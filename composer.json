@@ -1,0 +1,43 @@
+{
+    "name": "tapiruslab/tapirusdb",
+    "description": "Official PHP Client for TapirusDB — Safe-Rust Quad-Model Embedded AI Database & Agent Memory Engine",
+    "type": "library",
+    "keywords": [
+        "tapirus",
+        "tapirusdb",
+        "database",
+        "embedded",
+        "sqlite",
+        "vector",
+        "graph",
+        "rag",
+        "ai-memory"
+    ],
+    "homepage": "https://tapirusdb.com",
+    "license": "BSL-1.1",
+    "authors": [
+        {
+            "name": "Ahmad Faiz",
+            "email": "faiz@tapirusdb.com",
+            "role": "Lead Architect",
+            "homepage": "https://tapirusdb.com"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/tapiruslab/TapirusDB/issues",
+        "source": "https://github.com/tapiruslab/TapirusDB",
+        "docs": "https://tapirusdb.com"
+    },
+    "require": {
+        "php": ">=8.0",
+        "ext-json": "*",
+        "ext-curl": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "Tapirus\\": "sdks/php/src/"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
