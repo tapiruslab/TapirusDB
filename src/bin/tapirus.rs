@@ -335,6 +335,13 @@ fn handle_http_client(mut stream: TcpStream, db: Arc<Mutex<Connection>>) {
         return;
     }
 
+    // Built-in Documentation Portal
+    if method == "GET" && (path == "/docs" || path == "/docs.html") {
+        let html = include_str!("../../ui/docs.html");
+        send_http_response(&mut stream, "200 OK", "text/html; charset=utf-8", html);
+        return;
+    }
+
     // SQL execution endpoint
     if method == "POST" && (path == "/sql" || path == "/api/sql") {
         let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
