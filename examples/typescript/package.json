@@ -1,6 +1,6 @@
 {
   "name": "tapirus-typescript-example",
-  "version": "0.1.2",
+  "version": "1.0.0",
   "description": "TapirusDB Node.js and TypeScript integration example",
   "main": "index.ts",
   "scripts": {

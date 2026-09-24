@@ -43,7 +43,7 @@ curl http://localhost:8787/health
 {
   "status": "online",
   "engine": "TapirusDB Edge",
-  "version": "0.1.2",
+  "version": "1.0.0",
   "runtime": "Cloudflare Workers (V8 Isolate)"
 }
 ```

@@ -1,6 +1,6 @@
 {
   "name": "tapirus-cloudflare-worker-example",
-  "version": "0.1.2",
+  "version": "1.0.0",
   "description": "Deploy TapirusDB serverless edge database on Cloudflare Workers",
   "main": "worker.js",
   "type": "module",

@@ -1,11 +1,11 @@
-﻿# @tapirus/tapirus 🦛
+# @tapirus/tapirus 🦛
 
 > **"One Engine. Four Models. Zero Data Sprawl."**  
 > **TapirusDB in WebAssembly** — The Pure Safe-Rust Multi-Model Database & AI Agent Memory Engine for Web Browsers, Node.js, and Cloudflare Workers.  
 > *Architected by **Ahmad Faiz***
 
-[![npm version](https://img.shields.io/npm/v/@tapirus/db.svg)](https://www.npmjs.com/package/@tapirus/db)
-[![License: BSL-1.1](https://img.shields.io/badge/License-BSL--1.1-blue.svg)](https://github.com/tapiruslab/TapirusDB/blob/master/LICENSE)
+[![npm version](https://img.shields.io/npm/v/tapirus.svg)](https://www.npmjs.com/package/tapirus)
+[![License: BSL-1.1](https://img.shields.io/badge/License-BSL--1.1-blue.svg)](https://github.com/tapiruslab/TapirusDB/blob/main/LICENSE)
 [![Wasm](https://img.shields.io/badge/WebAssembly-wasm32-purple.svg)](https://webassembly.org/)
 
 ## Features
