@@ -8,15 +8,10 @@
 
 <br/>
 
-[![Website](https://img.shields.io/badge/website-tapirusdb.com-blue.svg?style=flat-square)](https://tapirusdb.com)
-[![Crates.io](https://img.shields.io/badge/crates.io-v1.0.0-orange.svg?style=flat-square&logo=rust)](https://crates.io/crates/tapirus)
-[![PyPI](https://img.shields.io/badge/pypi-v1.0.0-blue.svg?style=flat-square&logo=pypi)](https://pypi.org/project/tapirus/)
-[![npm](https://img.shields.io/npm/v/tapirus.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/tapirus)
-[![Packagist](https://img.shields.io/badge/packagist-v1.0.0-orange.svg?style=flat-square&logo=php)](https://packagist.org/packages/tapiruslab/tapirusdb)
-[![Go Reference](https://img.shields.io/badge/go-reference-007d9c.svg?style=flat-square&logo=go)](https://pkg.go.dev/github.com/tapiruslab/TapirusDB/sdks/go)
-[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg?style=flat-square&logo=docker)](https://github.com/tapiruslab/TapirusDB/pkgs/container/tapirusdb)
-[![Safety](https://img.shields.io/badge/memory--safety-100%25_Safe_Rust-brightgreen.svg?style=flat-square)](src/lib.rs)
-[![License](https://img.shields.io/badge/license-BUSL_1.1-purple.svg?style=flat-square)](LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/tapirus.svg?style=flat-square&logo=rust&color=e05d44)](https://crates.io/crates/tapirus)
+[![Memory Safety](https://img.shields.io/badge/memory--safety-100%25_Safe_Rust-brightgreen.svg?style=flat-square)](src/lib.rs)
+[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-purple.svg?style=flat-square)](LICENSE)
+[![Documentation](https://img.shields.io/badge/docs-tapirusdb.com-0070f3.svg?style=flat-square)](https://tapirusdb.com)
 
 <br/>
 
@@ -114,6 +109,19 @@ composer require tapiruslab/tapirusdb
 # OCI Container (Docker & Podman)
 docker pull ghcr.io/tapiruslab/tapirusdb:latest
 ```
+
+#### Official Ecosystem & Registry Matrix
+
+| Ecosystem | Registry / Package | Installation Command | License |
+| :--- | :--- | :--- | :--- |
+| **🦀 Rust** | [![Crates.io](https://img.shields.io/crates/v/tapirus.svg?style=flat-square&logo=rust)](https://crates.io/crates/tapirus) | `cargo add tapirus` | BUSL-1.1 |
+| **🐍 Python** | [![PyPI](https://img.shields.io/pypi/v/tapirus.svg?style=flat-square&logo=pypi)](https://pypi.org/project/tapirus/) | `pip install tapirus` | MIT |
+| **🟢 Node.js / TS** | [![npm](https://img.shields.io/npm/v/tapirus.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/tapirus) | `npm install tapirus` | MIT |
+| **🐹 Go** | [![Go Reference](https://pkg.go.dev/badge/github.com/tapiruslab/TapirusDB/sdks/go.svg)](https://pkg.go.dev/github.com/tapiruslab/TapirusDB/sdks/go) | `go get github.com/tapiruslab/TapirusDB/sdks/go` | MIT |
+| **🐘 PHP** | [![Packagist](https://img.shields.io/badge/packagist-v1.0.0-orange.svg?style=flat-square&logo=php)](https://packagist.org/packages/tapiruslab/tapirusdb) | `composer require tapiruslab/tapirusdb` | MIT |
+| **🐳 Docker** | [![Docker](https://img.shields.io/badge/ghcr.io-tapirusdb-2496ed?style=flat-square&logo=docker)](https://github.com/tapiruslab/TapirusDB/pkgs/container/tapirusdb) | `docker pull ghcr.io/tapiruslab/tapirusdb:latest` | BUSL-1.1 |
+| **🪟 Windows** | [![Winget](https://img.shields.io/badge/winget-tapirus.yaml-0078d4?style=flat-square&logo=windows)](https://github.com/tapiruslab/TapirusDB/blob/main/winget/tapirus.yaml) | `winget install --manifest ...` | BUSL-1.1 |
+| **🍺 Homebrew** | [![Homebrew](https://img.shields.io/badge/brew-tapirus.rb-fbb040?style=flat-square&logo=homebrew)](https://github.com/tapiruslab/TapirusDB/blob/main/Formula/tapirus.rb) | `brew install .../tapirus.rb` | BUSL-1.1 |
 
 ---
 

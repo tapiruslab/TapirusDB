@@ -83,4 +83,5 @@ func main() {
 
 ## 📜 License
 
-Licensed under the [Business Source License 1.1 (BUSL-1.1)](https://github.com/tapiruslab/TapirusDB/blob/main/LICENSE).
+The TapirusDB Go SDK is licensed under the [MIT License](LICENSE).  
+The underlying TapirusDB core engine is licensed under [BUSL-1.1](https://github.com/tapiruslab/TapirusDB/blob/main/LICENSE).
