@@ -26,32 +26,11 @@
 
 Modern AI and edge developers are forced into **Fragmented Polyglot Persistence**—gluing together multiple complex, heavy databases across network boundaries:
 
-```text
-THE FRAGILE "FRANKENSTACK" (TRADITIONAL MULTI-DB)
-┌─────────────┐   gRPC (20-50ms)   ┌───────────────────────────┐
-│             ├───────────────────►│ Dedicated Vector DB (Cloud)│ (~500MB RAM, $$$/mo)
-│             │   HTTP (15-30ms)   ├───────────────────────────┤
-│ Application ├───────────────────►│ Dedicated Graph DB (JVM)  │ (~1.2GB RAM, Heavy)
-│             │   TCP IPC (5-10ms) ├───────────────────────────┤
-│             ├───────────────────►│ Relational SQL Server     │ (~350MB RAM, Daemons)
-└─────────────┘                    └───────────────────────────┘
-Total Latency: 40–90 ms | Idle RAM: > 2.0 GB | Fragile ETL sync lag & drift
+<div align="center">
 
-VS.
+![TapirusDB Architecture vs Fragile Frankenstack](.github/assets/architecture-comparison.svg)
 
-THE TAPIRUSDB UNIFIED EMBEDDED ENGINE
-┌──────────────────────────────────────────────────────────────┐
-│                  YOUR APPLICATION PROCESS                    │
-│                                                              │
-│   ┌──────────────────────────────────────────────────────┐   │
-│   │ TapirusDB In-Process Engine (100% Pure Safe Rust)    │   │
-│   │   • Sub-Microsecond Chaining (0.55 µs)               │   │
-│   │   • Relational SQL + Vectors + Graphs + Documents    │   │
-│   │   • Single Encrypted `.tapir` File (< 4 MB Idle RAM) │   │
-│   └──────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────┘
-Total Latency: 0.55 µs chaining / 22.8 µs vector search (vs 40–90 ms cloud roundtrips) | Idle RAM: < 4 MB | Zero Sync Lag | $0 Cloud Cost
-```
+</div>
 
 ---
 
