@@ -1,9 +1,9 @@
-﻿[package]
+[package]
 name = "tapirus-ffi"
 version = "1.0.0"
 edition = "2024"
 authors = ["Ahmad Faiz <faiz@tapirusdb.com>"]
-license = "BSL-1.1"
+license = "BUSL-1.1"
 description = "C Foreign Function Interface (FFI) bindings for TapirusDB"
 repository = "https://github.com/tapiruslab/TapirusDB"
 

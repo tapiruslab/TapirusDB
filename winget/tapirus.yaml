@@ -1,19 +1,19 @@
-﻿# yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
 PackageIdentifier: TapirusDB.Tapirus
-PackageVersion: 0.1.2
+PackageVersion: 1.0.0
 PackageName: TapirusDB
 Publisher: Tapirus Tech Lab (TapirusDB.com)
 PublisherUrl: https://tapirusdb.com
 PublisherSupportUrl: https://github.com/tapiruslab/TapirusDB/issues
 Author: Ahmad Faiz
-ShortDescription: The Safe-Rust Embedded Multi-Model Database & AI Agent Memory Engine
+ShortDescription: The Safe-Rust Embedded Quad-Model Database & AI Agent Memory Engine
 Description: |
-  TapirusDB is an ultra-fast, in-process multi-model database engine written entirely in 100% Safe Rust.
+  TapirusDB is an ultra-fast, in-process quad-model database engine written entirely in 100% Safe Rust.
   It combines Relational SQL-92, JSON Document collections, HNSW Vector search, and Knowledge Graph (GraphRAG)
   into a single atomic .tapir disk file.
 PackageUrl: https://tapirusdb.com
-License: BSL-1.1
-LicenseUrl: https://github.com/tapiruslab/TapirusDB/blob/master/LICENSE
+License: BUSL-1.1
+LicenseUrl: https://github.com/tapiruslab/TapirusDB/blob/main/LICENSE
 Copyright: Copyright (c) 2026 Ahmad Faiz • Tapirus Tech Lab (TapirusDB.com)
 Tags:
   - database
@@ -25,11 +25,11 @@ Tags:
   - graphrag
 Commands:
   - tapirus
-ReleaseNotesUrl: https://github.com/tapiruslab/TapirusDB/releases/tag/v0.1.2
+ReleaseNotesUrl: https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.0
 Installers:
   - Architecture: x64
     InstallerType: portable
-    InstallerUrl: https://github.com/tapiruslab/TapirusDB/releases/download/v0.1.2/tapirus-windows-x86_64.zip
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerUrl: https://github.com/tapiruslab/TapirusDB/releases/download/v1.0.0/tapirus-windows-x86_64.zip
+    InstallerSha256: 045aa1a96e69ead7eda40ad7f7662d4e5bd0d487b0988c6669387ed56f615537
 ManifestType: singleton
 ManifestVersion: 1.6.0
