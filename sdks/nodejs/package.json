@@ -1,0 +1,31 @@
+﻿{
+  "name": "tapirus",
+  "version": "1.0.0",
+  "description": "Official Node.js & TypeScript SDK for TapirusDB — Embedded Safe-Rust Quad-Model Database",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": [
+    "tapirus",
+    "tapirusdb",
+    "embedded",
+    "database",
+    "sqlite",
+    "vector",
+    "ai",
+    "rag",
+    "graph"
+  ],
+  "author": "Ahmad Faiz <faiz@tapirusdb.com>",
+  "license": "BSL-1.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tapiruslab/TapirusDB.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tapiruslab/TapirusDB/issues"
+  },
+  "homepage": "https://tapirusdb.com"
+}

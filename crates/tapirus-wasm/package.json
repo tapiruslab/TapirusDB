@@ -1,0 +1,32 @@
+﻿{
+  "name": "@tapirus/tapirus",
+  "version": "1.0.0",
+  "description": "TapirusDB in WebAssembly: Pure Safe-Rust Multi-Model Database & AI Agent Memory Engine for Browsers, Node.js, and Cloudflare Workers",
+  "main": "pkg/tapirus_wasm.js",
+  "types": "pkg/tapirus_wasm.d.ts",
+  "files": [
+    "pkg/"
+  ],
+  "scripts": {
+    "build:web": "wasm-pack build --target web --out-dir pkg",
+    "build:nodejs": "wasm-pack build --target nodejs --out-dir pkg",
+    "build:bundler": "wasm-pack build --target bundler --out-dir pkg"
+  },
+  "keywords": [
+    "database",
+    "sqlite",
+    "vector",
+    "wasm",
+    "webassembly",
+    "ai-agent",
+    "memory",
+    "graphrag"
+  ],
+  "author": "Ahmad Faiz <faiz@tapirusdb.com>",
+  "license": "BSL-1.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tapiruslab/TapirusDB.git"
+  },
+  "homepage": "https://tapirusdb.com"
+}

@@ -1,0 +1,36 @@
+Business Source License 1.1
+
+Parameters:
+
+Licensor:
+    Ahmad Faiz (TapirusLab / TapirusDB)
+
+Licensed Work:
+    TapirusDB ("tapirus") database engine source code and documentation.
+
+Additional Use Grant:
+    You may make use of the Licensed Work (including copying, modifying, and
+    compiling it) for any application or purpose, provided that you do not offer
+    the Licensed Work as a hosted commercial Managed Database-as-a-Service (DBaaS)
+    or cloud-hosted database platform in competition with the Licensor without
+    an explicit commercial license agreement.
+    
+    Individual developer usage, research, embedded application embedding,
+    self-hosted single-node deployments, and edge silicon use cases are 100%
+    permitted and royalty-free under this grant.
+
+Change Date:
+    September 16, 2030
+
+Change License:
+    Apache License, Version 2.0
+
+-------------------------------------------------------------------------------
+
+Notice:
+
+The Business Source License 1.1 (the "License") is a license that allows you
+to use the Licensed Work for free, subject to the conditions above. On the
+Change Date, the Licensed Work will become subject to the Change License.
+
+For full license terms and conditions, see https://mariadb.com/bsl11/

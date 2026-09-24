@@ -1,0 +1,83 @@
+﻿[package]
+name = "tapirus"
+version = "1.0.0"
+edition = "2024"
+authors = ["Ahmad Faiz <faiz@tapirusdb.com>"]
+license = "BSL-1.1"
+description = "The Safe-Rust Embedded Multi-Model Database & AI Agent Memory Engine"
+repository = "https://github.com/tapiruslab/TapirusDB"
+homepage = "https://tapirusdb.com"
+documentation = "https://docs.rs/tapirus"
+readme = "README.md"
+keywords = ["embedded", "database", "sqlite", "vector", "ai-memory"]
+categories = ["database-implementations", "embedded"]
+rust-version = "1.85"
+exclude = [
+    "docs/formal_verification/",
+    "scratch/",
+]
+
+[workspace]
+members = [
+    ".",
+    "crates/tapirus-ffi",
+    "crates/tapirus-wasm"
+]
+
+[[bin]]
+name = "tapirus"
+path = "src/bin/tapirus.rs"
+
+[[bench]]
+name = "tapirus_bench"
+harness = false
+
+[dependencies]
+# Concurrency & Locks
+parking_lot = "0.12"
+
+# Checksums & Data Integrity
+crc32fast = "1.4"
+
+# Encryption at Rest (AEAD ChaCha20-Poly1305 & SHA256 Key Derivation)
+chacha20poly1305 = "0.10"
+sha2 = "0.10"
+
+# Serialization & Deserialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error Handling
+thiserror = "2.0"
+
+# Optional SIMD Vector Math
+wide = { version = "0.7", optional = true }
+getrandom = "0.4.3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom-02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+
+[dev-dependencies]
+tempfile = "3.14"
+
+[features]
+default = ["std"]
+std = []
+simd = ["dep:wide"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Ultra-compact profile for Edge IoT, Microcontrollers, and Embedded Linux
+[profile.min-size]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

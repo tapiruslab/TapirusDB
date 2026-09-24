@@ -1,0 +1,35 @@
+﻿{
+  "name": "@tapirus/db",
+  "version": "1.0.0",
+  "description": "Official TypeScript & JavaScript SDK for TapirusDB — The Safe-Rust Embedded Multi-Model AI Database Engine",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": [
+    "database",
+    "sqlite",
+    "in-process",
+    "vector-database",
+    "graphrag",
+    "embedded",
+    "ai-memory",
+    "local-first",
+    "wasm",
+    "rag"
+  ],
+  "author": "Ahmad Faiz <faiz@tapirusdb.com>",
+  "license": "BSL-1.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tapiruslab/TapirusDB.git"
+  },
+  "homepage": "https://tapirusdb.com",
+  "bugs": {
+    "url": "https://github.com/tapiruslab/TapirusDB/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

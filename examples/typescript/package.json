@@ -1,0 +1,16 @@
+{
+  "name": "tapirus-typescript-example",
+  "version": "0.1.2",
+  "description": "TapirusDB Node.js and TypeScript integration example",
+  "main": "index.ts",
+  "scripts": {
+    "start": "ts-node index.ts"
+  },
+  "dependencies": {
+    "koffi": "^2.8.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.0.0"
+  }
+}

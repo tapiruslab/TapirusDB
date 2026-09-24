@@ -1,0 +1,76 @@
+# Rust build artifacts
+/target/
+dist/
+build/
+
+# Database files & transient WAL frames
+*.tapir
+*.tapir-wal
+*.tapir-shm
+*.db
+*.sqlite
+:memory:*
+
+# Binary documents & office drafts
+*.docx
+*.pdf
+~$*
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Python & Node artifacts
+__pycache__/
+*.pyc
+*.egg-info/
+node_modules/
+
+# Archives
+*.tar.gz
+*.zip
+
+# Internal reviews, scratchpads, and audit notes
+docs/reviews/
+docs/audit/
+docs/INTERNAL_*
+audit/
+scratch/
+*.audit.md
+
+# Large Model Binaries & Installers (Local Only)
+*.gguf
+OllamaSetup.exe
+
+# Agent Skills (Local)
+.agents/
+skills-lock.json
+
+# Commercial & Proprietary Desktop Products (Keep Secret / Local Only)
+studio/
+
+# Standalone Website Repository
+tapirusdb-site/
+
+# Security, Keys & Credentials (Strictly Never Commit)
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.cert
+*.pfx
+*.p12
+*.crt
+id_rsa*
+id_ed25519*
+secrets/
+credentials.json
+token.json
+*.log
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
