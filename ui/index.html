@@ -17,20 +17,22 @@
 
   <style>
     :root {
-      --bg-base: #07090e;
-      --bg-surface: #0c1017;
-      --bg-card: rgba(16, 22, 34, 0.65);
+      --bg-base: #06080d;
+      --bg-surface: #0a0e17;
+      --bg-surface-elevated: #101624;
+      --bg-card: rgba(16, 22, 36, 0.7);
       --border-subtle: rgba(255, 255, 255, 0.08);
       --border-strong: rgba(255, 255, 255, 0.16);
-      --text-main: #f1f5f9;
+      --text-main: #f8fafc;
       --text-muted: #94a3b8;
       --text-dim: #64748b;
       --accent-emerald: #10b981;
-      --accent-emerald-glow: rgba(16, 185, 129, 0.15);
-      --accent-cyan: #06b6d4;
+      --accent-emerald-glow: rgba(16, 185, 129, 0.25);
+      --accent-cyan: #00d2ff;
       --accent-blue: #3b82f6;
+      --accent-purple: #8b5cf6;
       --code-bg: #090c14;
-      --container-width: 1200px;
+      --container-width: 1220px;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -51,25 +53,28 @@
       padding: 0 24px;
     }
 
-    /* Top Navigation */
-    .nav-bar {
+    /* Top Navigation (Floating Glass Pill) */
+    .nav-wrapper {
       position: fixed;
-      top: 0; left: 0; right: 0;
-      height: 68px;
-      background: rgba(7, 9, 14, 0.82);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border-bottom: 1px solid var(--border-subtle);
+      top: 16px; left: 0; right: 0;
       z-index: 1000;
-      display: flex;
-      align-items: center;
+      padding: 0 20px;
     }
 
-    .nav-inner {
+    .nav-bar {
+      max-width: var(--container-width);
+      margin: 0 auto;
+      height: 60px;
+      background: rgba(10, 14, 23, 0.85);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      width: 100%;
+      justify-content: space-between;
+      padding: 0 20px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
     }
 
     .brand {
@@ -79,21 +84,21 @@
       text-decoration: none;
       color: #fff;
       font-weight: 800;
-      font-size: 18px;
-      letter-spacing: -0.5px;
+      font-size: 17px;
+      letter-spacing: -0.4px;
     }
 
     .brand-glyph {
-      width: 32px; height: 32px;
-      background: linear-gradient(135deg, #10b981, #06b6d4);
-      border-radius: 8px;
+      width: 30px; height: 30px;
+      background: linear-gradient(135deg, #10b981, #00d2ff);
+      border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 16px;
+      font-size: 14px;
       font-weight: 800;
       color: #000;
-      box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+      box-shadow: 0 0 12px rgba(16, 185, 129, 0.5);
     }
 
     .brand-tag {
@@ -110,63 +115,85 @@
     .nav-menu {
       display: flex;
       align-items: center;
-      gap: 28px;
+      gap: 26px;
       list-style: none;
     }
 
     .nav-link {
       color: var(--text-muted);
       text-decoration: none;
-      font-size: 14px;
+      font-size: 13.5px;
       font-weight: 500;
       transition: color 0.2s;
     }
     .nav-link:hover { color: #fff; }
     .nav-link.active-link { color: #fff; font-weight: 600; }
-    .nav-link-highlight {
-      color: var(--accent-cyan);
+    .nav-link-docs {
+      color: #38bdf8;
       font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
-    .nav-link-highlight:hover { color: #38bdf8; }
+    .nav-link-docs:hover { color: #7dd3fc; }
 
     .nav-actions {
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 12px;
     }
 
-    .btn {
+    .btn-pill {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      padding: 9px 18px;
-      font-size: 13.5px;
+      gap: 10px;
+      padding: 8px 18px;
+      font-size: 13px;
       font-weight: 600;
-      border-radius: 8px;
+      border-radius: 999px;
       text-decoration: none;
-      transition: all 0.2s;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
       cursor: pointer;
       border: none;
     }
+    .btn-pill:active {
+      transform: scale(0.98);
+    }
 
     .btn-primary {
-      background: linear-gradient(135deg, #10b981, #06b6d4);
-      color: #000;
-      box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+      background: linear-gradient(135deg, #10b981 0%, #00d2ff 100%);
+      color: #030712;
+      font-weight: 700;
+      box-shadow: 0 0 20px rgba(16, 185, 129, 0.35);
     }
     .btn-primary:hover {
-      box-shadow: 0 0 30px rgba(16, 185, 129, 0.5);
+      box-shadow: 0 0 35px rgba(0, 210, 255, 0.55);
       transform: translateY(-1px);
+    }
+    .btn-primary .btn-arrow-badge {
+      width: 22px; height: 22px;
+      background: rgba(0, 0, 0, 0.16);
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .btn-primary:hover .btn-arrow-badge {
+      transform: translateX(2px);
     }
 
     .btn-secondary {
       background: rgba(255, 255, 255, 0.05);
       color: #fff;
       border: 1px solid var(--border-subtle);
+      box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.06);
     }
     .btn-secondary:hover {
       background: rgba(255, 255, 255, 0.1);
       border-color: var(--border-strong);
+      transform: translateY(-1px);
     }
 
     .mobile-menu-btn {
@@ -174,30 +201,63 @@
       background: none;
       border: none;
       color: #fff;
-      font-size: 24px;
+      font-size: 22px;
       cursor: pointer;
     }
 
-    /* Hero Section */
-    .hero {
-      padding: 160px 0 100px;
+    /* =========================================================================
+       HERO SECTION WITH QUANTUM BINARY NEURAL CORTEX CANVAS
+       ========================================================================= */
+    .cds-hero {
       position: relative;
+      padding: 160px 0 100px;
       overflow: hidden;
       text-align: center;
     }
 
-    .hero-glow {
+    /* Quantum Binary Neural Cortex Canvas Background Wrapper */
+    .cds-hero-bg-canvas-wrap {
       position: absolute;
-      top: 60px; left: 50%;
-      transform: translateX(-50%);
-      width: 700px; height: 350px;
-      background: radial-gradient(circle, rgba(16, 185, 129, 0.18) 0%, rgba(6, 182, 212, 0.08) 50%, transparent 70%);
-      filter: blur(60px);
-      z-index: -1;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
       pointer-events: none;
+      z-index: 0;
+    }
+    .cds-hero-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    /* Technical Grid Overlay */
+    .cds-hero-grid-overlay {
+      position: absolute;
+      inset: 0;
+      background-image: 
+        linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 32px 32px;
+      pointer-events: none;
+      z-index: 1;
+    }
+    /* Radial Vignette Mask */
+    .cds-hero-vignette-mask {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 50% 35%, transparent 20%, rgba(6, 8, 13, 0.75) 65%, #06080d 100%);
+      pointer-events: none;
+      z-index: 1;
     }
 
-    .eyebrow-pill {
+    .hero-content {
+      position: relative;
+      z-index: 2;
+    }
+
+    .eyebrow-badge {
       display: inline-flex;
       align-items: center;
       gap: 8px;
@@ -205,41 +265,53 @@
       background: rgba(16, 185, 129, 0.1);
       border: 1px solid rgba(16, 185, 129, 0.25);
       border-radius: 999px;
-      font-size: 12.5px;
+      font-size: 12px;
       color: #34d399;
       font-weight: 600;
+      letter-spacing: 0.02em;
       margin-bottom: 24px;
+      box-shadow: 0 0 20px rgba(16, 185, 129, 0.15);
     }
-    .eyebrow-pill i { font-size: 14px; }
+    .eyebrow-badge .dot {
+      width: 6px; height: 6px;
+      background: #10b981;
+      border-radius: 50%;
+      box-shadow: 0 0 8px #10b981;
+      animation: pulseDot 2s infinite ease-in-out;
+    }
+    @keyframes pulseDot {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.4); opacity: 0.6; }
+    }
 
-    .hero h1 {
-      font-size: 58px;
+    .hero-title {
+      font-size: 56px;
       font-weight: 800;
       letter-spacing: -0.04em;
       line-height: 1.1;
       color: #fff;
-      margin-bottom: 22px;
-      max-width: 920px;
+      margin-bottom: 20px;
+      max-width: 940px;
       margin-left: auto;
       margin-right: auto;
     }
-
-    .hero h1 span.gradient-text {
-      background: linear-gradient(135deg, #10b981 0%, #06b6d4 50%, #38bdf8 100%);
+    .hero-title span.glow-gradient {
+      background: linear-gradient(135deg, #10b981 0%, #00d2ff 60%, #38bdf8 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
+      filter: drop-shadow(0 0 35px rgba(0, 210, 255, 0.35));
     }
 
-    .hero-subhead {
-      font-size: 19px;
+    .hero-lead {
+      font-size: 18.5px;
       color: var(--text-muted);
-      max-width: 780px;
+      max-width: 760px;
       margin: 0 auto 36px;
       line-height: 1.6;
       font-weight: 400;
     }
 
-    .hero-cta-group {
+    .hero-cta-bar {
       display: flex;
       justify-content: center;
       align-items: center;
@@ -248,97 +320,105 @@
       flex-wrap: wrap;
     }
 
-    /* Terminal Quick Copy */
-    .hero-terminal {
+    .terminal-quick-box {
       display: inline-flex;
       align-items: center;
-      background: var(--code-bg);
+      background: rgba(9, 12, 20, 0.85);
       border: 1px solid var(--border-subtle);
-      border-radius: 8px;
-      padding: 8px 14px;
+      border-radius: 999px;
+      padding: 6px 14px 6px 16px;
       font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
+      font-size: 12.5px;
       color: #38bdf8;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
     }
-    .hero-terminal code { margin: 0 12px 0 6px; }
-    .hero-terminal button {
+    .terminal-quick-box code { margin: 0 10px 0 6px; }
+    .terminal-quick-box button {
       background: rgba(255, 255, 255, 0.08);
       border: 1px solid var(--border-subtle);
       color: var(--text-muted);
       font-size: 11px;
-      padding: 4px 8px;
-      border-radius: 4px;
+      padding: 3px 8px;
+      border-radius: 999px;
       cursor: pointer;
       transition: all 0.2s;
     }
-    .hero-terminal button:hover {
-      background: rgba(255, 255, 255, 0.15);
+    .terminal-quick-box button:hover {
+      background: rgba(255, 255, 255, 0.18);
       color: #fff;
     }
 
-    /* Code Preview Box (Hero) */
-    .hero-code-card {
-      max-width: 820px;
+    /* =========================================================================
+       DUCKDB-INSPIRED ANIMATED STACK DIAGRAM (HERO COMPONENT - DOPPELRAND)
+       ========================================================================= */
+    .cds-stack-diagram-shell {
+      max-width: 840px;
       margin: 0 auto;
-      background: #090d16;
+      padding: 6px;
+      background: rgba(255, 255, 255, 0.03);
       border: 1px solid var(--border-subtle);
-      border-radius: 12px;
-      overflow: hidden;
-      box-shadow: 0 20px 50px rgba(0,0,0,0.6);
-      text-align: left;
+      border-radius: 20px;
+      box-shadow: 0 30px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(16, 185, 129, 0.08);
     }
 
-    .code-tabs-bar {
+    .cds-stack-diagram-wrap {
+      background: rgba(13, 17, 26, 0.92);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 14px;
+      padding: 16px 20px 20px;
+      box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.08);
+    }
+
+    .stack-diagram-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: rgba(255, 255, 255, 0.02);
-      border-bottom: 1px solid var(--border-subtle);
-      padding: 0 16px;
-    }
-
-    .code-tabs {
-      display: flex;
-      gap: 4px;
-    }
-
-    .code-tab-btn {
-      background: none;
-      border: none;
+      margin-bottom: 12px;
+      font-size: 11px;
       color: var(--text-dim);
-      font-size: 12.5px;
-      font-weight: 600;
-      padding: 12px 14px;
-      cursor: pointer;
-      border-bottom: 2px solid transparent;
-      transition: all 0.2s;
-    }
-    .code-tab-btn:hover { color: #fff; }
-    .code-tab-btn.active {
-      color: var(--accent-cyan);
-      border-bottom-color: var(--accent-cyan);
-    }
-
-    .code-content-wrapper {
-      padding: 20px 24px;
-      overflow-x: auto;
-    }
-
-    .code-content-wrapper pre code {
       font-family: 'JetBrains Mono', monospace;
-      font-size: 13.5px;
-      line-height: 1.65;
-      color: #e2e8f0;
+      padding: 0 6px;
+      letter-spacing: 0.05em;
     }
 
-    /* Stat / Trophy Bar */
+    .cds-stack-diagram {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .cds-stack-diagram .svg-node {
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), filter 0.25s ease;
+      cursor: pointer;
+    }
+    .cds-stack-diagram .svg-node:hover {
+      filter: drop-shadow(0 0 16px rgba(0, 210, 255, 0.45));
+    }
+    .cds-stack-diagram .svg-node:hover > rect:first-child {
+      stroke: #00d2ff;
+      stroke-width: 1.8px;
+    }
+
+    /* Scroll Reveal Animation */
+    .reveal-on-scroll {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1), transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+      will-change: opacity, transform;
+    }
+    .reveal-on-scroll.is-revealed {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* Stat / Trophy Strip */
     .stat-strip {
       padding: 40px 0;
       border-top: 1px solid var(--border-subtle);
       border-bottom: 1px solid var(--border-subtle);
       background: rgba(255, 255, 255, 0.015);
-      margin-bottom: 90px;
+      margin-bottom: 100px;
     }
 
     .stat-grid {
@@ -356,7 +436,7 @@
       margin-bottom: 4px;
     }
     .stat-num.gradient {
-      background: linear-gradient(135deg, #10b981, #06b6d4);
+      background: linear-gradient(135deg, #10b981, #00d2ff);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
@@ -370,7 +450,7 @@
     /* Section Headers */
     .section-header {
       text-align: center;
-      max-width: 720px;
+      max-width: 740px;
       margin: 0 auto 60px;
     }
 
@@ -406,10 +486,10 @@
     .arch-graphic-container {
       max-width: 960px;
       margin: 0 auto;
-      border-radius: 12px;
+      border-radius: 14px;
       overflow: hidden;
       border: 1px solid var(--border-subtle);
-      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.6);
     }
     .arch-graphic-container picture, .arch-graphic-container img {
       width: 100%;
@@ -430,16 +510,16 @@
     .bento-card {
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
-      border-radius: 14px;
-      padding: 32px;
+      border-radius: 16px;
+      padding: 34px;
       position: relative;
       overflow: hidden;
       transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     }
     .bento-card:hover {
-      border-color: rgba(6, 182, 212, 0.3);
+      border-color: rgba(0, 210, 255, 0.35);
       transform: translateY(-2px);
-      box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+      box-shadow: 0 14px 40px rgba(0,0,0,0.5);
     }
 
     .bento-icon {
@@ -454,12 +534,12 @@
       color: #34d399;
       margin-bottom: 20px;
     }
-    .bento-icon.cyan { background: rgba(6, 182, 212, 0.1); border-color: rgba(6, 182, 212, 0.2); color: #38bdf8; }
+    .bento-icon.cyan { background: rgba(0, 210, 255, 0.1); border-color: rgba(0, 210, 255, 0.2); color: #38bdf8; }
     .bento-icon.purple { background: rgba(139, 92, 246, 0.1); border-color: rgba(139, 92, 246, 0.2); color: #a78bfa; }
     .bento-icon.blue { background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.2); color: #60a5fa; }
 
     .bento-card h3 {
-      font-size: 20px;
+      font-size: 21px;
       font-weight: 700;
       color: #fff;
       margin-bottom: 10px;
@@ -470,13 +550,13 @@
       color: var(--text-muted);
       font-size: 14.5px;
       line-height: 1.6;
-      margin-bottom: 18px;
+      margin-bottom: 20px;
     }
 
     .bento-snippet {
       background: var(--code-bg);
       border: 1px solid var(--border-subtle);
-      border-radius: 6px;
+      border-radius: 8px;
       padding: 12px 14px;
       font-family: 'JetBrains Mono', monospace;
       font-size: 12.5px;
@@ -491,7 +571,7 @@
     .bench-table-wrapper {
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
-      border-radius: 12px;
+      border-radius: 14px;
       overflow-x: auto;
     }
 
@@ -554,7 +634,7 @@
     .eco-card {
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
-      border-radius: 10px;
+      border-radius: 12px;
       padding: 20px;
       display: flex;
       flex-direction: column;
@@ -602,9 +682,9 @@
 
     /* Final CTA */
     .cta-banner {
-      background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(6, 182, 212, 0.08));
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(0, 210, 255, 0.08));
       border: 1px solid rgba(16, 185, 129, 0.25);
-      border-radius: 16px;
+      border-radius: 20px;
       padding: 60px 40px;
       text-align: center;
       margin-bottom: 100px;
@@ -620,7 +700,7 @@
     .cta-banner p {
       color: var(--text-muted);
       font-size: 17px;
-      max-width: 600px;
+      max-width: 620px;
       margin: 0 auto 32px;
     }
 
@@ -674,25 +754,28 @@
     /* Mobile Drawer */
     .mobile-drawer {
       position: fixed;
-      top: 68px; left: 0; right: 0; bottom: 0;
-      background: var(--bg-base);
-      padding: 30px 24px;
+      top: 86px; left: 20px; right: 20px;
+      background: #0d121c;
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 24px;
       display: none;
       flex-direction: column;
-      gap: 20px;
+      gap: 16px;
       z-index: 999;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.8);
     }
     .mobile-drawer.open { display: flex; }
     .mobile-drawer a {
       color: #fff;
       text-decoration: none;
-      font-size: 18px;
+      font-size: 16px;
       font-weight: 600;
     }
 
     /* Responsive */
     @media (max-width: 960px) {
-      .hero h1 { font-size: 42px; }
+      .hero-title { font-size: 40px; }
       .bento-grid { grid-template-columns: 1fr; }
       .stat-grid { grid-template-columns: repeat(2, 1fr); }
       .eco-grid { grid-template-columns: 1fr; }
@@ -702,8 +785,8 @@
     }
 
     @media (max-width: 600px) {
-      .hero h1 { font-size: 34px; }
-      .hero-subhead { font-size: 16px; }
+      .hero-title { font-size: 32px; }
+      .hero-lead { font-size: 16px; }
       .stat-grid { grid-template-columns: 1fr; }
       .footer-grid { grid-template-columns: 1fr; }
     }
@@ -711,9 +794,9 @@
 </head>
 <body>
 
-  <!-- Top Navigation -->
-  <header class="nav-bar">
-    <div class="container nav-inner">
+  <!-- Floating Glass Nav Bar -->
+  <div class="nav-wrapper">
+    <header class="nav-bar">
       <a href="index.html" class="brand">
         <div class="brand-glyph">T</div>
         <span>TAPIRUSDB</span>
@@ -725,23 +808,23 @@
         <li><a href="#architecture" class="nav-link">Architecture</a></li>
         <li><a href="#benchmarks" class="nav-link">Benchmarks</a></li>
         <li><a href="#ecosystem" class="nav-link">Ecosystem</a></li>
-        <li><a href="docs.html" class="nav-link nav-link-highlight"><i class="lni lni-book"></i> Documentation</a></li>
-        <li><a href="docs.html#studio" class="nav-link"><i class="lni lni-code-alt"></i> Studio Demo</a></li>
+        <li><a href="docs.html" class="nav-link nav-link-docs"><i class="lni lni-book"></i> Documentation</a></li>
+        <li><a href="docs.html#studio" class="nav-link"><i class="lni lni-code-alt"></i> Studio</a></li>
       </ul>
 
       <div class="nav-actions">
-        <a href="docs.html" class="btn btn-primary">
-          Explore Docs →
+        <a href="docs.html" class="btn-pill btn-primary">
+          Documentation →
         </a>
-        <a href="https://github.com/tapiruslab/TapirusDB" target="_blank" class="btn btn-secondary">
+        <a href="https://github.com/tapiruslab/TapirusDB" target="_blank" class="btn-pill btn-secondary">
           <i class="lni lni-github-original"></i>
         </a>
         <button class="mobile-menu-btn" id="mobileToggle" aria-label="Toggle Navigation">
           <i class="lni lni-menu"></i>
         </button>
       </div>
-    </div>
-  </header>
+    </header>
+  </div>
 
   <!-- Mobile Drawer -->
   <div class="mobile-drawer" id="mobileDrawer">
@@ -754,71 +837,179 @@
     <a href="https://github.com/tapiruslab/TapirusDB" target="_blank"><i class="lni lni-github-original"></i> GitHub Repository</a>
   </div>
 
-  <!-- Hero Section -->
-  <section class="hero">
-    <div class="hero-glow"></div>
-    <div class="container">
-      <div class="eyebrow-pill">
-        <i class="lni lni-shield"></i> 100% Safe-Rust Quad-Model Engine • v1.0.0 Live
+  <!-- =========================================================================
+       HERO SECTION WITH QUANTUM BINARY NEURAL CORTEX CANVAS (LIVE ANIMATION)
+       ========================================================================= -->
+  <header class="cds-hero">
+    <!-- Quantum Binary Neural Cortex Canvas Background Wrapper -->
+    <div class="cds-hero-bg-canvas-wrap">
+      <canvas id="heroNeuralCanvas" class="cds-hero-canvas"></canvas>
+      <div class="cds-hero-grid-overlay"></div>
+      <div class="cds-hero-vignette-mask"></div>
+    </div>
+
+    <div class="container hero-content">
+      <div class="eyebrow-badge">
+        <span class="dot"></span> 100% Safe-Rust Quad-Model Engine • v1.0.0 Live
       </div>
 
-      <h1>
-        One Database. Four Models.<br>
-        <span class="gradient-text">Zero Network Latency.</span>
+      <h1 class="hero-title">
+        The Embedded Memory Engine<br>
+        <span class="glow-gradient">for Sovereign AI &amp; Edge Systems.</span>
       </h1>
 
-      <p class="hero-subhead">
-        The embedded cognitive memory and multi-model database engine for sovereign AI agents, robotics, and edge hardware. Unifies Relational SQL, HNSW Vectors, GraphRAG, and JSON Documents into a single encrypted <code>.tapir</code> file (<4MB RAM).
+      <p class="hero-lead">
+        Stop stitching Pinecone, Neo4j, and SQLite together. TapirusDB provides autonomous AI agents and edge devices with <strong>0.55 µs in-process chaining</strong>, 22.8 µs vector search, openCypher knowledge graphs, and relational SQL inside a <strong>single encrypted <code>.tapir</code> file</strong>. Engineered in 100% Safe Rust with &lt;4MB idle RAM and zero cloud latency.
       </p>
 
-      <div class="hero-cta-group">
-        <a href="docs.html" class="btn btn-primary" style="padding:12px 24px; font-size:15px;">
-          Read Documentation →
+      <div class="hero-cta-bar">
+        <a href="docs.html" class="btn-pill btn-primary" style="padding:10px 22px; font-size:14.5px;">
+          <span>Explore Documentation</span>
+          <span class="btn-arrow-badge"><i class="lni lni-arrow-right"></i></span>
         </a>
-        <a href="docs.html#studio" class="btn btn-secondary" style="padding:12px 22px; font-size:15px;">
-          Try Interactive Studio
+        <a href="docs.html#studio" class="btn-pill btn-secondary" style="padding:10px 20px; font-size:14.5px;">
+          <i class="lni lni-code-alt"></i> Interactive SLM Studio
         </a>
-        <div class="hero-terminal">
+        <div class="terminal-quick-box">
           <span>$</span>
-          <code id="heroCmd">cargo add tapirus</code>
+          <code>cargo add tapirus</code>
           <button onclick="copySnippet('cargo add tapirus', this)">Copy</button>
         </div>
       </div>
 
-      <!-- Live Code Preview Card -->
-      <div class="hero-code-card">
-        <div class="code-tabs-bar">
-          <div class="code-tabs">
-            <button class="code-tab-btn active" onclick="switchHeroTab('rust', this)">Rust</button>
-            <button class="code-tab-btn" onclick="switchHeroTab('python', this)">Python</button>
-            <button class="code-tab-btn" onclick="switchHeroTab('typescript', this)">TypeScript</button>
-            <button class="code-tab-btn" onclick="switchHeroTab('go', this)">Go</button>
+      <!-- =====================================================================
+           DUCKDB-INSPIRED ANIMATED STACK DIAGRAM (INTERACTIVE SVG WITH FLOWING DOTS)
+           ===================================================================== -->
+      <div class="cds-stack-diagram-shell">
+        <div class="cds-stack-diagram-wrap">
+          <div class="stack-diagram-header">
+            <span>TAPIRUSDB IN-PROCESS RUNTIME CIRCUIT</span>
+            <span>0.55 µs MEMORY POINTERS</span>
           </div>
-          <span style="font-family:'JetBrains Mono',monospace; font-size:11px; color:#64748b;">Sub-Microsecond In-Process Engine</span>
-        </div>
-        <div class="code-content-wrapper">
-          <pre><code id="heroCodeSnippet">use tapirus::{Connection, Result};
 
-fn main() -> Result<()> {
-    // Single encrypted disk file (< 4 MB idle memory)
-    let db = Connection::open("production.tapir")?;
+          <svg class="cds-stack-diagram" viewBox="0 0 640 190" role="img" aria-label="TapirusDB Unified Quad-Model Architecture Flow">
+            <defs>
+              <linearGradient id="core-header-grad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#0f62fe" />
+                <stop offset="100%" stop-color="#002d9c" />
+              </linearGradient>
+              <filter id="card-shadow" x="-5%" y="-10%" width="110%" height="130%">
+                <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.4" />
+              </filter>
+              <filter id="dot-glow-cyan" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+              <filter id="dot-glow-green" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
 
-    // Relational SQL table with native 1536-D vector embedding
-    db.execute("CREATE TABLE memory (id INT PRIMARY KEY, content TEXT, vector VECTOR(1536));")?;
-    db.execute("INSERT INTO memory VALUES (1, 'Sovereign AI', [0.12, -0.45, ...]);")?;
+            <!-- Circuit Wire 1: Host App to TapirusDB Core -->
+            <path d="M 126 95 H 176" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2" stroke-dasharray="4 3" />
+            <path d="M 126 95 H 176" fill="none" stroke="#00d2ff" stroke-width="2" stroke-opacity="0.7" />
 
-    // Sub-microsecond GraphRAG & vector similarity traversal
-    let matches = db.query("SELECT id, content FROM memory ORDER BY VECTOR_COSINE(vector, [...]) LIMIT 5;")?;
-    println!("Matches: {:?}", matches);
-    Ok(())
-}</code></pre>
+            <!-- Animated Glowing Dot 1 (Host App to TapirusDB Core: 0.55µs query) -->
+            <circle r="4" fill="#00d2ff" filter="url(#dot-glow-cyan)">
+              <animateMotion dur="1.6s" repeatCount="indefinite" path="M 126 95 L 176 95" keyTimes="0;1" keyPoints="0;1" />
+            </circle>
+
+            <!-- Circuit Wire 2: TapirusDB Core to Single .tapir File -->
+            <path d="M 464 95 H 504" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2" stroke-dasharray="4 3" />
+            <path d="M 464 95 H 504" fill="none" stroke="#10b981" stroke-width="2" stroke-opacity="0.7" />
+
+            <!-- Animated Glowing Dot 2 (TapirusDB Core to Atomic File Flush) -->
+            <circle r="4" fill="#10b981" filter="url(#dot-glow-green)">
+              <animateMotion dur="1.6s" repeatCount="indefinite" path="M 464 95 L 504 95" keyTimes="0;1" keyPoints="0;1" begin="0.8s" />
+            </circle>
+
+            <!-- 1. LEFT NODE: HOST APP / AGENT -->
+            <g class="svg-node" transform="translate(10, 48)">
+              <rect width="116" height="94" rx="8" fill="#0d1424" stroke="#334155" stroke-width="1.2" filter="url(#card-shadow)" />
+              <rect width="116" height="26" rx="8" fill="#131c30" />
+              <path d="M 0 20 H 116" stroke="#1e293b" stroke-width="1" />
+              <circle cx="12" cy="13" r="3" fill="#ef4444" />
+              <circle cx="20" cy="13" r="3" fill="#f59e0b" />
+              <circle cx="28" cy="13" r="3" fill="#10b981" />
+              <text x="58" y="47" text-anchor="middle" font-family="'Plus Jakarta Sans', sans-serif" font-size="11.5" font-weight="700" fill="#ffffff">Host App</text>
+              <text x="58" y="62" text-anchor="middle" font-family="'Plus Jakarta Sans', sans-serif" font-size="10" font-weight="500" fill="#94a3b8">AI Agent / Daemon</text>
+              <rect x="14" y="71" width="88" height="15" rx="3" fill="rgba(6, 182, 212, 0.12)" stroke="rgba(6, 182, 212, 0.3)" stroke-width="0.8" />
+              <text x="58" y="82" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="600" fill="#38bdf8">0.55 µs in-process</text>
+            </g>
+
+            <!-- 2. CENTER NODE: TAPIRUSDB CORE (QUAD ENGINE) -->
+            <g class="svg-node" transform="translate(176, 14)">
+              <rect width="288" height="162" rx="10" fill="#0d1726" stroke="#10b981" stroke-width="1.5" filter="url(#card-shadow)" />
+              
+              <rect width="288" height="32" rx="10" fill="url(#core-header-grad)" />
+              <path d="M 0 26 H 288" fill="url(#core-header-grad)" />
+              <g transform="translate(10, 6)">
+                <rect width="20" height="20" rx="4" fill="#ffffff" />
+                <path d="M 6 7 H 14 M 10 7 V 14" stroke="#0f62fe" stroke-width="2" stroke-linecap="square" />
+              </g>
+              <text x="36" y="20.5" font-family="'Plus Jakarta Sans', sans-serif" font-size="12" font-weight="700" fill="#ffffff">TapirusDB Engine Core</text>
+              <rect x="188" y="7" width="90" height="18" rx="4" fill="rgba(255,255,255,0.18)" />
+              <text x="233" y="19.5" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="600" fill="#ffffff">100% Safe Rust</text>
+
+              <!-- Model 1: SQL Relational (Top-Left) -->
+              <g transform="translate(12, 42)">
+                <rect width="126" height="52" rx="6" fill="#132034" stroke="#1e293b" stroke-width="1" />
+                <text x="12" y="19" font-family="'Plus Jakarta Sans', sans-serif" font-size="11" font-weight="700" fill="#f8fafc">Relational SQL</text>
+                <text x="12" y="34" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="500" fill="#94a3b8">ACID • MVCC • Joins</text>
+                <text x="12" y="45" font-family="'JetBrains Mono', monospace" font-size="7.5" font-weight="600" fill="#38bdf8">510 ns Point Lookup</text>
+              </g>
+
+              <!-- Model 2: JSON Documents (Top-Right) -->
+              <g transform="translate(150, 42)">
+                <rect width="126" height="52" rx="6" fill="#132034" stroke="#1e293b" stroke-width="1" />
+                <text x="12" y="19" font-family="'Plus Jakarta Sans', sans-serif" font-size="11" font-weight="700" fill="#f8fafc">Document JSON</text>
+                <text x="12" y="34" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="500" fill="#94a3b8">Schemaless Payloads</text>
+                <text x="12" y="45" font-family="'JetBrains Mono', monospace" font-size="7.5" font-weight="600" fill="#fbbf24">JSONB Path Extract</text>
+              </g>
+
+              <!-- Model 3: HNSW Vectors (Bottom-Left) -->
+              <g transform="translate(12, 100)">
+                <rect width="126" height="52" rx="6" fill="#132034" stroke="#1e293b" stroke-width="1" />
+                <text x="12" y="19" font-family="'Plus Jakarta Sans', sans-serif" font-size="11" font-weight="700" fill="#f8fafc">HNSW Vectors</text>
+                <text x="12" y="34" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="500" fill="#94a3b8">Cosine / L2 • SQ8</text>
+                <text x="12" y="45" font-family="'JetBrains Mono', monospace" font-size="7.5" font-weight="600" fill="#34d399">22.8 µs ANN Search</text>
+              </g>
+
+              <!-- Model 4: Knowledge Graph (Bottom-Right) -->
+              <g transform="translate(150, 100)">
+                <rect width="126" height="52" rx="6" fill="#132034" stroke="#1e293b" stroke-width="1" />
+                <text x="12" y="19" font-family="'Plus Jakarta Sans', sans-serif" font-size="11" font-weight="700" fill="#f8fafc">Knowledge Graph</text>
+                <text x="12" y="34" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="500" fill="#94a3b8">openCypher • CSR</text>
+                <text x="12" y="45" font-family="'JetBrains Mono', monospace" font-size="7.5" font-weight="600" fill="#c084fc">GraphRAG &amp; Dijkstra</text>
+              </g>
+            </g>
+
+            <!-- 3. RIGHT NODE: SINGLE ENCRYPTED FILE -->
+            <g class="svg-node" transform="translate(504, 48)">
+              <rect width="126" height="94" rx="8" fill="#071f16" stroke="#10b981" stroke-width="1.2" filter="url(#card-shadow)" />
+              <rect width="126" height="26" rx="8" fill="#0d2e22" />
+              <path d="M 0 20 H 126" stroke="#164e39" stroke-width="1" />
+              <text x="63" y="16.5" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="600" fill="#34d399">SINGLE FILE</text>
+              <text x="63" y="46" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="700" fill="#ffffff">app.tapir</text>
+              <text x="63" y="60" text-anchor="middle" font-family="'Plus Jakarta Sans', sans-serif" font-size="9.5" font-weight="500" fill="#94a3b8">AES-256 Encrypted</text>
+              <rect x="14" y="70" width="98" height="16" rx="3" fill="#063826" stroke="#10b981" stroke-width="0.8" />
+              <text x="63" y="82" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="600" fill="#34d399">Atomic WAL Flush</text>
+            </g>
+          </svg>
         </div>
       </div>
     </div>
-  </section>
+  </header>
 
   <!-- Stat Strip -->
-  <section class="stat-strip">
+  <section class="stat-strip reveal-on-scroll">
     <div class="container">
       <div class="stat-grid">
         <div>
@@ -841,11 +1032,11 @@ fn main() -> Result<()> {
     </div>
   </section>
 
-  <!-- Architecture: Frankenstack vs TapirusDB -->
-  <section class="arch-section" id="architecture">
+  <!-- Architecture Comparison: Frankenstack vs TapirusDB -->
+  <section class="arch-section reveal-on-scroll" id="architecture">
     <div class="container">
       <div class="section-header">
-        <div class="section-eyebrow">Architectural Superiority</div>
+        <div class="section-eyebrow">Architectural Contrast</div>
         <h2 class="section-title">Kill the "Frankenstack".</h2>
         <p class="section-desc">
           Stop gluing four disparate databases across fragile network sockets. TapirusDB collapses your vector store, graph database, SQL engine, and document repository into one atomic in-process runtime.
@@ -861,14 +1052,14 @@ fn main() -> Result<()> {
     </div>
   </section>
 
-  <!-- Quad Model Bento Grid -->
-  <section class="bento-section" id="features">
+  <!-- Bento Grid: Quad Model Advantages -->
+  <section class="bento-section reveal-on-scroll" id="features">
     <div class="container">
       <div class="section-header">
         <div class="section-eyebrow">Quad-Model Convergence</div>
-        <h2 class="section-title">Four Engines. One Atomic File.</h2>
+        <h2 class="section-title">Four Engines. One Atomic Disk File.</h2>
         <p class="section-desc">
-          Execute relational queries, semantic vector similarity, relationship traversals, and schemaless lookups without ever serializing data across network boundaries.
+          Execute relational queries, semantic vector similarity, relationship traversals, and schemaless lookups without serializing data across network boundaries.
         </p>
       </div>
 
@@ -908,14 +1099,14 @@ fn main() -> Result<()> {
     </div>
   </section>
 
-  <!-- Performance Comparison -->
-  <section class="benchmarks-section" id="benchmarks">
+  <!-- Performance Comparison Duel -->
+  <section class="benchmarks-section reveal-on-scroll" id="benchmarks">
     <div class="container">
       <div class="section-header">
         <div class="section-eyebrow">Industry Duel Matrix</div>
         <h2 class="section-title">Engineered to Outperform.</h2>
         <p class="section-desc">
-          See how TapirusDB compares against isolated database engines and heavyweight polyglot stacks.
+          How TapirusDB compares against isolated single-model engines and heavyweight polyglot stacks.
         </p>
       </div>
 
@@ -979,7 +1170,7 @@ fn main() -> Result<()> {
   </section>
 
   <!-- Ecosystem / SDKs -->
-  <section class="eco-section" id="ecosystem">
+  <section class="eco-section reveal-on-scroll" id="ecosystem">
     <div class="container">
       <div class="section-header">
         <div class="section-eyebrow">Polyglot SDKs</div>
@@ -1042,18 +1233,19 @@ fn main() -> Result<()> {
   </section>
 
   <!-- Final CTA Banner -->
-  <section class="container">
+  <section class="container reveal-on-scroll">
     <div class="cta-banner">
       <h2>Build Sovereign AI Systems Today.</h2>
       <p>
         Zero network latency. Zero cloud lock-in. Single encrypted file storage for autonomous agents, robotics, and edge computing.
       </p>
       <div style="display:flex; justify-content:center; gap:16px; flex-wrap:wrap;">
-        <a href="docs.html" class="btn btn-primary" style="padding:13px 28px; font-size:15px;">
-          Explore Full Documentation &amp; Guides →
+        <a href="docs.html" class="btn-pill btn-primary" style="padding:12px 24px; font-size:15px;">
+          <span>Explore Full Documentation &amp; Guides</span>
+          <span class="btn-arrow-badge"><i class="lni lni-arrow-right"></i></span>
         </a>
-        <a href="docs.html#studio" class="btn btn-secondary" style="padding:13px 24px; font-size:15px;">
-          Launch Interactive Studio
+        <a href="docs.html#studio" class="btn-pill btn-secondary" style="padding:12px 22px; font-size:15px;">
+          <i class="lni lni-code-alt"></i> Launch Interactive Studio
         </a>
       </div>
     </div>
@@ -1117,29 +1309,11 @@ fn main() -> Result<()> {
     </div>
   </footer>
 
+  <!-- =========================================================================
+       SCRIPTS: QUANTUM BINARY NEURAL CORTEX + HERO INTERACTIONS
+       ========================================================================= -->
   <script>
-    // Hero Code Switcher
-    const heroSnippets = {
-      rust: `use tapirus::{Connection, Result};\n\nfn main() -> Result<()> {\n    // Single encrypted disk file (< 4 MB idle memory)\n    let db = Connection::open("production.tapir")?;\n\n    // Relational SQL table with native 1536-D vector embedding\n    db.execute("CREATE TABLE memory (id INT PRIMARY KEY, content TEXT, vector VECTOR(1536));")?;\n    db.execute("INSERT INTO memory VALUES (1, 'Sovereign AI', [0.12, -0.45, ...]);")?;\n\n    // Sub-microsecond GraphRAG & vector similarity traversal\n    let matches = db.query("SELECT id, content FROM memory ORDER BY VECTOR_COSINE(vector, [...]) LIMIT 5;")?;\n    println!("Matches: {:?}", matches);\n    Ok(())\n}`,
-      python: `import tapirus\n\n# Open or create atomic encrypted database\ndb = tapirus.Connection("production.tapir")\n\n# Execute SQL with Vector column\ndb.execute("CREATE TABLE memory (id INT PRIMARY KEY, content TEXT, vector VECTOR(1536));")\ndb.execute("INSERT INTO memory VALUES (1, 'Local Edge AI', [0.12, -0.45, ...]);")\n\n# Query rows\nresults = db.query("SELECT * FROM memory;")\nprint("Retrieved:", results)`,
-      typescript: `import { Tapirus } from "tapirus";\n\nconst db = new Tapirus("production.tapir");\n\n// Create table & query\ndb.execute("CREATE TABLE agents (id INTEGER PRIMARY KEY, name TEXT);");\ndb.execute("INSERT INTO agents VALUES (1, 'Hermes-Agent');");\n\nconst rows = db.query("SELECT * FROM agents;");\nconsole.log(rows);`,
-      go: `package main\n\nimport (\n    "context"\n    "fmt"\n    tapirus "github.com/tapiruslab/TapirusDB/sdks/go"\n)\n\nfunc main() {\n    client := tapirus.NewClient(tapirus.Config{Endpoint: "http://127.0.0.1:8080"})\n    res, _ := client.Query(context.Background(), "SELECT * FROM items;")\n    fmt.Println(res)\n}`
-    };
-
-    const heroTerminalCmds = {
-      rust: "cargo add tapirus",
-      python: "pip install tapirus",
-      typescript: "npm install tapirus",
-      go: "go get github.com/tapiruslab/TapirusDB/sdks/go"
-    };
-
-    function switchHeroTab(lang, btn) {
-      document.querySelectorAll('.code-tab-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById('heroCodeSnippet').innerText = heroSnippets[lang];
-      document.getElementById('heroCmd').innerText = heroTerminalCmds[lang];
-    }
-
+    // Copy snippet helper
     function copySnippet(text, btn) {
       navigator.clipboard.writeText(text).then(() => {
         const orig = btn.innerText;
@@ -1155,11 +1329,273 @@ fn main() -> Result<()> {
       mobileToggle.addEventListener('click', () => {
         mobileDrawer.classList.toggle('open');
       });
-      // Close on link click
       mobileDrawer.querySelectorAll('a').forEach(a => {
         a.addEventListener('click', () => mobileDrawer.classList.remove('open'));
       });
     }
+
+    // =========================================================================
+    // QUANTUM BINARY NEURAL CORTEX ENGINE (initHeroBrain)
+    // =========================================================================
+    function initHeroBrain() {
+      const canvas = document.getElementById('heroNeuralCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const hero = canvas.closest('.cds-hero') || canvas.parentElement;
+      let width = 0;
+      let height = 0;
+      let dpr = 1;
+      let isVisible = true;
+
+      function resize() {
+        if (!hero) return;
+        width = hero.offsetWidth;
+        height = hero.offsetHeight;
+        dpr = window.devicePixelRatio || 1;
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
+        canvas.style.width = width + 'px';
+        canvas.style.height = height + 'px';
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+      window.addEventListener('resize', resize);
+      resize();
+
+      if ('IntersectionObserver' in window && hero) {
+        const observer = new IntersectionObserver((entries) => {
+          entries.forEach(entry => {
+            isVisible = entry.isIntersecting;
+          });
+        }, { threshold: 0.05 });
+        observer.observe(hero);
+      }
+
+      // Mouse & Touch interaction
+      let mouse = { x: -1000, y: -1000, active: false };
+      hero.addEventListener('mousemove', (e) => {
+        const rect = hero.getBoundingClientRect();
+        mouse.x = e.clientX - rect.left;
+        mouse.y = e.clientY - rect.top;
+        mouse.active = true;
+      });
+      hero.addEventListener('mouseleave', () => {
+        mouse.active = false;
+        mouse.x = -1000;
+        mouse.y = -1000;
+      });
+      hero.addEventListener('touchmove', (e) => {
+        if (e.touches && e.touches.length > 0) {
+          const rect = hero.getBoundingClientRect();
+          mouse.x = e.touches[0].clientX - rect.left;
+          mouse.y = e.touches[0].clientY - rect.top;
+          mouse.active = true;
+        }
+      }, { passive: true });
+      hero.addEventListener('touchend', () => {
+        mouse.active = false;
+        mouse.x = -1000;
+        mouse.y = -1000;
+      });
+
+      // Neural Nodes Configuration
+      const nodeCount = width > 800 ? 64 : 32;
+      const maxConnectDist = 145;
+      const nodes = [];
+      const nodeColors = [
+        '#00d2ff', // Electric Cyan
+        '#4589ff', // Quantum Blue
+        '#10b981', // Memory Emerald
+        '#a78bfa'  // Knowledge Purple
+      ];
+
+      for (let i = 0; i < nodeCount; i++) {
+        nodes.push({
+          x: Math.random() * width,
+          y: Math.random() * height,
+          vx: (Math.random() - 0.5) * 0.5,
+          vy: (Math.random() - 0.5) * 0.5,
+          radius: Math.random() * 1.8 + 1.2,
+          color: nodeColors[Math.floor(Math.random() * nodeColors.length)],
+          pulse: Math.random() * Math.PI * 2,
+          pulseSpeed: 0.02 + Math.random() * 0.03
+        });
+      }
+
+      // Fast Binary Data Packets ("Otak Binary Laju")
+      const packetSnippets = ['1', '0', '0.55µs', '101', '010', 'WAL', 'CSR', 'SIMD', 'RRF', 'HNSW', '1', '0'];
+      const packets = [];
+      const maxPackets = 16;
+
+      function spawnPacket(n1Index, n2Index) {
+        const n1 = nodes[n1Index];
+        const n2 = nodes[n2Index];
+        if (!n1 || !n2) return;
+        const isLabel = Math.random() < 0.35;
+        packets.push({
+          n1: n1Index,
+          n2: n2Index,
+          progress: 0,
+          speed: 0.018 + Math.random() * 0.028,
+          label: isLabel ? packetSnippets[Math.floor(Math.random() * packetSnippets.length)] : null,
+          color: Math.random() < 0.7 ? '#00d2ff' : '#10b981',
+          size: isLabel ? 9 : 2.5
+        });
+      }
+
+      function animate() {
+        requestAnimationFrame(animate);
+        if (!isVisible || document.hidden) return;
+
+        ctx.clearRect(0, 0, width, height);
+
+        // Update & Render Nodes
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[i];
+          n.x += n.vx;
+          n.y += n.vy;
+          n.pulse += n.pulseSpeed;
+
+          if (n.x < 0) { n.x = 0; n.vx *= -1; }
+          else if (n.x > width) { n.x = width; n.vx *= -1; }
+          if (n.y < 0) { n.y = 0; n.vy *= -1; }
+          else if (n.y > height) { n.y = height; n.vy *= -1; }
+
+          if (mouse.active) {
+            const dx = mouse.x - n.x;
+            const dy = mouse.y - n.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < 160 && dist > 0) {
+              const force = (160 - dist) / 160 * 0.35;
+              n.x -= (dx / dist) * force;
+              n.y -= (dy / dist) * force;
+            }
+          }
+
+          const currentRadius = n.radius + Math.sin(n.pulse) * 0.5;
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, Math.max(0.8, currentRadius), 0, Math.PI * 2);
+          ctx.fillStyle = n.color;
+          ctx.shadowBlur = 8;
+          ctx.shadowColor = n.color;
+          ctx.fill();
+        }
+        ctx.shadowBlur = 0;
+
+        // Draw Synapses
+        const activePairs = [];
+        for (let i = 0; i < nodes.length; i++) {
+          for (let j = i + 1; j < nodes.length; j++) {
+            const dx = nodes[j].x - nodes[i].x;
+            const dy = nodes[j].y - nodes[i].y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist < maxConnectDist) {
+              activePairs.push([i, j]);
+              const alpha = (1 - dist / maxConnectDist) * 0.25;
+              ctx.beginPath();
+              ctx.moveTo(nodes[i].x, nodes[i].y);
+              ctx.lineTo(nodes[j].x, nodes[j].y);
+              ctx.strokeStyle = `rgba(0, 210, 255, ${alpha.toFixed(3)})`;
+              ctx.lineWidth = 1;
+              ctx.stroke();
+            }
+          }
+
+          if (mouse.active) {
+            const mdx = mouse.x - nodes[i].x;
+            const mdy = mouse.y - nodes[i].y;
+            const mdist = Math.sqrt(mdx * mdx + mdy * mdy);
+            if (mdist < 180) {
+              const mAlpha = (1 - mdist / 180) * 0.45;
+              ctx.beginPath();
+              ctx.moveTo(nodes[i].x, nodes[i].y);
+              ctx.lineTo(mouse.x, mouse.y);
+              ctx.strokeStyle = `rgba(0, 210, 255, ${mAlpha.toFixed(3)})`;
+              ctx.lineWidth = 1.2;
+              ctx.stroke();
+            }
+          }
+        }
+
+        // Spawn high-speed packets occasionally along active synapses
+        if (packets.length < maxPackets && activePairs.length > 0 && Math.random() < 0.22) {
+          const pair = activePairs[Math.floor(Math.random() * activePairs.length)];
+          spawnPacket(pair[0], pair[1]);
+        }
+
+        // Render Packets
+        for (let p = packets.length - 1; p >= 0; p--) {
+          const pkt = packets[p];
+          pkt.progress += pkt.speed;
+
+          const n1 = nodes[pkt.n1];
+          const n2 = nodes[pkt.n2];
+
+          if (pkt.progress >= 1 || !n1 || !n2) {
+            packets.splice(p, 1);
+            continue;
+          }
+
+          const curX = n1.x + (n2.x - n1.x) * pkt.progress;
+          const curY = n1.y + (n2.y - n1.y) * pkt.progress;
+
+          if (pkt.label) {
+            ctx.save();
+            ctx.font = 'bold 9px "JetBrains Mono", monospace';
+            ctx.fillStyle = pkt.color;
+            ctx.shadowBlur = 6;
+            ctx.shadowColor = pkt.color;
+            ctx.fillText(pkt.label, curX, curY);
+            ctx.restore();
+          } else {
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(curX, curY, pkt.size, 0, Math.PI * 2);
+            ctx.fillStyle = pkt.color;
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = pkt.color;
+            ctx.fill();
+
+            const trailProgress = Math.max(0, pkt.progress - 0.07);
+            const trX = n1.x + (n2.x - n1.x) * trailProgress;
+            const trY = n1.y + (n2.y - n1.y) * trailProgress;
+            ctx.beginPath();
+            ctx.moveTo(curX, curY);
+            ctx.lineTo(trX, trY);
+            ctx.strokeStyle = pkt.color;
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+      }
+
+      requestAnimationFrame(animate);
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      initHeroBrain();
+
+      // Hardware-Accelerated Scroll Reveal Observer
+      if ('IntersectionObserver' in window) {
+        const revealObserver = new IntersectionObserver((entries) => {
+          entries.forEach(entry => {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('is-revealed');
+              revealObserver.unobserve(entry.target);
+            }
+          });
+        }, { threshold: 0.08 });
+
+        document.querySelectorAll('.reveal-on-scroll').forEach(el => {
+          revealObserver.observe(el);
+        });
+      } else {
+        document.querySelectorAll('.reveal-on-scroll').forEach(el => el.classList.add('is-revealed'));
+      }
+    });
   </script>
 </body>
 </html>
