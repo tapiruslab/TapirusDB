@@ -4829,7 +4829,11 @@ runNodeSDK();</code></pre>
         <div id="tab-cli" class="cds-tab-pane">
           <div style="background:var(--cds-surface-1); padding:10px 14px; font-family:var(--cds-font-mono); font-size:13px; border:1px solid var(--cds-hairline); display:flex; justify-content:space-between; align-items:center;">
             <code id="cliInstall">curl -fsSL https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/install.sh | bash</code>
-            <button class="cds-copy-btn" onclick="copySnippet('cliInstall', this)">Copy</button>
+            <button class="cds-copy-btn" onclick="copySnippet('cliInstall', this)">Copy (macOS/Linux)</button>
+          </div>
+          <div style="background:var(--cds-surface-1); padding:10px 14px; font-family:var(--cds-font-mono); font-size:13px; border:1px solid var(--cds-hairline); border-top:none; display:flex; justify-content:space-between; align-items:center;">
+            <code id="cliWinget">winget install --manifest https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/winget/tapirus.yaml</code>
+            <button class="cds-copy-btn" onclick="copySnippet('cliWinget', this)">Copy (Windows)</button>
           </div>
 
           <div class="cds-code-wrapper">

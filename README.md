@@ -81,13 +81,14 @@ Total Latency: 0.55 µs chaining / 22.8 µs vector search (vs 40–90 ms cloud r
 #### Package Managers (Terminal & CLI)
 ```bash
 # macOS & Linux (Homebrew)
-brew install tapirus
+brew install https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/Formula/tapirus.rb
 
 # Windows (Windows Package Manager)
-winget install tapirus
+winget install --manifest https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/winget/tapirus.yaml
+# (Or 'winget install tapirus' once indexed in Microsoft community repo)
 
 # Linux / macOS Automated Script
-curl -fsSL https://raw.githubusercontent.com/tapiruslab/TapirusDB/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/install.sh | bash
 ```
 
 #### Language SDKs & Client Libraries
