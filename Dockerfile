@@ -4,7 +4,7 @@
 # ==============================================================================
 
 # Stage 1: Build binary and shared library
-FROM rust:1.88-alpine AS builder
+FROM rust:alpine AS builder
 
 RUN apk add --no-cache musl-dev gcc git
 
