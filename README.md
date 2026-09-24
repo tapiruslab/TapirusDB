@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # TapirusDB
 
@@ -10,13 +10,13 @@
 
 [![Website](https://img.shields.io/badge/website-tapirusdb.com-blue.svg?style=flat-square)](https://tapirusdb.com)
 [![Crates.io](https://img.shields.io/badge/crates.io-v1.0.0-orange.svg?style=flat-square&logo=rust)](https://crates.io/crates/tapirus)
-[![Release](https://img.shields.io/badge/release-v1.0.0-blue.svg?style=flat-square&logo=github)](https://github.com/tapiruslab/TapirusDB/releases)
+[![PyPI](https://img.shields.io/badge/pypi-v1.0.0-blue.svg?style=flat-square&logo=pypi)](https://pypi.org/project/tapirus/)
+[![npm](https://img.shields.io/npm/v/tapirus.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/tapirus)
+[![Packagist](https://img.shields.io/badge/packagist-v1.0.0-orange.svg?style=flat-square&logo=php)](https://packagist.org/packages/tapiruslab/tapirusdb)
+[![Go Reference](https://img.shields.io/badge/go-reference-007d9c.svg?style=flat-square&logo=go)](https://pkg.go.dev/github.com/tapiruslab/TapirusDB/sdks/go)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg?style=flat-square&logo=docker)](https://github.com/tapiruslab/TapirusDB/pkgs/container/tapirusdb)
 [![Safety](https://img.shields.io/badge/memory--safety-100%25_Safe_Rust-brightgreen.svg?style=flat-square)](src/lib.rs)
-[![Architecture](https://img.shields.io/badge/architecture-In--Process_Single--File-informational.svg?style=flat-square)](BLUEPRINT.md)
-[![npm](https://img.shields.io/npm/v/@tapirus/db.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/@tapirus/db)
-[![PyPI](https://img.shields.io/badge/pypi-tapirus-blue.svg?style=flat-square&logo=pypi)](https://pypi.org/project/tapirus/)
-[![Homebrew](https://img.shields.io/badge/brew-tapirus-orange.svg?style=flat-square&logo=homebrew)](Formula/tapirus.rb)
-[![License](https://img.shields.io/badge/license-BSL_1.1-purple.svg?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-BUSL_1.1-purple.svg?style=flat-square)](LICENSE)
 
 <br/>
 
@@ -90,16 +90,28 @@ winget install tapirus
 curl -fsSL https://raw.githubusercontent.com/tapiruslab/TapirusDB/master/install.sh | bash
 ```
 
-#### Language SDKs
+#### Language SDKs & Client Libraries
 ```bash
+# Rust Engine
+cargo add tapirus
+
 # Python SDK (Python 3.9+)
 pip install tapirus
 
-# TypeScript / Node.js SDK
-npm install @tapirus/db
+# Node.js & TypeScript SDK
+npm install tapirus
 
-# Rust (Cargo.toml)
-cargo add tapirus
+# Bun Runtime
+bun add tapirus
+
+# Go SDK
+go get github.com/tapiruslab/TapirusDB/sdks/go
+
+# PHP Composer
+composer require tapiruslab/tapirusdb
+
+# OCI Container (Docker & Podman)
+docker pull ghcr.io/tapiruslab/tapirusdb:latest
 ```
 
 ---
