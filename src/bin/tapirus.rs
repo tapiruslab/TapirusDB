@@ -330,7 +330,7 @@ fn handle_http_client(mut stream: TcpStream, db: Arc<Mutex<Connection>>) {
 
     // Built-in Web Client UI
     if method == "GET" && (path == "/" || path == "/index.html") {
-        let html = include_str!("../../examples/web/index.html");
+        let html = include_str!("../../ui/index.html");
         send_http_response(&mut stream, "200 OK", "text/html; charset=utf-8", html);
         return;
     }
