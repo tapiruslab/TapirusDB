@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -581,35 +581,6 @@
       .cds-strategic-pillars {
         grid-template-columns: 1fr;
       }
-    }
-    .cds-pillar-card {
-      background-color: var(--cds-surface-1);
-      border: 1px solid var(--cds-hairline);
-      border-top: 3px solid var(--cds-primary);
-      padding: 24px 20px;
-      display: flex;
-      flex-direction: column;
-    }
-    .cds-pillar-badge {
-      font-family: var(--cds-font-mono);
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--cds-primary);
-      letter-spacing: 0.5px;
-      margin-bottom: 8px;
-    }
-    .cds-pillar-title {
-      font-family: var(--cds-font-sans);
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--cds-ink);
-      margin-bottom: 8px;
-      line-height: 1.3;
-    }
-    .cds-pillar-desc {
-      font-size: 13px;
-      color: var(--cds-ink-muted);
-      line-height: 1.5;
     }
 
     /* -------------------------------------------------------------------------
@@ -2339,26 +2310,571 @@
       color: #8c8c8c;
     }
 
-    /* Responsive Queries */
-    @media (max-width: 1024px) {
-      .cds-display-xl { font-size: 52px; }
-      .cds-telemetry-grid { grid-template-columns: repeat(2, 1fr); }
-      .cds-cards-grid { grid-template-columns: repeat(2, 1fr); }
-      .cds-evolution-split { grid-template-columns: 1fr; }
-      .cds-footer-grid { grid-template-columns: 1fr 1fr; }
+    /* -------------------------------------------------------------------------
+       UTILITY GRID CLASSES
+       ------------------------------------------------------------------------- */
+    .cds-grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
     }
-    @media (max-width: 672px) {
-      .cds-utility-bar { display: none; }
-      .cds-display-xl { font-size: 38px; }
-      .cds-cards-grid { grid-template-columns: 1fr; }
-      .cds-telemetry-grid { grid-template-columns: 1fr; }
-      .cds-benchmark-highlight { grid-template-columns: 1fr; }
-      .cds-strategic-pillars { grid-template-columns: 1fr; }
-      .cds-chain-split { grid-template-columns: 1fr; }
-      .cds-helix-inner { grid-template-columns: 1fr; }
-      .cds-nav-menu { display: none; }
-      .cds-footer-grid { grid-template-columns: 1fr; }
-      .cds-footer-bottom { flex-direction: column; gap: 12px; text-align: center; }
+    .cds-grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+    }
+    .cds-grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 24px;
+    }
+
+    /* Top Navigation Actions & Mobile Hamburger */
+    .cds-nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .cds-mobile-menu-btn {
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 5px;
+      width: 38px;
+      height: 38px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 4px;
+      cursor: pointer;
+      padding: 0;
+      transition: all 0.15s ease;
+      z-index: 1001;
+    }
+    .cds-mobile-menu-btn:hover {
+      background: rgba(255, 255, 255, 0.16);
+      border-color: #00d2ff;
+    }
+    .cds-mobile-menu-btn span {
+      display: block;
+      width: 20px;
+      height: 2px;
+      background-color: #ffffff;
+      border-radius: 1px;
+      transition: all 0.2s ease;
+    }
+
+    /* Mobile Drawer & Backdrop */
+    .cds-drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      z-index: 1999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+    .cds-drawer-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .cds-mobile-drawer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: min(85vw, 360px);
+      background: #080c16;
+      border-left: 1px solid rgba(255, 255, 255, 0.12);
+      z-index: 2000;
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: -10px 0 35px rgba(0, 0, 0, 0.6);
+    }
+    .cds-mobile-drawer.open {
+      transform: translateX(0);
+    }
+    .cds-drawer-header {
+      height: 56px;
+      padding: 0 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      background: #05080e;
+    }
+    .cds-drawer-close {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 4px;
+      color: #94a3b8;
+      font-size: 16px;
+      width: 32px;
+      height: 32px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+    }
+    .cds-drawer-close:hover {
+      color: #ffffff;
+      background: rgba(255, 255, 255, 0.15);
+    }
+    .cds-drawer-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 12px;
+      -webkit-overflow-scrolling: touch;
+    }
+    .cds-mobile-nav-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .cds-mobile-nav-link {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      color: #cbd5e1;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 6px;
+      transition: all 0.15s ease;
+      min-height: 44px;
+    }
+    .cds-mobile-nav-link i {
+      font-size: 16px;
+      color: #00d2ff;
+      width: 20px;
+      text-align: center;
+    }
+    .cds-mobile-nav-link:hover, .cds-mobile-nav-link:active {
+      background: rgba(15, 98, 254, 0.15);
+      color: #ffffff;
+    }
+    .cds-drawer-footer {
+      padding: 16px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      background: #05080e;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* Swipe hint for wide data tables */
+    .cds-table-scroll-hint {
+      display: none;
+      background: #edf5ff;
+      color: var(--cds-primary);
+      font-family: var(--cds-font-mono);
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 8px 14px;
+      border-bottom: 1px solid #d0e2ff;
+      text-align: center;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    /* -------------------------------------------------------------------------
+       COMPREHENSIVE RESPONSIVE SUITE (@media 1024px, 860px, 768px, 640px, 480px)
+       ------------------------------------------------------------------------- */
+    @media (max-width: 1024px) {
+      .cds-display-xl {
+        font-size: 52px;
+      }
+      .cds-display-lg {
+        font-size: 38px;
+      }
+      .cds-grid-4 {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .cds-grid-3 {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .cds-telemetry-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .cds-cards-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .cds-benchmark-highlight {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .cds-strategic-pillars {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .cds-evolution-split {
+        grid-template-columns: 1fr;
+      }
+      .cds-footer-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+      .cds-table-scroll-hint {
+        display: flex;
+      }
+    }
+
+    @media (max-width: 860px) {
+      .cds-nav-menu {
+        display: none;
+      }
+      .cds-mobile-menu-btn {
+        display: flex;
+      }
+      .cds-utility-bar {
+        display: none;
+      }
+      .cds-stack-panel {
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 24px 20px;
+        gap: 24px;
+      }
+      .cds-stack-info {
+        flex: 1;
+        max-width: 100%;
+      }
+      .cds-stack-diagram-wrap {
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .cds-chain-split {
+        grid-template-columns: 1fr;
+      }
+      .cds-helix-inner {
+        grid-template-columns: 1fr;
+      }
+      .cds-grid-2 {
+        grid-template-columns: 1fr;
+      }
+      .cds-graduation-box {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 16px;
+      }
+      .cds-graduation-box .cds-btn {
+        width: 100%;
+        text-align: center;
+      }
+    }
+
+    @media (max-width: 768px) {
+      html, body {
+        overflow-x: hidden;
+        width: 100%;
+      }
+      .cds-container {
+        padding-left: 1.25rem;
+        padding-right: 1.25rem;
+      }
+      .cds-section {
+        padding-top: 48px;
+        padding-bottom: 48px;
+      }
+      .cds-display-xl {
+        font-size: clamp(2rem, 7vw, 3.25rem);
+        line-height: 1.18;
+      }
+      .cds-display-lg {
+        font-size: 26px;
+        line-height: 1.25;
+      }
+      .cds-subhead {
+        font-size: 15px;
+        line-height: 1.55;
+      }
+      .cds-hero-lead {
+        font-size: 15px;
+        line-height: 1.55;
+        margin-bottom: 24px;
+      }
+      .cds-grid-3 {
+        grid-template-columns: 1fr;
+      }
+      .cds-grid-4 {
+        grid-template-columns: 1fr;
+      }
+      .cds-cards-grid {
+        grid-template-columns: 1fr;
+      }
+      .cds-duel-grid {
+        grid-template-columns: 1fr;
+      }
+      .cds-table th, .cds-table td {
+        padding: 10px 12px;
+        font-size: 12.5px;
+      }
+      .cds-cta-inner {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 20px;
+      }
+      .cds-cta-title {
+        font-size: 26px;
+      }
+      .cds-cta-actions {
+        flex-direction: column;
+        width: 100%;
+      }
+      .cds-cta-actions .cds-btn {
+        width: 100%;
+        text-align: center;
+      }
+      .cds-footer-grid {
+        grid-template-columns: 1fr;
+        gap: 32px;
+      }
+      .cds-footer-bottom {
+        flex-direction: column;
+        gap: 12px;
+        text-align: center;
+      }
+      .cds-tab-btn {
+        padding: 12px 16px;
+        font-size: 13px;
+        min-height: 44px;
+      }
+      .cds-tab-pane {
+        padding: 20px 14px;
+      }
+      .cds-code-wrapper {
+        padding: 14px 12px;
+      }
+      .cds-code-block {
+        font-size: 12px;
+      }
+      .studio-chassis {
+        padding: 6px;
+        border-radius: 12px;
+      }
+      .studio-bezel-rim {
+        padding: 14px 10px;
+        border-radius: 8px;
+      }
+      .studio-hardware-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+      }
+      .studio-hardware-title {
+        font-size: 10.5px;
+        margin-left: 0;
+      }
+      .studio-engine-badge {
+        width: 100%;
+        justify-content: center;
+        padding: 6px 12px;
+      }
+      .studio-segmented-bar {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 6px;
+      }
+      .studio-seg-btn {
+        padding: 8px 10px;
+        font-size: 12px;
+        min-height: 42px;
+      }
+      .studio-execution-bar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+      }
+      .studio-exec-left {
+        justify-content: space-between;
+        width: 100%;
+      }
+      .studio-run-button {
+        width: 100%;
+        justify-content: center;
+        padding: 10px 16px;
+        font-size: 14px;
+      }
+      .studio-inspector-header {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 8px 10px;
+        gap: 8px;
+      }
+      .studio-tabs {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        width: 100%;
+      }
+      .studio-tab-btn {
+        padding: 8px 12px;
+        font-size: 11px;
+      }
+      .studio-copy-action-btn {
+        width: 100%;
+        justify-content: center;
+      }
+      .studio-telemetry-cards {
+        grid-template-columns: 1fr;
+        padding: 12px 10px;
+      }
+      .studio-hw-strip {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 10px 12px;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .cds-hero {
+        padding-top: 54px;
+        padding-bottom: 44px;
+      }
+      .cds-hero-actions {
+        flex-direction: column;
+        width: 100%;
+        gap: 10px;
+      }
+      .cds-hero-actions .cds-btn {
+        width: 100%;
+        text-align: center;
+        justify-content: center;
+        min-height: 44px;
+      }
+      .cds-terminal-box {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        padding: 12px;
+        margin-bottom: 36px;
+      }
+      .cds-terminal-cmd {
+        overflow-x: auto;
+        width: 100%;
+        font-size: 12px;
+        padding-bottom: 4px;
+      }
+      .cds-copy-btn {
+        width: 100%;
+        text-align: center;
+        min-height: 38px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .cds-strategic-pillars {
+        grid-template-columns: 1fr;
+        gap: 12px;
+        margin-top: 24px;
+        margin-bottom: 32px;
+      }
+      .cds-telemetry-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .cds-telemetry-tile {
+        padding: 14px 12px;
+      }
+      .cds-telemetry-value {
+        font-size: 24px;
+      }
+      .cds-telemetry-value span {
+        font-size: 14px;
+      }
+      .cds-telemetry-label {
+        font-size: 12px;
+      }
+      .cds-telemetry-sub {
+        font-size: 11px;
+      }
+      .cds-benchmark-highlight {
+        grid-template-columns: 1fr;
+      }
+      .cds-highlight-box {
+        padding: 16px;
+      }
+      .cds-highlight-stat {
+        font-size: 22px;
+      }
+      .cds-evolution-card {
+        padding: 24px 18px;
+      }
+      .cds-evolution-title {
+        font-size: 22px;
+      }
+      .cds-card {
+        padding: 20px 16px;
+      }
+      .cds-card-title {
+        font-size: 18px;
+      }
+      .cds-duel-card {
+        padding: 18px 14px;
+      }
+      .cds-duel-title {
+        font-size: 16px;
+      }
+      .studio-segmented-bar {
+        grid-template-columns: 1fr;
+      }
+      .studio-presets-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .studio-chips-container {
+        width: 100%;
+      }
+      .studio-editor-chrome {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+        padding: 8px 10px;
+      }
+      .studio-editor-actions {
+        width: 100%;
+        justify-content: flex-end;
+      }
+      .studio-line-numbers {
+        width: 30px;
+        padding: 10px 4px;
+        font-size: 11px;
+      }
+      .studio-textarea {
+        padding: 10px 8px;
+        font-size: 12px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .cds-container {
+        padding-left: 0.875rem;
+        padding-right: 0.875rem;
+      }
+      .cds-brand-tag {
+        display: none;
+      }
+      .cds-nav-cta {
+        display: none;
+      }
+      .cds-display-xl {
+        font-size: 27px;
+        letter-spacing: -0.3px;
+      }
+      .cds-display-lg {
+        font-size: 22px;
+      }
+      .cds-telemetry-grid {
+        grid-template-columns: 1fr;
+      }
+      .cds-hero-glow-text {
+        filter: drop-shadow(0 0 12px rgba(0, 210, 255, 0.3));
+      }
     }
   </style>
 </head>
@@ -2404,13 +2920,54 @@
         <li class="cds-nav-item"><a href="#playground">SLM Studio</a></li>
       </ul>
 
-      <div>
-        <a href="#getting-started" class="cds-btn cds-btn-primary">
+      <div class="cds-nav-actions">
+        <a href="#getting-started" class="cds-btn cds-btn-primary cds-nav-cta">
           Quickstart Guide →
         </a>
+        <button class="cds-mobile-menu-btn" id="mobileMenuBtn" aria-label="Open Navigation Menu">
+          <span></span>
+          <span></span>
+          <span></span>
+        </button>
       </div>
     </div>
   </nav>
+
+  <!-- Mobile Navigation Drawer & Backdrop -->
+  <div class="cds-drawer-backdrop" id="drawerBackdrop"></div>
+  <aside class="cds-mobile-drawer" id="mobileDrawer" aria-label="Mobile Navigation">
+    <div class="cds-drawer-header">
+      <a href="#" class="cds-brand">
+        <div class="cds-brand-glyph">T</div>
+        <span class="cds-brand-title">TAPIRUSDB</span>
+        <span class="cds-brand-tag">v0.1.3</span>
+      </a>
+      <button class="cds-drawer-close" id="mobileDrawerClose" aria-label="Close navigation menu">
+        <i class="lni lni-close"></i>
+      </button>
+    </div>
+    <div class="cds-drawer-body">
+      <ul class="cds-mobile-nav-list">
+        <li><a href="#quad-model" class="cds-mobile-nav-link"><i class="lni lni-grid-alt"></i> Quad-Model Core</a></li>
+        <li><a href="#ai-engine" class="cds-mobile-nav-link"><i class="lni lni-layers"></i> Agent Memory &amp; GraphRAG</a></li>
+        <li><a href="#serverless" class="cds-mobile-nav-link"><i class="lni lni-cloud-network"></i> Serverless Edge &amp; S3/R2</a></li>
+        <li><a href="#robotics-edge" class="cds-mobile-nav-link"><i class="lni lni-cpu"></i> Robotics &amp; Bare-Metal MCU</a></li>
+        <li><a href="#classic-apps" class="cds-mobile-nav-link"><i class="lni lni-database"></i> Classic Applications</a></li>
+        <li><a href="#use-cases" class="cds-mobile-nav-link"><i class="lni lni-briefcase"></i> Production Domains</a></li>
+        <li><a href="#comparison" class="cds-mobile-nav-link"><i class="lni lni-shield"></i> Vs Competitors Matrix</a></li>
+        <li><a href="#benchmarks" class="cds-mobile-nav-link"><i class="lni lni-dashboard"></i> Hardware Benchmarks</a></li>
+        <li><a href="#tapisaurus" class="cds-mobile-nav-link"><i class="lni lni-world"></i> Tapisaurus Evolution</a></li>
+        <li><a href="#playground" class="cds-mobile-nav-link"><i class="lni lni-play"></i> SLM Studio Playground</a></li>
+        <li><a href="#getting-started" class="cds-mobile-nav-link"><i class="lni lni-code-alt"></i> Quickstart Guide</a></li>
+      </ul>
+    </div>
+    <div class="cds-drawer-footer">
+      <a href="#getting-started" class="cds-btn cds-btn-primary" style="width:100%; text-align:center;">Install v0.1.3 →</a>
+      <a href="https://github.com/tapiruslab/TapirusDB" target="_blank" class="cds-btn cds-btn-dark-secondary" style="width:100%; text-align:center;">
+        <i class="lni lni-github-original"></i> GitHub Repository
+      </a>
+    </div>
+  </aside>
 
   <!-- =========================================================================
        2. HERO SECTION
@@ -3176,7 +3733,7 @@
         Standard vector search wastes compute scanning millions of disconnected chunk embeddings. TapirusDB introduces <strong>Seed-and-Traverse GraphRAG</strong>: fast Product Quantization (PQ) identifies 2–3 seed entities in &lt;1ms, micro-hop graph BFS collects factual relationships in 0.5µs, and Tri-Modal Reciprocal Rank Fusion (RRF) delivers airtight prompt context for frontier LLMs and on-device SLMs.
       </p>
 
-      <div class="cds-cards-grid" style="grid-template-columns: repeat(4, 1fr); margin-top:32px;">
+      <div class="cds-cards-grid cds-grid-4" style="margin-top:32px;">
         <div class="cds-card">
           <div style="font-family:var(--cds-font-mono); font-size:12px; color:var(--cds-primary); font-weight:600; margin-bottom:8px;">STEP 01</div>
           <h4 style="font-size:16px; margin-bottom:8px; font-weight:600; color:var(--cds-ink);">PQ Fast Seeding</h4>
@@ -3243,7 +3800,7 @@ console.log(rag.promptContext);</code></pre>
         In AWS Lambda, Google Cloud Run, and Cloudflare Workers, downloading whole database files kills cold-start performance. TapirusDB's <strong>RemotePager</strong> streams 4KB B+Tree pages on-demand using HTTP Range requests (<code>Range: bytes=offset-(offset+4095)</code>) and caches blocks in memory for 0.00ms subsequent reads.
       </p>
 
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:32px; margin-top:36px; align-items:start;">
+      <div class="cds-grid-2" style="gap:32px; margin-top:36px; align-items:start;">
         <div style="background:var(--cds-surface-1); border:1px solid var(--cds-hairline); border-left:4px solid var(--cds-primary); padding:24px;">
           <div style="font-family:var(--cds-font-mono); font-size:12px; color:var(--cds-primary); font-weight:600; margin-bottom:8px;">
             S3 / CLOUDFLARE R2 RANGE STREAMING
@@ -3311,7 +3868,7 @@ console.log(rag.promptContext);</code></pre>
       </p>
 
       <!-- 3-Tier Hardware Continuum Cards -->
-      <div class="cds-cards-grid" style="grid-template-columns: repeat(3, 1fr); margin-top:36px;">
+      <div class="cds-cards-grid cds-grid-3" style="margin-top:36px;">
         <!-- Tier A -->
         <div class="cds-card" style="border-top: 3px solid var(--cds-primary);">
           <div>
@@ -3377,7 +3934,7 @@ console.log(rag.promptContext);</code></pre>
       </div>
 
       <!-- Robotics & Microcontroller Code Showcase -->
-      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:24px; margin-top:32px;">
+      <div class="cds-grid-2" style="gap:24px; margin-top:32px;">
         <!-- ROS2 C++ Sensor Loop -->
         <div style="background:var(--cds-canvas); border:1px solid var(--cds-hairline); padding:20px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
@@ -3667,6 +4224,7 @@ let route = db.graph_query("
 
       <!-- Master Comparative Matrix Table -->
       <div class="cds-table-container" style="margin-top:32px;">
+        <div class="cds-table-scroll-hint"><i class="lni lni-arrows-horizontal"></i> Swipe horizontally to explore all 9 database engines</div>
         <table class="cds-table">
           <thead>
             <tr>
@@ -4219,7 +4777,7 @@ runNodeSDK();</code></pre>
             <button class="cds-copy-btn" onclick="copySnippet('mcpRunCmd', this)">Copy</button>
           </div>
 
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-top:16px;">
+          <div class="cds-grid-2" style="gap:16px; margin-top:16px;">
             <div>
               <div style="font-family:var(--cds-font-sans); font-size:13px; font-weight:600; margin-bottom:6px; color:var(--cds-ink);">
                 Claude Desktop Config (claude_desktop_config.json)
@@ -5491,7 +6049,7 @@ $ curl http://localhost:8080/api/health
         observer.observe(hero);
       }
 
-      // Mouse interaction
+      // Mouse & Touch interaction
       let mouse = { x: -1000, y: -1000, active: false };
       hero.addEventListener('mousemove', (e) => {
         const rect = hero.getBoundingClientRect();
@@ -5500,6 +6058,19 @@ $ curl http://localhost:8080/api/health
         mouse.active = true;
       });
       hero.addEventListener('mouseleave', () => {
+        mouse.active = false;
+        mouse.x = -1000;
+        mouse.y = -1000;
+      });
+      hero.addEventListener('touchmove', (e) => {
+        if (e.touches && e.touches.length > 0) {
+          const rect = hero.getBoundingClientRect();
+          mouse.x = e.touches[0].clientX - rect.left;
+          mouse.y = e.touches[0].clientY - rect.top;
+          mouse.active = true;
+        }
+      }, { passive: true });
+      hero.addEventListener('touchend', () => {
         mouse.active = false;
         mouse.x = -1000;
         mouse.y = -1000;
@@ -5714,6 +6285,31 @@ $ curl http://localhost:8080/api/health
 
       await detectBackend();
       executeStudioQuery();
+    });
+
+    // Mobile Drawer Navigation Logic
+    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+    const mobileDrawerClose = document.getElementById('mobileDrawerClose');
+    const mobileDrawer = document.getElementById('mobileDrawer');
+    const drawerBackdrop = document.getElementById('drawerBackdrop');
+
+    function openMobileDrawer() {
+      if (mobileDrawer) mobileDrawer.classList.add('open');
+      if (drawerBackdrop) drawerBackdrop.classList.add('open');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeMobileDrawer() {
+      if (mobileDrawer) mobileDrawer.classList.remove('open');
+      if (drawerBackdrop) drawerBackdrop.classList.remove('open');
+      document.body.style.overflow = '';
+    }
+
+    if (mobileMenuBtn) mobileMenuBtn.addEventListener('click', openMobileDrawer);
+    if (mobileDrawerClose) mobileDrawerClose.addEventListener('click', closeMobileDrawer);
+    if (drawerBackdrop) drawerBackdrop.addEventListener('click', closeMobileDrawer);
+    document.querySelectorAll('.cds-mobile-nav-link, .cds-drawer-footer a').forEach(link => {
+      link.addEventListener('click', closeMobileDrawer);
     });
 
     // Also trigger immediately in case DOMContentLoaded already fired
