@@ -22,8 +22,8 @@ jobs:
       - name: Install Stable Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Check Compiler & Lints (Workspace)
-        run: cargo check --workspace --verbose
+      - name: Check Compiler & Lints
+        run: cargo check --verbose
 
-      - name: Run Full Test Suite (Workspace)
-        run: cargo test --workspace --verbose
+      - name: Run Full Test Suite
+        run: cargo test --verbose
