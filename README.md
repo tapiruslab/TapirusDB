@@ -26,11 +26,13 @@
 
 Modern AI and edge developers are forced into **Fragmented Polyglot Persistence**—gluing together multiple complex, heavy databases across network boundaries:
 
-<div align="center">
-
-![TapirusDB Architecture vs Fragile Frankenstack](.github/assets/architecture-comparison.svg)
-
-</div>
+<p align="center">
+  <picture>
+    <source media="(max-width: 768px)" srcset="https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/.github/assets/architecture-mobile.svg">
+    <source media="(min-width: 769px)" srcset="https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/.github/assets/architecture-comparison.svg">
+    <img alt="TapirusDB Architecture vs The Fragile Frankenstack" src="https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/.github/assets/architecture-comparison.svg" width="100%">
+  </picture>
+</p>
 
 ---
 

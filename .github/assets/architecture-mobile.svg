@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 920" width="100%" height="100%" style="background:#0a0d14; border-radius:12px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <!-- Background Grid Pattern -->
+    <pattern id="gridMob" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#141a26" stroke-width="1"/>
+    </pattern>
+
+    <!-- Gradients -->
+    <linearGradient id="badCardGradMob" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1c1214"/>
+      <stop offset="100%" stop-color="#120d0f"/>
+    </linearGradient>
+
+    <linearGradient id="goodCardGradMob" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0c1f19"/>
+      <stop offset="100%" stop-color="#081410"/>
+    </linearGradient>
+
+    <linearGradient id="emeraldBorderMob" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="50%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#3b82f6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background Base -->
+  <rect width="480" height="920" rx="12" fill="#090d16"/>
+  <rect width="480" height="920" rx="12" fill="url(#gridMob)"/>
+
+  <!-- ================= TOP PANEL: TRADITIONAL FRANKENSTACK ================= -->
+  <g transform="translate(20, 20)">
+    <!-- Outer Card -->
+    <rect width="440" height="396" rx="10" fill="url(#badCardGradMob)" stroke="#ef4444" stroke-width="1.2" stroke-opacity="0.6"/>
+
+    <!-- Header Badge -->
+    <rect x="16" y="16" width="170" height="24" rx="4" fill="#361014"/>
+    <text x="24" y="32" fill="#f87171" font-size="11" font-weight="700" letter-spacing="0.5">❌ THE FRAGILE FRANKENSTACK</text>
+    <text x="16" y="56" fill="#94a3b8" font-size="12">Fragmented Multi-Database Architecture</text>
+
+    <!-- App Node -->
+    <rect x="16" y="74" width="105" height="216" rx="8" fill="#182234" stroke="#334155" stroke-width="1"/>
+    <text x="68" y="165" fill="#f1f5f9" font-size="12" font-weight="600" text-anchor="middle">Your</text>
+    <text x="68" y="183" fill="#f1f5f9" font-size="12" font-weight="600" text-anchor="middle">Application</text>
+    <text x="68" y="201" fill="#64748b" font-size="10" text-anchor="middle">Process</text>
+
+    <!-- Network Pipes (Dashed) -->
+    <!-- Vector -->
+    <path d="M 121 110 L 226 110" stroke="#f87171" stroke-width="1.5" stroke-dasharray="3,3"/>
+    <polygon points="226,110 220,107 220,113" fill="#f87171"/>
+    <rect x="131" y="96" width="84" height="15" rx="3" fill="#2d1216"/>
+    <text x="173" y="107" fill="#fca5a5" font-size="9" font-weight="600" text-anchor="middle">gRPC (20-50ms)</text>
+
+    <!-- Cloud Vector DB Card -->
+    <rect x="226" y="82" width="198" height="54" rx="6" fill="#171e2e" stroke="#475569" stroke-width="1"/>
+    <text x="238" y="104" fill="#f8fafc" font-size="12" font-weight="600">☁️ Cloud Vector DB</text>
+    <text x="238" y="123" fill="#f87171" font-size="10">~500 MB RAM • $$$/mo</text>
+
+    <!-- Graph -->
+    <path d="M 121 182 L 226 182" stroke="#f87171" stroke-width="1.5" stroke-dasharray="3,3"/>
+    <polygon points="226,182 220,179 220,185" fill="#f87171"/>
+    <rect x="131" y="168" width="84" height="15" rx="3" fill="#2d1216"/>
+    <text x="173" y="179" fill="#fca5a5" font-size="9" font-weight="600" text-anchor="middle">HTTP (15-30ms)</text>
+
+    <!-- Graph DB Card -->
+    <rect x="226" y="154" width="198" height="54" rx="6" fill="#171e2e" stroke="#475569" stroke-width="1"/>
+    <text x="238" y="176" fill="#f8fafc" font-size="12" font-weight="600">☕ Graph Database</text>
+    <text x="238" y="195" fill="#f87171" font-size="10">~1.2 GB RAM • JVM Heavy</text>
+
+    <!-- SQL -->
+    <path d="M 121 254 L 226 254" stroke="#f87171" stroke-width="1.5" stroke-dasharray="3,3"/>
+    <polygon points="226,254 220,251 220,257" fill="#f87171"/>
+    <rect x="131" y="240" width="84" height="15" rx="3" fill="#2d1216"/>
+    <text x="173" y="251" fill="#fca5a5" font-size="9" font-weight="600" text-anchor="middle">TCP IPC (5-10ms)</text>
+
+    <!-- Relational SQL Card -->
+    <rect x="226" y="226" width="198" height="54" rx="6" fill="#171e2e" stroke="#475569" stroke-width="1"/>
+    <text x="238" y="248" fill="#f8fafc" font-size="12" font-weight="600">🐬 Relational SQL</text>
+    <text x="238" y="267" fill="#f87171" font-size="10">~350 MB RAM • Daemon</text>
+
+    <!-- Metric Footer -->
+    <rect x="16" y="306" width="408" height="74" rx="6" fill="#1a0f12" stroke="#ef4444" stroke-width="0.8" stroke-opacity="0.3"/>
+    <text x="28" y="328" fill="#fca5a5" font-size="11" font-weight="700">Cumulative Overhead &amp; Pain Points:</text>
+    <text x="28" y="348" fill="#cbd5e1" font-size="11">⏱️ Latency: <tspan fill="#f87171" font-weight="700">40–90 ms</tspan> per request cycle</text>
+    <text x="28" y="366" fill="#cbd5e1" font-size="11">💾 RAM: <tspan fill="#f87171" font-weight="700">&gt; 2.0 GB idle</tspan> • Fragile ETL sync lag</text>
+  </g>
+
+  <!-- ================= MIDDLE: VS BADGE ================= -->
+  <g transform="translate(240, 440)">
+    <circle r="20" fill="#0f172a" stroke="#334155" stroke-width="2"/>
+    <text x="0" y="5" fill="#f8fafc" font-size="12" font-weight="800" text-anchor="middle" letter-spacing="1">VS</text>
+  </g>
+
+  <!-- ================= BOTTOM PANEL: TAPIRUSDB UNIFIED ENGINE ================= -->
+  <g transform="translate(20, 464)">
+    <!-- Outer Card -->
+    <rect width="440" height="436" rx="10" fill="url(#goodCardGradMob)" stroke="url(#emeraldBorderMob)" stroke-width="1.8"/>
+
+    <!-- Header Badge -->
+    <rect x="16" y="16" width="160" height="24" rx="4" fill="#063524"/>
+    <text x="24" y="32" fill="#34d399" font-size="11" font-weight="700" letter-spacing="0.5">⚡ TAPIRUSDB UNIFIED</text>
+    <text x="16" y="56" fill="#94a3b8" font-size="12">Zero-Network, In-Process Quad-Model Architecture</text>
+
+    <!-- App Process Outer -->
+    <rect x="16" y="74" width="408" height="254" rx="8" fill="#0d1b1e" stroke="#059669" stroke-width="1" stroke-opacity="0.4"/>
+    <text x="28" y="94" fill="#34d399" font-size="11" font-weight="700">YOUR APPLICATION RUNTIME PROCESS</text>
+    <text x="28" y="108" fill="#64748b" font-size="10">(Rust, Python, Node.js, Go, PHP, Bun, Edge Worker)</text>
+
+    <!-- Embedded Core Engine Box -->
+    <rect x="26" y="120" width="388" height="124" rx="6" fill="#132a26" stroke="#10b981" stroke-width="1.2"/>
+    <text x="36" y="142" fill="#ffffff" font-size="12" font-weight="700">🦛 TapirusDB Core (100% Safe Rust)</text>
+
+    <!-- Grid of 4 Model Badges (2x2 for mobile) -->
+    <g transform="translate(36, 154)">
+      <rect width="84" height="26" rx="4" fill="#064e3b"/>
+      <text x="42" y="17" fill="#6ee7b7" font-size="10" font-weight="600" text-anchor="middle">📊 SQL-92</text>
+    </g>
+    <g transform="translate(126, 154)">
+      <rect width="90" height="26" rx="4" fill="#064e3b"/>
+      <text x="45" y="17" fill="#6ee7b7" font-size="10" font-weight="600" text-anchor="middle">🧠 HNSW 1536-D</text>
+    </g>
+    <g transform="translate(222, 154)">
+      <rect width="88" height="26" rx="4" fill="#064e3b"/>
+      <text x="44" y="17" fill="#6ee7b7" font-size="10" font-weight="600" text-anchor="middle">🕸️ GraphRAG</text>
+    </g>
+    <g transform="translate(316, 154)">
+      <rect width="86" height="26" rx="4" fill="#064e3b"/>
+      <text x="43" y="17" fill="#6ee7b7" font-size="10" font-weight="600" text-anchor="middle">📄 JSON Doc</text>
+    </g>
+
+    <text x="36" y="210" fill="#a7f3d0" font-size="10">Direct pointer dereference • Sub-microsecond memory bus</text>
+    <text x="36" y="226" fill="#6ee7b7" font-size="9">Zero serialization • Zero network sockets • In-process shared RAM</text>
+
+    <!-- Connector Arrow -->
+    <path d="M 220 244 L 220 258" stroke="#10b981" stroke-width="2"/>
+    <polygon points="220,260 216,254 224,254" fill="#10b981"/>
+
+    <!-- Disk Storage Node -->
+    <rect x="26" y="260" width="388" height="52" rx="6" fill="#093829" stroke="#34d399" stroke-width="1"/>
+    <text x="36" y="280" fill="#ffffff" font-size="11" font-weight="700">🔒 Single Atomic File: app.tapir</text>
+    <text x="36" y="298" fill="#6ee7b7" font-size="10">ChaCha20-Poly1305 Encrypted • Zero Daemons • Zero Config</text>
+
+    <!-- Metric Footer -->
+    <rect x="16" y="344" width="408" height="76" rx="6" fill="#08281e" stroke="#10b981" stroke-width="1"/>
+    <text x="28" y="366" fill="#6ee7b7" font-size="11" font-weight="700">Unmatched Enterprise Performance:</text>
+    <text x="28" y="386" fill="#f8fafc" font-size="11">⚡ Latency: <tspan fill="#34d399" font-weight="700">0.55 µs</tspan> chaining / <tspan fill="#34d399" font-weight="700">22.8 µs</tspan> vector search</text>
+    <text x="28" y="404" fill="#f8fafc" font-size="11">💾 RAM: <tspan fill="#34d399" font-weight="700">&lt; 4 MB idle</tspan> • Zero sync lag • $0 cloud cost</text>
+  </g>
+</svg>
