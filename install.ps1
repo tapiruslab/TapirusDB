@@ -1,14 +1,14 @@
-﻿# ==============================================================================
+# ==============================================================================
 # TapirusDB Universal Installer for Windows (PowerShell)
 # Architected by Ahmad Faiz • Tapirus Tech Lab (TapirusDB.com)
 # ==============================================================================
 # Usage:
-#   irm https://raw.githubusercontent.com/TapirusDB/tapirus/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/install.ps1 | iex
 # ==============================================================================
 
 $ErrorActionPreference = "Stop"
 
-$TapirusVersion = "0.1.2"
+$TapirusVersion = "1.0.0"
 $Repo = "tapiruslab/TapirusDB"
 $InstallDir = if ($env:TAPIRUS_INSTALL_DIR) { $env:TAPIRUS_INSTALL_DIR } else { "$env:USERPROFILE\.tapirus" }
 $BinDir = "$InstallDir\bin"

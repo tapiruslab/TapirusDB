@@ -10,7 +10,7 @@ import os
 import sys
 from typing import Any, Dict, List, Optional
 
-__version__ = "0.1.2"
+__version__ = "1.0.0"
 __all__ = [
     "Tapirus",
     "TapirusError",

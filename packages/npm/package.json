@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "@tapirus/db",
   "version": "1.0.0",
   "description": "Official TypeScript & JavaScript SDK for TapirusDB — The Safe-Rust Embedded Multi-Model AI Database Engine",
@@ -20,7 +20,7 @@
     "rag"
   ],
   "author": "Ahmad Faiz <faiz@tapirusdb.com>",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/tapiruslab/TapirusDB.git"

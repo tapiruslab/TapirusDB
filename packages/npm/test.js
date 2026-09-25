@@ -5,7 +5,7 @@ async function runTests() {
   console.log('Testing @tapirus/db SDK...');
 
   // 1. Version check
-  assert.strictEqual(TapirusDatabase.version(), '0.1.2');
+  assert.strictEqual(TapirusDatabase.version(), '1.0.0');
 
   // 2. In-memory open
   const db = await TapirusDatabase.openInMemory();

@@ -1,5 +1,71 @@
-// Package tapirus provides the official Go client for TapirusDB —
-// the 100% Safe-Rust Embedded Quad-Model AI Database & Agent Memory Engine.
+/*
+Package tapirus provides the official Go client library for TapirusDB —
+the 100% Safe-Rust Embedded Quad-Model AI Database and Memory Engine.
+
+# Overview
+
+TapirusDB collapses four disparate database paradigms into a unified,
+single-file in-process engine:
+
+  - Relational SQL-92 (ACID transactions, B+Tree indexing, MVCC)
+  - Dense HNSW Vector Search (Cosine, L2 Euclidean, Inner Product similarity)
+  - openCypher Knowledge Graph (CSR topology, GraphRAG, multi-hop traversals)
+  - Schemaless JSON Document Collections
+
+# Quickstart
+
+Initialize a client and execute multi-model queries:
+
+	package main
+
+	import (
+		"context"
+		"fmt"
+		"log"
+		tapirus "github.com/tapiruslab/TapirusDB/sdks/go"
+	)
+
+	func main() {
+		ctx := context.Background()
+		client := tapirus.NewClient(tapirus.Config{
+			Endpoint: "http://127.0.0.1:8080",
+		})
+
+		// 1. Health check
+		health, err := client.Health(ctx)
+		if err != nil {
+			log.Fatalf("Health check failed: %v", err)
+		}
+		fmt.Printf("Connected: %s (%s)\n", health.Version, health.Engine)
+
+		// 2. Relational SQL
+		rows, err := client.Query(ctx, "SELECT id, name FROM agents;")
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("Agents:", rows)
+
+		// 3. HNSW Vector Search
+		matches, err := client.VectorSearch(ctx, "agent_embeddings", []float32{0.12, 0.45, -0.67}, 5)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("Vector matches:", matches)
+
+		// 4. GraphRAG Traversal
+		rag, err := client.GraphRAG(ctx, tapirus.GraphRAGRequest{
+			Query: "Explain consensus protocol",
+			Seeds: 3,
+			Hops:  2,
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("Extracted %d nodes, %d edges\n", len(rag.Nodes), len(rag.Edges))
+	}
+
+For detailed documentation, SDK guides, and live demos, visit https://tapirusdb.com/docs.html.
+*/
 package tapirus
 
 import (

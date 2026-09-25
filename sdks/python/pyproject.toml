@@ -8,13 +8,13 @@ version = "1.0.0"
 description = "Official Python SDK for TapirusDB — Safe-Rust Quad-Model Embedded AI Database & Agent Memory Engine"
 readme = "README.md"
 authors = [{ name = "Ahmad Faiz", email = "faiz@tapirusdb.com" }]
-license = { text = "BSL-1.1" }
+license = { text = "MIT" }
 requires-python = ">=3.8"
 keywords = ["tapirus", "tapirusdb", "embedded", "database", "sqlite", "vector", "graph", "ai-memory", "rag"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: Other/Proprietary License",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -28,5 +28,5 @@ dependencies = []
 
 [project.urls]
 Homepage = "https://tapirusdb.com"
-Documentation = "https://docs.tapirusdb.com"
+Documentation = "https://tapirusdb.com/docs.html"
 Repository = "https://github.com/tapiruslab/TapirusDB"

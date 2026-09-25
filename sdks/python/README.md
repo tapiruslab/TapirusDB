@@ -1,61 +1,161 @@
+<div align="center">
+
 # TapirusDB Python SDK (`tapirus`)
 
-Official Python client for **TapirusDB** — the 100% Safe-Rust Embedded Quad-Model Database & AI Agent Memory Engine.
+### Official Python Client for TapirusDB — Embedded Quad-Model AI Database & Memory Engine
+**Relational SQL • HNSW Vector Search • openCypher Knowledge Graph • JSON Documents**  
+*Single Encrypted `.tapir` Container • 100% Safe Rust Core • < 4 MB Idle RAM • Zero Cloud Daemons*
+
+<br/>
+
+[![PyPI version](https://img.shields.io/pypi/v/tapirus.svg?style=flat-square&logo=pypi)](https://pypi.org/project/tapirus/)
+[![Python versions](https://img.shields.io/pypi/pyversions/tapirus.svg?style=flat-square&logo=python)](https://pypi.org/project/tapirus/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+[![Memory Safety](https://img.shields.io/badge/memory--safety-100%25_Safe_Rust-brightgreen.svg?style=flat-square)](https://github.com/tapiruslab/TapirusDB)
+[![Docs](https://img.shields.io/badge/docs-tapirusdb.com-2b3a7e.svg?style=flat-square)](https://tapirusdb.com/docs.html)
+
+<br/>
+
+</div>
 
 ---
 
 ## ⚡ Installation
 
-Install from source or local checkout:
+Install from PyPI:
+
+```bash
+pip install tapirus
+```
+
+Or install from source:
+
 ```bash
 pip install .
 ```
 
-Or build wheels for PyPI distribution:
-```bash
-python -m build
-twine upload dist/*
-```
+**Requirements:** Python 3.8+ (Supports CPython 3.8, 3.9, 3.10, 3.11, 3.12).
 
 ---
 
 ## 🚀 Quickstart
 
+### 1. Relational SQL & ACID Transactions
+
 ```python
-import tapirus
+from tapirus import Connection
 
-# 1. Connect to an encrypted single-file database
-db = tapirus.connect("agent_memory.tapir", passphrase="super-secret-key")
+# Open or create a persistent database file (or ":memory:")
+with Connection.open("production.tapir") as db:
+    # Create structured table
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS agents (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            model TEXT NOT NULL,
+            memory_mb REAL
+        );
+    """)
 
-# 2. Relational SQL & Transactions
-db.execute("""
-    CREATE TABLE documents (
-        id INTEGER PRIMARY KEY,
-        title TEXT,
-        category TEXT,
-        embedding VECTOR(3)
-    );
-""")
+    # Insert records
+    db.execute("INSERT INTO agents (id, name, model, memory_mb) VALUES (1, 'Echo-Agent', 'Phi-3-Mini', 3.8);")
 
-db.execute("""
-    INSERT INTO documents VALUES 
-    (1, 'Autonomous Drone Navigation', 'robotics', [0.99, 0.02, 0.01]),
-    (2, 'Soil Moisture Sensor Mesh', 'iot', [0.12, 0.95, 0.05]);
-""")
-
-# 3. Query
-rows = db.query("SELECT id, title, category FROM documents WHERE category = 'robotics';")
-for row in rows:
-    print(row)
-
-# 4. In-Memory Mode
-mem_db = tapirus.connect(":memory:")
-mem_db.execute("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT);")
+    # Query rows as Python dictionaries
+    rows = db.query("SELECT id, name, model, memory_mb FROM agents WHERE memory_mb < 100;")
+    print("Agents:", rows)
 ```
 
 ---
 
-## 🛡️ Architecture & Safety
-- **Single-File `.tapir` Container**: Unified relational SQL, document JSON, HNSW vectors, and openCypher knowledge graphs in one file.
-- **Hardware AES-256 GCM**: ChaCha20-Poly1305 AEAD with PBKDF2/SHA-256 salt verification.
-- **Zero Cloud Latency**: Runs entirely in-process (`0.55 µs` pointer dereference) without external server daemons.
+### 2. Native HNSW Vector Similarity Search
+
+```python
+from tapirus import Connection
+
+with Connection.open("production.tapir") as db:
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS embeddings (
+            doc_id INTEGER PRIMARY KEY,
+            content TEXT,
+            vector VECTOR(4)
+        );
+    """)
+
+    # Insert embeddings
+    db.execute("""
+        INSERT INTO embeddings VALUES
+        (1, 'Safe Systems Architecture', [0.12, 0.45, 0.88, -0.23]),
+        (2, 'Quantum Neural Topology', [-0.42, 0.81, 0.15, 0.33]);
+    """)
+
+    # Perform nearest-neighbor similarity search
+    results = db.query("""
+        SELECT doc_id, content, VECTOR_COSINE(vector, [0.10, 0.40, 0.85, -0.20]) AS score
+        FROM embeddings
+        ORDER BY score DESC
+        LIMIT 5;
+    """)
+    print("Top Matches:", results)
+```
+
+---
+
+### 3. Knowledge Graph & openCypher GraphRAG
+
+```python
+from tapirus import Connection
+
+with Connection.open("production.tapir") as db:
+    # Create nodes and relationships
+    db.graph_add_node(1, "Agent", '{"name":"Echo"}')
+    db.graph_add_node(2, "Database", '{"name":"TapirusDB"}')
+    db.graph_add_edge(1, 2, "USES", 1.0, '{"since":"2026"}')
+
+    # openCypher pattern matching
+    matches = db.graph_match("MATCH (a:Agent)-[r:USES]->(d:Database) RETURN a.name, d.name;")
+    print("Graph Traversal:", matches)
+```
+
+---
+
+### 4. Schemaless JSON Document Collections
+
+```python
+from tapirus import Connection
+
+with Connection.open("production.tapir") as db:
+    users = db.collection("users")
+
+    # Insert nested JSON document
+    doc_id = users.insert_one({
+        "username": "faiz",
+        "preferences": {"theme": "light", "telemetry": False},
+        "tags": ["architect", "rust"]
+    })
+
+    # Find document by ID
+    user = users.find_one({"_id": doc_id})
+    print("User document:", user)
+```
+
+---
+
+### 5. Encrypted Vault at Rest (ChaCha20-Poly1305 AEAD)
+
+```python
+from tapirus import Connection
+
+# Open cryptographically authenticated container
+with Connection.open("vault.tapir", passphrase="your-ultra-secure-passphrase") as db:
+    db.execute("CREATE TABLE secrets (id INT PRIMARY KEY, token TEXT);")
+    db.execute("INSERT INTO secrets VALUES (1, 'sk-agent-confidential-key');")
+```
+
+---
+
+## 📜 License
+
+The TapirusDB Python SDK is licensed under the [MIT License](LICENSE).  
+The underlying TapirusDB core engine is licensed under [BUSL-1.1](https://github.com/tapiruslab/TapirusDB/blob/main/LICENSE).
+
+For complete documentation, benchmarks, and architectural details, visit **[tapirusdb.com](https://tapirusdb.com)**.

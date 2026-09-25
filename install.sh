@@ -1,15 +1,15 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # ==============================================================================
 # TapirusDB Universal Installer for Linux, macOS, BSD, and ARM
 # Architected by Ahmad Faiz • Tapirus Tech Lab (TapirusDB.com)
 # ==============================================================================
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/TapirusDB/tapirus/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/install.sh | bash
 # ==============================================================================
 
 set -euo pipefail
 
-TAPIRUS_VERSION="0.1.2"
+TAPIRUS_VERSION="1.0.0"
 REPO="tapiruslab/TapirusDB"
 INSTALL_DIR="${TAPIRUS_INSTALL_DIR:-$HOME/.tapirus}"
 BIN_DIR="$INSTALL_DIR/bin"

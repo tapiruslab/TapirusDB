@@ -97,7 +97,7 @@ int64_t tapirus_checkpoint(TapirusConn* conn);
 void tapirus_free_string(char* s);
 
 /**
- * @brief Return the library version string (e.g. "0.1.2").
+ * @brief Return the library version string (e.g. "1.0.0").
  *
  * @return Static null-terminated version string. Do NOT free this pointer.
  */

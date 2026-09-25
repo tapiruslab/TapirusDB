@@ -1,70 +1,161 @@
-﻿# TapirusDB Python Client
+<div align="center">
 
-> **"One Engine. Four Models. Zero Data Sprawl."**  
-> The Safe-Rust In-Process AI Multi-Model Database Engine (`tapirus`).  
-> *Architected by **Ahmad Faiz***
+# TapirusDB Python SDK (`tapirus`)
 
-[![License: BSL-1.1](https://img.shields.io/badge/License-BSL--1.1-blue.svg)](https://github.com/tapiruslab/TapirusDB/blob/master/LICENSE)
-[![PyPI version](https://img.shields.io/badge/pypi-0.1.2-brightgreen.svg)](https://pypi.org/project/tapirus/)
-[![Rust](https://img.shields.io/badge/Pure_Safe_Rust-100%25-orange.svg)](https://www.rust-lang.org/)
+### Official Python Client for TapirusDB — Embedded Quad-Model AI Database & Memory Engine
+**Relational SQL • HNSW Vector Search • openCypher Knowledge Graph • JSON Documents**  
+*Single Encrypted `.tapir` Container • 100% Safe Rust Core • < 4 MB Idle RAM • Zero Cloud Daemons*
 
-## Features
-- **Zero Daemons / In-Process:** Runs directly inside your Python runtime as a native in-process engine without external server processes.
-- **Ultra-Low Memory:** Idle memory `< 4 MB RAM`.
-- **Quad-Model Architecture:** SQL relational tables, JSON documents, native HNSW vector search, and Property Graph with sub-microsecond GraphRAG.
-- **Single-File Durability:** All models persisted in a single `.tapir` file with crash-resilient WAL.
-- **Native Cryptography:** Page-level ChaCha20-Poly1305 authenticated encryption (AEAD).
-- **AI Agent Memory & MCP:** Seamless integration with LLMs (Claude, GPT-4o) and edge SLMs (Phi-3, Gemma-2).
+<br/>
 
-## Installation
+[![PyPI version](https://img.shields.io/pypi/v/tapirus.svg?style=flat-square&logo=pypi)](https://pypi.org/project/tapirus/)
+[![Python versions](https://img.shields.io/pypi/pyversions/tapirus.svg?style=flat-square&logo=python)](https://pypi.org/project/tapirus/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+[![Memory Safety](https://img.shields.io/badge/memory--safety-100%25_Safe_Rust-brightgreen.svg?style=flat-square)](https://github.com/tapiruslab/TapirusDB)
+[![Docs](https://img.shields.io/badge/docs-tapirusdb.com-2b3a7e.svg?style=flat-square)](https://tapirusdb.com/docs.html)
+
+<br/>
+
+</div>
+
+---
+
+## ⚡ Installation
+
+Install from PyPI:
 
 ```bash
-# Install directly from local repository:
-pip install .
-
-# Or from PyPI (when published):
 pip install tapirus
 ```
 
-## Quick Start
+Or install from source:
 
-### Embedded Relational SQL & ACID Transactions
+```bash
+pip install .
+```
+
+**Requirements:** Python 3.8+ (Supports CPython 3.8, 3.9, 3.10, 3.11, 3.12).
+
+---
+
+## 🚀 Quickstart
+
+### 1. Relational SQL & ACID Transactions
+
 ```python
-from tapirus import Tapirus
+from tapirus import Connection
 
-# Open or create single-file database
-with Tapirus.open("app.tapir") as db:
-    # 1. Create tables
+# Open or create a persistent database file (or ":memory:")
+with Connection.open("production.tapir") as db:
+    # Create structured table
     db.execute("""
-        CREATE TABLE rovers (
+        CREATE TABLE IF NOT EXISTS agents (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
-            battery REAL
+            model TEXT NOT NULL,
+            memory_mb REAL
         );
     """)
 
-    # 2. Insert records
-    db.execute("INSERT INTO rovers (id, name, battery) VALUES (1, 'Curiosity', 98.5);")
+    # Insert records
+    db.execute("INSERT INTO agents (id, name, model, memory_mb) VALUES (1, 'Echo-Agent', 'Phi-3-Mini', 3.8);")
 
-    # 3. Query records as Python dictionaries
-    rows = db.query("SELECT id, name, battery FROM rovers WHERE id = 1;")
-    print(rows)  # [{'id': 1, 'name': 'Curiosity', 'battery': 98.5}]
-
-    # 4. Atomic transactions
-    db.execute("BEGIN;")
-    db.execute("UPDATE rovers SET battery = 95.0 WHERE id = 1;")
-    db.execute("COMMIT;")
+    # Query rows as Python dictionaries
+    rows = db.query("SELECT id, name, model, memory_mb FROM agents WHERE memory_mb < 100;")
+    print("Agents:", rows)
 ```
 
-### Encrypted Database at Rest (ChaCha20-Poly1305)
+---
+
+### 2. Native HNSW Vector Similarity Search
+
 ```python
-from tapirus import Tapirus
+from tapirus import Connection
 
-# Open encrypted database with passphrase
-with Tapirus.open("vault.tapir", passphrase="ultra_secure_passphrase") as db:
-    db.execute("CREATE TABLE secrets (id INT PRIMARY KEY, token TEXT);")
-    db.execute("INSERT INTO secrets VALUES (1, 'sk-live-confidential-credential');")
+with Connection.open("production.tapir") as db:
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS embeddings (
+            doc_id INTEGER PRIMARY KEY,
+            content TEXT,
+            vector VECTOR(4)
+        );
+    """)
+
+    # Insert embeddings
+    db.execute("""
+        INSERT INTO embeddings VALUES
+        (1, 'Safe Systems Architecture', [0.12, 0.45, 0.88, -0.23]),
+        (2, 'Quantum Neural Topology', [-0.42, 0.81, 0.15, 0.33]);
+    """)
+
+    # Perform nearest-neighbor similarity search
+    results = db.query("""
+        SELECT doc_id, content, VECTOR_COSINE(vector, [0.10, 0.40, 0.85, -0.20]) AS score
+        FROM embeddings
+        ORDER BY score DESC
+        LIMIT 5;
+    """)
+    print("Top Matches:", results)
 ```
 
-## License
-Business Source License 1.1 (BSL-1.1). Commercial use permitted under the terms defined in the main [TapirusDB repository](https://github.com/tapiruslab/TapirusDB).
+---
+
+### 3. Knowledge Graph & openCypher GraphRAG
+
+```python
+from tapirus import Connection
+
+with Connection.open("production.tapir") as db:
+    # Create nodes and relationships
+    db.graph_add_node(1, "Agent", '{"name":"Echo"}')
+    db.graph_add_node(2, "Database", '{"name":"TapirusDB"}')
+    db.graph_add_edge(1, 2, "USES", 1.0, '{"since":"2026"}')
+
+    # openCypher pattern matching
+    matches = db.graph_match("MATCH (a:Agent)-[r:USES]->(d:Database) RETURN a.name, d.name;")
+    print("Graph Traversal:", matches)
+```
+
+---
+
+### 4. Schemaless JSON Document Collections
+
+```python
+from tapirus import Connection
+
+with Connection.open("production.tapir") as db:
+    users = db.collection("users")
+
+    # Insert nested JSON document
+    doc_id = users.insert_one({
+        "username": "faiz",
+        "preferences": {"theme": "light", "telemetry": False},
+        "tags": ["architect", "rust"]
+    })
+
+    # Find document by ID
+    user = users.find_one({"_id": doc_id})
+    print("User document:", user)
+```
+
+---
+
+### 5. Encrypted Vault at Rest (ChaCha20-Poly1305 AEAD)
+
+```python
+from tapirus import Connection
+
+# Open cryptographically authenticated container
+with Connection.open("vault.tapir", passphrase="your-ultra-secure-passphrase") as db:
+    db.execute("CREATE TABLE secrets (id INT PRIMARY KEY, token TEXT);")
+    db.execute("INSERT INTO secrets VALUES (1, 'sk-agent-confidential-key');")
+```
+
+---
+
+## 📜 License
+
+The TapirusDB Python SDK is licensed under the [MIT License](LICENSE).  
+The underlying TapirusDB core engine is licensed under [BUSL-1.1](https://github.com/tapiruslab/TapirusDB/blob/main/LICENSE).
+
+For complete documentation, benchmarks, and architectural details, visit **[tapirusdb.com](https://tapirusdb.com)**.

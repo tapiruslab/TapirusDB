@@ -26,7 +26,7 @@
     "support": {
         "issues": "https://github.com/tapiruslab/TapirusDB/issues",
         "source": "https://github.com/tapiruslab/TapirusDB",
-        "docs": "https://tapirusdb.com"
+        "docs": "https://tapirusdb.com/docs.html"
     },
     "require": {
         "php": ">=8.0",
@@ -35,7 +35,7 @@
     },
     "autoload": {
         "psr-4": {
-            "Tapirus\\": "sdks/php/src/"
+            "Tapirus\\": "src/"
         }
     },
     "minimum-stability": "stable",

@@ -41,7 +41,7 @@ class TapirusDatabase {
   }
 
   static version() {
-    return '0.1.2';
+    return '1.0.0';
   }
 
   async execute(sql, params = []) {

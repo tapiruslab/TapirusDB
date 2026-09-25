@@ -65,6 +65,9 @@ winget install --manifest https://raw.githubusercontent.com/tapiruslab/TapirusDB
 
 # Linux / macOS Automated Script
 curl -fsSL https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/install.sh | bash
+
+# Windows PowerShell Automated Script
+irm https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/install.ps1 | iex
 ```
 
 #### Language SDKs & Client Libraries

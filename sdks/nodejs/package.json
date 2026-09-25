@@ -24,7 +24,7 @@
     "graph"
   ],
   "author": "Ahmad Faiz <faiz@tapirusdb.com>",
-  "license": "BUSL-1.1",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tapiruslab/TapirusDB.git"
