@@ -32,6 +32,42 @@ bun add @tapirus/db
 
 ---
 
+## 🔰 Beginner's Step-by-Step Guide (Zero to Running in 60s)
+
+> [!WARNING]
+> **Common Beginner Mistake:** Do **NOT** paste JavaScript code (`import`, `const`, `console.log`) directly into your Windows PowerShell, Command Prompt, or Linux Bash terminal. The command line will error with `'import' is not recognized as a cmdlet`. Always write your code into a `.mjs` or `.js` file, and execute it using `node filename.mjs`!
+
+### Step 1: Initialize your project folder
+```powershell
+mkdir my-tapirus-app
+cd my-tapirus-app
+npm init -y
+npm install @tapirus/db
+```
+
+### Step 2: Create your script (`app.mjs`)
+```javascript
+import { TapirusDatabase } from '@tapirus/db';
+
+const db = await TapirusDatabase.open('production.tapir');
+
+// Create table
+await db.execute('CREATE TABLE IF NOT EXISTS users (id INT, name TEXT);');
+await db.execute('INSERT INTO users VALUES (1, "Faiz");');
+
+// Query table
+const rows = await db.query('SELECT * FROM users;');
+console.log('Query result:', rows);
+```
+
+### Step 3: Run your script with Node.js
+```powershell
+node app.mjs
+# Output: Query result: [ { id: 1, raw: "INSERT INTO users VALUES (1, 'Faiz')" } ]
+```
+
+---
+
 ## 🚀 Quickstart
 
 ```typescript

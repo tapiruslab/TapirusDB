@@ -263,6 +263,25 @@ with Tapirus.open("app.tapir", passphrase="master_vault_key") as db:
     print(records)  # [{'id': 1, 'sensor': 'temperature', 'value': 23.8}]
 ```
 
+#### Node.js & TypeScript: Zero-Daemon Embedded Database
+```javascript
+// Install: npm install tapirus
+// Run script: node app.mjs
+import { open, Tapirus } from "tapirus";
+
+const db = open("production.tapir");
+
+// Relational SQL
+db.execute("CREATE TABLE IF NOT EXISTS users (id INT, name TEXT, active INT);");
+db.execute("INSERT INTO users VALUES (1, 'Faiz', 1);");
+
+// Query rows as JSON objects
+const rows = db.query("SELECT * FROM users WHERE active = 1;");
+console.log(rows); // [ { id: 1, raw: "INSERT INTO users VALUES (1, 'Faiz', 1)" } ]
+
+db.close();
+```
+
 ---
 
 ## Beyond AI: An Ultra-Fast Embedded Database for Classic Applications

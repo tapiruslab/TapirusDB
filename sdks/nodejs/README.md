@@ -36,6 +36,73 @@ bun add tapirus
 
 ---
 
+## 🔰 Beginner's Step-by-Step Guide (Zero to Running in 60s)
+
+> [!WARNING]
+> **Common Beginner Mistake:** Do **NOT** paste JavaScript code (`import`, `const`, `console.log`) directly into your Windows PowerShell, Command Prompt, or Linux Bash terminal. The command line will error with `'import' is not recognized as a cmdlet`. Always write your code into a `.mjs` or `.js` file, and execute it using `node filename.mjs`!
+
+### Step 1: Initialize your project folder
+```powershell
+mkdir my-tapirus-app
+cd my-tapirus-app
+npm init -y
+npm install tapirus
+```
+
+### Step 2: Create your script (`app.mjs` or `app.js`)
+
+**Option A: Modern ES Modules (`app.mjs`):**
+```javascript
+import { open, Tapirus } from 'tapirus';
+
+// Open or create persistent database file (or ":memory:")
+const db = open('production.tapir');
+
+// Create table and insert records
+db.execute('CREATE TABLE IF NOT EXISTS users (id INT, name TEXT, active INT);');
+db.execute("INSERT INTO users VALUES (1, 'Faiz', 1);");
+
+// Query rows
+const rows = db.query('SELECT * FROM users WHERE active = 1;');
+console.log('Query result:', rows);
+
+// Always close when finished
+db.close();
+```
+
+**Option B: Standard CommonJS (`app.js`):**
+```javascript
+const { open, Tapirus } = require('tapirus');
+
+const db = open('production.tapir');
+db.execute('CREATE TABLE IF NOT EXISTS users (id INT, name TEXT, active INT);');
+db.execute("INSERT INTO users VALUES (1, 'Faiz', 1);");
+
+const rows = db.query('SELECT * FROM users;');
+console.log('Query result:', rows);
+db.close();
+```
+
+### Step 3: Run your script with Node.js
+```powershell
+node app.mjs
+# Output: Query result: [ { id: 1, raw: "INSERT INTO users VALUES (1, 'Faiz', 1)" } ]
+```
+
+### Step 4: Interactive Mode (Node.js REPL)
+If you want to type commands interactively in PowerShell:
+```powershell
+PS C:\Users\afaiz\my-tapirus-app> node
+> const { open } = require('tapirus');
+> const db = open('production.tapir');
+> db.execute("CREATE TABLE users (id INT, name TEXT);");
+> db.execute("INSERT INTO users VALUES (1, 'Faiz');");
+> db.query("SELECT * FROM users;");
+[ { id: 1, raw: "INSERT INTO users VALUES (1, 'Faiz')" } ]
+```
+
+---
+
 ## 🚀 Quickstart
 
 ### 1. Relational SQL & ACID Transactions
