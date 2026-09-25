@@ -10,31 +10,40 @@
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Blinker:wght@100;200;300;400;600;700;800;900&family=Michroma&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   
   <!-- LineIcons -->
   <link rel="stylesheet" href="https://cdn.lineicons.com/4.0/lineicons.css">
 
   <style>
     :root {
+      --corp-primary: #2b3a7e;
+      --corp-primary-dark: #1b2654;
+      --corp-primary-light: #3e50a2;
+      --corp-primary-glow: rgba(43, 58, 126, 0.25);
+      --corp-subtle: rgba(43, 58, 126, 0.08);
       --bg-base: #f8fafc;
       --bg-surface: #ffffff;
       --bg-surface-elevated: #f1f5f9;
       --bg-card: rgba(255, 255, 255, 0.95);
-      --border-subtle: rgba(15, 23, 42, 0.08);
-      --border-strong: rgba(15, 23, 42, 0.16);
+      --border-subtle: rgba(43, 58, 126, 0.1);
+      --border-strong: rgba(43, 58, 126, 0.2);
       --text-main: #0f172a;
       --text-muted: #475569;
       --text-dim: #64748b;
       --accent-emerald: #059669;
       --accent-emerald-glow: rgba(5, 150, 105, 0.15);
       --accent-cyan: #0284c7;
-      --accent-blue: #2563eb;
+      --accent-blue: #2b3a7e;
       --accent-purple: #7c3aed;
       --code-bg: #0f172a;
       --sidebar-width: 290px;
       --toc-width: 240px;
       --header-height: 64px;
+    }
+
+    h1, h2, h3, h4, h5, h6 {
+      font-family: 'Blinker', -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -76,34 +85,38 @@
       align-items: center;
       gap: 10px;
       text-decoration: none;
-      color: #0f172a;
-      font-weight: 800;
-      font-size: 18px;
-      letter-spacing: -0.5px;
+      color: #2b3a7e;
+      font-family: 'Michroma', sans-serif;
+      font-weight: 700;
+      font-size: 17px;
+      letter-spacing: -0.02em;
     }
 
     .doc-brand-glyph {
       width: 32px; height: 32px;
-      background: linear-gradient(135deg, #059669, #0284c7);
+      background: linear-gradient(135deg, #2b3a7e 0%, #1d4ed8 100%);
       border-radius: 8px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 16px;
-      font-weight: 800;
+      font-size: 15px;
+      font-weight: 700;
       color: #ffffff;
-      box-shadow: 0 0 12px rgba(5, 150, 105, 0.35);
+      font-family: 'Michroma', sans-serif;
+      box-shadow: 0 0 14px rgba(43, 58, 126, 0.35);
     }
 
     .doc-tag {
-      font-size: 10px;
-      background: rgba(5, 150, 105, 0.08);
-      color: #059669;
-      border: 1px solid rgba(5, 150, 105, 0.25);
+      font-size: 9.5px;
+      background: rgba(43, 58, 126, 0.08);
+      color: #2b3a7e;
+      border: 1px solid rgba(43, 58, 126, 0.25);
       padding: 2px 7px;
       border-radius: 999px;
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Michroma', sans-serif;
       font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
     }
 
     .back-home-link {
@@ -254,9 +267,10 @@
       border-bottom: 1px solid var(--border-subtle);
     }
     .doc-sidebar-header-title {
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 700;
-      color: var(--text-main);
+      color: #2b3a7e;
+      font-family: 'Michroma', sans-serif;
       text-transform: uppercase;
       letter-spacing: 0.08em;
     }
@@ -284,41 +298,44 @@
     }
 
     .doc-group-title {
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      color: var(--text-dim);
+      color: #2b3a7e;
+      font-family: 'Michroma', sans-serif;
       padding: 0 10px 8px;
       display: flex;
       align-items: center;
       justify-content: space-between;
+      opacity: 0.85;
     }
 
     .doc-link {
+      font-family: 'Blinker', sans-serif;
       display: flex;
       align-items: center;
       gap: 10px;
       padding: 8px 12px;
-      font-size: 13.5px;
+      font-size: 14.5px;
       color: var(--text-muted);
       text-decoration: none;
       border-radius: 6px;
       transition: all 0.15s ease;
-      font-weight: 500;
+      font-weight: 600;
     }
     .doc-link i { font-size: 14px; color: var(--text-dim); transition: color 0.15s; }
     .doc-link:hover {
-      color: #0f172a;
-      background: rgba(15, 23, 42, 0.04);
+      color: #2b3a7e;
+      background: rgba(43, 58, 126, 0.04);
     }
-    .doc-link:hover i { color: var(--accent-cyan); }
+    .doc-link:hover i { color: #2b3a7e; }
     .doc-link.active {
-      color: var(--accent-emerald);
-      background: rgba(5, 150, 105, 0.08);
-      font-weight: 600;
+      color: #2b3a7e;
+      background: rgba(43, 58, 126, 0.08);
+      font-weight: 700;
     }
-    .doc-link.active i { color: var(--accent-emerald); }
+    .doc-link.active i { color: #2b3a7e; }
 
     /* Main Content Area */
     .doc-main {
@@ -342,12 +359,13 @@
 
     /* Typography */
     .doc-header h1 {
-      font-size: 34px;
+      font-family: 'Blinker', sans-serif;
+      font-size: 38px;
       font-weight: 800;
-      letter-spacing: -0.03em;
+      letter-spacing: -0.02em;
       color: #0f172a;
       margin-bottom: 12px;
-      line-height: 1.2;
+      line-height: 1.15;
     }
 
     .doc-lead {
@@ -365,9 +383,10 @@
     }
 
     .doc-section h2 {
-      font-size: 24px;
-      font-weight: 700;
-      letter-spacing: -0.02em;
+      font-family: 'Blinker', sans-serif;
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
       color: #0f172a;
       margin-bottom: 16px;
       padding-bottom: 8px;
@@ -386,8 +405,9 @@
     .doc-section h2:hover a.anchor-link { opacity: 1; }
 
     .doc-section h3 {
-      font-size: 18px;
-      font-weight: 600;
+      font-family: 'Blinker', sans-serif;
+      font-size: 20px;
+      font-weight: 700;
       color: #1e293b;
       margin: 28px 0 12px;
     }
@@ -415,9 +435,9 @@
       border-left: 4px solid;
     }
     .callout-info {
-      background: rgba(2, 132, 199, 0.08);
-      border-color: var(--accent-cyan);
-      color: #0369a1;
+      background: rgba(43, 58, 126, 0.06);
+      border-color: #2b3a7e;
+      color: #1b2654;
     }
     .callout-success {
       background: rgba(5, 150, 105, 0.08);
@@ -592,30 +612,32 @@
       color: #f1f5f9;
     }
     .studio-mode-btn.active {
-      background: #059669;
+      background: #2b3a7e;
       color: #ffffff;
-      box-shadow: 0 2px 8px rgba(5, 150, 105, 0.35);
+      box-shadow: 0 2px 8px rgba(43, 58, 126, 0.35);
     }
 
     .studio-run-btn {
-      background: linear-gradient(135deg, #059669, #0284c7);
+      background: linear-gradient(135deg, #2b3a7e 0%, #1d4ed8 100%);
       border: none;
       color: #ffffff;
-      font-size: 13px;
+      font-family: 'Blinker', sans-serif;
+      font-size: 14.5px;
       font-weight: 700;
-      padding: 7px 18px;
+      letter-spacing: 0.02em;
+      padding: 7px 20px;
       border-radius: 6px;
       cursor: pointer;
       display: flex;
       align-items: center;
       gap: 6px;
-      box-shadow: 0 0 15px rgba(5, 150, 105, 0.3);
+      box-shadow: 0 0 15px rgba(43, 58, 126, 0.35);
       transition: all 0.15s;
       white-space: nowrap;
     }
     .studio-run-btn:hover {
       transform: translateY(-1px);
-      box-shadow: 0 4px 18px rgba(5, 150, 105, 0.4);
+      box-shadow: 0 4px 18px rgba(43, 58, 126, 0.5);
     }
 
     .studio-editor {
@@ -662,11 +684,12 @@
       overflow-y: auto;
     }
     .doc-toc-title {
-      font-size: 11px;
+      font-family: 'Michroma', sans-serif;
+      font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      color: var(--text-dim);
+      color: #2b3a7e;
       margin-bottom: 12px;
     }
     .doc-toc a {
@@ -682,10 +705,25 @@
     .doc-toc a:hover {
       color: #0f172a;
     }
-    .doc-toc a.active {
-      color: var(--accent-emerald);
-      border-left-color: var(--accent-emerald);
+    .doc-toc a {
+      font-family: 'Blinker', sans-serif;
+      font-size: 13.5px;
       font-weight: 600;
+      color: var(--text-dim);
+      text-decoration: none;
+      display: block;
+      padding: 5px 0 5px 12px;
+      border-left: 2px solid transparent;
+      transition: all 0.15s;
+      line-height: 1.4;
+    }
+    .doc-toc a:hover {
+      color: #2b3a7e;
+    }
+    .doc-toc a.active {
+      color: #2b3a7e;
+      border-left-color: #2b3a7e;
+      font-weight: 700;
     }
 
     /* Responsive Media Queries */

@@ -10,29 +10,38 @@
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Blinker:wght@100;200;300;400;600;700;800;900&family=Michroma&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   
   <!-- LineIcons -->
   <link rel="stylesheet" href="https://cdn.lineicons.com/4.0/lineicons.css">
 
   <style>
     :root {
+      --corp-primary: #2b3a7e;
+      --corp-primary-dark: #1b2654;
+      --corp-primary-light: #3e50a2;
+      --corp-primary-glow: rgba(43, 58, 126, 0.25);
+      --corp-subtle: rgba(43, 58, 126, 0.08);
       --bg-base: #f8fafc;
       --bg-surface: #ffffff;
       --bg-surface-elevated: #f1f5f9;
       --bg-card: rgba(255, 255, 255, 0.95);
-      --border-subtle: rgba(15, 23, 42, 0.08);
-      --border-strong: rgba(15, 23, 42, 0.16);
+      --border-subtle: rgba(43, 58, 126, 0.1);
+      --border-strong: rgba(43, 58, 126, 0.2);
       --text-main: #0f172a;
       --text-muted: #475569;
       --text-dim: #64748b;
       --accent-emerald: #059669;
       --accent-emerald-glow: rgba(5, 150, 105, 0.15);
       --accent-cyan: #0284c7;
-      --accent-blue: #2563eb;
+      --accent-blue: #2b3a7e;
       --accent-purple: #7c3aed;
       --code-bg: #0f172a;
       --container-width: 1220px;
+    }
+
+    h1, h2, h3, h4, h5, h6 {
+      font-family: 'Blinker', -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -82,34 +91,38 @@
       align-items: center;
       gap: 10px;
       text-decoration: none;
-      color: #0f172a;
-      font-weight: 800;
-      font-size: 17px;
-      letter-spacing: -0.4px;
+      color: #2b3a7e;
+      font-family: 'Michroma', sans-serif;
+      font-weight: 700;
+      font-size: 16px;
+      letter-spacing: -0.02em;
     }
 
     .brand-glyph {
-      width: 30px; height: 30px;
-      background: linear-gradient(135deg, #059669, #0284c7);
-      border-radius: 50%;
+      width: 32px; height: 32px;
+      background: linear-gradient(135deg, #2b3a7e 0%, #1d4ed8 100%);
+      border-radius: 8px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 14px;
-      font-weight: 800;
+      font-size: 15px;
+      font-weight: 700;
       color: #ffffff;
-      box-shadow: 0 0 12px rgba(5, 150, 105, 0.35);
+      font-family: 'Michroma', sans-serif;
+      box-shadow: 0 0 14px rgba(43, 58, 126, 0.35);
     }
 
     .brand-tag {
-      font-size: 10px;
-      background: rgba(5, 150, 105, 0.08);
-      color: #059669;
-      border: 1px solid rgba(5, 150, 105, 0.25);
+      font-size: 9.5px;
+      background: rgba(43, 58, 126, 0.08);
+      color: #2b3a7e;
+      border: 1px solid rgba(43, 58, 126, 0.25);
       padding: 2px 7px;
       border-radius: 999px;
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Michroma', sans-serif;
       font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
     }
 
     .nav-menu {
@@ -120,22 +133,24 @@
     }
 
     .nav-link {
+      font-family: 'Blinker', sans-serif;
+      font-size: 15px;
+      font-weight: 600;
       color: var(--text-muted);
       text-decoration: none;
-      font-size: 13.5px;
-      font-weight: 500;
+      letter-spacing: 0.01em;
       transition: color 0.2s;
     }
-    .nav-link:hover { color: #0f172a; }
-    .nav-link.active-link { color: #0f172a; font-weight: 600; }
+    .nav-link:hover { color: #2b3a7e; }
+    .nav-link.active-link { color: #2b3a7e; font-weight: 700; }
     .nav-link-docs {
-      color: #0284c7;
-      font-weight: 600;
+      color: #2b3a7e;
+      font-weight: 700;
       display: flex;
       align-items: center;
       gap: 6px;
     }
-    .nav-link-docs:hover { color: #0369a1; }
+    .nav-link-docs:hover { color: #1e2a5c; }
 
     .nav-actions {
       display: flex;
@@ -144,12 +159,14 @@
     }
 
     .btn-pill {
+      font-family: 'Blinker', sans-serif;
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: 0.02em;
       display: inline-flex;
       align-items: center;
       gap: 10px;
       padding: 8px 18px;
-      font-size: 13px;
-      font-weight: 600;
       border-radius: 999px;
       text-decoration: none;
       transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
@@ -161,13 +178,12 @@
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, #059669 0%, #0284c7 100%);
+      background: linear-gradient(135deg, #2b3a7e 0%, #1e40af 100%);
       color: #ffffff;
-      font-weight: 700;
-      box-shadow: 0 4px 18px rgba(5, 150, 105, 0.35);
+      box-shadow: 0 4px 18px rgba(43, 58, 126, 0.35);
     }
     .btn-primary:hover {
-      box-shadow: 0 6px 24px rgba(2, 132, 199, 0.45);
+      box-shadow: 0 6px 24px rgba(43, 58, 126, 0.5);
       transform: translateY(-1px);
     }
     .btn-primary .btn-arrow-badge {
@@ -262,21 +278,23 @@
       align-items: center;
       gap: 8px;
       padding: 6px 14px;
-      background: rgba(5, 150, 105, 0.08);
-      border: 1px solid rgba(5, 150, 105, 0.25);
+      background: rgba(43, 58, 126, 0.08);
+      border: 1px solid rgba(43, 58, 126, 0.25);
       border-radius: 999px;
-      font-size: 12px;
-      color: #047857;
-      font-weight: 600;
-      letter-spacing: 0.02em;
+      font-size: 11px;
+      color: #2b3a7e;
+      font-weight: 700;
+      font-family: 'Michroma', sans-serif;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
       margin-bottom: 24px;
-      box-shadow: 0 2px 10px rgba(5, 150, 105, 0.1);
+      box-shadow: 0 2px 10px rgba(43, 58, 126, 0.1);
     }
     .eyebrow-badge .dot {
       width: 6px; height: 6px;
-      background: #059669;
+      background: #2b3a7e;
       border-radius: 50%;
-      box-shadow: 0 0 8px #059669;
+      box-shadow: 0 0 8px #2b3a7e;
       animation: pulseDot 2s infinite ease-in-out;
     }
     @keyframes pulseDot {
@@ -285,21 +303,22 @@
     }
 
     .hero-title {
-      font-size: 56px;
-      font-weight: 800;
-      letter-spacing: -0.04em;
-      line-height: 1.1;
+      font-family: 'Blinker', sans-serif;
+      font-size: 58px;
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      line-height: 1.08;
       color: #0f172a;
       margin-bottom: 20px;
-      max-width: 940px;
+      max-width: 960px;
       margin-left: auto;
       margin-right: auto;
     }
     .hero-title span.glow-gradient {
-      background: linear-gradient(135deg, #059669 0%, #0284c7 60%, #2563eb 100%);
+      background: linear-gradient(135deg, #2b3a7e 0%, #1d4ed8 50%, #0284c7 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
-      filter: drop-shadow(0 2px 14px rgba(2, 132, 199, 0.25));
+      filter: drop-shadow(0 2px 14px rgba(43, 58, 126, 0.2));
     }
 
     .hero-lead {
@@ -459,14 +478,16 @@
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.15em;
-      color: var(--accent-cyan);
+      color: #2b3a7e;
+      font-family: 'Michroma', sans-serif;
       margin-bottom: 10px;
     }
 
     .section-title {
-      font-size: 36px;
+      font-family: 'Blinker', sans-serif;
+      font-size: 38px;
       font-weight: 800;
-      letter-spacing: -0.03em;
+      letter-spacing: -0.02em;
       color: #0f172a;
       margin-bottom: 14px;
       line-height: 1.2;
@@ -593,8 +614,11 @@
       font-weight: 600;
     }
     .bench-table th.highlight-col {
-      color: #047857;
-      background: rgba(5, 150, 105, 0.08);
+      color: #2b3a7e;
+      background: rgba(43, 58, 126, 0.08);
+      font-family: 'Blinker', sans-serif;
+      font-weight: 700;
+      font-size: 15px;
     }
     .bench-table td {
       padding: 14px 18px;
@@ -612,8 +636,8 @@
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      color: #047857;
-      background: rgba(5, 150, 105, 0.12);
+      color: #2b3a7e;
+      background: rgba(43, 58, 126, 0.12);
       padding: 2px 7px;
       border-radius: 4px;
       font-size: 11px;
@@ -731,11 +755,12 @@
       max-width: 320px;
     }
     .footer-col h5 {
-      font-size: 12px;
-      font-weight: 700;
+      font-family: 'Blinker', sans-serif;
+      font-size: 13px;
+      font-weight: 800;
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      color: #0f172a;
+      color: #2b3a7e;
       margin-bottom: 16px;
     }
     .footer-links {
@@ -897,8 +922,8 @@
           <svg class="cds-stack-diagram" viewBox="0 0 640 190" role="img" aria-label="TapirusDB Unified Quad-Model Architecture Flow">
             <defs>
               <linearGradient id="core-header-grad" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stop-color="#0f62fe" />
-                <stop offset="100%" stop-color="#002d9c" />
+                <stop offset="0%" stop-color="#2b3a7e" />
+                <stop offset="100%" stop-color="#1b2654" />
               </linearGradient>
               <filter id="card-shadow" x="-5%" y="-10%" width="110%" height="130%">
                 <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.4" />
@@ -953,15 +978,15 @@
 
             <!-- 2. CENTER NODE: TAPIRUSDB CORE (QUAD ENGINE) -->
             <g class="svg-node" transform="translate(176, 14)">
-              <rect width="288" height="162" rx="10" fill="#ffffff" stroke="#059669" stroke-width="1.5" filter="url(#card-shadow)" />
+              <rect width="288" height="162" rx="10" fill="#ffffff" stroke="#2b3a7e" stroke-width="1.8" filter="url(#card-shadow)" />
               
               <rect width="288" height="32" rx="10" fill="url(#core-header-grad)" />
               <path d="M 0 26 H 288" fill="url(#core-header-grad)" />
               <g transform="translate(10, 6)">
                 <rect width="20" height="20" rx="4" fill="#ffffff" />
-                <path d="M 6 7 H 14 M 10 7 V 14" stroke="#0f62fe" stroke-width="2" stroke-linecap="square" />
+                <path d="M 6 7 H 14 M 10 7 V 14" stroke="#2b3a7e" stroke-width="2" stroke-linecap="square" />
               </g>
-              <text x="36" y="20.5" font-family="'Plus Jakarta Sans', sans-serif" font-size="12" font-weight="700" fill="#ffffff">TapirusDB Engine Core</text>
+              <text x="36" y="20.5" font-family="'Blinker', sans-serif" font-size="13.5" font-weight="800" fill="#ffffff">TapirusDB Engine Core</text>
               <rect x="188" y="7" width="90" height="18" rx="4" fill="rgba(255,255,255,0.22)" />
               <text x="233" y="19.5" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="600" fill="#ffffff">100% Safe Rust</text>
 
@@ -1411,10 +1436,10 @@
       const maxConnectDist = 145;
       const nodes = [];
       const nodeColors = [
+        '#2b3a7e', // Corporate Navy Primary
+        '#1d4ed8', // Royal Blue
         '#0284c7', // Sky Blue
-        '#2563eb', // Royal Blue
-        '#059669', // Emerald
-        '#7c3aed'  // Purple
+        '#059669'  // Emerald
       ];
 
       for (let i = 0; i < nodeCount; i++) {
