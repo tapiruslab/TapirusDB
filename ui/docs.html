@@ -979,7 +979,10 @@
         <span class="doc-tag">Docs</span>
       </a>
       <a href="index.html" class="back-home-link" title="Back to Homepage">
-        <i class="lni lni-arrow-left"></i> <span>Back to Homepage</span>
+        <i class="lni lni-arrow-left"></i> <span>Home</span>
+      </a>
+      <a href="tutorial.html" class="back-home-link" title="Hands-On Tutorials" style="color:var(--corp-primary); font-weight:600;">
+        <i class="lni lni-graduation"></i> <span>Tutorials</span>
       </a>
     </div>
 
@@ -1017,7 +1020,7 @@
         <a href="#why-tapirus" class="doc-link"><i class="lni lni-shield"></i> Why TapirusDB</a>
         <a href="#installation" class="doc-link"><i class="lni lni-download"></i> Installation &amp; Packages</a>
         <a href="#quickstart" class="doc-link"><i class="lni lni-bolt"></i> 30-Second Quickstart</a>
-        <a href="#beginner-tutorial" class="doc-link"><i class="lni lni-graduation"></i> Beginner Guide: Zero to Query</a>
+        <a href="tutorial.html" class="doc-link" style="color:var(--accent-cyan); font-weight:700;"><i class="lni lni-graduation"></i> Tutorials Portal ↗</a>
       </div>
 
       <div class="doc-group">
@@ -1302,145 +1305,19 @@ fn main() -> Result<()> {
         </div>
       </section>
 
-      <!-- Section: Beginner Guide: Zero to Query -->
-      <section class="doc-section" id="beginner-tutorial">
-        <h2>
-          <span>Beginner Guide: Zero to Query in 60 Seconds</span>
-          <a href="#beginner-tutorial" class="anchor-link">#</a>
-        </h2>
-        <p>
-          New to embedded databases? TapirusDB links directly into your application runtime. Unlike traditional databases (PostgreSQL, MySQL, MongoDB), there are <strong>zero background servers to install or start</strong> (no <code>systemctl</code>, no Docker daemon required). All data is stored in a single encrypted <code>.tapir</code> file on disk.
-        </p>
-
-        <div class="callout callout-warn">
-          <i class="lni lni-warning" style="font-size: 20px; color: #d97706; margin-top: 2px;"></i>
-          <div>
-            <strong>Crucial Beginner Tip: Terminal Shell vs. Code Files</strong><br/>
-            Do <strong>NOT</strong> paste JavaScript (<code>import</code>, <code>const</code>) or Python code directly into your Windows PowerShell, Command Prompt, or Linux Bash prompt! Terminal shells expect command-line programs and will return errors such as <code>'import' is not recognized as the name of a cmdlet</code>.<br/><br/>
-            <strong>Always write your code into a file</strong> (e.g. <code>app.mjs</code> or <code>app.js</code>) and run it with <code>node app.mjs</code>!
-          </div>
+      <!-- Tutorials Portal Banner Card -->
+      <div class="callout callout-info" style="margin: 28px 0 36px; border-radius: 12px; padding: 22px 24px; border-left: 5px solid var(--corp-primary); box-shadow: 0 4px 18px rgba(43, 58, 126, 0.05); background: #ffffff; border-right: 1px solid var(--border-subtle); border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle);">
+        <i class="lni lni-graduation" style="font-size: 32px; color: var(--corp-primary); margin-top: 2px;"></i>
+        <div>
+          <h3 style="margin: 0 0 6px; font-size: 18px; color: var(--corp-primary); font-family: 'Blinker', sans-serif;">Looking for Step-by-Step Hands-On Tutorials?</h3>
+          <p style="margin: 0 0 14px; font-size: 14.5px; color: var(--text-muted); line-height: 1.6;">
+            We have created a dedicated <strong>Tutorials Portal</strong> featuring zero-to-query guided walkthroughs for <strong>Node.js &amp; TypeScript, Python, Safe-Rust, and Go</strong>, complete with shell execution tips and interactive REPL recipes.
+          </p>
+          <a href="tutorial.html" class="btn-pill btn-primary" style="display:inline-flex; font-size: 13.5px; padding: 7px 18px;">
+            Open Tutorials Portal →
+          </a>
         </div>
-
-        <h3>4-Step Node.js &amp; JavaScript Walkthrough</h3>
-        <p>Follow these 4 simple steps to run your first TapirusDB script on Windows, macOS, or Linux:</p>
-
-        <p><strong>Step 1: Create a project directory &amp; initialize npm</strong></p>
-        <div class="code-box">
-          <div class="code-header">
-            <span>Terminal (PowerShell / Command Prompt / Bash)</span>
-            <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
-          </div>
-          <pre><code># 1. Create a dedicated folder for your project
-mkdir tapirus-demo
-cd tapirus-demo
-
-# 2. Initialize package.json and install tapirus
-npm init -y
-npm install tapirus</code></pre>
-        </div>
-
-        <p><strong>Step 2: Create a JavaScript file (<code>app.mjs</code> or <code>app.js</code>)</strong></p>
-        <p>Choose either modern ES Modules (Option A) or standard CommonJS (Option B):</p>
-
-        <div class="code-box">
-          <div class="code-header">
-            <span>Option A: Modern ES Modules (app.mjs) — Recommended</span>
-            <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
-          </div>
-          <pre><code>// app.mjs
-import { open, Tapirus } from "tapirus";
-
-// 1. Open or create persistent database file (or ":memory:" for RAM-only)
-const db = open("production.tapir");
-// (Alternatively: const db = new Tapirus("production.tapir");)
-
-console.log("==> Connected to TapirusDB single-file container!");
-
-// 2. Create a structured SQL table
-db.execute(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INT PRIMARY KEY,
-    name TEXT NOT NULL,
-    active INT NOT NULL
-  );
-`);
-
-// 3. Insert records
-db.execute("INSERT INTO users VALUES (1, 'Faiz', 1);");
-db.execute("INSERT INTO users VALUES (2, 'Developer', 1);");
-
-// 4. Query records via SQL
-const rows = db.query("SELECT * FROM users WHERE active = 1;");
-console.log("Query Results:", rows);
-
-// 5. Always close when done
-db.close();
-console.log("==> Database connection safely closed.");</code></pre>
-        </div>
-
-        <div class="code-box">
-          <div class="code-header">
-            <span>Option B: Standard CommonJS (app.js)</span>
-            <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
-          </div>
-          <pre><code>// app.js
-const { open, Tapirus } = require("tapirus");
-
-const db = open("production.tapir");
-
-db.execute("CREATE TABLE IF NOT EXISTS users (id INT, name TEXT, active INT);");
-db.execute("INSERT INTO users VALUES (1, 'Faiz', 1);");
-
-const rows = db.query("SELECT * FROM users WHERE active = 1;");
-console.log("Query Results:", rows);
-
-db.close();</code></pre>
-        </div>
-
-        <p><strong>Step 3: Execute your script with Node.js</strong></p>
-        <div class="code-box">
-          <div class="code-header">
-            <span>Terminal (PowerShell / Command Prompt / Bash)</span>
-            <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
-          </div>
-          <pre><code># If you created app.mjs (ES Modules):
-node app.mjs
-
-# If you created app.js (CommonJS):
-node app.js</code></pre>
-        </div>
-
-        <p><strong>Step 4: Interactive Mode (Node.js REPL)</strong></p>
-        <p>Want to test commands line-by-line interactively without creating a file? Launch the Node.js REPL first:</p>
-        <div class="code-box">
-          <div class="code-header">
-            <span>PowerShell / Bash Interactive Session</span>
-            <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
-          </div>
-          <pre><code># 1. Type node and press Enter to enter JavaScript prompt:
-PS C:\Users\afaiz\tapirus-demo> node
-Welcome to Node.js v20.x.x.
-Type ".help" for more information.
-
-# 2. Now you can paste and execute JavaScript statements:
-> const { open } = require('tapirus');
-> const db = open('test.tapir');
-> db.execute("CREATE TABLE users (id INT, name TEXT);");
-> db.execute("INSERT INTO users VALUES (1, 'Faiz');");
-> db.query("SELECT * FROM users;");
-[ { id: 1, raw: 'INSERT INTO users VALUES (1, "Faiz")' } ]
-
-# 3. Press Ctrl + C twice to exit.</code></pre>
-        </div>
-
-        <div class="callout callout-success">
-          <i class="lni lni-checkmark-circle" style="font-size: 20px; color: var(--accent-emerald); margin-top: 2px;"></i>
-          <div>
-            <strong>TypeScript Support:</strong><br/>
-            TapirusDB includes full first-class TypeScript typings. You can run TypeScript scripts directly using <code>npx ts-node index.ts</code> without building or manual configuration!
-          </div>
-        </div>
-      </section>
+      </div>
 
       <!-- Section: Interactive SLM Studio -->
       <section class="doc-section" id="studio">
@@ -1774,7 +1651,7 @@ func main() {
       <a href="#why-tapirus">Why TapirusDB</a>
       <a href="#installation">Installation &amp; Packages</a>
       <a href="#quickstart">30-Second Quickstart</a>
-      <a href="#beginner-tutorial">Beginner Guide: Zero to Query</a>
+      <a href="tutorial.html" style="color:var(--accent-cyan); font-weight:700;">Tutorials Portal ↗</a>
       <a href="#studio">Interactive SLM Studio</a>
       <a href="#sql-engine">Relational SQL-92</a>
       <a href="#vector-engine">HNSW Vector Search</a>

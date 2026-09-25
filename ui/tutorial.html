@@ -1,0 +1,995 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tutorials &amp; Getting Started | TapirusDB — Embedded Quad-Model AI Database</title>
+  <meta name="description" content="Step-by-step hands-on tutorials, beginner walkthroughs, and code recipes for TapirusDB across Node.js, Python, Rust, and Go.">
+  <link rel="canonical" href="https://tapirusdb.com/tutorial.html">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Blinker:wght@100;200;300;400;600;700;800;900&family=Michroma&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <!-- LineIcons -->
+  <link rel="stylesheet" href="https://cdn.lineicons.com/4.0/lineicons.css">
+
+  <style>
+    :root {
+      --corp-primary: #2b3a7e;
+      --corp-primary-dark: #1b2654;
+      --corp-primary-light: #3e50a2;
+      --corp-primary-glow: rgba(43, 58, 126, 0.25);
+      --corp-subtle: rgba(43, 58, 126, 0.08);
+      --bg-base: #f8fafc;
+      --bg-surface: #ffffff;
+      --bg-surface-elevated: #f1f5f9;
+      --border-subtle: rgba(43, 58, 126, 0.1);
+      --border-strong: rgba(43, 58, 126, 0.2);
+      --text-main: #0f172a;
+      --text-muted: #475569;
+      --text-dim: #64748b;
+      --accent-emerald: #059669;
+      --accent-cyan: #0284c7;
+      --code-bg: #0f172a;
+      --container-width: 1100px;
+      --header-height: 64px;
+    }
+
+    h1, h2, h3, h4, h5, h6 {
+      font-family: 'Blinker', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-weight: 600;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      line-height: 1.65;
+      font-size: 15px;
+      overflow-x: hidden;
+    }
+
+    /* Container */
+    .container {
+      max-width: var(--container-width);
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Top Navigation */
+    .top-nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: var(--header-height);
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border-subtle);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: var(--corp-primary);
+      font-family: 'Michroma', sans-serif;
+      font-weight: 700;
+      font-size: 16.5px;
+      letter-spacing: -0.02em;
+    }
+
+    .nav-brand-glyph {
+      width: 32px; height: 32px;
+      background: linear-gradient(135deg, #2b3a7e 0%, #1d4ed8 100%);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      font-weight: 700;
+      color: #ffffff;
+      font-family: 'Michroma', sans-serif;
+      box-shadow: 0 0 14px rgba(43, 58, 126, 0.35);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 22px;
+      list-style: none;
+    }
+
+    .nav-item-link {
+      font-family: 'Blinker', sans-serif;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: color 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .nav-item-link:hover { color: var(--corp-primary); }
+    .nav-item-link.active {
+      color: var(--corp-primary);
+      font-weight: 700;
+      border-bottom: 2px solid var(--corp-primary);
+      padding-bottom: 2px;
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .btn-pill {
+      font-family: 'Blinker', sans-serif;
+      font-weight: 700;
+      font-size: 13.5px;
+      letter-spacing: 0.02em;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 16px;
+      border-radius: 999px;
+      text-decoration: none;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      cursor: pointer;
+      border: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #2b3a7e 0%, #1e40af 100%);
+      color: #ffffff;
+      box-shadow: 0 3px 14px rgba(43, 58, 126, 0.3);
+    }
+    .btn-primary:hover {
+      box-shadow: 0 5px 20px rgba(43, 58, 126, 0.45);
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: #ffffff;
+      color: #0f172a;
+      border: 1px solid var(--border-subtle);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    }
+    .btn-secondary:hover {
+      background: #f8fafc;
+      border-color: var(--border-strong);
+    }
+
+    .mobile-menu-btn {
+      display: none;
+      background: none;
+      border: none;
+      color: #0f172a;
+      font-size: 22px;
+      cursor: pointer;
+    }
+
+    /* Mobile Drawer */
+    .mobile-drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.4);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 998;
+      display: none;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+    }
+    .mobile-drawer-backdrop.active { display: block; opacity: 1; }
+
+    .mobile-drawer {
+      position: fixed;
+      top: 76px; left: 20px; right: 20px;
+      background: #ffffff;
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 20px;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 999;
+      box-shadow: 0 20px 40px rgba(15, 23, 42, 0.15);
+    }
+    .mobile-drawer.open { display: flex; }
+    .mobile-drawer a {
+      color: #0f172a;
+      text-decoration: none;
+      font-size: 15px;
+      font-weight: 600;
+      padding: 10px 14px;
+      border-radius: 8px;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .mobile-drawer a:hover {
+      background: rgba(43, 58, 126, 0.06);
+      color: var(--corp-primary);
+    }
+
+    /* Header Hero */
+    .tutorial-hero {
+      padding: 130px 0 40px;
+      text-align: center;
+      background: radial-gradient(circle at 50% 20%, rgba(43, 58, 126, 0.06) 0%, transparent 70%);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .eyebrow-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      background: rgba(43, 58, 126, 0.08);
+      border: 1px solid rgba(43, 58, 126, 0.25);
+      border-radius: 999px;
+      font-size: 11px;
+      color: var(--corp-primary);
+      font-weight: 700;
+      font-family: 'Michroma', sans-serif;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 18px;
+    }
+
+    .tutorial-hero h1 {
+      font-size: 42px;
+      line-height: 1.2;
+      color: #0f172a;
+      margin-bottom: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    .tutorial-hero p {
+      font-size: 17px;
+      color: var(--text-muted);
+      max-width: 680px;
+      margin: 0 auto;
+    }
+
+    /* Stack Tabs Navigator */
+    .stack-tabs-wrap {
+      display: flex;
+      justify-content: center;
+      margin-top: 32px;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .stack-tab-btn {
+      background: #ffffff;
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      padding: 9px 20px;
+      font-family: 'Blinker', sans-serif;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+    }
+    .stack-tab-btn:hover {
+      border-color: var(--corp-primary);
+      color: var(--corp-primary);
+      transform: translateY(-1px);
+    }
+    .stack-tab-btn.active {
+      background: var(--corp-primary);
+      color: #ffffff;
+      border-color: var(--corp-primary);
+      box-shadow: 0 4px 16px rgba(43, 58, 126, 0.3);
+    }
+
+    /* Content Area */
+    .tutorial-body {
+      padding: 48px 0 100px;
+    }
+
+    .tutorial-pane {
+      display: none;
+      animation: fadeIn 0.25s ease-out;
+    }
+    .tutorial-pane.active {
+      display: block;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Card Box */
+    .guide-card {
+      background: #ffffff;
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 32px;
+      margin-bottom: 32px;
+      box-shadow: 0 4px 20px rgba(15, 23, 42, 0.04);
+    }
+
+    .guide-card h2 {
+      font-size: 26px;
+      color: #0f172a;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .guide-card p.subtitle {
+      font-size: 15.5px;
+      color: var(--text-muted);
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .step-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      background: var(--corp-subtle);
+      color: var(--corp-primary);
+      border-radius: 8px;
+      font-weight: 700;
+      font-family: 'Michroma', sans-serif;
+      font-size: 12px;
+      margin-right: 8px;
+    }
+
+    .guide-step {
+      margin-bottom: 28px;
+    }
+    .guide-step h3 {
+      font-size: 18px;
+      color: #1e293b;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+    }
+    .guide-step p {
+      color: var(--text-muted);
+      margin-bottom: 12px;
+      line-height: 1.6;
+    }
+
+    /* Callouts */
+    .callout {
+      padding: 16px 20px;
+      border-radius: 10px;
+      margin: 18px 0;
+      font-size: 14px;
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      border-left: 4px solid;
+    }
+    .callout-warn {
+      background: rgba(217, 119, 6, 0.08);
+      border-color: #d97706;
+      color: #92400e;
+    }
+    .callout-info {
+      background: rgba(43, 58, 126, 0.06);
+      border-color: var(--corp-primary);
+      color: #1b2654;
+    }
+    .callout-success {
+      background: rgba(5, 150, 105, 0.08);
+      border-color: var(--accent-emerald);
+      color: #065f46;
+    }
+
+    /* Code Box */
+    .code-box {
+      background: var(--code-bg);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 14px 0 20px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 4px 15px rgba(15, 23, 42, 0.08);
+    }
+    .code-header {
+      background: #1e293b;
+      padding: 8px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: #94a3b8;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .code-copy-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      color: #cbd5e1;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+    .code-copy-btn:hover {
+      background: rgba(255, 255, 255, 0.18);
+      color: #ffffff;
+    }
+    .code-copy-btn.copied {
+      background: rgba(5, 150, 105, 0.25) !important;
+      border-color: #10b981 !important;
+      color: #34d399 !important;
+      font-weight: 600;
+    }
+    pre code {
+      display: block;
+      padding: 16px;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13.5px;
+      line-height: 1.6;
+      color: #e2e8f0;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* Footer */
+    footer {
+      background: #ffffff;
+      border-top: 1px solid var(--border-subtle);
+      padding: 40px 0;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 13.5px;
+    }
+
+    @media (max-width: 860px) {
+      .nav-links { display: none; }
+      .mobile-menu-btn { display: block; }
+      .tutorial-hero h1 { font-size: 32px; }
+      .guide-card { padding: 20px; }
+      .guide-card h2 { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation -->
+  <header class="top-nav">
+    <a href="index.html" class="nav-brand">
+      <div class="nav-brand-glyph">T</div>
+      <span>TAPIRUSDB</span>
+    </a>
+
+    <ul class="nav-links">
+      <li><a href="index.html" class="nav-item-link">Home</a></li>
+      <li><a href="docs.html" class="nav-item-link"><i class="lni lni-book"></i> Documentation</a></li>
+      <li><a href="tutorial.html" class="nav-item-link active"><i class="lni lni-graduation"></i> Tutorials</a></li>
+      <li><a href="docs.html#studio" class="nav-item-link"><i class="lni lni-code-alt"></i> Studio</a></li>
+    </ul>
+
+    <div class="nav-actions">
+      <a href="docs.html" class="btn-pill btn-primary">
+        Docs Reference →
+      </a>
+      <a href="https://github.com/tapiruslab/TapirusDB" target="_blank" class="btn-pill btn-secondary" title="GitHub Repository">
+        <i class="lni lni-github-original"></i>
+      </a>
+      <button class="mobile-menu-btn" id="mobileToggle" aria-label="Toggle Navigation">
+        <i class="lni lni-menu"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Mobile Drawer Backdrop & Drawer -->
+  <div class="mobile-drawer-backdrop" id="mobileBackdrop"></div>
+  <div class="mobile-drawer" id="mobileDrawer">
+    <a href="index.html"><i class="lni lni-home"></i> Home</a>
+    <a href="docs.html"><i class="lni lni-book"></i> Full Documentation</a>
+    <a href="tutorial.html" style="color:var(--corp-primary); font-weight:700;"><i class="lni lni-graduation"></i> Hands-On Tutorials</a>
+    <a href="docs.html#studio"><i class="lni lni-code-alt"></i> Interactive Studio</a>
+    <a href="https://github.com/tapiruslab/TapirusDB" target="_blank"><i class="lni lni-github-original"></i> GitHub Repository</a>
+  </div>
+
+  <!-- Hero Header -->
+  <section class="tutorial-hero">
+    <div class="container">
+      <div class="eyebrow-badge">Hands-On Developer Tutorials</div>
+      <h1>From Zero to Query in 60 Seconds</h1>
+      <p>
+        Master the Safe-Rust embedded database engine. Choose your language below for guided, copy-paste walkthroughs with zero background servers.
+      </p>
+
+      <!-- Stack Filter Tabs -->
+      <div class="stack-tabs-wrap">
+        <button class="stack-tab-btn active" onclick="switchTutorial('node', this)">
+          <i class="lni lni-javascript"></i> Node.js &amp; TypeScript
+        </button>
+        <button class="stack-tab-btn" onclick="switchTutorial('python', this)">
+          <i class="lni lni-python"></i> Python
+        </button>
+        <button class="stack-tab-btn" onclick="switchTutorial('rust', this)">
+          <i class="lni lni-code"></i> Safe Rust
+        </button>
+        <button class="stack-tab-btn" onclick="switchTutorial('go', this)">
+          <i class="lni lni-code-alt"></i> Go (Golang)
+        </button>
+        <button class="stack-tab-btn" onclick="switchTutorial('graphrag', this)">
+          <i class="lni lni-network"></i> Agent Memory &amp; GraphRAG
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main Tutorial Content -->
+  <main class="tutorial-body">
+    <div class="container">
+
+      <!-- ===================================================================
+           TUTORIAL 1: NODE.JS & TYPESCRIPT
+           =================================================================== -->
+      <div class="tutorial-pane active" id="pane-node">
+        <div class="guide-card">
+          <h2><i class="lni lni-javascript" style="color:#eab308;"></i> Node.js &amp; TypeScript Quickstart</h2>
+          <p class="subtitle">Install the official <code>tapirus</code> npm package, connect in-process, and execute SQL transactions without database daemons.</p>
+
+          <!-- Critical Shell Alert -->
+          <div class="callout callout-warn">
+            <i class="lni lni-warning" style="font-size: 22px; color: #d97706; margin-top: 2px;"></i>
+            <div>
+              <strong>Common Beginner Pitfall (Terminal vs. JavaScript):</strong><br/>
+              Do <strong>NOT</strong> paste JavaScript code (such as <code>import</code>, <code>const</code>, or <code>console.log</code>) directly into Windows PowerShell or Linux Bash! Terminal prompts expect system executables, which will result in errors like:
+              <code style="background:rgba(217,119,6,0.15); padding:2px 5px; border-radius:4px; font-weight:600;">import : The term 'import' is not recognized</code>.<br/><br/>
+              Always save your code into a script file (e.g., <code>app.mjs</code> or <code>app.js</code>) and run it via <code>node app.mjs</code>!
+            </div>
+          </div>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">1</span> Project Setup &amp; Installation</h3>
+            <p>Create a new directory and install the official package from npm:</p>
+            <div class="code-box">
+              <div class="code-header">
+                <span>PowerShell / Command Prompt / Terminal</span>
+                <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
+              </div>
+              <pre><code># 1. Create and enter a new project directory
+mkdir my-tapirus-app
+cd my-tapirus-app
+
+# 2. Initialize npm package and install tapirus
+npm init -y
+npm install tapirus</code></pre>
+            </div>
+          </div>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">2</span> Write Your Script (app.mjs)</h3>
+            <p>Create a file named <code>app.mjs</code> in your folder and paste the following complete code:</p>
+            <div class="code-box">
+              <div class="code-header">
+                <span>app.mjs (Modern ES Modules)</span>
+                <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
+              </div>
+              <pre><code>import { open, Tapirus } from "tapirus";
+
+// 1. Open or create persistent single-file container "production.tapir"
+// (Use ":memory:" if you want ultra-fast temporary RAM-only storage)
+const db = open("production.tapir");
+// Note: You can also use: const db = new Tapirus("production.tapir");
+
+console.log("==> Connected to TapirusDB successfully!");
+
+// 2. Create structured SQL table
+db.execute(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INT PRIMARY KEY,
+    name TEXT NOT NULL,
+    active INT NOT NULL
+  );
+`);
+
+// 3. Insert records
+db.execute("INSERT INTO users VALUES (1, 'Faiz', 1);");
+db.execute("INSERT INTO users VALUES (2, 'Developer', 1);");
+
+// 4. Query records via SQL
+const rows = db.query("SELECT * FROM users WHERE active = 1;");
+console.log("==> Query Results:", rows);
+
+// 5. Always close when done
+db.close();
+console.log("==> Database closed cleanly.");</code></pre>
+            </div>
+          </div>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">3</span> Run Your Application</h3>
+            <p>Execute the script with Node.js:</p>
+            <div class="code-box">
+              <div class="code-header">
+                <span>Terminal Output</span>
+                <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
+              </div>
+              <pre><code>node app.mjs</code></pre>
+            </div>
+            <p><strong>Expected Output:</strong></p>
+            <div class="code-box">
+              <div class="code-header"><span>Console Output</span></div>
+              <pre><code>==> Connected to TapirusDB successfully!
+==> Query Results: [
+  { id: 1, raw: 'INSERT INTO users VALUES (1, "Faiz", 1)' },
+  { id: 2, raw: 'INSERT INTO users VALUES (2, "Developer", 1)' }
+]
+==> Database closed cleanly.</code></pre>
+            </div>
+          </div>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">4</span> Interactive Testing (Node.js REPL)</h3>
+            <p>Want to test commands line-by-line in your PowerShell or Bash terminal? Enter the interactive Node REPL first:</p>
+            <div class="code-box">
+              <div class="code-header">
+                <span>PowerShell Interactive Session</span>
+                <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
+              </div>
+              <pre><code># 1. Type node and press Enter:
+PS C:\Users\afaiz\my-tapirus-app> node
+Welcome to Node.js v20.x.x.
+Type ".help" for more information.
+
+# 2. Paste commands line by line:
+> const { open } = require('tapirus');
+> const db = open('test.tapir');
+> db.execute("CREATE TABLE users (id INT, name TEXT);");
+> db.execute("INSERT INTO users VALUES (1, 'Faiz');");
+> db.query("SELECT * FROM users;");
+[ { id: 1, raw: 'INSERT INTO users VALUES (1, "Faiz")' } ]
+
+# 3. Press Ctrl + C twice to exit.</code></pre>
+            </div>
+          </div>
+
+          <div class="callout callout-success">
+            <i class="lni lni-checkmark-circle" style="font-size: 20px; color: var(--accent-emerald); margin-top: 2px;"></i>
+            <div>
+              <strong>TypeScript Support:</strong> TapirusDB ships with bundled type definitions (<code>index.d.ts</code>). You can run TypeScript files directly using <code>npx ts-node app.ts</code> with zero build steps!
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================
+           TUTORIAL 2: PYTHON
+           =================================================================== -->
+      <div class="tutorial-pane" id="pane-python">
+        <div class="guide-card">
+          <h2><i class="lni lni-python" style="color:#0284c7;"></i> Python Developer Quickstart</h2>
+          <p class="subtitle">Integrate TapirusDB into your AI pipeline, LangChain agents, or data workflows with pure native bindings.</p>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">1</span> Setup Python Virtual Environment</h3>
+            <div class="code-box">
+              <div class="code-header">
+                <span>Terminal (PowerShell / Bash)</span>
+                <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
+              </div>
+              <pre><code># 1. Create and activate a virtual environment
+python -m venv venv
+
+# Windows PowerShell:
+.\venv\Scripts\Activate.ps1
+
+# Linux / macOS:
+source venv/bin/activate
+
+# 2. Install TapirusDB
+pip install tapirus</code></pre>
+            </div>
+          </div>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">2</span> Create Python Script (app.py)</h3>
+            <div class="code-box">
+              <div class="code-header">
+                <span>app.py</span>
+                <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
+              </div>
+              <pre><code>from tapirus import Tapirus
+
+# Open or create encrypted single-file container
+with Tapirus.open("app.tapir") as db:
+    # 1. Execute SQL Transaction
+    db.execute("CREATE TABLE IF NOT EXISTS agents (id INTEGER PRIMARY KEY, name TEXT, role TEXT);")
+    db.execute("INSERT INTO agents VALUES (1, 'Hermes', 'Autonomous Researcher');")
+    db.execute("INSERT INTO agents VALUES (2, 'Argus', 'Telemetry Monitor');")
+
+    # 2. Query as native Python dictionaries
+    results = db.query("SELECT * FROM agents;")
+    print("Database Records:", results)
+
+    # 3. Vector Similarity Search
+    db.execute("CREATE TABLE embeddings (doc_id INT PRIMARY KEY, title TEXT, vector VECTOR(4));")
+    db.execute("INSERT INTO embeddings VALUES (1, 'Sovereign AI', [0.12, 0.45, 0.88, -0.23]);")
+    
+    matches = db.query("SELECT doc_id, title FROM embeddings ORDER BY VECTOR_COSINE(vector, [0.10, 0.40, 0.85, -0.20]) DESC LIMIT 1;")
+    print("Nearest Vector Match:", matches)</code></pre>
+            </div>
+          </div>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">3</span> Run Script</h3>
+            <div class="code-box">
+              <div class="code-header"><span>Terminal</span></div>
+              <pre><code>python app.py</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================
+           TUTORIAL 3: RUST
+           =================================================================== -->
+      <div class="tutorial-pane" id="pane-rust">
+        <div class="guide-card">
+          <h2><i class="lni lni-code" style="color:#ea580c;"></i> Safe Rust Embedded Quickstart</h2>
+          <p class="subtitle">Direct compile-time linking with <code>#![forbid(unsafe_code)]</code> for systems engineering, robotics, and high-performance apps.</p>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">1</span> Create Cargo Project</h3>
+            <div class="code-box">
+              <div class="code-header">
+                <span>Terminal</span>
+                <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
+              </div>
+              <pre><code>cargo new tapirus_quickstart
+cd tapirus_quickstart
+cargo add tapirus</code></pre>
+            </div>
+          </div>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">2</span> Write main.rs</h3>
+            <div class="code-box">
+              <div class="code-header">
+                <span>src/main.rs</span>
+                <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
+              </div>
+              <pre><code>use tapirus::{Connection, Result};
+
+fn main() -> Result<()> {
+    // Open single-file container (or Connection::open_in_memory()?)
+    let db = Connection::open("production.tapir")?;
+
+    // Relational SQL with native 4D Vector
+    db.execute("
+        CREATE TABLE IF NOT EXISTS memory (
+            id INTEGER PRIMARY KEY,
+            content TEXT NOT NULL,
+            embedding VECTOR(4)
+        );
+    ")?;
+
+    db.execute("
+        INSERT INTO memory VALUES (1, 'Safe Rust Architecture', [0.12, 0.45, 0.88, -0.23]);
+    ")?;
+
+    let rows = db.query("SELECT id, content FROM memory WHERE id = 1;")?;
+    println!("Retrieved Row: {:?}", rows);
+
+    Ok(())
+}</code></pre>
+            </div>
+          </div>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">3</span> Run</h3>
+            <div class="code-box">
+              <div class="code-header"><span>Terminal</span></div>
+              <pre><code>cargo run</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================
+           TUTORIAL 4: GO
+           =================================================================== -->
+      <div class="tutorial-pane" id="pane-go">
+        <div class="guide-card">
+          <h2><i class="lni lni-code-alt" style="color:#0284c7;"></i> Go (Golang) SDK Guide</h2>
+          <p class="subtitle">High-concurrency cloud microservices and CLI tools powered by TapirusDB.</p>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">1</span> Initialize Go Module</h3>
+            <div class="code-box">
+              <div class="code-header">
+                <span>Terminal</span>
+                <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
+              </div>
+              <pre><code>mkdir go-tapirus && cd go-tapirus
+go mod init myapp
+go get github.com/tapiruslab/TapirusDB/sdks/go</code></pre>
+            </div>
+          </div>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">2</span> Write main.go</h3>
+            <div class="code-box">
+              <div class="code-header">
+                <span>main.go</span>
+                <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
+              </div>
+              <pre><code>package main
+
+import (
+	"context"
+	"fmt"
+	tapirus "github.com/tapiruslab/TapirusDB/sdks/go"
+)
+
+func main() {
+	client := tapirus.NewClient(tapirus.Config{
+		Endpoint: "http://127.0.0.1:8080",
+	})
+
+	ctx := context.Background()
+
+	// Query SQL
+	res, err := client.Query(ctx, "SELECT id, name FROM items;")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Result:", res)
+}</code></pre>
+            </div>
+          </div>
+
+          <div class="guide-step">
+            <h3><span class="step-badge">3</span> Run</h3>
+            <div class="code-box">
+              <div class="code-header"><span>Terminal</span></div>
+              <pre><code>go run main.go</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================
+           TUTORIAL 5: AGENT MEMORY & GRAPHRAG
+           =================================================================== -->
+      <div class="tutorial-pane" id="pane-graphrag">
+        <div class="guide-card">
+          <h2><i class="lni lni-network" style="color:#7c3aed;"></i> AI Agent Memory &amp; GraphRAG</h2>
+          <p class="subtitle">Combine Vector Cosine, openCypher Knowledge Graph, and Temporal Recency Decay into a unified agent memory loop.</p>
+
+          <div class="guide-step">
+            <h3>The Tri-Modal Reciprocal Rank Fusion (RRF) Architecture</h3>
+            <p>Traditional RAG relies on vector similarity alone, which frequently hallucinates or loses relationship context. TapirusDB unifies:</p>
+            <ul style="margin: 0 0 20px 24px; color: var(--text-muted);">
+              <li><strong>Dense Vector Search:</strong> Finds semantic conceptual similarity.</li>
+              <li><strong>Knowledge Graph (CSR):</strong> Finds structural relationships (who made what, dependencies).</li>
+              <li><strong>BM25 Full-Text &amp; Recency Decay:</strong> Favors recent conversations and exact keyword matches.</li>
+            </ul>
+
+            <div class="code-box">
+              <div class="code-header">
+                <span>Agent Memory Recall Loop (openCypher + Vector)</span>
+                <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
+              </div>
+              <pre><code>// 1. Graph Relationship Traversal (openCypher)
+MATCH (agent:Agent {id: "echo-1"})-[r:COLLABORATES_WITH]->(target:Service)
+WHERE target.criticality = 'high'
+RETURN target.endpoint, r.permissions;
+
+// 2. Vector Seed + Graph Sweep (1-Hop in 0.55 microseconds)
+VECTOR NEAR [0.12, 0.45, 0.88, -0.23] IN memory_store TOP 3
+FOLLOW [:DEPENDS_ON*1..2]
+RETURN DISTINCT node.content;</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <p style="margin-bottom: 8px;"><strong>TapirusDB — The Safe-Rust Embedded Quad-Model Database Engine.</strong></p>
+      <p style="font-size: 12.5px;">Architected by Ahmad Faiz • Tapirus Tech Lab (<a href="https://tapirusdb.com" style="color:var(--corp-primary);">tapirusdb.com</a>)</p>
+    </div>
+  </footer>
+
+  <script>
+    // Copy code helper
+    function copyCode(btn) {
+      const pre = btn.closest('.code-box').querySelector('pre code');
+      if (pre) {
+        navigator.clipboard.writeText(pre.innerText).then(() => {
+          const orig = btn.innerText;
+          btn.innerText = "✓ Copied!";
+          btn.classList.add('copied');
+          setTimeout(() => {
+            btn.innerText = orig;
+            btn.classList.remove('copied');
+          }, 1800);
+        });
+      }
+    }
+
+    // Switch Stack Tabs
+    function switchTutorial(paneId, btn) {
+      document.querySelectorAll('.stack-tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tutorial-pane').forEach(p => p.classList.remove('active'));
+
+      btn.classList.add('active');
+      const targetPane = document.getElementById(`pane-${paneId}`);
+      if (targetPane) {
+        targetPane.classList.add('active');
+      }
+    }
+
+    // Mobile Drawer Toggle
+    const mobileToggle = document.getElementById('mobileToggle');
+    const mobileDrawer = document.getElementById('mobileDrawer');
+    const mobileBackdrop = document.getElementById('mobileBackdrop');
+
+    function openMobileDrawer() {
+      if (mobileDrawer) mobileDrawer.classList.add('open');
+      if (mobileBackdrop) mobileBackdrop.classList.add('active');
+      document.body.style.overflow = 'hidden';
+    }
+    function closeMobileDrawer() {
+      if (mobileDrawer) mobileDrawer.classList.remove('open');
+      if (mobileBackdrop) mobileBackdrop.classList.remove('active');
+      document.body.style.overflow = '';
+    }
+
+    if (mobileToggle) {
+      mobileToggle.addEventListener('click', () => {
+        if (mobileDrawer && mobileDrawer.classList.contains('open')) {
+          closeMobileDrawer();
+        } else {
+          openMobileDrawer();
+        }
+      });
+    }
+    if (mobileBackdrop) {
+      mobileBackdrop.addEventListener('click', closeMobileDrawer);
+    }
+    if (mobileDrawer) {
+      mobileDrawer.querySelectorAll('a').forEach(a => {
+        a.addEventListener('click', closeMobileDrawer);
+      });
+    }
+  </script>
+</body>
+</html>
