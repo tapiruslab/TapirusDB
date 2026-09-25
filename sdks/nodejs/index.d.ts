@@ -32,6 +32,8 @@ export class TapirusConnection {
   close(): void;
 }
 
+export class Tapirus extends TapirusConnection {}
+
 /**
  * Open a connection to TapirusDB.
  */
@@ -39,5 +41,6 @@ export function open(pathOrConfig?: string | TapirusConfig): TapirusConnection;
 
 export default {
   open,
+  Tapirus,
   TapirusConnection,
 };

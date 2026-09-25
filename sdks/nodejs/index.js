@@ -59,7 +59,11 @@ function open(pathOrConfig) {
   return new TapirusConnection(pathOrConfig);
 }
 
+const Tapirus = TapirusConnection;
+
 module.exports = {
   open,
+  Tapirus,
   TapirusConnection,
+  default: { open, Tapirus, TapirusConnection }
 };
