@@ -17,21 +17,21 @@
 
   <style>
     :root {
-      --bg-base: #07090e;
-      --bg-surface: #0d111a;
-      --bg-surface-elevated: #131926;
-      --bg-card: rgba(19, 25, 38, 0.7);
-      --border-subtle: rgba(255, 255, 255, 0.08);
-      --border-strong: rgba(255, 255, 255, 0.16);
-      --text-main: #f1f5f9;
-      --text-muted: #94a3b8;
+      --bg-base: #f8fafc;
+      --bg-surface: #ffffff;
+      --bg-surface-elevated: #f1f5f9;
+      --bg-card: rgba(255, 255, 255, 0.95);
+      --border-subtle: rgba(15, 23, 42, 0.08);
+      --border-strong: rgba(15, 23, 42, 0.16);
+      --text-main: #0f172a;
+      --text-muted: #475569;
       --text-dim: #64748b;
-      --accent-emerald: #10b981;
-      --accent-emerald-glow: rgba(16, 185, 129, 0.15);
-      --accent-cyan: #06b6d4;
-      --accent-blue: #3b82f6;
-      --accent-purple: #8b5cf6;
-      --code-bg: #090c14;
+      --accent-emerald: #059669;
+      --accent-emerald-glow: rgba(5, 150, 105, 0.15);
+      --accent-cyan: #0284c7;
+      --accent-blue: #2563eb;
+      --accent-purple: #7c3aed;
+      --code-bg: #0f172a;
       --sidebar-width: 290px;
       --toc-width: 240px;
       --header-height: 64px;
@@ -53,7 +53,7 @@
       position: fixed;
       top: 0; left: 0; right: 0;
       height: var(--header-height);
-      background: rgba(7, 9, 14, 0.85);
+      background: rgba(255, 255, 255, 0.92);
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
       border-bottom: 1px solid var(--border-subtle);
@@ -62,12 +62,13 @@
       align-items: center;
       justify-content: space-between;
       padding: 0 24px;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
     }
 
     .doc-nav-left {
       display: flex;
       align-items: center;
-      gap: 20px;
+      gap: 16px;
     }
 
     .doc-brand {
@@ -75,7 +76,7 @@
       align-items: center;
       gap: 10px;
       text-decoration: none;
-      color: #fff;
+      color: #0f172a;
       font-weight: 800;
       font-size: 18px;
       letter-spacing: -0.5px;
@@ -83,22 +84,22 @@
 
     .doc-brand-glyph {
       width: 32px; height: 32px;
-      background: linear-gradient(135deg, #10b981, #06b6d4);
+      background: linear-gradient(135deg, #059669, #0284c7);
       border-radius: 8px;
       display: flex;
       align-items: center;
       justify-content: center;
       font-size: 16px;
       font-weight: 800;
-      color: #000;
-      box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+      color: #ffffff;
+      box-shadow: 0 0 12px rgba(5, 150, 105, 0.35);
     }
 
     .doc-tag {
       font-size: 10px;
-      background: rgba(16, 185, 129, 0.15);
-      color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.3);
+      background: rgba(5, 150, 105, 0.08);
+      color: #059669;
+      border: 1px solid rgba(5, 150, 105, 0.25);
       padding: 2px 7px;
       border-radius: 999px;
       font-family: 'JetBrains Mono', monospace;
@@ -115,13 +116,13 @@
       gap: 6px;
       padding: 5px 12px;
       border-radius: 6px;
-      background: rgba(255, 255, 255, 0.04);
+      background: rgba(15, 23, 42, 0.04);
       border: 1px solid var(--border-subtle);
       transition: all 0.2s;
     }
     .back-home-link:hover {
-      color: #fff;
-      background: rgba(255, 255, 255, 0.08);
+      color: #0f172a;
+      background: rgba(15, 23, 42, 0.08);
       border-color: var(--border-strong);
     }
 
@@ -137,9 +138,9 @@
     }
     .doc-search-box input {
       width: 100%;
-      background: rgba(255, 255, 255, 0.05);
+      background: #f1f5f9;
       border: 1px solid var(--border-subtle);
-      color: #fff;
+      color: #0f172a;
       font-size: 13px;
       padding: 7px 12px 7px 34px;
       border-radius: 8px;
@@ -148,8 +149,8 @@
     }
     .doc-search-box input:focus {
       border-color: var(--accent-cyan);
-      box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.15);
-      background: rgba(255, 255, 255, 0.08);
+      box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.15);
+      background: #ffffff;
     }
     .doc-search-box i {
       position: absolute;
@@ -162,27 +163,15 @@
       right: 8px; top: 7px;
       font-size: 10px;
       padding: 2px 5px;
-      background: rgba(255, 255, 255, 0.1);
+      background: rgba(15, 23, 42, 0.08);
       border-radius: 4px;
       color: var(--text-muted);
       font-family: monospace;
     }
 
-    .doc-nav-btn {
-      color: var(--text-muted);
-      text-decoration: none;
-      font-size: 13px;
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      transition: color 0.2s;
-    }
-    .doc-nav-btn:hover { color: #fff; }
-
     .doc-github-btn {
-      background: #1e293b;
-      color: #fff;
+      background: #0f172a;
+      color: #ffffff;
       text-decoration: none;
       font-size: 13px;
       font-weight: 600;
@@ -191,21 +180,31 @@
       display: flex;
       align-items: center;
       gap: 6px;
-      border: 1px solid var(--border-subtle);
+      border: 1px solid #1e293b;
       transition: all 0.2s;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.1);
     }
     .doc-github-btn:hover {
-      background: #334155;
-      border-color: var(--border-strong);
+      background: #1e293b;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.2);
     }
 
     .mobile-menu-toggle {
       display: none;
-      background: none;
-      border: none;
-      color: #fff;
-      font-size: 22px;
+      background: rgba(15, 23, 42, 0.04);
+      border: 1px solid var(--border-subtle);
+      color: #0f172a;
+      font-size: 18px;
       cursor: pointer;
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+    }
+    .mobile-menu-toggle:hover {
+      background: rgba(15, 23, 42, 0.08);
     }
 
     /* Layout Wrapper */
@@ -213,6 +212,23 @@
       display: flex;
       margin-top: var(--header-height);
       min-height: calc(100vh - var(--header-height));
+    }
+
+    /* Backdrop for mobile drawer */
+    .doc-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.45);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 104;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+    }
+    .doc-backdrop.active {
+      display: block;
+      opacity: 1;
     }
 
     /* Sidebar Navigation */
@@ -227,6 +243,40 @@
       overflow-y: auto;
       padding: 24px 16px 48px;
       z-index: 90;
+    }
+
+    .doc-sidebar-header {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 14px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .doc-sidebar-header-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-main);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .sidebar-close-btn {
+      background: rgba(15, 23, 42, 0.05);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      color: var(--text-muted);
+      width: 30px;
+      height: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .sidebar-close-btn:hover {
+      background: rgba(15, 23, 42, 0.1);
+      color: var(--text-main);
     }
 
     .doc-group {
@@ -259,16 +309,16 @@
     }
     .doc-link i { font-size: 14px; color: var(--text-dim); transition: color 0.15s; }
     .doc-link:hover {
-      color: #fff;
-      background: rgba(255, 255, 255, 0.04);
+      color: #0f172a;
+      background: rgba(15, 23, 42, 0.04);
     }
     .doc-link:hover i { color: var(--accent-cyan); }
     .doc-link.active {
-      color: #34d399;
-      background: rgba(16, 185, 129, 0.1);
+      color: var(--accent-emerald);
+      background: rgba(5, 150, 105, 0.08);
       font-weight: 600;
     }
-    .doc-link.active i { color: #10b981; }
+    .doc-link.active i { color: var(--accent-emerald); }
 
     /* Main Content Area */
     .doc-main {
@@ -288,14 +338,14 @@
       margin-bottom: 20px;
     }
     .doc-breadcrumbs a { color: var(--text-muted); text-decoration: none; }
-    .doc-breadcrumbs a:hover { color: #fff; }
+    .doc-breadcrumbs a:hover { color: #0f172a; }
 
     /* Typography */
     .doc-header h1 {
       font-size: 34px;
       font-weight: 800;
       letter-spacing: -0.03em;
-      color: #fff;
+      color: #0f172a;
       margin-bottom: 12px;
       line-height: 1.2;
     }
@@ -318,7 +368,7 @@
       font-size: 24px;
       font-weight: 700;
       letter-spacing: -0.02em;
-      color: #fff;
+      color: #0f172a;
       margin-bottom: 16px;
       padding-bottom: 8px;
       border-bottom: 1px solid var(--border-subtle);
@@ -338,18 +388,18 @@
     .doc-section h3 {
       font-size: 18px;
       font-weight: 600;
-      color: #e2e8f0;
+      color: #1e293b;
       margin: 28px 0 12px;
     }
 
     .doc-section p {
-      color: #cbd5e1;
+      color: var(--text-muted);
       margin-bottom: 16px;
     }
 
     .doc-section ul, .doc-section ol {
       margin: 0 0 20px 24px;
-      color: #cbd5e1;
+      color: var(--text-muted);
     }
     .doc-section li { margin-bottom: 6px; }
 
@@ -365,47 +415,49 @@
       border-left: 4px solid;
     }
     .callout-info {
-      background: rgba(6, 182, 212, 0.08);
+      background: rgba(2, 132, 199, 0.08);
       border-color: var(--accent-cyan);
-      color: #bae6fd;
+      color: #0369a1;
     }
     .callout-success {
-      background: rgba(16, 185, 129, 0.08);
+      background: rgba(5, 150, 105, 0.08);
       border-color: var(--accent-emerald);
-      color: #a7f3d0;
+      color: #065f46;
     }
     .callout-warn {
-      background: rgba(245, 158, 11, 0.08);
-      border-color: #f59e0b;
-      color: #fde68a;
+      background: rgba(217, 119, 6, 0.08);
+      border-color: #d97706;
+      color: #92400e;
     }
     .callout i { font-size: 18px; margin-top: 2px; }
 
     /* Code Blocks */
     .code-box {
       background: var(--code-bg);
-      border: 1px solid var(--border-subtle);
+      border: 1px solid rgba(15, 23, 42, 0.15);
       border-radius: 8px;
       margin: 18px 0 24px;
       overflow: hidden;
+      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+      max-width: 100%;
     }
 
     .code-header {
-      background: rgba(255, 255, 255, 0.03);
+      background: rgba(255, 255, 255, 0.05);
       padding: 8px 16px;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      border-bottom: 1px solid var(--border-subtle);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
       font-family: 'JetBrains Mono', monospace;
       font-size: 12px;
-      color: var(--text-dim);
+      color: #94a3b8;
     }
 
     .code-copy-btn {
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid var(--border-subtle);
-      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #cbd5e1;
       font-size: 11px;
       padding: 3px 8px;
       border-radius: 4px;
@@ -416,8 +468,8 @@
       transition: all 0.15s;
     }
     .code-copy-btn:hover {
-      background: rgba(255, 255, 255, 0.12);
-      color: #fff;
+      background: rgba(255, 255, 255, 0.16);
+      color: #ffffff;
     }
 
     pre code {
@@ -428,51 +480,82 @@
       font-size: 13.5px;
       line-height: 1.6;
       color: #e2e8f0;
+      -webkit-overflow-scrolling: touch;
     }
 
     inline-code, code:not(pre code) {
       font-family: 'JetBrains Mono', monospace;
       font-size: 12.5px;
-      background: rgba(255, 255, 255, 0.08);
+      background: #f1f5f9;
       padding: 2px 6px;
       border-radius: 4px;
-      color: #38bdf8;
+      color: #0284c7;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      font-weight: 500;
     }
 
-    /* Tables */
-    .doc-table {
+    /* Table Scroll Wrapper for Mobile Responsiveness */
+    .table-scroll-wrap {
       width: 100%;
-      border-collapse: collapse;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
       margin: 20px 0 28px;
-      font-size: 13.5px;
       border: 1px solid var(--border-subtle);
       border-radius: 8px;
-      overflow: hidden;
+      background: #ffffff;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+    }
+
+    .doc-table {
+      width: 100%;
+      min-width: 600px;
+      border-collapse: collapse;
+      font-size: 13.5px;
+      background: #ffffff;
     }
     .doc-table th {
-      background: rgba(255, 255, 255, 0.03);
-      padding: 10px 14px;
+      background: #f8fafc;
+      padding: 12px 16px;
       text-align: left;
-      font-weight: 600;
-      color: #fff;
+      font-weight: 700;
+      color: #0f172a;
       border-bottom: 1px solid var(--border-subtle);
     }
     .doc-table td {
-      padding: 10px 14px;
+      padding: 12px 16px;
       border-bottom: 1px solid var(--border-subtle);
-      color: #cbd5e1;
+      color: #334155;
     }
     .doc-table tr:last-child td { border-bottom: none; }
-    .doc-table tr:hover td { background: rgba(255, 255, 255, 0.02); }
+    .doc-table tr:hover td { background: #f8fafc; }
+
+    .license-tag {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      display: inline-block;
+    }
+    .license-tag.mit {
+      background: #eff6ff;
+      color: #2563eb;
+      border: 1px solid #bfdbfe;
+    }
+    .license-tag.busl {
+      background: #fef3c7;
+      color: #d97706;
+      border: 1px solid #fde68a;
+    }
 
     /* Interactive Studio Section */
     .studio-container {
-      background: #090d16;
-      border: 1px solid rgba(16, 185, 129, 0.3);
+      background: #0f172a;
+      border: 1px solid rgba(5, 150, 105, 0.3);
       border-radius: 12px;
       padding: 20px;
       margin: 24px 0 32px;
-      box-shadow: 0 0 30px rgba(16, 185, 129, 0.08);
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
     }
 
     .studio-header {
@@ -481,13 +564,14 @@
       align-items: center;
       margin-bottom: 16px;
       padding-bottom: 12px;
-      border-bottom: 1px solid var(--border-subtle);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      gap: 12px;
     }
 
     .studio-modes {
       display: flex;
       gap: 6px;
-      background: rgba(255, 255, 255, 0.04);
+      background: rgba(255, 255, 255, 0.06);
       padding: 4px;
       border-radius: 8px;
     }
@@ -495,23 +579,28 @@
     .studio-mode-btn {
       background: none;
       border: none;
-      color: var(--text-muted);
+      color: #94a3b8;
       font-size: 12px;
       font-weight: 600;
       padding: 6px 12px;
       border-radius: 6px;
       cursor: pointer;
       transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .studio-mode-btn:hover {
+      color: #f1f5f9;
     }
     .studio-mode-btn.active {
-      background: #10b981;
-      color: #000;
+      background: #059669;
+      color: #ffffff;
+      box-shadow: 0 2px 8px rgba(5, 150, 105, 0.35);
     }
 
     .studio-run-btn {
-      background: linear-gradient(135deg, #10b981, #06b6d4);
+      background: linear-gradient(135deg, #059669, #0284c7);
       border: none;
-      color: #000;
+      color: #ffffff;
       font-size: 13px;
       font-weight: 700;
       padding: 7px 18px;
@@ -520,39 +609,46 @@
       display: flex;
       align-items: center;
       gap: 6px;
-      box-shadow: 0 0 15px rgba(16, 185, 129, 0.3);
-      transition: transform 0.15s;
+      box-shadow: 0 0 15px rgba(5, 150, 105, 0.3);
+      transition: all 0.15s;
+      white-space: nowrap;
     }
-    .studio-run-btn:hover { transform: scale(1.02); }
+    .studio-run-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 18px rgba(5, 150, 105, 0.4);
+    }
 
     .studio-editor {
       width: 100%;
       height: 110px;
-      background: #06080e;
-      border: 1px solid var(--border-subtle);
+      background: #090d16;
+      border: 1px solid rgba(255, 255, 255, 0.12);
       border-radius: 6px;
       padding: 12px;
-      color: #67e8f9;
+      color: #38bdf8;
       font-family: 'JetBrains Mono', monospace;
       font-size: 13px;
       resize: vertical;
       outline: none;
     }
     .studio-editor:focus {
-      border-color: var(--accent-cyan);
+      border-color: #0284c7;
+      box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.2);
     }
 
     .studio-output-box {
       margin-top: 14px;
-      background: #04060a;
-      border: 1px solid var(--border-subtle);
+      background: #050811;
+      border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 6px;
       padding: 14px;
       max-height: 240px;
       overflow-y: auto;
       font-family: 'JetBrains Mono', monospace;
       font-size: 12.5px;
-      color: #a7f3d0;
+      color: #34d399;
+      white-space: pre-wrap;
+      word-break: break-all;
     }
 
     /* Right TOC on desktop */
@@ -584,36 +680,143 @@
       line-height: 1.4;
     }
     .doc-toc a:hover {
-      color: #fff;
+      color: #0f172a;
     }
     .doc-toc a.active {
-      color: var(--accent-cyan);
-      border-left-color: var(--accent-cyan);
+      color: var(--accent-emerald);
+      border-left-color: var(--accent-emerald);
       font-weight: 600;
     }
 
-    /* Responsive */
+    /* Responsive Media Queries */
     @media (max-width: 1200px) {
       .doc-toc { display: none; }
       .doc-main { max-width: 100%; margin-right: 0; }
     }
 
     @media (max-width: 860px) {
-      .mobile-menu-toggle { display: block; }
+      .mobile-menu-toggle {
+        display: flex;
+      }
+      .doc-sidebar-header {
+        display: flex;
+      }
       .doc-sidebar {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 300px;
+        max-width: 85vw;
+        height: 100vh;
+        z-index: 105;
+        padding: 20px 16px 40px;
         transform: translateX(-100%);
         transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-        width: 280px;
-        box-shadow: 20px 0 40px rgba(0,0,0,0.8);
+        box-shadow: 10px 0 35px rgba(15, 23, 42, 0.15);
       }
       .doc-sidebar.open {
         transform: translateX(0);
       }
       .doc-main {
         margin-left: 0;
-        padding: 30px 20px 80px;
+        padding: 28px 20px 80px;
       }
-      .doc-search-box { display: none; }
+      .doc-search-box {
+        display: none;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .doc-main {
+        padding: 20px 16px 60px;
+      }
+      .doc-header h1 {
+        font-size: 26px;
+      }
+      .doc-lead {
+        font-size: 15px;
+      }
+      .doc-section h2 {
+        font-size: 20px;
+      }
+      .doc-section h3 {
+        font-size: 16px;
+      }
+      
+      .studio-container {
+        padding: 16px 12px;
+      }
+      .studio-header {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .studio-modes {
+        overflow-x: auto;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch;
+        padding: 4px;
+        gap: 4px;
+      }
+      .studio-mode-btn {
+        flex: 1 0 auto;
+        text-align: center;
+        padding: 6px 10px;
+        font-size: 11.5px;
+      }
+      .studio-run-btn {
+        justify-content: center;
+        width: 100%;
+        padding: 9px 16px;
+      }
+      .studio-editor {
+        font-size: 12px;
+        padding: 10px;
+      }
+      .studio-output-box {
+        font-size: 11.5px;
+        padding: 10px;
+      }
+      .code-header {
+        padding: 7px 12px;
+        font-size: 11px;
+      }
+      pre code {
+        padding: 12px;
+        font-size: 12px;
+      }
+      .callout {
+        padding: 12px 14px;
+        font-size: 13px;
+        gap: 10px;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .doc-nav {
+        padding: 0 12px;
+      }
+      .doc-nav-left {
+        gap: 8px;
+      }
+      .doc-brand span:not(.doc-tag) {
+        font-size: 15px;
+      }
+      .doc-tag {
+        display: none;
+      }
+      .back-home-link span {
+        display: none;
+      }
+      .back-home-link {
+        padding: 6px 8px;
+      }
+      .doc-github-btn span {
+        display: none;
+      }
+      .doc-github-btn {
+        padding: 6px 10px;
+      }
     }
   </style>
 </head>
@@ -630,8 +833,8 @@
         <span>TapirusDB</span>
         <span class="doc-tag">Docs</span>
       </a>
-      <a href="index.html" class="back-home-link">
-        <i class="lni lni-arrow-left"></i> Back to Homepage
+      <a href="index.html" class="back-home-link" title="Back to Homepage">
+        <i class="lni lni-arrow-left"></i> <span>Back to Homepage</span>
       </a>
     </div>
 
@@ -642,8 +845,8 @@
         <span class="doc-search-shortcut">/</span>
       </div>
 
-      <a href="https://github.com/tapiruslab/TapirusDB" target="_blank" class="doc-github-btn">
-        <i class="lni lni-github-original"></i> GitHub
+      <a href="https://github.com/tapiruslab/TapirusDB" target="_blank" class="doc-github-btn" title="GitHub Repository">
+        <i class="lni lni-github-original"></i> <span>GitHub</span>
       </a>
     </div>
   </header>
@@ -651,8 +854,17 @@
   <!-- Documentation Layout -->
   <div class="doc-layout">
 
+    <!-- Mobile Drawer Backdrop -->
+    <div class="doc-backdrop" id="docBackdrop"></div>
+
     <!-- Sticky Left Sidebar -->
     <aside class="doc-sidebar" id="docSidebar">
+      <div class="doc-sidebar-header">
+        <span class="doc-sidebar-header-title">Documentation Menu</span>
+        <button class="sidebar-close-btn" id="sidebarCloseBtn" aria-label="Close Documentation Menu">
+          <i class="lni lni-close"></i>
+        </button>
+      </div>
       <div class="doc-group">
         <div class="doc-group-title">Getting Started</div>
         <a href="#overview" class="doc-link active"><i class="lni lni-rocket"></i> Overview &amp; Philosophy</a>
@@ -718,7 +930,7 @@
       <div class="doc-header">
         <h1>TapirusDB Documentation</h1>
         <p class="doc-lead">
-          The embedded cognitive memory and multi-model database engine engineered in 100% Safe Rust (<code style="color:#34d399">#![forbid(unsafe_code)]</code>). Unifies Relational SQL, HNSW Vectors, GraphRAG, and JSON Documents in a single encrypted disk file with sub-microsecond latency.
+          The embedded cognitive memory and multi-model database engine engineered in 100% Safe Rust (<code style="color:#059669; font-weight:600;">#![forbid(unsafe_code)]</code>). Unifies Relational SQL, HNSW Vectors, GraphRAG, and JSON Documents in a single encrypted disk file with sub-microsecond latency.
         </p>
       </div>
 
@@ -769,37 +981,39 @@
           </picture>
         </div>
 
-        <table class="doc-table">
-          <thead>
-            <tr>
-              <th>Metric</th>
-              <th>The Polyglot "Frankenstack"</th>
-              <th>TapirusDB v1.0.0</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><strong>Query Latency</strong></td>
-              <td>40 – 90 ms (TCP/HTTP/gRPC sockets)</td>
-              <td><span style="color:#34d399; font-weight:700;">0.55 µs</span> (Direct memory bus)</td>
-            </tr>
-            <tr>
-              <td><strong>Idle RAM</strong></td>
-              <td>&gt; 2,000 MB (4 separate JVM / C++ runtimes)</td>
-              <td><span style="color:#34d399; font-weight:700;">&lt; 4 MB</span> (Single process)</td>
-            </tr>
-            <tr>
-              <td><strong>Memory Safety</strong></td>
-              <td>Unsafe C/C++ or JVM Garbage Collection pauses</td>
-              <td><span style="color:#34d399; font-weight:700;">100% Safe Rust</span></td>
-            </tr>
-            <tr>
-              <td><strong>Sync Drift</strong></td>
-              <td>Fragile ETL pipelines and eventual consistency lag</td>
-              <td><span style="color:#34d399; font-weight:700;">Zero</span> (Single atomic .tapir disk file)</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-scroll-wrap">
+          <table class="doc-table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th>The Polyglot "Frankenstack"</th>
+                <th>TapirusDB v1.0.0</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Query Latency</strong></td>
+                <td>40 – 90 ms (TCP/HTTP/gRPC sockets)</td>
+                <td><span style="color:var(--accent-emerald); font-weight:700;">0.55 µs</span> (Direct memory bus)</td>
+              </tr>
+              <tr>
+                <td><strong>Idle RAM</strong></td>
+                <td>&gt; 2,000 MB (4 separate JVM / C++ runtimes)</td>
+                <td><span style="color:var(--accent-emerald); font-weight:700;">&lt; 4 MB</span> (Single process)</td>
+              </tr>
+              <tr>
+                <td><strong>Memory Safety</strong></td>
+                <td>Unsafe C/C++ or JVM Garbage Collection pauses</td>
+                <td><span style="color:var(--accent-emerald); font-weight:700;">100% Safe Rust</span></td>
+              </tr>
+              <tr>
+                <td><strong>Sync Drift</strong></td>
+                <td>Fragile ETL pipelines and eventual consistency lag</td>
+                <td><span style="color:var(--accent-emerald); font-weight:700;">Zero</span> (Single atomic .tapir disk file)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <!-- Section: Installation -->
@@ -838,54 +1052,56 @@
         </div>
 
         <h3>Language Client Libraries</h3>
-        <table class="doc-table">
-          <thead>
-            <tr>
-              <th>Language</th>
-              <th>Registry Package</th>
-              <th>Installation Command</th>
-              <th>License</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><strong>Rust</strong></td>
-              <td><a href="https://crates.io/crates/tapirus" target="_blank" style="color:#67e8f9;">crates.io/crates/tapirus</a></td>
-              <td><code>cargo add tapirus</code></td>
-              <td>BUSL-1.1</td>
-            </tr>
-            <tr>
-              <td><strong>Python</strong></td>
-              <td><a href="https://pypi.org/project/tapirus/" target="_blank" style="color:#67e8f9;">pypi.org/project/tapirus</a></td>
-              <td><code>pip install tapirus</code></td>
-              <td>MIT</td>
-            </tr>
-            <tr>
-              <td><strong>Node.js / TS</strong></td>
-              <td><a href="https://www.npmjs.com/package/tapirus" target="_blank" style="color:#67e8f9;">npmjs.com/package/tapirus</a></td>
-              <td><code>npm install tapirus</code></td>
-              <td>MIT</td>
-            </tr>
-            <tr>
-              <td><strong>Go (Golang)</strong></td>
-              <td><a href="https://proxy.golang.org/github.com/tapiruslab/%21tapirus%21d%21b/sdks/go/@v/v1.0.1.info" target="_blank" style="color:#67e8f9;">proxy.golang.org</a></td>
-              <td><code>go get github.com/tapiruslab/TapirusDB/sdks/go</code></td>
-              <td>MIT</td>
-            </tr>
-            <tr>
-              <td><strong>PHP</strong></td>
-              <td><a href="https://packagist.org/packages/tapiruslab/tapirusdb" target="_blank" style="color:#67e8f9;">packagist.org/packages/tapiruslab/tapirusdb</a></td>
-              <td><code>composer require tapiruslab/tapirusdb</code></td>
-              <td>MIT</td>
-            </tr>
-            <tr>
-              <td><strong>Docker</strong></td>
-              <td><a href="https://github.com/tapiruslab/TapirusDB/pkgs/container/tapirusdb" target="_blank" style="color:#67e8f9;">ghcr.io/tapiruslab/tapirusdb</a></td>
-              <td><code>docker pull ghcr.io/tapiruslab/tapirusdb:latest</code></td>
-              <td>BUSL-1.1</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-scroll-wrap">
+          <table class="doc-table">
+            <thead>
+              <tr>
+                <th>Language</th>
+                <th>Registry Package</th>
+                <th>Installation Command</th>
+                <th>License</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Rust</strong></td>
+                <td><a href="https://crates.io/crates/tapirus" target="_blank" style="color:var(--accent-cyan); font-weight:600;">crates.io/crates/tapirus</a></td>
+                <td><code>cargo add tapirus</code></td>
+                <td><span class="license-tag busl">BUSL-1.1</span></td>
+              </tr>
+              <tr>
+                <td><strong>Python</strong></td>
+                <td><a href="https://pypi.org/project/tapirus/" target="_blank" style="color:var(--accent-cyan); font-weight:600;">pypi.org/project/tapirus</a></td>
+                <td><code>pip install tapirus</code></td>
+                <td><span class="license-tag mit">MIT</span></td>
+              </tr>
+              <tr>
+                <td><strong>Node.js / TS</strong></td>
+                <td><a href="https://www.npmjs.com/package/tapirus" target="_blank" style="color:var(--accent-cyan); font-weight:600;">npmjs.com/package/tapirus</a></td>
+                <td><code>npm install tapirus</code></td>
+                <td><span class="license-tag mit">MIT</span></td>
+              </tr>
+              <tr>
+                <td><strong>Go (Golang)</strong></td>
+                <td><a href="https://proxy.golang.org/github.com/tapiruslab/%21tapirus%21d%21b/sdks/go/@v/v1.0.1.info" target="_blank" style="color:var(--accent-cyan); font-weight:600;">proxy.golang.org</a></td>
+                <td><code>go get github.com/tapiruslab/TapirusDB/sdks/go</code></td>
+                <td><span class="license-tag mit">MIT</span></td>
+              </tr>
+              <tr>
+                <td><strong>PHP</strong></td>
+                <td><a href="https://packagist.org/packages/tapiruslab/tapirusdb" target="_blank" style="color:var(--accent-cyan); font-weight:600;">packagist.org/packages/tapiruslab/tapirusdb</a></td>
+                <td><code>composer require tapiruslab/tapirusdb</code></td>
+                <td><span class="license-tag mit">MIT</span></td>
+              </tr>
+              <tr>
+                <td><strong>Docker</strong></td>
+                <td><a href="https://github.com/tapiruslab/TapirusDB/pkgs/container/tapirusdb" target="_blank" style="color:var(--accent-cyan); font-weight:600;">ghcr.io/tapiruslab/tapirusdb</a></td>
+                <td><code>docker pull ghcr.io/tapiruslab/tapirusdb:latest</code></td>
+                <td><span class="license-tag busl">BUSL-1.1</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <!-- Section: Quickstart -->
@@ -1284,14 +1500,50 @@ func main() {
       if (pre) copyText(pre.innerText, btn);
     }
 
-    // Mobile menu toggle
+    // Mobile menu toggle, backdrop and auto-close
     const toggleBtn = document.getElementById('menuToggle');
     const sidebar = document.getElementById('docSidebar');
+    const backdrop = document.getElementById('docBackdrop');
+    const closeBtn = document.getElementById('sidebarCloseBtn');
+
+    function openSidebar() {
+      sidebar.classList.add('open');
+      backdrop.classList.add('active');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeSidebar() {
+      sidebar.classList.remove('open');
+      backdrop.classList.remove('active');
+      document.body.style.overflow = '';
+    }
+
     if (toggleBtn && sidebar) {
       toggleBtn.addEventListener('click', () => {
-        sidebar.classList.toggle('open');
+        if (sidebar.classList.contains('open')) {
+          closeSidebar();
+        } else {
+          openSidebar();
+        }
       });
     }
+
+    if (closeBtn) {
+      closeBtn.addEventListener('click', closeSidebar);
+    }
+
+    if (backdrop) {
+      backdrop.addEventListener('click', closeSidebar);
+    }
+
+    // Auto-close sidebar on mobile when any link inside it is clicked
+    document.querySelectorAll('.doc-sidebar .doc-link').forEach(link => {
+      link.addEventListener('click', () => {
+        if (window.innerWidth <= 860) {
+          closeSidebar();
+        }
+      });
+    });
 
     // Sidebar search filter
     const searchInput = document.getElementById('docSearch');

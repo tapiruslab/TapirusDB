@@ -17,21 +17,21 @@
 
   <style>
     :root {
-      --bg-base: #06080d;
-      --bg-surface: #0a0e17;
-      --bg-surface-elevated: #101624;
-      --bg-card: rgba(16, 22, 36, 0.7);
-      --border-subtle: rgba(255, 255, 255, 0.08);
-      --border-strong: rgba(255, 255, 255, 0.16);
-      --text-main: #f8fafc;
-      --text-muted: #94a3b8;
+      --bg-base: #f8fafc;
+      --bg-surface: #ffffff;
+      --bg-surface-elevated: #f1f5f9;
+      --bg-card: rgba(255, 255, 255, 0.95);
+      --border-subtle: rgba(15, 23, 42, 0.08);
+      --border-strong: rgba(15, 23, 42, 0.16);
+      --text-main: #0f172a;
+      --text-muted: #475569;
       --text-dim: #64748b;
-      --accent-emerald: #10b981;
-      --accent-emerald-glow: rgba(16, 185, 129, 0.25);
-      --accent-cyan: #00d2ff;
-      --accent-blue: #3b82f6;
-      --accent-purple: #8b5cf6;
-      --code-bg: #090c14;
+      --accent-emerald: #059669;
+      --accent-emerald-glow: rgba(5, 150, 105, 0.15);
+      --accent-cyan: #0284c7;
+      --accent-blue: #2563eb;
+      --accent-purple: #7c3aed;
+      --code-bg: #0f172a;
       --container-width: 1220px;
     }
 
@@ -53,7 +53,7 @@
       padding: 0 24px;
     }
 
-    /* Top Navigation (Floating Glass Pill) */
+    /* Top Navigation (Floating Glass Pill in Light Mode) */
     .nav-wrapper {
       position: fixed;
       top: 16px; left: 0; right: 0;
@@ -65,7 +65,7 @@
       max-width: var(--container-width);
       margin: 0 auto;
       height: 60px;
-      background: rgba(10, 14, 23, 0.85);
+      background: rgba(255, 255, 255, 0.88);
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
       border: 1px solid var(--border-subtle);
@@ -74,7 +74,7 @@
       align-items: center;
       justify-content: space-between;
       padding: 0 20px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
     }
 
     .brand {
@@ -82,7 +82,7 @@
       align-items: center;
       gap: 10px;
       text-decoration: none;
-      color: #fff;
+      color: #0f172a;
       font-weight: 800;
       font-size: 17px;
       letter-spacing: -0.4px;
@@ -90,22 +90,22 @@
 
     .brand-glyph {
       width: 30px; height: 30px;
-      background: linear-gradient(135deg, #10b981, #00d2ff);
+      background: linear-gradient(135deg, #059669, #0284c7);
       border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
       font-size: 14px;
       font-weight: 800;
-      color: #000;
-      box-shadow: 0 0 12px rgba(16, 185, 129, 0.5);
+      color: #ffffff;
+      box-shadow: 0 0 12px rgba(5, 150, 105, 0.35);
     }
 
     .brand-tag {
       font-size: 10px;
-      background: rgba(16, 185, 129, 0.15);
-      color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.3);
+      background: rgba(5, 150, 105, 0.08);
+      color: #059669;
+      border: 1px solid rgba(5, 150, 105, 0.25);
       padding: 2px 7px;
       border-radius: 999px;
       font-family: 'JetBrains Mono', monospace;
@@ -126,16 +126,16 @@
       font-weight: 500;
       transition: color 0.2s;
     }
-    .nav-link:hover { color: #fff; }
-    .nav-link.active-link { color: #fff; font-weight: 600; }
+    .nav-link:hover { color: #0f172a; }
+    .nav-link.active-link { color: #0f172a; font-weight: 600; }
     .nav-link-docs {
-      color: #38bdf8;
+      color: #0284c7;
       font-weight: 600;
       display: flex;
       align-items: center;
       gap: 6px;
     }
-    .nav-link-docs:hover { color: #7dd3fc; }
+    .nav-link-docs:hover { color: #0369a1; }
 
     .nav-actions {
       display: flex;
@@ -161,18 +161,18 @@
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, #10b981 0%, #00d2ff 100%);
-      color: #030712;
+      background: linear-gradient(135deg, #059669 0%, #0284c7 100%);
+      color: #ffffff;
       font-weight: 700;
-      box-shadow: 0 0 20px rgba(16, 185, 129, 0.35);
+      box-shadow: 0 4px 18px rgba(5, 150, 105, 0.35);
     }
     .btn-primary:hover {
-      box-shadow: 0 0 35px rgba(0, 210, 255, 0.55);
+      box-shadow: 0 6px 24px rgba(2, 132, 199, 0.45);
       transform: translateY(-1px);
     }
     .btn-primary .btn-arrow-badge {
       width: 22px; height: 22px;
-      background: rgba(0, 0, 0, 0.16);
+      background: rgba(255, 255, 255, 0.2);
       border-radius: 50%;
       display: inline-flex;
       align-items: center;
@@ -185,13 +185,13 @@
     }
 
     .btn-secondary {
-      background: rgba(255, 255, 255, 0.05);
-      color: #fff;
+      background: #ffffff;
+      color: #0f172a;
       border: 1px solid var(--border-subtle);
-      box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.06);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
     }
     .btn-secondary:hover {
-      background: rgba(255, 255, 255, 0.1);
+      background: #f8fafc;
       border-color: var(--border-strong);
       transform: translateY(-1px);
     }
@@ -200,13 +200,13 @@
       display: none;
       background: none;
       border: none;
-      color: #fff;
+      color: #0f172a;
       font-size: 22px;
       cursor: pointer;
     }
 
     /* =========================================================================
-       HERO SECTION WITH QUANTUM BINARY NEURAL CORTEX CANVAS
+       HERO SECTION WITH QUANTUM BINARY NEURAL CORTEX CANVAS (LIGHT MODE)
        ========================================================================= */
     .cds-hero {
       position: relative;
@@ -237,8 +237,8 @@
       position: absolute;
       inset: 0;
       background-image: 
-        linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+        linear-gradient(to right, rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
       background-size: 32px 32px;
       pointer-events: none;
       z-index: 1;
@@ -247,7 +247,7 @@
     .cds-hero-vignette-mask {
       position: absolute;
       inset: 0;
-      background: radial-gradient(circle at 50% 35%, transparent 20%, rgba(6, 8, 13, 0.75) 65%, #06080d 100%);
+      background: radial-gradient(circle at 50% 35%, transparent 20%, rgba(248, 250, 252, 0.8) 65%, #f8fafc 100%);
       pointer-events: none;
       z-index: 1;
     }
@@ -262,21 +262,21 @@
       align-items: center;
       gap: 8px;
       padding: 6px 14px;
-      background: rgba(16, 185, 129, 0.1);
-      border: 1px solid rgba(16, 185, 129, 0.25);
+      background: rgba(5, 150, 105, 0.08);
+      border: 1px solid rgba(5, 150, 105, 0.25);
       border-radius: 999px;
       font-size: 12px;
-      color: #34d399;
+      color: #047857;
       font-weight: 600;
       letter-spacing: 0.02em;
       margin-bottom: 24px;
-      box-shadow: 0 0 20px rgba(16, 185, 129, 0.15);
+      box-shadow: 0 2px 10px rgba(5, 150, 105, 0.1);
     }
     .eyebrow-badge .dot {
       width: 6px; height: 6px;
-      background: #10b981;
+      background: #059669;
       border-radius: 50%;
-      box-shadow: 0 0 8px #10b981;
+      box-shadow: 0 0 8px #059669;
       animation: pulseDot 2s infinite ease-in-out;
     }
     @keyframes pulseDot {
@@ -289,17 +289,17 @@
       font-weight: 800;
       letter-spacing: -0.04em;
       line-height: 1.1;
-      color: #fff;
+      color: #0f172a;
       margin-bottom: 20px;
       max-width: 940px;
       margin-left: auto;
       margin-right: auto;
     }
     .hero-title span.glow-gradient {
-      background: linear-gradient(135deg, #10b981 0%, #00d2ff 60%, #38bdf8 100%);
+      background: linear-gradient(135deg, #059669 0%, #0284c7 60%, #2563eb 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
-      filter: drop-shadow(0 0 35px rgba(0, 210, 255, 0.35));
+      filter: drop-shadow(0 2px 14px rgba(2, 132, 199, 0.25));
     }
 
     .hero-lead {
@@ -323,18 +323,18 @@
     .terminal-quick-box {
       display: inline-flex;
       align-items: center;
-      background: rgba(9, 12, 20, 0.85);
+      background: #ffffff;
       border: 1px solid var(--border-subtle);
       border-radius: 999px;
       padding: 6px 14px 6px 16px;
       font-family: 'JetBrains Mono', monospace;
       font-size: 12.5px;
-      color: #38bdf8;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      color: #0284c7;
+      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
     }
     .terminal-quick-box code { margin: 0 10px 0 6px; }
     .terminal-quick-box button {
-      background: rgba(255, 255, 255, 0.08);
+      background: #f1f5f9;
       border: 1px solid var(--border-subtle);
       color: var(--text-muted);
       font-size: 11px;
@@ -344,8 +344,8 @@
       transition: all 0.2s;
     }
     .terminal-quick-box button:hover {
-      background: rgba(255, 255, 255, 0.18);
-      color: #fff;
+      background: #e2e8f0;
+      color: #0f172a;
     }
 
     /* =========================================================================
@@ -355,19 +355,19 @@
       max-width: 840px;
       margin: 0 auto;
       padding: 6px;
-      background: rgba(255, 255, 255, 0.03);
+      background: #ffffff;
       border: 1px solid var(--border-subtle);
       border-radius: 20px;
-      box-shadow: 0 30px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(16, 185, 129, 0.08);
+      box-shadow: 0 20px 45px rgba(15, 23, 42, 0.06), 0 0 30px rgba(5, 150, 105, 0.04);
     }
 
     .cds-stack-diagram-wrap {
-      background: rgba(13, 17, 26, 0.92);
+      background: #f8fafc;
       backdrop-filter: blur(16px);
-      border: 1px solid rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(15, 23, 42, 0.06);
       border-radius: 14px;
       padding: 16px 20px 20px;
-      box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.08);
+      box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.9);
     }
 
     .stack-diagram-header {
@@ -393,10 +393,10 @@
       cursor: pointer;
     }
     .cds-stack-diagram .svg-node:hover {
-      filter: drop-shadow(0 0 16px rgba(0, 210, 255, 0.45));
+      filter: drop-shadow(0 0 14px rgba(2, 132, 199, 0.35));
     }
     .cds-stack-diagram .svg-node:hover > rect:first-child {
-      stroke: #00d2ff;
+      stroke: #0284c7;
       stroke-width: 1.8px;
     }
 
@@ -417,7 +417,7 @@
       padding: 40px 0;
       border-top: 1px solid var(--border-subtle);
       border-bottom: 1px solid var(--border-subtle);
-      background: rgba(255, 255, 255, 0.015);
+      background: rgba(15, 23, 42, 0.02);
       margin-bottom: 100px;
     }
 
@@ -432,11 +432,11 @@
       font-size: 38px;
       font-weight: 800;
       letter-spacing: -0.03em;
-      color: #fff;
+      color: #0f172a;
       margin-bottom: 4px;
     }
     .stat-num.gradient {
-      background: linear-gradient(135deg, #10b981, #00d2ff);
+      background: linear-gradient(135deg, #059669, #0284c7);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
@@ -467,7 +467,7 @@
       font-size: 36px;
       font-weight: 800;
       letter-spacing: -0.03em;
-      color: #fff;
+      color: #0f172a;
       margin-bottom: 14px;
       line-height: 1.2;
     }
@@ -489,7 +489,8 @@
       border-radius: 14px;
       overflow: hidden;
       border: 1px solid var(--border-subtle);
-      box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+      box-shadow: 0 16px 45px rgba(15, 23, 42, 0.06);
+      background: #ffffff;
     }
     .arch-graphic-container picture, .arch-graphic-container img {
       width: 100%;
@@ -508,40 +509,41 @@
     }
 
     .bento-card {
-      background: var(--bg-card);
+      background: #ffffff;
       border: 1px solid var(--border-subtle);
       border-radius: 16px;
       padding: 34px;
       position: relative;
       overflow: hidden;
       transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
     }
     .bento-card:hover {
-      border-color: rgba(0, 210, 255, 0.35);
+      border-color: rgba(2, 132, 199, 0.35);
       transform: translateY(-2px);
-      box-shadow: 0 14px 40px rgba(0,0,0,0.5);
+      box-shadow: 0 12px 35px rgba(15, 23, 42, 0.08);
     }
 
     .bento-icon {
       width: 44px; height: 44px;
       border-radius: 10px;
-      background: rgba(16, 185, 129, 0.1);
-      border: 1px solid rgba(16, 185, 129, 0.2);
+      background: rgba(5, 150, 105, 0.1);
+      border: 1px solid rgba(5, 150, 105, 0.2);
       display: flex;
       align-items: center;
       justify-content: center;
       font-size: 20px;
-      color: #34d399;
+      color: #059669;
       margin-bottom: 20px;
     }
-    .bento-icon.cyan { background: rgba(0, 210, 255, 0.1); border-color: rgba(0, 210, 255, 0.2); color: #38bdf8; }
-    .bento-icon.purple { background: rgba(139, 92, 246, 0.1); border-color: rgba(139, 92, 246, 0.2); color: #a78bfa; }
-    .bento-icon.blue { background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+    .bento-icon.cyan { background: rgba(2, 132, 199, 0.1); border-color: rgba(2, 132, 199, 0.2); color: #0284c7; }
+    .bento-icon.purple { background: rgba(124, 58, 237, 0.1); border-color: rgba(124, 58, 237, 0.2); color: #7c3aed; }
+    .bento-icon.blue { background: rgba(37, 99, 235, 0.1); border-color: rgba(37, 99, 235, 0.2); color: #2563eb; }
 
     .bento-card h3 {
       font-size: 21px;
       font-weight: 700;
-      color: #fff;
+      color: #0f172a;
       margin-bottom: 10px;
       letter-spacing: -0.02em;
     }
@@ -555,7 +557,7 @@
 
     .bento-snippet {
       background: var(--code-bg);
-      border: 1px solid var(--border-subtle);
+      border: 1px solid rgba(15, 23, 42, 0.1);
       border-radius: 8px;
       padding: 12px 14px;
       font-family: 'JetBrains Mono', monospace;
@@ -569,37 +571,39 @@
     }
 
     .bench-table-wrapper {
-      background: var(--bg-card);
+      background: #ffffff;
       border: 1px solid var(--border-subtle);
       border-radius: 14px;
       overflow-x: auto;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04);
     }
 
     .bench-table {
       width: 100%;
+      min-width: 640px;
       border-collapse: collapse;
       font-size: 13.5px;
       text-align: left;
     }
     .bench-table th {
       padding: 14px 18px;
-      background: rgba(255, 255, 255, 0.02);
+      background: #f8fafc;
       border-bottom: 1px solid var(--border-subtle);
       color: var(--text-muted);
       font-weight: 600;
     }
     .bench-table th.highlight-col {
-      color: #34d399;
-      background: rgba(16, 185, 129, 0.06);
+      color: #047857;
+      background: rgba(5, 150, 105, 0.08);
     }
     .bench-table td {
       padding: 14px 18px;
       border-bottom: 1px solid var(--border-subtle);
-      color: #cbd5e1;
+      color: #334155;
     }
     .bench-table td.highlight-col {
-      background: rgba(16, 185, 129, 0.04);
-      color: #fff;
+      background: rgba(5, 150, 105, 0.04);
+      color: #0f172a;
       font-weight: 600;
     }
     .bench-table tr:last-child td { border-bottom: none; }
@@ -608,15 +612,15 @@
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      color: #34d399;
-      background: rgba(16, 185, 129, 0.15);
+      color: #047857;
+      background: rgba(5, 150, 105, 0.12);
       padding: 2px 7px;
       border-radius: 4px;
       font-size: 11px;
       font-weight: 700;
     }
     .tag-loss {
-      color: #f87171;
+      color: #dc2626;
       font-size: 12px;
     }
 
@@ -632,7 +636,7 @@
     }
 
     .eco-card {
-      background: var(--bg-card);
+      background: #ffffff;
       border: 1px solid var(--border-subtle);
       border-radius: 12px;
       padding: 20px;
@@ -641,10 +645,12 @@
       justify-content: space-between;
       transition: all 0.2s;
       text-decoration: none;
+      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
     }
     .eco-card:hover {
       border-color: var(--accent-cyan);
       transform: translateY(-2px);
+      box-shadow: 0 10px 25px rgba(2, 132, 199, 0.1);
     }
 
     .eco-top {
@@ -656,14 +662,14 @@
     .eco-lang {
       font-size: 16px;
       font-weight: 700;
-      color: #fff;
+      color: #0f172a;
       display: flex;
       align-items: center;
       gap: 8px;
     }
     .eco-license {
       font-size: 10px;
-      background: rgba(255, 255, 255, 0.06);
+      background: rgba(15, 23, 42, 0.06);
       padding: 2px 6px;
       border-radius: 4px;
       color: var(--text-dim);
@@ -671,30 +677,31 @@
     }
 
     .eco-cmd {
-      background: var(--code-bg);
+      background: #f8fafc;
       padding: 8px 10px;
       border-radius: 6px;
       font-family: 'JetBrains Mono', monospace;
       font-size: 11.5px;
-      color: #38bdf8;
-      border: 1px solid var(--border-subtle);
+      color: #0284c7;
+      border: 1px solid #e2e8f0;
     }
 
     /* Final CTA */
     .cta-banner {
-      background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(0, 210, 255, 0.08));
-      border: 1px solid rgba(16, 185, 129, 0.25);
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(2, 132, 199, 0.06));
+      border: 1px solid rgba(5, 150, 105, 0.25);
       border-radius: 20px;
       padding: 60px 40px;
       text-align: center;
       margin-bottom: 100px;
       position: relative;
+      box-shadow: 0 20px 45px rgba(15, 23, 42, 0.04);
     }
     .cta-banner h2 {
       font-size: 38px;
       font-weight: 800;
       letter-spacing: -0.03em;
-      color: #fff;
+      color: #0f172a;
       margin-bottom: 16px;
     }
     .cta-banner p {
@@ -708,7 +715,7 @@
     .footer {
       border-top: 1px solid var(--border-subtle);
       padding: 60px 0 40px;
-      background: #05070a;
+      background: #f1f5f9;
       font-size: 13.5px;
     }
     .footer-grid {
@@ -728,7 +735,7 @@
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      color: #fff;
+      color: #0f172a;
       margin-bottom: 16px;
     }
     .footer-links {
@@ -740,10 +747,10 @@
       text-decoration: none;
       transition: color 0.15s;
     }
-    .footer-links a:hover { color: #fff; }
+    .footer-links a:hover { color: #0f172a; }
 
     .footer-bottom {
-      border-top: 1px solid var(--border-subtle);
+      border-top: 1px solid rgba(15, 23, 42, 0.08);
       padding-top: 24px;
       display: flex;
       justify-content: space-between;
@@ -755,7 +762,7 @@
     .mobile-drawer {
       position: fixed;
       top: 86px; left: 20px; right: 20px;
-      background: #0d121c;
+      background: #ffffff;
       border: 1px solid var(--border-subtle);
       border-radius: 16px;
       padding: 24px;
@@ -763,11 +770,11 @@
       flex-direction: column;
       gap: 16px;
       z-index: 999;
-      box-shadow: 0 20px 40px rgba(0,0,0,0.8);
+      box-shadow: 0 20px 40px rgba(15, 23, 42, 0.15);
     }
     .mobile-drawer.open { display: flex; }
     .mobile-drawer a {
-      color: #fff;
+      color: #0f172a;
       text-decoration: none;
       font-size: 16px;
       font-weight: 600;
@@ -913,40 +920,40 @@
             </defs>
 
             <!-- Circuit Wire 1: Host App to TapirusDB Core -->
-            <path d="M 126 95 H 176" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2" stroke-dasharray="4 3" />
-            <path d="M 126 95 H 176" fill="none" stroke="#00d2ff" stroke-width="2" stroke-opacity="0.7" />
+            <path d="M 126 95 H 176" fill="none" stroke="rgba(15,23,42,0.12)" stroke-width="2" stroke-dasharray="4 3" />
+            <path d="M 126 95 H 176" fill="none" stroke="#0284c7" stroke-width="2" stroke-opacity="0.8" />
 
             <!-- Animated Glowing Dot 1 (Host App to TapirusDB Core: 0.55µs query) -->
-            <circle r="4" fill="#00d2ff" filter="url(#dot-glow-cyan)">
+            <circle r="4" fill="#0284c7" filter="url(#dot-glow-cyan)">
               <animateMotion dur="1.6s" repeatCount="indefinite" path="M 126 95 L 176 95" keyTimes="0;1" keyPoints="0;1" />
             </circle>
 
             <!-- Circuit Wire 2: TapirusDB Core to Single .tapir File -->
-            <path d="M 464 95 H 504" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2" stroke-dasharray="4 3" />
-            <path d="M 464 95 H 504" fill="none" stroke="#10b981" stroke-width="2" stroke-opacity="0.7" />
+            <path d="M 464 95 H 504" fill="none" stroke="rgba(15,23,42,0.12)" stroke-width="2" stroke-dasharray="4 3" />
+            <path d="M 464 95 H 504" fill="none" stroke="#059669" stroke-width="2" stroke-opacity="0.8" />
 
             <!-- Animated Glowing Dot 2 (TapirusDB Core to Atomic File Flush) -->
-            <circle r="4" fill="#10b981" filter="url(#dot-glow-green)">
+            <circle r="4" fill="#059669" filter="url(#dot-glow-green)">
               <animateMotion dur="1.6s" repeatCount="indefinite" path="M 464 95 L 504 95" keyTimes="0;1" keyPoints="0;1" begin="0.8s" />
             </circle>
 
             <!-- 1. LEFT NODE: HOST APP / AGENT -->
             <g class="svg-node" transform="translate(10, 48)">
-              <rect width="116" height="94" rx="8" fill="#0d1424" stroke="#334155" stroke-width="1.2" filter="url(#card-shadow)" />
-              <rect width="116" height="26" rx="8" fill="#131c30" />
-              <path d="M 0 20 H 116" stroke="#1e293b" stroke-width="1" />
+              <rect width="116" height="94" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2" filter="url(#card-shadow)" />
+              <rect width="116" height="26" rx="8" fill="#f1f5f9" />
+              <path d="M 0 20 H 116" stroke="#e2e8f0" stroke-width="1" />
               <circle cx="12" cy="13" r="3" fill="#ef4444" />
               <circle cx="20" cy="13" r="3" fill="#f59e0b" />
               <circle cx="28" cy="13" r="3" fill="#10b981" />
-              <text x="58" y="47" text-anchor="middle" font-family="'Plus Jakarta Sans', sans-serif" font-size="11.5" font-weight="700" fill="#ffffff">Host App</text>
-              <text x="58" y="62" text-anchor="middle" font-family="'Plus Jakarta Sans', sans-serif" font-size="10" font-weight="500" fill="#94a3b8">AI Agent / Daemon</text>
-              <rect x="14" y="71" width="88" height="15" rx="3" fill="rgba(6, 182, 212, 0.12)" stroke="rgba(6, 182, 212, 0.3)" stroke-width="0.8" />
-              <text x="58" y="82" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="600" fill="#38bdf8">0.55 µs in-process</text>
+              <text x="58" y="47" text-anchor="middle" font-family="'Plus Jakarta Sans', sans-serif" font-size="11.5" font-weight="700" fill="#0f172a">Host App</text>
+              <text x="58" y="62" text-anchor="middle" font-family="'Plus Jakarta Sans', sans-serif" font-size="10" font-weight="500" fill="#64748b">AI Agent / Daemon</text>
+              <rect x="14" y="71" width="88" height="15" rx="3" fill="#f0f9ff" stroke="#bae6fd" stroke-width="0.8" />
+              <text x="58" y="82" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="600" fill="#0284c7">0.55 µs in-process</text>
             </g>
 
             <!-- 2. CENTER NODE: TAPIRUSDB CORE (QUAD ENGINE) -->
             <g class="svg-node" transform="translate(176, 14)">
-              <rect width="288" height="162" rx="10" fill="#0d1726" stroke="#10b981" stroke-width="1.5" filter="url(#card-shadow)" />
+              <rect width="288" height="162" rx="10" fill="#ffffff" stroke="#059669" stroke-width="1.5" filter="url(#card-shadow)" />
               
               <rect width="288" height="32" rx="10" fill="url(#core-header-grad)" />
               <path d="M 0 26 H 288" fill="url(#core-header-grad)" />
@@ -955,52 +962,52 @@
                 <path d="M 6 7 H 14 M 10 7 V 14" stroke="#0f62fe" stroke-width="2" stroke-linecap="square" />
               </g>
               <text x="36" y="20.5" font-family="'Plus Jakarta Sans', sans-serif" font-size="12" font-weight="700" fill="#ffffff">TapirusDB Engine Core</text>
-              <rect x="188" y="7" width="90" height="18" rx="4" fill="rgba(255,255,255,0.18)" />
+              <rect x="188" y="7" width="90" height="18" rx="4" fill="rgba(255,255,255,0.22)" />
               <text x="233" y="19.5" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="600" fill="#ffffff">100% Safe Rust</text>
 
               <!-- Model 1: SQL Relational (Top-Left) -->
               <g transform="translate(12, 42)">
-                <rect width="126" height="52" rx="6" fill="#132034" stroke="#1e293b" stroke-width="1" />
-                <text x="12" y="19" font-family="'Plus Jakarta Sans', sans-serif" font-size="11" font-weight="700" fill="#f8fafc">Relational SQL</text>
-                <text x="12" y="34" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="500" fill="#94a3b8">ACID • MVCC • Joins</text>
-                <text x="12" y="45" font-family="'JetBrains Mono', monospace" font-size="7.5" font-weight="600" fill="#38bdf8">510 ns Point Lookup</text>
+                <rect width="126" height="52" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+                <text x="12" y="19" font-family="'Plus Jakarta Sans', sans-serif" font-size="11" font-weight="700" fill="#0f172a">Relational SQL</text>
+                <text x="12" y="34" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="500" fill="#64748b">ACID • MVCC • Joins</text>
+                <text x="12" y="45" font-family="'JetBrains Mono', monospace" font-size="7.5" font-weight="600" fill="#0284c7">510 ns Point Lookup</text>
               </g>
 
               <!-- Model 2: JSON Documents (Top-Right) -->
               <g transform="translate(150, 42)">
-                <rect width="126" height="52" rx="6" fill="#132034" stroke="#1e293b" stroke-width="1" />
-                <text x="12" y="19" font-family="'Plus Jakarta Sans', sans-serif" font-size="11" font-weight="700" fill="#f8fafc">Document JSON</text>
-                <text x="12" y="34" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="500" fill="#94a3b8">Schemaless Payloads</text>
-                <text x="12" y="45" font-family="'JetBrains Mono', monospace" font-size="7.5" font-weight="600" fill="#fbbf24">JSONB Path Extract</text>
+                <rect width="126" height="52" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+                <text x="12" y="19" font-family="'Plus Jakarta Sans', sans-serif" font-size="11" font-weight="700" fill="#0f172a">Document JSON</text>
+                <text x="12" y="34" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="500" fill="#64748b">Schemaless Payloads</text>
+                <text x="12" y="45" font-family="'JetBrains Mono', monospace" font-size="7.5" font-weight="600" fill="#d97706">JSONB Path Extract</text>
               </g>
 
               <!-- Model 3: HNSW Vectors (Bottom-Left) -->
               <g transform="translate(12, 100)">
-                <rect width="126" height="52" rx="6" fill="#132034" stroke="#1e293b" stroke-width="1" />
-                <text x="12" y="19" font-family="'Plus Jakarta Sans', sans-serif" font-size="11" font-weight="700" fill="#f8fafc">HNSW Vectors</text>
-                <text x="12" y="34" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="500" fill="#94a3b8">Cosine / L2 • SQ8</text>
-                <text x="12" y="45" font-family="'JetBrains Mono', monospace" font-size="7.5" font-weight="600" fill="#34d399">22.8 µs ANN Search</text>
+                <rect width="126" height="52" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+                <text x="12" y="19" font-family="'Plus Jakarta Sans', sans-serif" font-size="11" font-weight="700" fill="#0f172a">HNSW Vectors</text>
+                <text x="12" y="34" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="500" fill="#64748b">Cosine / L2 • SQ8</text>
+                <text x="12" y="45" font-family="'JetBrains Mono', monospace" font-size="7.5" font-weight="600" fill="#059669">22.8 µs ANN Search</text>
               </g>
 
               <!-- Model 4: Knowledge Graph (Bottom-Right) -->
               <g transform="translate(150, 100)">
-                <rect width="126" height="52" rx="6" fill="#132034" stroke="#1e293b" stroke-width="1" />
-                <text x="12" y="19" font-family="'Plus Jakarta Sans', sans-serif" font-size="11" font-weight="700" fill="#f8fafc">Knowledge Graph</text>
-                <text x="12" y="34" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="500" fill="#94a3b8">openCypher • CSR</text>
-                <text x="12" y="45" font-family="'JetBrains Mono', monospace" font-size="7.5" font-weight="600" fill="#c084fc">GraphRAG &amp; Dijkstra</text>
+                <rect width="126" height="52" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+                <text x="12" y="19" font-family="'Plus Jakarta Sans', sans-serif" font-size="11" font-weight="700" fill="#0f172a">Knowledge Graph</text>
+                <text x="12" y="34" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="500" fill="#64748b">openCypher • CSR</text>
+                <text x="12" y="45" font-family="'JetBrains Mono', monospace" font-size="7.5" font-weight="600" fill="#7c3aed">GraphRAG &amp; Dijkstra</text>
               </g>
             </g>
 
             <!-- 3. RIGHT NODE: SINGLE ENCRYPTED FILE -->
             <g class="svg-node" transform="translate(504, 48)">
-              <rect width="126" height="94" rx="8" fill="#071f16" stroke="#10b981" stroke-width="1.2" filter="url(#card-shadow)" />
-              <rect width="126" height="26" rx="8" fill="#0d2e22" />
-              <path d="M 0 20 H 126" stroke="#164e39" stroke-width="1" />
-              <text x="63" y="16.5" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="600" fill="#34d399">SINGLE FILE</text>
-              <text x="63" y="46" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="700" fill="#ffffff">app.tapir</text>
-              <text x="63" y="60" text-anchor="middle" font-family="'Plus Jakarta Sans', sans-serif" font-size="9.5" font-weight="500" fill="#94a3b8">AES-256 Encrypted</text>
-              <rect x="14" y="70" width="98" height="16" rx="3" fill="#063826" stroke="#10b981" stroke-width="0.8" />
-              <text x="63" y="82" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="600" fill="#34d399">Atomic WAL Flush</text>
+              <rect width="126" height="94" rx="8" fill="#f0fdf4" stroke="#059669" stroke-width="1.2" filter="url(#card-shadow)" />
+              <rect width="126" height="26" rx="8" fill="#dcfce7" />
+              <path d="M 0 20 H 126" stroke="#bbf7d0" stroke-width="1" />
+              <text x="63" y="16.5" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="600" fill="#065f46">SINGLE FILE</text>
+              <text x="63" y="46" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="700" fill="#0f172a">app.tapir</text>
+              <text x="63" y="60" text-anchor="middle" font-family="'Plus Jakarta Sans', sans-serif" font-size="9.5" font-weight="500" fill="#64748b">AES-256 Encrypted</text>
+              <rect x="14" y="70" width="98" height="16" rx="3" fill="#dcfce7" stroke="#86efac" stroke-width="0.8" />
+              <text x="63" y="82" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="600" fill="#047857">Atomic WAL Flush</text>
             </g>
           </svg>
         </div>
@@ -1404,10 +1411,10 @@
       const maxConnectDist = 145;
       const nodes = [];
       const nodeColors = [
-        '#00d2ff', // Electric Cyan
-        '#4589ff', // Quantum Blue
-        '#10b981', // Memory Emerald
-        '#a78bfa'  // Knowledge Purple
+        '#0284c7', // Sky Blue
+        '#2563eb', // Royal Blue
+        '#059669', // Emerald
+        '#7c3aed'  // Purple
       ];
 
       for (let i = 0; i < nodeCount; i++) {
@@ -1439,7 +1446,7 @@
           progress: 0,
           speed: 0.018 + Math.random() * 0.028,
           label: isLabel ? packetSnippets[Math.floor(Math.random() * packetSnippets.length)] : null,
-          color: Math.random() < 0.7 ? '#00d2ff' : '#10b981',
+          color: Math.random() < 0.7 ? '#0284c7' : '#059669',
           size: isLabel ? 9 : 2.5
         });
       }
@@ -1477,7 +1484,7 @@
           ctx.beginPath();
           ctx.arc(n.x, n.y, Math.max(0.8, currentRadius), 0, Math.PI * 2);
           ctx.fillStyle = n.color;
-          ctx.shadowBlur = 8;
+          ctx.shadowBlur = 4;
           ctx.shadowColor = n.color;
           ctx.fill();
         }
@@ -1493,11 +1500,11 @@
 
             if (dist < maxConnectDist) {
               activePairs.push([i, j]);
-              const alpha = (1 - dist / maxConnectDist) * 0.25;
+              const alpha = (1 - dist / maxConnectDist) * 0.22;
               ctx.beginPath();
               ctx.moveTo(nodes[i].x, nodes[i].y);
               ctx.lineTo(nodes[j].x, nodes[j].y);
-              ctx.strokeStyle = `rgba(0, 210, 255, ${alpha.toFixed(3)})`;
+              ctx.strokeStyle = `rgba(2, 132, 199, ${alpha.toFixed(3)})`;
               ctx.lineWidth = 1;
               ctx.stroke();
             }
@@ -1508,11 +1515,11 @@
             const mdy = mouse.y - nodes[i].y;
             const mdist = Math.sqrt(mdx * mdx + mdy * mdy);
             if (mdist < 180) {
-              const mAlpha = (1 - mdist / 180) * 0.45;
+              const mAlpha = (1 - mdist / 180) * 0.35;
               ctx.beginPath();
               ctx.moveTo(nodes[i].x, nodes[i].y);
               ctx.lineTo(mouse.x, mouse.y);
-              ctx.strokeStyle = `rgba(0, 210, 255, ${mAlpha.toFixed(3)})`;
+              ctx.strokeStyle = `rgba(2, 132, 199, ${mAlpha.toFixed(3)})`;
               ctx.lineWidth = 1.2;
               ctx.stroke();
             }
