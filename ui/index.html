@@ -785,25 +785,55 @@
     }
 
     /* Mobile Drawer */
+    .mobile-drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.4);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 998;
+      display: none;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+    }
+    .mobile-drawer-backdrop.active {
+      display: block;
+      opacity: 1;
+    }
     .mobile-drawer {
       position: fixed;
       top: 86px; left: 20px; right: 20px;
       background: #ffffff;
       border: 1px solid var(--border-subtle);
       border-radius: 16px;
-      padding: 24px;
+      padding: 20px;
       display: none;
       flex-direction: column;
-      gap: 16px;
+      gap: 8px;
       z-index: 999;
       box-shadow: 0 20px 40px rgba(15, 23, 42, 0.15);
+      animation: drawerSlide 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes drawerSlide {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
     }
     .mobile-drawer.open { display: flex; }
     .mobile-drawer a {
       color: #0f172a;
       text-decoration: none;
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 600;
+      padding: 10px 14px;
+      border-radius: 8px;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .mobile-drawer a:hover {
+      background: rgba(43, 58, 126, 0.06);
+      color: var(--corp-primary);
     }
 
     /* Responsive */
@@ -859,14 +889,17 @@
     </header>
   </div>
 
+  <!-- Mobile Drawer Backdrop -->
+  <div class="mobile-drawer-backdrop" id="mobileBackdrop"></div>
+
   <!-- Mobile Drawer -->
   <div class="mobile-drawer" id="mobileDrawer">
-    <a href="docs.html" style="color:#34d399;"><i class="lni lni-book"></i> Documentation Portal →</a>
+    <a href="docs.html" style="color:var(--corp-primary); font-weight:700;"><i class="lni lni-book"></i> Documentation Portal →</a>
     <a href="docs.html#studio"><i class="lni lni-code-alt"></i> Interactive SLM Studio</a>
-    <a href="#features">Quad-Model Features</a>
-    <a href="#architecture">Architecture &amp; Frankenstack</a>
-    <a href="#benchmarks">Benchmarks &amp; Specs</a>
-    <a href="#ecosystem">SDKs &amp; Downloads</a>
+    <a href="#features"><i class="lni lni-layers"></i> Quad-Model Features</a>
+    <a href="#architecture"><i class="lni lni-network"></i> Architecture &amp; Frankenstack</a>
+    <a href="#benchmarks"><i class="lni lni-bar-chart"></i> Benchmarks &amp; Specs</a>
+    <a href="#ecosystem"><i class="lni lni-download"></i> SDKs &amp; Downloads</a>
     <a href="https://github.com/tapiruslab/TapirusDB" target="_blank"><i class="lni lni-github-original"></i> GitHub Repository</a>
   </div>
 
@@ -1346,24 +1379,54 @@
        SCRIPTS: QUANTUM BINARY NEURAL CORTEX + HERO INTERACTIONS
        ========================================================================= -->
   <script>
-    // Copy snippet helper
+    // Copy snippet helper with animated emerald feedback
     function copySnippet(text, btn) {
       navigator.clipboard.writeText(text).then(() => {
         const orig = btn.innerText;
-        btn.innerText = "Copied!";
-        setTimeout(() => btn.innerText = orig, 1800);
+        btn.innerText = "✓ Copied!";
+        btn.style.color = "#059669";
+        btn.style.borderColor = "#059669";
+        btn.style.backgroundColor = "rgba(5, 150, 105, 0.12)";
+        setTimeout(() => {
+          btn.innerText = orig;
+          btn.style.color = "";
+          btn.style.borderColor = "";
+          btn.style.backgroundColor = "";
+        }, 1800);
       });
     }
 
-    // Mobile Navigation Drawer Toggle
+    // Mobile Navigation Drawer Toggle with Backdrop
     const mobileToggle = document.getElementById('mobileToggle');
     const mobileDrawer = document.getElementById('mobileDrawer');
-    if (mobileToggle && mobileDrawer) {
+    const mobileBackdrop = document.getElementById('mobileBackdrop');
+
+    function openMobileDrawer() {
+      if (mobileDrawer) mobileDrawer.classList.add('open');
+      if (mobileBackdrop) mobileBackdrop.classList.add('active');
+      document.body.style.overflow = 'hidden';
+    }
+    function closeMobileDrawer() {
+      if (mobileDrawer) mobileDrawer.classList.remove('open');
+      if (mobileBackdrop) mobileBackdrop.classList.remove('active');
+      document.body.style.overflow = '';
+    }
+
+    if (mobileToggle) {
       mobileToggle.addEventListener('click', () => {
-        mobileDrawer.classList.toggle('open');
+        if (mobileDrawer && mobileDrawer.classList.contains('open')) {
+          closeMobileDrawer();
+        } else {
+          openMobileDrawer();
+        }
       });
+    }
+    if (mobileBackdrop) {
+      mobileBackdrop.addEventListener('click', closeMobileDrawer);
+    }
+    if (mobileDrawer) {
       mobileDrawer.querySelectorAll('a').forEach(a => {
-        a.addEventListener('click', () => mobileDrawer.classList.remove('open'));
+        a.addEventListener('click', closeMobileDrawer);
       });
     }
 

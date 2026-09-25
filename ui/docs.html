@@ -183,6 +183,50 @@
       font-family: monospace;
     }
 
+    /* Live Search Dropdown */
+    .doc-search-dropdown {
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 0;
+      width: 320px;
+      background: #ffffff;
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      box-shadow: 0 14px 40px rgba(15, 23, 42, 0.12);
+      max-height: 380px;
+      overflow-y: auto;
+      display: none;
+      z-index: 1000;
+      padding: 8px;
+    }
+    .doc-search-dropdown.show {
+      display: block;
+    }
+    .doc-search-item {
+      display: flex;
+      flex-direction: column;
+      padding: 8px 12px;
+      border-radius: 6px;
+      text-decoration: none;
+      transition: background 0.15s;
+    }
+    .doc-search-item:hover, .doc-search-item.selected {
+      background: rgba(43, 58, 126, 0.06);
+    }
+    .doc-search-item-title {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--corp-primary);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .doc-search-item-category {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 2px;
+    }
+
     .doc-github-btn {
       background: #0f172a;
       color: #ffffff;
@@ -492,6 +536,12 @@
       background: rgba(255, 255, 255, 0.16);
       color: #ffffff;
     }
+    .code-copy-btn.copied {
+      background: rgba(5, 150, 105, 0.25) !important;
+      border-color: #10b981 !important;
+      color: #34d399 !important;
+      font-weight: 600;
+    }
 
     pre code {
       display: block;
@@ -567,6 +617,62 @@
       background: #fef3c7;
       color: #d97706;
       border: 1px solid #fde68a;
+    }
+
+    /* Documentation Sequential Pager Navigation */
+    .doc-pager {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 56px;
+      padding-top: 36px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .doc-pager-card {
+      display: flex;
+      flex-direction: column;
+      padding: 18px 22px;
+      border-radius: 12px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-surface);
+      text-decoration: none;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+    }
+    .doc-pager-card:hover {
+      border-color: var(--corp-primary);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 25px rgba(43, 58, 126, 0.1);
+    }
+    .doc-pager-card.next {
+      text-align: right;
+      align-items: flex-end;
+    }
+    .doc-pager-label {
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .doc-pager-title {
+      font-family: 'Blinker', sans-serif;
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--corp-primary);
+    }
+    @media (max-width: 600px) {
+      .doc-pager {
+        grid-template-columns: 1fr;
+      }
+      .doc-pager-card.next {
+        text-align: left;
+        align-items: flex-start;
+      }
     }
 
     /* Interactive Studio Section */
@@ -880,8 +986,9 @@
     <div class="doc-nav-right">
       <div class="doc-search-box">
         <i class="lni lni-search-alt"></i>
-        <input type="text" id="docSearch" placeholder="Search documentation..." autocomplete="off">
-        <span class="doc-search-shortcut">/</span>
+        <input type="text" id="docSearch" placeholder="Search documentation (⌘K or /)..." autocomplete="off">
+        <span class="doc-search-shortcut">⌘K</span>
+        <div class="doc-search-dropdown" id="docSearchDropdown"></div>
       </div>
 
       <a href="https://github.com/tapiruslab/TapirusDB" target="_blank" class="doc-github-btn" title="GitHub Repository">
@@ -1462,6 +1569,18 @@ func main() {
         </div>
       </section>
 
+      <!-- Documentation Sequential Pagination Footer -->
+      <nav class="doc-pager" aria-label="Documentation Navigation Pager">
+        <a href="#overview" class="doc-pager-card prev" id="docPagerPrev">
+          <span class="doc-pager-label"><i class="lni lni-arrow-left"></i> Previous Topic</span>
+          <span class="doc-pager-title" id="docPagerPrevTitle">Overview &amp; Philosophy</span>
+        </a>
+        <a href="#why-tapirus" class="doc-pager-card next" id="docPagerNext">
+          <span class="doc-pager-label">Next Topic <i class="lni lni-arrow-right"></i></span>
+          <span class="doc-pager-title" id="docPagerNextTitle">Why TapirusDB</span>
+        </a>
+      </nav>
+
     </main>
 
     <!-- On This Page Table of Contents (Desktop) -->
@@ -1529,11 +1648,16 @@ func main() {
       }, 250);
     }
 
+    // Enhanced Copy Text Helper with Animated Emerald Badge
     function copyText(text, btn) {
       navigator.clipboard.writeText(text).then(() => {
         const orig = btn.innerText;
-        btn.innerText = "Copied!";
-        setTimeout(() => btn.innerText = orig, 2000);
+        btn.innerText = "✓ Copied!";
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.innerText = orig;
+          btn.classList.remove('copied');
+        }, 1800);
       });
     }
 
@@ -1587,43 +1711,181 @@ func main() {
       });
     });
 
-    // Sidebar search filter
+    // =========================================================================
+    // ADVANCED LIVE SEARCH WITH DROPDOWN & SHORTCUTS (⌘K / /)
+    // =========================================================================
     const searchInput = document.getElementById('docSearch');
-    if (searchInput) {
+    const searchDropdown = document.getElementById('docSearchDropdown');
+    const sidebarLinks = Array.from(document.querySelectorAll('.doc-sidebar .doc-link'));
+
+    // Build searchable topic index
+    const searchIndex = sidebarLinks.map(link => {
+      const href = link.getAttribute('href');
+      const targetSec = document.querySelector(href);
+      const title = link.textContent.trim();
+      const group = link.closest('.doc-group')?.querySelector('.doc-group-title')?.textContent.trim() || 'Documentation';
+      const text = targetSec ? targetSec.innerText.slice(0, 400) : '';
+      return { title, href, group, text };
+    });
+
+    if (searchInput && searchDropdown) {
       searchInput.addEventListener('input', (e) => {
-        const val = e.target.value.toLowerCase();
-        document.querySelectorAll('.doc-sidebar .doc-link').forEach(link => {
-          const text = link.innerText.toLowerCase();
-          link.style.display = text.includes(val) ? 'flex' : 'none';
+        const q = e.target.value.trim().toLowerCase();
+        if (!q) {
+          searchDropdown.classList.remove('show');
+          searchDropdown.innerHTML = '';
+          sidebarLinks.forEach(l => l.style.display = 'flex');
+          return;
+        }
+
+        // 1. Filter sidebar links
+        sidebarLinks.forEach(l => {
+          const match = l.textContent.toLowerCase().includes(q);
+          l.style.display = match ? 'flex' : 'none';
         });
+
+        // 2. Populate interactive dropdown
+        const matched = searchIndex.filter(item => 
+          item.title.toLowerCase().includes(q) || item.text.toLowerCase().includes(q)
+        ).slice(0, 8);
+
+        if (matched.length > 0) {
+          searchDropdown.innerHTML = matched.map(m => `
+            <a href="${m.href}" class="doc-search-item" onclick="onSearchItemClick('${m.href}')">
+              <div class="doc-search-item-title"><i class="lni lni-file"></i> ${m.title}</div>
+              <div class="doc-search-item-category">${m.group}</div>
+            </a>
+          `).join('');
+          searchDropdown.classList.add('show');
+        } else {
+          searchDropdown.innerHTML = `<div style="padding:14px; font-size:12px; color:var(--text-dim); text-align:center;">No matching documentation topics found.</div>`;
+          searchDropdown.classList.add('show');
+        }
       });
-      // Keyboard shortcut '/'
+
+      // Keyboard shortcuts: / or Cmd+K / Ctrl+K
       window.addEventListener('keydown', (e) => {
-        if (e.key === '/' && document.activeElement !== searchInput) {
+        if ((e.key === '/' && document.activeElement !== searchInput && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') ||
+            ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k')) {
           e.preventDefault();
           searchInput.focus();
+          searchInput.select();
+        } else if (e.key === 'Escape') {
+          searchDropdown.classList.remove('show');
+          searchInput.blur();
+        }
+      });
+
+      // Close dropdown when clicking outside
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('.doc-search-box')) {
+          searchDropdown.classList.remove('show');
         }
       });
     }
 
-    // Scroll active link highlight for TOC
+    function onSearchItemClick(href) {
+      if (searchDropdown) searchDropdown.classList.remove('show');
+      if (searchInput) searchInput.value = '';
+      sidebarLinks.forEach(l => l.style.display = 'flex');
+      if (window.innerWidth <= 860) closeSidebar();
+    }
+
+    // =========================================================================
+    // DYNAMIC SEQUENTIAL PAGER & SCROLL SPY SYNCHRONIZATION
+    // =========================================================================
+    const docSections = Array.from(document.querySelectorAll('.doc-section'));
+    const sectionIndexList = docSections.map(sec => {
+      const id = sec.getAttribute('id');
+      const h2 = sec.querySelector('h2');
+      const title = h2 ? h2.textContent.replace('#', '').trim() : id;
+      return { id, title };
+    });
+
+    const pagerPrev = document.getElementById('docPagerPrev');
+    const pagerNext = document.getElementById('docPagerNext');
+    const pagerPrevTitle = document.getElementById('docPagerPrevTitle');
+    const pagerNextTitle = document.getElementById('docPagerNextTitle');
+    const crumbCurrent = document.getElementById('currentCrumb');
+
+    function updateDocPager(currentId) {
+      const idx = sectionIndexList.findIndex(s => s.id === currentId);
+      if (idx === -1) return;
+
+      // Update Breadcrumbs
+      if (crumbCurrent) {
+        crumbCurrent.textContent = sectionIndexList[idx].title;
+      }
+
+      // Update Previous Pager
+      if (idx > 0) {
+        const prevSec = sectionIndexList[idx - 1];
+        if (pagerPrev) {
+          pagerPrev.style.visibility = 'visible';
+          pagerPrev.href = `#${prevSec.id}`;
+        }
+        if (pagerPrevTitle) pagerPrevTitle.textContent = prevSec.title;
+      } else {
+        if (pagerPrev) {
+          pagerPrev.style.visibility = 'hidden';
+        }
+      }
+
+      // Update Next Pager
+      if (idx < sectionIndexList.length - 1) {
+        const nextSec = sectionIndexList[idx + 1];
+        if (pagerNext) {
+          pagerNext.style.visibility = 'visible';
+          pagerNext.href = `#${nextSec.id}`;
+        }
+        if (pagerNextTitle) pagerNextTitle.textContent = nextSec.title;
+      } else {
+        if (pagerNext) {
+          pagerNext.style.visibility = 'visible';
+          pagerNext.href = `#overview`;
+        }
+        if (pagerNextTitle) pagerNextTitle.textContent = "Back to Top (Overview)";
+      }
+    }
+
+    // Scroll active link highlight for TOC & Sidebar
     window.addEventListener('scroll', () => {
-      const sections = document.querySelectorAll('.doc-section');
-      const tocLinks = document.querySelectorAll('.doc-toc a');
       let current = '';
-      sections.forEach(sec => {
-        const top = sec.offsetTop - 120;
+      docSections.forEach(sec => {
+        const top = sec.offsetTop - 130;
         if (window.scrollY >= top) {
           current = sec.getAttribute('id');
         }
       });
-      tocLinks.forEach(link => {
+
+      if (!current && docSections.length > 0) {
+        current = docSections[0].getAttribute('id');
+      }
+
+      // Sync TOC
+      document.querySelectorAll('.doc-toc a').forEach(link => {
         link.classList.remove('active');
         if (link.getAttribute('href') === `#${current}`) {
           link.classList.add('active');
         }
       });
+
+      // Sync Sidebar Active State
+      sidebarLinks.forEach(link => {
+        link.classList.remove('active');
+        if (link.getAttribute('href') === `#${current}`) {
+          link.classList.add('active');
+        }
+      });
+
+      // Sync Pager and Breadcrumbs
+      updateDocPager(current);
     });
+
+    // Initial Pager Run
+    if (docSections.length > 0) {
+      updateDocPager(docSections[0].getAttribute('id'));
+    }
   </script>
 </body>
 </html>

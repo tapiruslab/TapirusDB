@@ -50,6 +50,28 @@ Modern AI and edge developers are forced into **Fragmented Polyglot Persistence*
 
 ---
 
+## Table of Contents
+
+* [Why TapirusDB? (Kill the "Frankenstack")](#why-tapirusdb-kill-the-frankenstack)
+* [Highlights & Technical Advantages](#highlights)
+* [Quickstart & 30-Second Code](#quickstart)
+  * [CLI & Package Managers (Brew, Winget, Shell)](#1-installation)
+  * [SDKs & Ecosystem Registry Matrix](#official-ecosystem--registry-matrix)
+  * [Code in 30 Seconds (Rust, Python, Node, Go, PHP)](#2-code-in-30-seconds)
+* [Beyond AI: Classic Applications (SQLite & Mongo Alternative)](#beyond-ai-an-ultra-fast-embedded-database-for-classic-applications)
+* [High-Impact Domains (Research, Analytics, IoT)](#-high-impact-real-world-domains-research-analytics--smart-home)
+* [Architectural Comparison vs Polyglot Frankenstack](#architectural-comparison)
+* [Core Technical Pillars (SIMD, CSR, RaBitQ, ChaCha20)](#core-technical-pillars)
+* [Industrial Edge & Autonomous Systems](#-industrial-applications-ai--beyond)
+* [Developer Tooling & MCP Server](#developer-tooling--cli)
+* [Verified Benchmarks & Latency Comparison](#verified-benchmarks)
+* [When (and When NOT) to Use TapirusDB](#when-and-when-not-to-use-tapirusdb)
+* [Formal Safety Verification (TLA+)](#formal-safety-verification)
+* [Roadmap: Tapisaurus Distributed Continuum](#roadmap-tapisaurus-distributed-continuum)
+* [Documentation & Architectural Specs](#documentation--architecture)
+
+---
+
 ## Quickstart
 
 ### 1. Installation
@@ -541,6 +563,29 @@ Benchmarks executed on native NVMe SSD hardware (`cargo bench --bench tapirus_be
 | **RaBitQ Asymmetric POPCNT Distance** | **> 12,000,000 ops/sec**| 0.08 µs | 0.08 µs | 0.12 µs |
 | **WAL Durable Disk Writes** | **107,875 writes/sec**| 9.15 µs | 6.71 µs | 62.21 µs |
 | **AI Memory Ingest (BM25 Indexing)** | **416,529 ops/sec** | 2.30 µs | 1.77 µs | 4.38 µs |
+
+### Latency Comparison: Traditional Frankenstack vs. TapirusDB In-Process
+```text
+Cloud Vector DB (gRPC Roundtrip)  [████████████████████████████████████████] 25,000 µs (25.0 ms)
+Dedicated Graph DB (HTTP/JVM)     [████████████████████████]                 15,000 µs (15.0 ms)
+Relational SQL Server (TCP IPC)   [████████]                                  5,000 µs (5.0 ms)
+TapirusDB Combined Graph-Vector   [▌]                                          0.55 µs (Sub-microsecond, ~45,000x faster)
+```
+
+---
+
+## When (and When NOT) to Use TapirusDB
+
+Engineering honesty is paramount. Choosing the right storage engine requires understanding boundary trade-offs:
+
+| Workload & Scenario | Recommended Engine | Architectural Rationale |
+| :--- | :---: | :--- |
+| **Local AI Agents & LLM RAG Memory** | ✅ **TapirusDB** | Microsecond episodic retrieval, combined vector + openCypher graph in one atomic `.tapir` file. |
+| **Embedded Edge, Robotics & IoT Hardware** | ✅ **TapirusDB** | < 4 MB idle RAM, 100% Safe Rust, zero background daemon processes or JVM runtimes. |
+| **Desktop Apps, CLI Tools & Local-First Web** | ✅ **TapirusDB** | Single-file portability, zero server configuration, pure client-side SQLite/Mongo alternative. |
+| **Petabyte Distributed Big Data Warehousing** | ❌ **ClickHouse / Snowflake** | TapirusDB is optimized for operational single-node/in-process workloads, not massive multi-rack OLAP scans. |
+| **Multi-Region Active-Active Distributed Writes** | ❌ **CockroachDB / Spanner** | For global multi-master write replication, use dedicated distributed consensus databases (or wait for Tapisaurus). |
+| **Complex Analytical BI Cubes over Billions of Rows** | ❌ **DuckDB / ClickHouse** | DuckDB is superior for vectorized columnar OLAP; TapirusDB excels at transactional, graph, vector, and episodic AI memory. |
 
 ---
 
