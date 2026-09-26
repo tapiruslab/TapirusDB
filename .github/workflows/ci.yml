@@ -1,4 +1,4 @@
-name: Continuous Integration & Test Suite
+name: Continuous Integration & Benchmark Suite
 
 on:
   push:
@@ -22,8 +22,43 @@ jobs:
       - name: Install Stable Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Check Compiler & Lints
-        run: cargo check --verbose
+        run: cargo check --workspace --verbose
 
       - name: Run Full Test Suite
-        run: cargo test --verbose
+        run: cargo test --workspace --verbose
+
+  benchmark:
+    name: Performance & Latency Benchmark
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Stable Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Benchmark Suite
+        run: |
+          cargo bench --bench tapirus_bench
+          if [ -f target/tapirus_bench_results.json ]; then
+            echo "### 🦛 TapirusDB Benchmark Telemetry Summary" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat target/tapirus_bench_results.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload Benchmark Telemetry Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tapirus-benchmark-telemetry
+          path: target/tapirus_bench_results.json
+          if-no-files-found: warn
+

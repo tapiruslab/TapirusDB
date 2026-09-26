@@ -11,6 +11,11 @@ from .exceptions import ConnectionError, QueryError, AuthenticationError
 
 def _find_library() -> Optional[str]:
     """Search for the compiled TapirusDB shared library."""
+    # 1. Direct environment variable override
+    env_path = os.environ.get("TAPIRUS_LIB_PATH")
+    if env_path and os.path.isfile(env_path):
+        return os.path.abspath(env_path)
+
     lib_names = []
     if sys.platform.startswith("linux"):
         lib_names = ["libtapirus.so", "libtapirus_ffi.so"]
@@ -23,12 +28,19 @@ def _find_library() -> Optional[str]:
 
     search_dirs = [
         os.path.dirname(__file__),
+    ]
+
+    custom_dir = os.environ.get("TAPIRUS_LIB_DIR")
+    if custom_dir:
+        search_dirs.append(os.path.abspath(custom_dir))
+
+    search_dirs.extend([
         os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "target", "release")),
         os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "target", "debug")),
         os.path.expanduser("~/.tapirus/lib"),
         "/usr/local/lib",
         "/usr/lib",
-    ]
+    ])
 
     for d in search_dirs:
         for name in lib_names:

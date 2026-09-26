@@ -133,6 +133,8 @@ docker pull ghcr.io/tapiruslab/tapirusdb:latest
 
 #### Official Ecosystem & Registry Matrix
 
+> 💡 **Looking for FFI integration, C-ABI bindings, or native shared libraries? See the [Multi-Language SDK & FFI Guide](sdks/README.md).**
+
 | Ecosystem | Registry / Package | Installation Command | License |
 | :--- | :--- | :--- | :--- |
 | **🦀 Rust** | [![Crates.io](https://img.shields.io/crates/v/tapirus.svg?style=flat-square&logo=rust)](https://crates.io/crates/tapirus) | `cargo add tapirus` | BUSL-1.1 |
