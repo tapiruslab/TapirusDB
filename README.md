@@ -13,7 +13,7 @@
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-purple.svg?style=flat-square)](LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-tapirusdb.com-0070f3.svg?style=flat-square)](https://tapirusdb.com)
 [![Downloads Hub](https://img.shields.io/badge/downloads-tapirusdb.com%2Fdownload-0284c7.svg?style=flat-square&logo=download)](https://tapirusdb.com/download.html)
-[![Tapirus Studio](https://img.shields.io/badge/Studio_GUI-Free_Workbench-10b981.svg?style=flat-square&logo=react)](https://github.com/tapiruslab/TapirusStudio)
+[![Tapirus Studio](https://img.shields.io/badge/Studio_GUI-Free_Workbench-10b981.svg?style=flat-square&logo=react)](https://tapirusdb.com/studio/index.html)
 [![GitHub Releases](https://img.shields.io/github/v/release/tapiruslab/TapirusDB?style=flat-square&color=blue)](https://github.com/tapiruslab/TapirusDB/releases)
 
 <br/>
@@ -22,11 +22,11 @@
 > TapirusDB is the high-performance, embedded cognitive memory engine for local AI agents, robotics, and sovereign edge hardware. It collapses vector similarity, knowledge graphs, relational metadata, and JSON documents into a **single encrypted `.tapir` file** with sub-microsecond in-process retrieval ($0.55\ \mu\text{s}$) and zero memory corruption risk.
 
 > 🖥️ **Need a Visual Database Manager (like phpMyAdmin or Supabase Studio)?**  
-> Use **[Tapirus Studio](https://github.com/tapiruslab/TapirusStudio)** — our free visual GUI companion for TapirusDB!  
+> Use **[Tapirus Studio](https://tapirusdb.com/studio/index.html)** — our free visual GUI companion for TapirusDB!  
 > • **🌐 Run Instant In-Browser**: [tapirusdb.com/studio](https://tapirusdb.com/studio/index.html) *(Zero installation required)*  
 > • **⬇️ Official Download Landing Page**: [tapirusdb.com/download.html](https://tapirusdb.com/download.html) *(Windows, macOS, Linux, CLI)*  
 > • **📦 Releases & Binary Downloads**: [github.com/tapiruslab/TapirusDB/releases](https://github.com/tapiruslab/TapirusDB/releases)  
-> • **💻 Studio Source Code Repository**: [github.com/tapiruslab/TapirusStudio](https://github.com/tapiruslab/TapirusStudio)
+> • **💻 Studio Source Code Directory**: [github.com/tapiruslab/TapirusDB/tree/main/studio](https://github.com/tapiruslab/TapirusDB/tree/main/studio)
 
 </div>
 
@@ -88,7 +88,7 @@ Modern AI and edge developers are forced into **Fragmented Polyglot Persistence*
 
 #### Official Downloads Hub & Visual Studio
 * ⬇️ **Official Download Landing Page**: [tapirusdb.com/download.html](https://tapirusdb.com/download.html) (Windows, macOS, Linux, CLI)
-* 🖥️ **Tapirus Studio (Free GUI)**: [Run Live in Browser](https://tapirusdb.com/studio/index.html) • [Studio Source Code (GitHub)](https://github.com/tapiruslab/TapirusStudio)
+* 🖥️ **Tapirus Studio (Free GUI)**: [Run Live in Browser](https://tapirusdb.com/studio/index.html) • [Studio Source Code (GitHub)](https://github.com/tapiruslab/TapirusDB/tree/main/studio)
 * 📦 **Pre-Compiled Binary Assets**: [GitHub Releases](https://github.com/tapiruslab/TapirusDB/releases)
 
 #### Package Managers (Terminal & CLI)
