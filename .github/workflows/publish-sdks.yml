@@ -1,0 +1,218 @@
+name: Publish SDKs (PyPI & npm)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (build only, do not upload to PyPI/npm)'
+        required: false
+        default: false
+        type: boolean
+      publish_pypi:
+        description: 'Publish Python SDK to PyPI'
+        required: false
+        default: true
+        type: boolean
+      publish_npm:
+        description: 'Publish Node.js SDK to npm'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  # ============================================================================
+  # 1. PYTHON SDK (PyPI via Maturin)
+  # ============================================================================
+  build-python-wheels:
+    name: Build Python Wheels (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build wheels via Maturin
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --manifest-path sdks/python/Cargo.toml --release --out dist
+          sccache: 'true'
+          manylinux: auto
+
+      - name: Upload Python wheels artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-wheels-${{ matrix.target }}
+          path: dist/*.whl
+
+  build-python-sdist:
+    name: Build Python Source Distribution (sdist)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build sdist via Maturin
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --manifest-path sdks/python/Cargo.toml --out dist
+
+      - name: Upload Python sdist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sdist
+          path: dist/*.tar.gz
+
+  publish-python:
+    name: Publish Python SDK to PyPI
+    needs: [build-python-wheels, build-python-sdist]
+    runs-on: ubuntu-latest
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.publish_pypi && !inputs.dry_run) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all Python artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: PyO3/maturin-action@v1
+        env:
+          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        with:
+          command: upload
+          args: --non-interactive --skip-existing dist/*
+
+      - name: Attach Python packages to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================================================
+  # 2. NODE.JS SDK (npm via napi-rs)
+  # ============================================================================
+  build-nodejs-binaries:
+    name: Build Node.js Binary (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: sdks/nodejs/package-lock.json
+
+      - name: Install Stable Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node SDK Dependencies
+        working-directory: sdks/nodejs
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+        shell: bash
+
+      - name: Build Native Binary with napi-rs
+        working-directory: sdks/nodejs
+        run: npx @napi-rs/cli build --platform --release --target ${{ matrix.target }}
+        shell: bash
+
+      - name: Upload Node binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-binary-${{ matrix.target }}
+          path: sdks/nodejs/*.node
+
+  publish-nodejs:
+    name: Publish Node.js SDK to npm
+    needs: [build-nodejs-binaries]
+    runs-on: ubuntu-latest
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.publish_npm && !inputs.dry_run) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download all Node.js binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: node-binary-*
+          path: sdks/nodejs
+          merge-multiple: true
+
+      - name: Inspect generated binary files
+        working-directory: sdks/nodejs
+        run: ls -la *.node
+        shell: bash
+
+      - name: Publish to npm Registry
+        working-directory: sdks/nodejs
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
