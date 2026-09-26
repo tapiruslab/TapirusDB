@@ -80,6 +80,12 @@ pub enum Token {
     Timestamp,
     With,
     Return,
+    Returning,
+    Replace,
+    Conflict,
+    Do,
+    Nothing,
+    Ignore,
     Analyze,
 
     // Window Function Keywords
@@ -427,6 +433,12 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
                 "TIMESTAMP" => Token::Timestamp,
                 "WITH" => Token::With,
                 "RETURN" => Token::Return,
+                "RETURNING" => Token::Returning,
+                "REPLACE" => Token::Replace,
+                "CONFLICT" => Token::Conflict,
+                "DO" => Token::Do,
+                "NOTHING" => Token::Nothing,
+                "IGNORE" => Token::Ignore,
                 "ANALYZE" => Token::Analyze,
                 // Window function keywords
                 "OVER" => Token::Over,

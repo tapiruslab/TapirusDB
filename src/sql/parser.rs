@@ -162,6 +162,19 @@ impl WhereExpr {
     }
 }
 
+/// Conflict resolution action for INSERT / UPSERT statements
+#[derive(Debug, Clone, PartialEq)]
+pub enum OnConflict {
+    /// Default: Fail on unique constraint violation
+    Abort,
+    /// Overwrite existing row on conflict (INSERT OR REPLACE / REPLACE INTO)
+    Replace,
+    /// Silently skip insert on conflict (INSERT OR IGNORE / ON CONFLICT DO NOTHING)
+    Ignore,
+    /// Update specific columns on conflict (UPSERT: ON CONFLICT DO UPDATE SET ...)
+    DoUpdate(Vec<(String, Value)>),
+}
+
 /// Abstract Syntax Tree (AST) representing an executable statement in TapirusDB
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
@@ -174,7 +187,7 @@ pub enum Statement {
         /// Column definitions
         columns: Vec<ColumnDef>,
     },
-    /// INSERT INTO table [(columns...)] VALUES (values...)
+    /// INSERT [OR REPLACE|IGNORE] INTO table [(columns...)] VALUES (values...) [ON CONFLICT ...] [RETURNING ...]
     Insert {
         /// Target table
         table: String,
@@ -182,6 +195,10 @@ pub enum Statement {
         columns: Option<Vec<String>>,
         /// Value expressions to insert
         values: Vec<Value>,
+        /// Conflict resolution strategy (Upsert / Replace / Ignore / Abort)
+        conflict_action: OnConflict,
+        /// Optional RETURNING column projections
+        returning: Option<Vec<String>>,
     },
     /// SELECT [DISTINCT] columns... FROM table [JOIN ...] [WHERE ...] [GROUP BY ...] [HAVING ...] [ORDER BY col [ASC|DESC]] [LIMIT n]
     Select {
@@ -291,7 +308,7 @@ pub enum Statement {
         /// Return projections (e.g. `["a", "r", "b"]` or `["*"]`)
         return_items: Vec<String>,
     },
-    /// UPDATE table SET col1 = val1, col2 = val2 [WHERE ...]
+    /// UPDATE table SET col1 = val1, col2 = val2 [WHERE ...] [RETURNING ...]
     Update {
         /// Target table
         table: String,
@@ -299,13 +316,17 @@ pub enum Statement {
         assignments: Vec<(String, Value)>,
         /// Optional WHERE expression
         where_clause: Option<WhereExpr>,
+        /// Optional RETURNING column projections
+        returning: Option<Vec<String>>,
     },
-    /// DELETE FROM table [WHERE ...]
+    /// DELETE FROM table [WHERE ...] [RETURNING ...]
     Delete {
         /// Target table
         table: String,
         /// Optional WHERE expression
         where_clause: Option<WhereExpr>,
+        /// Optional RETURNING column projections
+        returning: Option<Vec<String>>,
     },
     /// BEGIN \[TRANSACTION\]
     BeginTransaction,
@@ -546,6 +567,12 @@ pub fn tokens_to_sql(tokens: &[Token]) -> String {
             Token::Dot => s.push('.'),
             Token::With => s.push_str("WITH"),
             Token::Return => s.push_str("RETURN"),
+            Token::Returning => s.push_str("RETURNING"),
+            Token::Replace => s.push_str("REPLACE"),
+            Token::Conflict => s.push_str("CONFLICT"),
+            Token::Do => s.push_str("DO"),
+            Token::Nothing => s.push_str("NOTHING"),
+            Token::Ignore => s.push_str("IGNORE"),
             Token::Colon => s.push(':'),
             Token::Dash => s.push('-'),
             Token::Arrow => s.push_str("->"),
@@ -588,6 +615,7 @@ pub fn parse_tokens(tokens: &[Token]) -> Result<Statement> {
         }
         Token::Alter => parse_alter(tokens, &mut cursor),
         Token::Insert => parse_insert(tokens, &mut cursor),
+        Token::Replace => parse_insert(tokens, &mut cursor),
         Token::Select => parse_select(tokens, &mut cursor),
         Token::Update => parse_update(tokens, &mut cursor),
         Token::Delete => parse_delete(tokens, &mut cursor),
@@ -807,7 +835,27 @@ fn parse_create_table(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
 }
 
 fn parse_insert(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
-    *cursor += 1; // consume INSERT
+    let mut conflict_action = OnConflict::Abort;
+
+    if check_token(tokens, *cursor, &Token::Replace) {
+        *cursor += 1; // consume REPLACE
+        conflict_action = OnConflict::Replace;
+    } else {
+        expect_token(tokens, cursor, &Token::Insert)?;
+        if check_token(tokens, *cursor, &Token::Or) {
+            *cursor += 1; // consume OR
+            if check_token(tokens, *cursor, &Token::Replace) {
+                *cursor += 1; // consume REPLACE
+                conflict_action = OnConflict::Replace;
+            } else if check_token(tokens, *cursor, &Token::Ignore) {
+                *cursor += 1; // consume IGNORE
+                conflict_action = OnConflict::Ignore;
+            } else {
+                return Err(Error::SqlSyntax("Expected REPLACE or IGNORE after INSERT OR".into()));
+            }
+        }
+    }
+
     expect_token(tokens, cursor, &Token::Into)?;
 
     let table_name = match get_token(tokens, cursor)? {
@@ -850,10 +898,53 @@ fn parse_insert(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         }
     }
 
+    // Check optional ON CONFLICT clause
+    if check_token(tokens, *cursor, &Token::On) && *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::Conflict {
+        *cursor += 2; // consume ON CONFLICT
+
+        // Optional conflict target e.g. (id)
+        if check_token(tokens, *cursor, &Token::OpenParen) {
+            *cursor += 1;
+            let _ = parse_identifier_or_keyword(tokens, cursor)?;
+            expect_token(tokens, cursor, &Token::CloseParen)?;
+        }
+
+        if check_token(tokens, *cursor, &Token::Replace) {
+            *cursor += 1;
+            conflict_action = OnConflict::Replace;
+        } else if check_token(tokens, *cursor, &Token::Do) {
+            *cursor += 1;
+            if check_token(tokens, *cursor, &Token::Nothing) {
+                *cursor += 1;
+                conflict_action = OnConflict::Ignore;
+            } else if check_token(tokens, *cursor, &Token::Update) {
+                *cursor += 1;
+                expect_token(tokens, cursor, &Token::Set)?;
+                let mut updates = Vec::new();
+                while *cursor < tokens.len() {
+                    let col = parse_identifier_or_keyword(tokens, cursor)?;
+                    expect_token(tokens, cursor, &Token::Equals)?;
+                    let val = parse_value_literal(tokens, cursor)?;
+                    updates.push((col, val));
+                    if check_token(tokens, *cursor, &Token::Comma) {
+                        *cursor += 1;
+                    } else {
+                        break;
+                    }
+                }
+                conflict_action = OnConflict::DoUpdate(updates);
+            }
+        }
+    }
+
+    let returning = parse_optional_returning(tokens, cursor)?;
+
     Ok(Statement::Insert {
         table: table_name,
         columns,
         values,
+        conflict_action,
+        returning,
     })
 }
 
@@ -1033,6 +1124,36 @@ fn parse_column_ident(tokens: &[Token], cursor: &mut usize) -> Result<String> {
         base.push_str(&sub);
     }
     Ok(base)
+}
+
+fn parse_optional_returning(tokens: &[Token], cursor: &mut usize) -> Result<Option<Vec<String>>> {
+    if !check_token(tokens, *cursor, &Token::Returning) {
+        return Ok(None);
+    }
+    *cursor += 1; // consume RETURNING
+
+    let mut cols = Vec::new();
+    if check_token(tokens, *cursor, &Token::Asterisk) {
+        *cursor += 1;
+        cols.push("*".to_string());
+    } else {
+        while *cursor < tokens.len() {
+            let col = parse_column_expression(tokens, cursor)?;
+            cols.push(col);
+
+            if check_token(tokens, *cursor, &Token::Comma) {
+                *cursor += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    if cols.is_empty() {
+        return Err(Error::SqlSyntax("RETURNING clause requires at least one column or *".into()));
+    }
+
+    Ok(Some(cols))
 }
 
 fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
@@ -1350,11 +1471,13 @@ fn parse_update(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     }
 
     let where_clause = parse_optional_where_clause(tokens, cursor)?;
+    let returning = parse_optional_returning(tokens, cursor)?;
 
     Ok(Statement::Update {
         table: table_name,
         assignments,
         where_clause,
+        returning,
     })
 }
 
@@ -1367,10 +1490,12 @@ fn parse_delete(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     };
 
     let where_clause = parse_optional_where_clause(tokens, cursor)?;
+    let returning = parse_optional_returning(tokens, cursor)?;
 
     Ok(Statement::Delete {
         table: table_name,
         where_clause,
+        returning,
     })
 }
 
@@ -2226,7 +2351,7 @@ mod tests {
         let sql = "UPDATE users SET name = 'Ahmad', age = 30 WHERE id = 1;";
         let stmt = parse_sql(sql).expect("Parse UPDATE");
         match stmt {
-            Statement::Update { table, assignments, where_clause } => {
+            Statement::Update { table, assignments, where_clause, .. } => {
                 assert_eq!(table, "users");
                 assert_eq!(assignments.len(), 2);
                 assert_eq!(assignments[0], ("name".to_string(), Value::Text("Ahmad".into())));
@@ -2239,9 +2364,64 @@ mod tests {
         let sql_del = "DELETE FROM users WHERE id = 42;";
         let stmt_del = parse_sql(sql_del).expect("Parse DELETE");
         match stmt_del {
-            Statement::Delete { table, where_clause } => {
+            Statement::Delete { table, where_clause, .. } => {
                 assert_eq!(table, "users");
                 assert_eq!(where_clause, Some(WhereExpr::eq("id", Value::Integer(42))));
+            }
+            _ => panic!("Expected Delete"),
+        }
+    }
+
+    #[test]
+    fn test_parse_returning_and_upsert() {
+        let sql1 = "INSERT INTO users (id, name) VALUES (1, 'Faiz') RETURNING id, name;";
+        let stmt1 = parse_sql(sql1).expect("Parse INSERT RETURNING");
+        match stmt1 {
+            Statement::Insert { table, conflict_action, returning, .. } => {
+                assert_eq!(table, "users");
+                assert_eq!(conflict_action, OnConflict::Abort);
+                assert_eq!(returning, Some(vec!["id".to_string(), "name".to_string()]));
+            }
+            _ => panic!("Expected Insert"),
+        }
+
+        let sql2 = "INSERT OR REPLACE INTO users (id, name) VALUES (1, 'Faiz') RETURNING *;";
+        let stmt2 = parse_sql(sql2).expect("Parse INSERT OR REPLACE RETURNING *");
+        match stmt2 {
+            Statement::Insert { table, conflict_action, returning, .. } => {
+                assert_eq!(table, "users");
+                assert_eq!(conflict_action, OnConflict::Replace);
+                assert_eq!(returning, Some(vec!["*".to_string()]));
+            }
+            _ => panic!("Expected Insert"),
+        }
+
+        let sql3 = "REPLACE INTO users (id, name) VALUES (2, 'Ali');";
+        let stmt3 = parse_sql(sql3).expect("Parse REPLACE INTO");
+        match stmt3 {
+            Statement::Insert { table, conflict_action, .. } => {
+                assert_eq!(table, "users");
+                assert_eq!(conflict_action, OnConflict::Replace);
+            }
+            _ => panic!("Expected Insert"),
+        }
+
+        let sql4 = "UPDATE users SET name = 'Ali' WHERE id = 1 RETURNING name;";
+        let stmt4 = parse_sql(sql4).expect("Parse UPDATE RETURNING");
+        match stmt4 {
+            Statement::Update { table, returning, .. } => {
+                assert_eq!(table, "users");
+                assert_eq!(returning, Some(vec!["name".to_string()]));
+            }
+            _ => panic!("Expected Update"),
+        }
+
+        let sql5 = "DELETE FROM users WHERE id = 1 RETURNING *;";
+        let stmt5 = parse_sql(sql5).expect("Parse DELETE RETURNING");
+        match stmt5 {
+            Statement::Delete { table, returning, .. } => {
+                assert_eq!(table, "users");
+                assert_eq!(returning, Some(vec!["*".to_string()]));
             }
             _ => panic!("Expected Delete"),
         }

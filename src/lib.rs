@@ -958,9 +958,34 @@ impl<'a> PreparedStatement<'a> {
         }
         let bound = crate::sql::parser::bind_parameters(&self.tokens, params)?;
         let stmt = crate::sql::parser::parse_tokens(&bound)?;
+
+        // Capture mutation metadata for CDC broadcast if RETURNING was used
+        let cdc_info = match &stmt {
+            Statement::Insert { table, .. } => Some((ChangeOp::Insert, table.clone())),
+            Statement::Update { table, .. } => Some((ChangeOp::Update, table.clone())),
+            Statement::Delete { table, .. } => Some((ChangeOp::Delete, table.clone())),
+            _ => None,
+        };
+
         let mut pager = self.conn.pager.write();
-        let executor = self.conn.executor.read();
-        executor.query(&mut pager, stmt)
+        let mut executor = self.conn.executor.write();
+        let rows = executor.query(&mut pager, stmt)?;
+
+        if let Some((op, table)) = cdc_info {
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.conn.realtime.publish(&ChangeEvent {
+                op,
+                table,
+                row_id: rows.len() as u64,
+                timestamp: now_ts,
+                data: serde_json::json!({"affected_rows": rows.len()}),
+            });
+        }
+
+        Ok(rows)
     }
 }
 
@@ -1032,9 +1057,34 @@ impl DatabaseConnection for Connection {
             return Ok(Vec::new());
         }
         let stmt = crate::sql::parser::parse_tokens(&tokens)?;
+
+        // Capture mutation metadata for CDC broadcast if RETURNING was used
+        let cdc_info = match &stmt {
+            Statement::Insert { table, .. } => Some((ChangeOp::Insert, table.clone())),
+            Statement::Update { table, .. } => Some((ChangeOp::Update, table.clone())),
+            Statement::Delete { table, .. } => Some((ChangeOp::Delete, table.clone())),
+            _ => None,
+        };
+
         let mut pager = self.pager.write();
-        let executor = self.executor.read();
-        executor.query(&mut pager, stmt)
+        let mut executor = self.executor.write();
+        let rows = executor.query(&mut pager, stmt)?;
+
+        if let Some((op, table)) = cdc_info {
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.realtime.publish(&ChangeEvent {
+                op,
+                table,
+                row_id: rows.len() as u64,
+                timestamp: now_ts,
+                data: serde_json::json!({"affected_rows": rows.len()}),
+            });
+        }
+
+        Ok(rows)
     }
 
     /// Execute a parameterized non-query SQL command

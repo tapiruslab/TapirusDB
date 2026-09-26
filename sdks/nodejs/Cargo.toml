@@ -1,0 +1,15 @@
+[package]
+name = "tapirus-nodejs"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2.16.4", default-features = false, features = ["napi4"] }
+napi-derive = "2.16.2"
+tapirus = { path = "../.." }
+
+[build-dependencies]
+napi-build = "2.1.3"

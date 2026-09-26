@@ -1,0 +1,12 @@
+[package]
+name = "tapirus-python"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+name = "tapirus"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.20", features = ["extension-module"] }
+tapirus = { path = "../.." }

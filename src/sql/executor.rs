@@ -6,7 +6,7 @@ use crate::graph::GraphEngine;
 use crate::pager::Pager;
 use crate::sql::catalog::{Catalog, ColumnDef, DataType, IndexDef, TableDef};
 use crate::sql::codec::{decode_row, encode_row};
-use crate::sql::parser::{BinaryOp, JoinType, Statement, WhereCondition, WhereExpr};
+use crate::sql::parser::{BinaryOp, JoinType, OnConflict, Statement, WhereCondition, WhereExpr};
 use crate::traits::{Row, Value, VectorIndexEngine};
 use crate::vector::{DistanceMetric, HnswIndex};
 use serde::{Deserialize, Serialize};
@@ -526,7 +526,7 @@ impl SQLExecutor {
 
     /// Recursively resolve a WhereExpr into a ResolvedWhereExpr, executing subqueries
     pub fn resolve_where_expr(
-        &self,
+        &mut self,
         pager: &mut Pager,
         expr: &WhereExpr,
     ) -> Result<ResolvedWhereExpr> {
@@ -604,168 +604,11 @@ impl SQLExecutor {
                 table,
                 columns,
                 values,
+                conflict_action,
+                returning,
             } => {
-                let table_cols;
-                let root_page;
-                let row_id;
-                let mut aligned_values;
-                let vector_col;
-
-                {
-                    let table_def = self
-                        .catalog
-                        .get_table_mut(&table)
-                        .ok_or_else(|| Error::TableNotFound(table.clone()))?;
-
-                    root_page = table_def.root_page;
-                    table_cols = table_def.columns.clone();
-                    vector_col = table_def.vector_column();
-
-                    // Align values to table columns
-                    aligned_values = if let Some(cols) = columns {
-                        if cols.len() != values.len() {
-                            return Err(Error::SqlSyntax(
-                                "Column count does not match value count in INSERT".into(),
-                            ));
-                        }
-                        let mut row_vals = vec![Value::Null; table_cols.len()];
-                        for (c_name, val) in cols.iter().zip(values) {
-                            let idx = table_def
-                                .column_index(c_name)
-                                .ok_or_else(|| Error::Corrupted(format!("Unknown column: {c_name}")))?;
-                            row_vals[idx] = val;
-                        }
-                        row_vals
-                    } else {
-                        if values.len() != table_cols.len() {
-                            return Err(Error::SqlSyntax(format!(
-                                "INSERT requires {} values, got {}",
-                                table_cols.len(),
-                                values.len()
-                            )));
-                        }
-                        values
-                    };
-
-                    // Determine row_id (from primary key column or auto-increment)
-                    let pk_idx = table_def.primary_key_index();
-                    row_id = if let Some(idx) = pk_idx {
-                        match &aligned_values[idx] {
-                            Value::Integer(i) => {
-                                let id_val = *i as u64;
-                                if id_val >= table_def.next_row_id {
-                                    table_def.next_row_id = id_val + 1;
-                                }
-                                id_val
-                            }
-                            Value::Null => {
-                                let rid = table_def.next_row_id;
-                                table_def.next_row_id += 1;
-                                aligned_values[idx] = Value::Integer(rid as i64);
-                                rid
-                            }
-                            _ => {
-                                let rid = table_def.next_row_id;
-                                table_def.next_row_id += 1;
-                                rid
-                            }
-                        }
-                    } else {
-                        let rid = table_def.next_row_id;
-                        table_def.next_row_id += 1;
-                        rid
-                    };
-                }
-
-                // Enforce column data type validation and coercion
-                for (col_idx, col_def) in table_cols.iter().enumerate() {
-                    if let Some(val) = aligned_values.get_mut(col_idx) {
-                        let orig = std::mem::replace(val, Value::Null);
-                        *val = col_def.data_type.coerce_value(orig).map_err(|e| match e {
-                            Error::DimensionMismatch(exp, got) => Error::DimensionMismatch(exp, got),
-                            Error::ConstraintViolation(msg) => {
-                                Error::ConstraintViolation(format!("{table}.{}: {msg}", col_def.name))
-                            }
-                            other => other,
-                        })?;
-                    }
-                }
-
-                // Enforce NOT NULL constraints
-                for (col_idx, col_def) in table_cols.iter().enumerate() {
-                    if col_def.not_null {
-                        if let Some(val) = aligned_values.get(col_idx) {
-                            if val.is_null() {
-                                return Err(Error::ConstraintViolation(format!(
-                                    "NOT NULL constraint failed: {table}.{}",
-                                    col_def.name
-                                )));
-                            }
-                        }
-                    }
-                }
-
-                // If table has a primary key or specific row_id and it already exists, enforce UNIQUE constraint
-                if let Some(_existing) = self.btree.search(pager, root_page, row_id)? {
-                    let pk_col_name = table_cols
-                        .iter()
-                        .find(|c| c.primary_key)
-                        .map(|c| c.name.as_str())
-                        .unwrap_or("id");
-                    return Err(Error::ConstraintViolation(format!(
-                        "UNIQUE constraint failed: {table}.{pk_col_name} (key {row_id} already exists)"
-                    )));
-                }
-
-                // Encode row to binary record payload
-                let payload = encode_row(&aligned_values);
-
-                // Insert into B+Tree
-                self.btree.insert(pager, root_page, row_id, &payload)?;
-
-                // Record temporal snapshot for time-travel queries
-                let now_ts = self.next_temporal_timestamp();
-                self.record_temporal_version(pager, &table, row_id, &payload, now_ts, u64::MAX)?;
-
-                // Update vector index if present
-                if let Some((v_idx, _)) = vector_col {
-                    if let Some(Value::Vector(vec_data)) = aligned_values.get(v_idx) {
-                        let index = self
-                            .vector_indexes
-                            .entry(table.to_lowercase())
-                            .or_insert_with(|| HnswIndex::new(vec_data.len(), DistanceMetric::Cosine));
-                        index.insert_vector(row_id, vec_data)?;
-                        if !pager.is_in_transaction() {
-                            let _ = self.persist_vector_indexes_to_disk(pager);
-                        }
-                    }
-                }
-
-                // Update secondary indexes with inverted posting lists
-                let temp_row = Row::new(
-                    table_cols.iter().map(|c| c.name.clone()).collect(),
-                    aligned_values.clone(),
-                );
-                for index_def in self.catalog.indexes() {
-                    if index_def.table.eq_ignore_ascii_case(&table) {
-                        if let Some(val) = temp_row.get_field_or_json_path(&index_def.column) {
-                            if !val.is_null() {
-                                let key = value_to_index_key(&val);
-                                let mut bucket = if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                                    serde_json::from_slice::<IndexBucket>(&payload).unwrap_or_else(|_| IndexBucket::new())
-                                } else {
-                                    IndexBucket::new()
-                                };
-                                bucket.add_row_id(val, row_id);
-                                let idx_payload = serde_json::to_vec(&bucket)
-                                    .map_err(|e| Error::Corrupted(format!("Failed to serialize index bucket: {e}")))?;
-                                self.btree.insert(pager, index_def.root_page, key, &idx_payload)?;
-                            }
-                        }
-                    }
-                }
-
-                Ok(1)
+                let (affected, _) = self.execute_insert(pager, table, columns, values, conflict_action, returning)?;
+                Ok(affected)
             }
 
             Statement::GraphInsertNode { id, label, properties } => {
@@ -799,236 +642,19 @@ impl SQLExecutor {
                 table,
                 assignments,
                 where_clause,
+                returning,
             } => {
-                let table_def = self
-                    .catalog
-                    .get_table(&table)
-                    .cloned()
-                    .ok_or_else(|| Error::TableNotFound(table.clone()))?;
-
-                let root_page = table_def.root_page;
-                let all_col_names = table_def.column_names();
-
-                // Validate assignment column names
-                for (col_name, _) in &assignments {
-                    if table_def.column_index(col_name).is_none() {
-                        return Err(Error::Corrupted(format!("Unknown column in SET: {col_name}")));
-                    }
-                }
-
-                let resolved_where = if let Some(ref expr) = where_clause {
-                    Some(self.resolve_where_expr(pager, expr)?)
-                } else {
-                    None
-                };
-
-                let cells = self.btree.scan(pager, root_page)?;
-                let mut updated_count = 0;
-
-                for cell in cells {
-                    let full_row = decode_row(&cell.payload, &all_col_names)?;
-                    let matches = if let Some(ref r_expr) = resolved_where {
-                        row_matches_resolved(&full_row, r_expr)
-                    } else {
-                        true
-                    };
-
-                    if matches {
-                        let mut values: Vec<Value> = full_row.values().to_vec();
-                        for (col_name, new_val) in &assignments {
-                            if let Some(col_idx) = table_def.column_index(col_name) {
-                                if col_idx < values.len() {
-                                    values[col_idx] = new_val.clone();
-                                }
-                            }
-                        }
-
-                        // Enforce column data type validation and coercion
-                        for (col_idx, col_def) in table_def.columns.iter().enumerate() {
-                            if let Some(val) = values.get_mut(col_idx) {
-                                let orig = std::mem::replace(val, Value::Null);
-                                *val = col_def.data_type.coerce_value(orig).map_err(|e| match e {
-                                    Error::DimensionMismatch(exp, got) => Error::DimensionMismatch(exp, got),
-                                    Error::ConstraintViolation(msg) => {
-                                        Error::ConstraintViolation(format!("{table}.{}: {msg}", col_def.name))
-                                    }
-                                    other => other,
-                                })?;
-                            }
-                        }
-
-                        // Enforce NOT NULL constraints
-                        for (col_idx, col_def) in table_def.columns.iter().enumerate() {
-                            if col_def.not_null {
-                                if let Some(val) = values.get(col_idx) {
-                                    if val.is_null() {
-                                        return Err(Error::ConstraintViolation(format!(
-                                            "NOT NULL constraint failed: {table}.{}",
-                                            col_def.name
-                                        )));
-                                    }
-                                }
-                            }
-                        }
-
-                        let pk_col_idx = table_def.primary_key_index();
-                        let new_row_id = if let Some(pk_idx) = pk_col_idx {
-                            if let Some(Value::Integer(id_val)) = values.get(pk_idx) {
-                                *id_val as u64
-                            } else {
-                                cell.row_id
-                            }
-                        } else {
-                            cell.row_id
-                        };
-
-                        // If primary key was modified to a different ID, ensure it does not collide
-                        if new_row_id != cell.row_id {
-                            if let Some(_existing) = self.btree.search(pager, root_page, new_row_id)? {
-                                let pk_col_name = table_def
-                                    .columns
-                                    .iter()
-                                    .find(|c| c.primary_key)
-                                    .map(|c| c.name.as_str())
-                                    .unwrap_or("id");
-                                return Err(Error::ConstraintViolation(format!(
-                                    "UNIQUE constraint failed: {table}.{pk_col_name} (key {new_row_id} already exists)"
-                                )));
-                            }
-                        }
-
-                        let new_payload = encode_row(&values);
-                        self.btree.delete(pager, root_page, cell.row_id)?;
-                        self.btree.insert(pager, root_page, new_row_id, &new_payload)?;
-
-                        // Update temporal snapshot for time-travel queries
-                        let now_ts = self.next_temporal_timestamp();
-                        self.close_temporal_version(pager, &table, cell.row_id, now_ts)?;
-                        self.record_temporal_version(pager, &table, new_row_id, &new_payload, now_ts, u64::MAX)?;
-
-                        // Update vector index if vector column was updated or row_id changed
-                        if let Some((v_idx, _)) = table_def.vector_column() {
-                            if let Some(Value::Vector(vec_data)) = values.get(v_idx) {
-                                let index = self
-                                    .vector_indexes
-                                    .entry(table.to_lowercase())
-                                    .or_insert_with(|| HnswIndex::new(vec_data.len(), DistanceMetric::Cosine));
-                                index.remove_vector(cell.row_id);
-                                index.insert_vector(new_row_id, vec_data)?;
-                            } else if new_row_id != cell.row_id {
-                                if let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase()) {
-                                    index.remove_vector(cell.row_id);
-                                }
-                            }
-                        }
-
-                        // Update secondary indexes with inverted posting lists
-                        for index_def in self.catalog.indexes() {
-                            if index_def.table.eq_ignore_ascii_case(&table) {
-                                if let Some(old_val) = full_row.get_field_or_json_path(&index_def.column) {
-                                    if !old_val.is_null() {
-                                        let old_key = value_to_index_key(&old_val);
-                                        if let Some(payload) = self.btree.search(pager, index_def.root_page, old_key)? {
-                                            if let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
-                                                bucket.remove_row_id(&old_val, cell.row_id);
-                                                if bucket.is_empty() {
-                                                    let _ = self.btree.delete(pager, index_def.root_page, old_key);
-                                                } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                                                    let _ = self.btree.insert(pager, index_def.root_page, old_key, &new_pl);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                let updated_temp_row = Row::new(all_col_names.clone(), values.clone());
-                                if let Some(new_val) = updated_temp_row.get_field_or_json_path(&index_def.column) {
-                                    if !new_val.is_null() {
-                                        let new_key = value_to_index_key(&new_val);
-                                        let mut bucket = if let Some(payload) = self.btree.search(pager, index_def.root_page, new_key)? {
-                                            serde_json::from_slice::<IndexBucket>(&payload).unwrap_or_else(|_| IndexBucket::new())
-                                        } else {
-                                            IndexBucket::new()
-                                        };
-                                        bucket.add_row_id(new_val, new_row_id);
-                                        if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                                            let _ = self.btree.insert(pager, index_def.root_page, new_key, &new_pl);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if new_row_id >= table_def.next_row_id {
-                            if let Some(tdef_mut) = self.catalog.get_table_mut(&table) {
-                                tdef_mut.next_row_id = new_row_id + 1;
-                            }
-                        }
-
-                        updated_count += 1;
-                    }
-                }
-
-                Ok(updated_count)
+                let (affected, _) = self.execute_update(pager, table, assignments, where_clause, returning)?;
+                Ok(affected)
             }
 
-            Statement::Delete { table, where_clause } => {
-                let table_def = self
-                    .catalog
-                    .get_table(&table)
-                    .cloned()
-                    .ok_or_else(|| Error::TableNotFound(table.clone()))?;
-
-                let root_page = table_def.root_page;
-                let all_col_names = table_def.column_names();
-                let cells = self.btree.scan(pager, root_page)?;
-                let mut deleted_count = 0;
-
-                let resolved_where = if let Some(ref expr) = where_clause {
-                    Some(self.resolve_where_expr(pager, expr)?)
-                } else {
-                    None
-                };
-
-                for cell in cells {
-                    let full_row = decode_row(&cell.payload, &all_col_names)?;
-                    let matches = if let Some(ref r_expr) = resolved_where {
-                        row_matches_resolved(&full_row, r_expr)
-                    } else {
-                        true
-                    };
-
-                    if matches {
-                        self.btree.delete(pager, root_page, cell.row_id)?;
-                        let now_ts = self.next_temporal_timestamp();
-                        self.close_temporal_version(pager, &table, cell.row_id, now_ts)?;
-                        if let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase()) {
-                            index.remove_vector(cell.row_id);
-                        }
-                        // Delete from secondary indexes with inverted posting lists
-                        for index_def in self.catalog.indexes() {
-                            if index_def.table.eq_ignore_ascii_case(&table) {
-                                if let Some(val) = full_row.get_field_or_json_path(&index_def.column) {
-                                    if !val.is_null() {
-                                        let key = value_to_index_key(&val);
-                                        if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                                            if let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
-                                                bucket.remove_row_id(&val, cell.row_id);
-                                                if bucket.is_empty() {
-                                                    let _ = self.btree.delete(pager, index_def.root_page, key);
-                                                } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                                                    let _ = self.btree.insert(pager, index_def.root_page, key, &new_pl);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        deleted_count += 1;
-                    }
-                }
-
-                Ok(deleted_count)
+            Statement::Delete {
+                table,
+                where_clause,
+                returning,
+            } => {
+                let (affected, _) = self.execute_delete(pager, table, where_clause, returning)?;
+                Ok(affected)
             }
 
             Statement::BeginTransaction => {
@@ -1291,9 +917,36 @@ impl SQLExecutor {
         }
     }
 
-    /// Execute a query returning rows (SELECT, VECTOR NEAR, EXPLAIN, etc.)
-    pub fn query(&self, pager: &mut Pager, stmt: Statement) -> Result<Vec<Row>> {
+    /// Execute a query returning rows (SELECT, VECTOR NEAR, EXPLAIN, RETURNING, etc.)
+    pub fn query(&mut self, pager: &mut Pager, stmt: Statement) -> Result<Vec<Row>> {
         match stmt {
+            Statement::Insert {
+                table,
+                columns,
+                values,
+                conflict_action,
+                returning,
+            } => {
+                let (_, rows) = self.execute_insert(pager, table, columns, values, conflict_action, returning)?;
+                Ok(rows)
+            }
+            Statement::Update {
+                table,
+                assignments,
+                where_clause,
+                returning,
+            } => {
+                let (_, rows) = self.execute_update(pager, table, assignments, where_clause, returning)?;
+                Ok(rows)
+            }
+            Statement::Delete {
+                table,
+                where_clause,
+                returning,
+            } => {
+                let (_, rows) = self.execute_delete(pager, table, where_clause, returning)?;
+                Ok(rows)
+            }
             Statement::WithCte { ctes, main_query } => {
                 self.query_with_cte(pager, ctes, *main_query)
             }
@@ -1769,6 +1422,7 @@ impl SQLExecutor {
                 let table_def = self
                     .catalog
                     .get_table(&table)
+                    .cloned()
                     .ok_or_else(|| Error::TableNotFound(table.clone()))?;
 
                 let root_page = table_def.root_page;
@@ -2439,7 +2093,7 @@ impl SQLExecutor {
 
     /// Execute a query with Common Table Expressions (WITH cte AS (...) SELECT ...)
     fn query_with_cte(
-        &self,
+        &mut self,
         pager: &mut Pager,
         ctes: Vec<crate::sql::parser::CteClause>,
         main_query: Statement,
@@ -2483,7 +2137,7 @@ impl SQLExecutor {
 
     /// Evaluate a SELECT statement against in-memory ephemeral CTE tables
     fn query_on_ephemeral_rows(
-        &self,
+        &mut self,
         pager: &mut Pager,
         stmt: Statement,
         cte_store: &HashMap<String, Vec<Row>>,
@@ -2659,6 +2313,550 @@ impl SQLExecutor {
         } else {
             Err(Error::SqlSyntax("Expected SELECT in CTE main query".into()))
         }
+    }
+
+    fn execute_insert(
+        &mut self,
+        pager: &mut Pager,
+        table: String,
+        columns: Option<Vec<String>>,
+        values: Vec<Value>,
+        conflict_action: OnConflict,
+        returning: Option<Vec<String>>,
+    ) -> Result<(usize, Vec<Row>)> {
+        let table_cols;
+        let root_page;
+        let row_id;
+        let mut aligned_values;
+        let vector_col;
+
+        {
+            let table_def = self
+                .catalog
+                .get_table_mut(&table)
+                .ok_or_else(|| Error::TableNotFound(table.clone()))?;
+
+            root_page = table_def.root_page;
+            table_cols = table_def.columns.clone();
+            vector_col = table_def.vector_column();
+
+            // Align values to table columns
+            aligned_values = if let Some(cols) = columns {
+                if cols.len() != values.len() {
+                    return Err(Error::SqlSyntax(
+                        "Column count does not match value count in INSERT".into(),
+                    ));
+                }
+                let mut row_vals = vec![Value::Null; table_cols.len()];
+                for (c_name, val) in cols.iter().zip(values) {
+                    let idx = table_def
+                        .column_index(c_name)
+                        .ok_or_else(|| Error::Corrupted(format!("Unknown column: {c_name}")))?;
+                    row_vals[idx] = val;
+                }
+                row_vals
+            } else {
+                if values.len() != table_cols.len() {
+                    return Err(Error::SqlSyntax(format!(
+                        "INSERT requires {} values, got {}",
+                        table_cols.len(),
+                        values.len()
+                    )));
+                }
+                values
+            };
+
+            // Determine row_id (from primary key column or auto-increment)
+            let pk_idx = table_def.primary_key_index();
+            row_id = if let Some(idx) = pk_idx {
+                match &aligned_values[idx] {
+                    Value::Integer(i) => {
+                        let id_val = *i as u64;
+                        if id_val >= table_def.next_row_id {
+                            table_def.next_row_id = id_val + 1;
+                        }
+                        id_val
+                    }
+                    Value::Null => {
+                        let rid = table_def.next_row_id;
+                        table_def.next_row_id += 1;
+                        aligned_values[idx] = Value::Integer(rid as i64);
+                        rid
+                    }
+                    _ => {
+                        let rid = table_def.next_row_id;
+                        table_def.next_row_id += 1;
+                        rid
+                    }
+                }
+            } else {
+                let rid = table_def.next_row_id;
+                table_def.next_row_id += 1;
+                rid
+            };
+        }
+
+        // Enforce column data type validation and coercion
+        for (col_idx, col_def) in table_cols.iter().enumerate() {
+            if let Some(val) = aligned_values.get_mut(col_idx) {
+                let orig = std::mem::replace(val, Value::Null);
+                *val = col_def.data_type.coerce_value(orig).map_err(|e| match e {
+                    Error::DimensionMismatch(exp, got) => Error::DimensionMismatch(exp, got),
+                    Error::ConstraintViolation(msg) => {
+                        Error::ConstraintViolation(format!("{table}.{}: {msg}", col_def.name))
+                    }
+                    other => other,
+                })?;
+            }
+        }
+
+        // Enforce NOT NULL constraints
+        for (col_idx, col_def) in table_cols.iter().enumerate() {
+            if col_def.not_null {
+                if let Some(val) = aligned_values.get(col_idx) {
+                    if val.is_null() {
+                        return Err(Error::ConstraintViolation(format!(
+                            "NOT NULL constraint failed: {table}.{}",
+                            col_def.name
+                        )));
+                    }
+                }
+            }
+        }
+
+        // If table has a primary key or specific row_id and it already exists, enforce UNIQUE constraint or handle Upsert
+        if let Some(existing_payload) = self.btree.search(pager, root_page, row_id)? {
+            match conflict_action {
+                OnConflict::Abort => {
+                    let pk_col_name = table_cols
+                        .iter()
+                        .find(|c| c.primary_key)
+                        .map(|c| c.name.as_str())
+                        .unwrap_or("id");
+                    return Err(Error::ConstraintViolation(format!(
+                        "UNIQUE constraint failed: {table}.{pk_col_name} (key {row_id} already exists)"
+                    )));
+                }
+                OnConflict::Ignore => {
+                    return Ok((0, Vec::new()));
+                }
+                OnConflict::Replace => {
+                    let all_col_names: Vec<String> = table_cols.iter().map(|c| c.name.clone()).collect();
+                    if let Ok(old_row) = decode_row(&existing_payload, &all_col_names) {
+                        for index_def in self.catalog.indexes() {
+                            if index_def.table.eq_ignore_ascii_case(&table) {
+                                if let Some(val) = old_row.get_field_or_json_path(&index_def.column) {
+                                    if !val.is_null() {
+                                        let key = value_to_index_key(&val);
+                                        if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
+                                            if let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                                                bucket.remove_row_id(&val, row_id);
+                                                if bucket.is_empty() {
+                                                    let _ = self.btree.delete(pager, index_def.root_page, key);
+                                                } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
+                                                    let _ = self.btree.insert(pager, index_def.root_page, key, &new_pl);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase()) {
+                        index.remove_vector(row_id);
+                    }
+                    let now_ts = self.next_temporal_timestamp();
+                    self.close_temporal_version(pager, &table, row_id, now_ts)?;
+                    self.btree.delete(pager, root_page, row_id)?;
+                }
+                OnConflict::DoUpdate(updates) => {
+                    let all_col_names: Vec<String> = table_cols.iter().map(|c| c.name.clone()).collect();
+                    let old_row = decode_row(&existing_payload, &all_col_names)?;
+                    let mut values: Vec<Value> = old_row.values().to_vec();
+                    for (col_name, new_val) in updates {
+                        if let Some(col_idx) = table_cols.iter().position(|c| c.name.eq_ignore_ascii_case(&col_name)) {
+                            if col_idx < values.len() {
+                                values[col_idx] = new_val;
+                            }
+                        }
+                    }
+                    for (col_idx, col_def) in table_cols.iter().enumerate() {
+                        if let Some(val) = values.get_mut(col_idx) {
+                            let orig = std::mem::replace(val, Value::Null);
+                            *val = col_def.data_type.coerce_value(orig).map_err(|e| match e {
+                                Error::DimensionMismatch(exp, got) => Error::DimensionMismatch(exp, got),
+                                Error::ConstraintViolation(msg) => {
+                                    Error::ConstraintViolation(format!("{table}.{}: {msg}", col_def.name))
+                                }
+                                other => other,
+                            })?;
+                            if col_def.not_null && val.is_null() {
+                                return Err(Error::ConstraintViolation(format!(
+                                    "NOT NULL constraint failed: {table}.{}",
+                                    col_def.name
+                                )));
+                            }
+                        }
+                    }
+                    for index_def in self.catalog.indexes() {
+                        if index_def.table.eq_ignore_ascii_case(&table) {
+                            if let Some(val) = old_row.get_field_or_json_path(&index_def.column) {
+                                if !val.is_null() {
+                                    let key = value_to_index_key(&val);
+                                    if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
+                                        if let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                                            bucket.remove_row_id(&val, row_id);
+                                            if bucket.is_empty() {
+                                                let _ = self.btree.delete(pager, index_def.root_page, key);
+                                            } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
+                                                let _ = self.btree.insert(pager, index_def.root_page, key, &new_pl);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase()) {
+                        index.remove_vector(row_id);
+                    }
+                    let now_ts = self.next_temporal_timestamp();
+                    self.close_temporal_version(pager, &table, row_id, now_ts)?;
+                    self.btree.delete(pager, root_page, row_id)?;
+
+                    aligned_values = values;
+                }
+            }
+        }
+
+        // Encode row to binary record payload
+        let payload = encode_row(&aligned_values);
+
+        // Insert into B+Tree
+        self.btree.insert(pager, root_page, row_id, &payload)?;
+
+        // Record temporal snapshot for time-travel queries
+        let now_ts = self.next_temporal_timestamp();
+        self.record_temporal_version(pager, &table, row_id, &payload, now_ts, u64::MAX)?;
+
+        // Update vector index if present
+        if let Some((v_idx, _)) = vector_col {
+            if let Some(Value::Vector(vec_data)) = aligned_values.get(v_idx) {
+                let index = self
+                    .vector_indexes
+                    .entry(table.to_lowercase())
+                    .or_insert_with(|| HnswIndex::new(vec_data.len(), DistanceMetric::Cosine));
+                index.insert_vector(row_id, vec_data)?;
+                if !pager.is_in_transaction() {
+                    let _ = self.persist_vector_indexes_to_disk(pager);
+                }
+            }
+        }
+
+        // Update secondary indexes with inverted posting lists
+        let temp_row = Row::new(
+            table_cols.iter().map(|c| c.name.clone()).collect(),
+            aligned_values.clone(),
+        );
+        for index_def in self.catalog.indexes() {
+            if index_def.table.eq_ignore_ascii_case(&table) {
+                if let Some(val) = temp_row.get_field_or_json_path(&index_def.column) {
+                    if !val.is_null() {
+                        let key = value_to_index_key(&val);
+                        let mut bucket = if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
+                            serde_json::from_slice::<IndexBucket>(&payload).unwrap_or_else(|_| IndexBucket::new())
+                        } else {
+                            IndexBucket::new()
+                        };
+                        bucket.add_row_id(val, row_id);
+                        let idx_payload = serde_json::to_vec(&bucket)
+                            .map_err(|e| Error::Corrupted(format!("Failed to serialize index bucket: {e}")))?;
+                        self.btree.insert(pager, index_def.root_page, key, &idx_payload)?;
+                    }
+                }
+            }
+        }
+
+        let returned_rows = if let Some(ref ret_cols) = returning {
+            let full_row = Row::new(
+                table_cols.iter().map(|c| c.name.clone()).collect(),
+                aligned_values,
+            );
+            if ret_cols.len() == 1 && ret_cols[0] == "*" {
+                vec![full_row]
+            } else {
+                vec![project_row(&full_row, ret_cols)?]
+            }
+        } else {
+            Vec::new()
+        };
+
+        Ok((1, returned_rows))
+    }
+
+    fn execute_update(
+        &mut self,
+        pager: &mut Pager,
+        table: String,
+        assignments: Vec<(String, Value)>,
+        where_clause: Option<WhereExpr>,
+        returning: Option<Vec<String>>,
+    ) -> Result<(usize, Vec<Row>)> {
+        let table_def = self
+            .catalog
+            .get_table(&table)
+            .cloned()
+            .ok_or_else(|| Error::TableNotFound(table.clone()))?;
+
+        let root_page = table_def.root_page;
+        let all_col_names = table_def.column_names();
+
+        // Validate assignment column names
+        for (col_name, _) in &assignments {
+            if table_def.column_index(col_name).is_none() {
+                return Err(Error::Corrupted(format!("Unknown column in SET: {col_name}")));
+            }
+        }
+
+        let resolved_where = if let Some(ref expr) = where_clause {
+            Some(self.resolve_where_expr(pager, expr)?)
+        } else {
+            None
+        };
+
+        let cells = self.btree.scan(pager, root_page)?;
+        let mut updated_count = 0;
+        let mut returned_rows = Vec::new();
+
+        for cell in cells {
+            let full_row = decode_row(&cell.payload, &all_col_names)?;
+            let matches = if let Some(ref r_expr) = resolved_where {
+                row_matches_resolved(&full_row, r_expr)
+            } else {
+                true
+            };
+
+            if matches {
+                let mut values: Vec<Value> = full_row.values().to_vec();
+                for (col_name, new_val) in &assignments {
+                    if let Some(col_idx) = table_def.column_index(col_name) {
+                        if col_idx < values.len() {
+                            values[col_idx] = new_val.clone();
+                        }
+                    }
+                }
+
+                // Enforce column data type validation and coercion
+                for (col_idx, col_def) in table_def.columns.iter().enumerate() {
+                    if let Some(val) = values.get_mut(col_idx) {
+                        let orig = std::mem::replace(val, Value::Null);
+                        *val = col_def.data_type.coerce_value(orig).map_err(|e| match e {
+                            Error::DimensionMismatch(exp, got) => Error::DimensionMismatch(exp, got),
+                            Error::ConstraintViolation(msg) => {
+                                Error::ConstraintViolation(format!("{table}.{}: {msg}", col_def.name))
+                            }
+                            other => other,
+                        })?;
+                    }
+                }
+
+                // Enforce NOT NULL constraints
+                for (col_idx, col_def) in table_def.columns.iter().enumerate() {
+                    if col_def.not_null {
+                        if let Some(val) = values.get(col_idx) {
+                            if val.is_null() {
+                                return Err(Error::ConstraintViolation(format!(
+                                    "NOT NULL constraint failed: {table}.{}",
+                                    col_def.name
+                                )));
+                            }
+                        }
+                    }
+                }
+
+                let pk_col_idx = table_def.primary_key_index();
+                let new_row_id = if let Some(pk_idx) = pk_col_idx {
+                    if let Some(Value::Integer(id_val)) = values.get(pk_idx) {
+                        *id_val as u64
+                    } else {
+                        cell.row_id
+                    }
+                } else {
+                    cell.row_id
+                };
+
+                // If primary key was modified to a different ID, ensure it does not collide
+                if new_row_id != cell.row_id {
+                    if let Some(_existing) = self.btree.search(pager, root_page, new_row_id)? {
+                        let pk_col_name = table_def
+                            .columns
+                            .iter()
+                            .find(|c| c.primary_key)
+                            .map(|c| c.name.as_str())
+                            .unwrap_or("id");
+                        return Err(Error::ConstraintViolation(format!(
+                            "UNIQUE constraint failed: {table}.{pk_col_name} (key {new_row_id} already exists)"
+                        )));
+                    }
+                }
+
+                let new_payload = encode_row(&values);
+                self.btree.delete(pager, root_page, cell.row_id)?;
+                self.btree.insert(pager, root_page, new_row_id, &new_payload)?;
+
+                // Update temporal snapshot for time-travel queries
+                let now_ts = self.next_temporal_timestamp();
+                self.close_temporal_version(pager, &table, cell.row_id, now_ts)?;
+                self.record_temporal_version(pager, &table, new_row_id, &new_payload, now_ts, u64::MAX)?;
+
+                // Update vector index if vector column was updated or row_id changed
+                if let Some((v_idx, _)) = table_def.vector_column() {
+                    if let Some(Value::Vector(vec_data)) = values.get(v_idx) {
+                        let index = self
+                            .vector_indexes
+                            .entry(table.to_lowercase())
+                            .or_insert_with(|| HnswIndex::new(vec_data.len(), DistanceMetric::Cosine));
+                        index.remove_vector(cell.row_id);
+                        index.insert_vector(new_row_id, vec_data)?;
+                    } else if new_row_id != cell.row_id {
+                        if let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase()) {
+                            index.remove_vector(cell.row_id);
+                        }
+                    }
+                }
+
+                // Update secondary indexes with inverted posting lists
+                for index_def in self.catalog.indexes() {
+                    if index_def.table.eq_ignore_ascii_case(&table) {
+                        if let Some(old_val) = full_row.get_field_or_json_path(&index_def.column) {
+                            if !old_val.is_null() {
+                                let old_key = value_to_index_key(&old_val);
+                                if let Some(payload) = self.btree.search(pager, index_def.root_page, old_key)? {
+                                    if let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                                        bucket.remove_row_id(&old_val, cell.row_id);
+                                        if bucket.is_empty() {
+                                            let _ = self.btree.delete(pager, index_def.root_page, old_key);
+                                        } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
+                                            let _ = self.btree.insert(pager, index_def.root_page, old_key, &new_pl);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let updated_temp_row = Row::new(all_col_names.clone(), values.clone());
+                        if let Some(new_val) = updated_temp_row.get_field_or_json_path(&index_def.column) {
+                            if !new_val.is_null() {
+                                let new_key = value_to_index_key(&new_val);
+                                let mut bucket = if let Some(payload) = self.btree.search(pager, index_def.root_page, new_key)? {
+                                    serde_json::from_slice::<IndexBucket>(&payload).unwrap_or_else(|_| IndexBucket::new())
+                                } else {
+                                    IndexBucket::new()
+                                };
+                                bucket.add_row_id(new_val, new_row_id);
+                                if let Ok(new_pl) = serde_json::to_vec(&bucket) {
+                                    let _ = self.btree.insert(pager, index_def.root_page, new_key, &new_pl);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if new_row_id >= table_def.next_row_id {
+                    if let Some(tdef_mut) = self.catalog.get_table_mut(&table) {
+                        tdef_mut.next_row_id = new_row_id + 1;
+                    }
+                }
+
+                if let Some(ref ret_cols) = returning {
+                    let updated_row = Row::new(all_col_names.clone(), values.clone());
+                    if ret_cols.len() == 1 && ret_cols[0] == "*" {
+                        returned_rows.push(updated_row);
+                    } else {
+                        returned_rows.push(project_row(&updated_row, ret_cols)?);
+                    }
+                }
+
+                updated_count += 1;
+            }
+        }
+
+        Ok((updated_count, returned_rows))
+    }
+
+    fn execute_delete(
+        &mut self,
+        pager: &mut Pager,
+        table: String,
+        where_clause: Option<WhereExpr>,
+        returning: Option<Vec<String>>,
+    ) -> Result<(usize, Vec<Row>)> {
+        let table_def = self
+            .catalog
+            .get_table(&table)
+            .cloned()
+            .ok_or_else(|| Error::TableNotFound(table.clone()))?;
+
+        let root_page = table_def.root_page;
+        let all_col_names = table_def.column_names();
+        let cells = self.btree.scan(pager, root_page)?;
+        let mut deleted_count = 0;
+        let mut returned_rows = Vec::new();
+
+        let resolved_where = if let Some(ref expr) = where_clause {
+            Some(self.resolve_where_expr(pager, expr)?)
+        } else {
+            None
+        };
+
+        for cell in cells {
+            let full_row = decode_row(&cell.payload, &all_col_names)?;
+            let matches = if let Some(ref r_expr) = resolved_where {
+                row_matches_resolved(&full_row, r_expr)
+            } else {
+                true
+            };
+
+            if matches {
+                if let Some(ref ret_cols) = returning {
+                    if ret_cols.len() == 1 && ret_cols[0] == "*" {
+                        returned_rows.push(full_row.clone());
+                    } else {
+                        returned_rows.push(project_row(&full_row, ret_cols)?);
+                    }
+                }
+
+                self.btree.delete(pager, root_page, cell.row_id)?;
+                let now_ts = self.next_temporal_timestamp();
+                self.close_temporal_version(pager, &table, cell.row_id, now_ts)?;
+                if let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase()) {
+                    index.remove_vector(cell.row_id);
+                }
+                // Delete from secondary indexes with inverted posting lists
+                for index_def in self.catalog.indexes() {
+                    if index_def.table.eq_ignore_ascii_case(&table) {
+                        if let Some(val) = full_row.get_field_or_json_path(&index_def.column) {
+                            if !val.is_null() {
+                                let key = value_to_index_key(&val);
+                                if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
+                                    if let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                                        bucket.remove_row_id(&val, cell.row_id);
+                                        if bucket.is_empty() {
+                                            let _ = self.btree.delete(pager, index_def.root_page, key);
+                                        } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
+                                            let _ = self.btree.insert(pager, index_def.root_page, key, &new_pl);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                deleted_count += 1;
+            }
+        }
+
+        Ok((deleted_count, returned_rows))
     }
 }
 

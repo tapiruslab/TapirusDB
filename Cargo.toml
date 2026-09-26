@@ -21,7 +21,9 @@ exclude = [
 members = [
     ".",
     "crates/tapirus-ffi",
-    "crates/tapirus-wasm"
+    "crates/tapirus-wasm",
+    "sdks/python",
+    "sdks/nodejs"
 ]
 
 [[bin]]
