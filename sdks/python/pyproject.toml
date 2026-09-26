@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "tapirus"
-version = "1.0.0"
+version = "1.0.1"
 description = "Official Python SDK for TapirusDB — Safe-Rust Quad-Model Embedded AI Database & Agent Memory Engine"
 readme = "README.md"
 authors = [{ name = "Ahmad Faiz", email = "faiz@tapirusdb.com" }]
