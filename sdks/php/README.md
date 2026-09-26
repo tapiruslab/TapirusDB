@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/assets/icons/php.svg" width="64" height="64" alt="PHP Logo" />
+
 # TapirusDB PHP SDK
 
 ### Official PHP Client for TapirusDB — Embedded Quad-Model AI Database & Memory Engine

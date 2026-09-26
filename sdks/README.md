@@ -36,13 +36,14 @@ TapirusDB supports two high-performance integration topologies:
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-| SDK / Language | Primary Protocol | Integration Type | Fallback Mode | Thread Safety |
+| SDK / Language | Registry / Package | Primary Protocol | Integration Type | Thread Safety |
 | :--- | :--- | :--- | :--- | :--- |
-| **Python** (`tapirus`) | C-ABI (ctypes) | Direct in-process shared library | Pure-Python memory emulator | Yes (Re-entrant) |
-| **Node.js** (`@tapirus/sdk`) | IPC / HTTP | Microservice / Client | In-memory JS store | Yes |
-| **Go** (`sdks/go`) | HTTP REST / IPC | High-concurrency client | N/A | Fully concurrent (`sync.Mutex`) |
-| **PHP** (`tapirus/tapirus`) | HTTP REST | PSR-18 HTTP client | N/A | Request-scoped |
-| **C / C++** (`include/tapirus.h`) | C99 ABI | Direct static/dynamic link | N/A | Thread-safe handles |
+| <img src="../assets/icons/rust.svg" width="16" height="16" valign="middle" alt="Rust" /> **Rust** | [![Crates.io](https://img.shields.io/crates/v/tapirus.svg?style=flat-square&logo=rust)](https://crates.io/crates/tapirus) | Direct Crate | Embedded in-process Safe Rust engine | 100% Thread-safe (`Send + Sync`) |
+| <img src="../assets/icons/python.svg" width="16" height="16" valign="middle" alt="Python" /> **Python** | [![PyPI](https://img.shields.io/pypi/v/tapirus.svg?style=flat-square&logo=pypi)](https://pypi.org/project/tapirus/) | C-ABI (ctypes) | Direct in-process shared library (`libtapirus`) | Yes (Re-entrant) |
+| <img src="../assets/icons/nodejs.svg" width="16" height="16" valign="middle" alt="Node.js" /> **Node.js / TS** | [![npm](https://img.shields.io/npm/v/tapirus.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/tapirus) | IPC / HTTP / WASM | In-memory JS store & HTTP Daemon Client | Yes |
+| <img src="../assets/icons/go.svg" width="16" height="16" valign="middle" alt="Go" /> **Go** | [![Go Reference](https://pkg.go.dev/badge/github.com/tapiruslab/TapirusDB/sdks/go.svg)](https://pkg.go.dev/github.com/tapiruslab/TapirusDB/sdks/go) | HTTP REST / IPC | High-concurrency native client | Fully concurrent (`sync.Mutex`) |
+| <img src="../assets/icons/php.svg" width="16" height="16" valign="middle" alt="PHP" /> **PHP** | [![Packagist](https://img.shields.io/badge/packagist-v1.0.0-orange.svg?style=flat-square&logo=php)](https://packagist.org/packages/tapiruslab/tapirusdb) | HTTP REST | PSR-18 HTTP client | Request-scoped |
+| <img src="../assets/icons/linux.svg" width="16" height="16" valign="middle" alt="C/C++" /> **C / C++** | `include/tapirus.h` | C99 ABI | Direct static/dynamic link (`.so/.dylib/.dll`) | Thread-safe handles |
 
 ---
 

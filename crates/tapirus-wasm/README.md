@@ -1,10 +1,10 @@
-# @tapirus/tapirus 🦛
+# tapirus-wasm 🦛
 
 > **"One Engine. Four Models. Zero Data Sprawl."**  
 > **TapirusDB in WebAssembly** — The Pure Safe-Rust Multi-Model Database & AI Agent Memory Engine for Web Browsers, Node.js, and Cloudflare Workers.  
 > *Architected by **Ahmad Faiz***
 
-[![npm version](https://img.shields.io/npm/v/@tapirus/db.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/@tapirus/db)
+[![npm version](https://img.shields.io/npm/v/tapirus-wasm.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/tapirus-wasm)
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-purple.svg?style=flat-square)](https://github.com/tapiruslab/TapirusDB/blob/main/LICENSE)
 [![Wasm](https://img.shields.io/badge/WebAssembly-wasm32-blue.svg?style=flat-square&logo=webassembly)](https://webassembly.org/)
 [![Docs](https://img.shields.io/badge/docs-tapirusdb.com-2b3a7e.svg?style=flat-square)](https://tapirusdb.com/docs.html)
@@ -18,7 +18,7 @@
 ## Quick Start (Browser / WebAssembly)
 
 ```javascript
-import init, { TapirusWasm } from '@tapirus/db';
+import init, { TapirusWasm } from 'tapirus-wasm';
 
 async function run() {
   // Initialize Wasm module

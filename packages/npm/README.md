@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/assets/icons/nodejs.svg" width="64" height="64" alt="Node.js Logo" />
+
 # @tapirus/db
 
 ### Official TypeScript & JavaScript SDK for TapirusDB — Embedded Quad-Model AI Database & Memory Engine

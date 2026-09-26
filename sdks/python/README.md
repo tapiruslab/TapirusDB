@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/assets/icons/python.svg" width="64" height="64" alt="Python Logo" />
+
 # TapirusDB Python SDK (`tapirus`)
 
 ### Official Python Client for TapirusDB — Embedded Quad-Model AI Database & Memory Engine

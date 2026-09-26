@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/assets/icons/go.svg" width="64" height="64" alt="Go Logo" />
+
 # TapirusDB Go SDK
 
 ### Official Go Client for TapirusDB — Embedded Quad-Model AI Database & Memory Engine
