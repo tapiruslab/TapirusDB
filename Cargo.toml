@@ -25,6 +25,11 @@ members = [
     "sdks/python",
     "sdks/nodejs"
 ]
+default-members = [
+    ".",
+    "crates/tapirus-ffi",
+    "crates/tapirus-wasm"
+]
 
 [[bin]]
 name = "tapirus"
