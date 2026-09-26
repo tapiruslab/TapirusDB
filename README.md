@@ -151,14 +151,14 @@ docker pull ghcr.io/tapiruslab/tapirusdb:latest
 
 | Ecosystem | Registry / Package | Installation Command | License |
 | :--- | :--- | :--- | :--- |
-| **🦀 Rust** | [![Crates.io](https://img.shields.io/crates/v/tapirus.svg?style=flat-square&logo=rust)](https://crates.io/crates/tapirus) | `cargo add tapirus` | BUSL-1.1 |
-| **🐍 Python** | [![PyPI](https://img.shields.io/pypi/v/tapirus.svg?style=flat-square&logo=pypi)](https://pypi.org/project/tapirus/) | `pip install tapirus` | MIT |
-| **🟢 Node.js / TS** | [![npm](https://img.shields.io/npm/v/tapirus.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/tapirus) | `npm install tapirus` | MIT |
-| **🐹 Go** | [![Go Reference](https://pkg.go.dev/badge/github.com/tapiruslab/TapirusDB/sdks/go.svg)](https://pkg.go.dev/github.com/tapiruslab/TapirusDB/sdks/go) | `go get github.com/tapiruslab/TapirusDB/sdks/go` | MIT |
-| **🐘 PHP** | [![Packagist](https://img.shields.io/badge/packagist-v1.0.0-orange.svg?style=flat-square&logo=php)](https://packagist.org/packages/tapiruslab/tapirusdb) | `composer require tapiruslab/tapirusdb` | MIT |
-| **🐳 Docker** | [![Docker](https://img.shields.io/badge/ghcr.io-tapirusdb-2496ed?style=flat-square&logo=docker)](https://github.com/tapiruslab/TapirusDB/pkgs/container/tapirusdb) | `docker pull ghcr.io/tapiruslab/tapirusdb:latest` | BUSL-1.1 |
-| **🪟 Windows** | [![Winget](https://img.shields.io/badge/winget-tapirus.yaml-0078d4?style=flat-square&logo=windows)](https://github.com/tapiruslab/TapirusDB/blob/main/winget/tapirus.yaml) | `winget install --manifest ...` | BUSL-1.1 |
-| **🍺 Homebrew** | [![Homebrew](https://img.shields.io/badge/brew-tapirus.rb-fbb040?style=flat-square&logo=homebrew)](https://github.com/tapiruslab/TapirusDB/blob/main/Formula/tapirus.rb) | `brew install .../tapirus.rb` | BUSL-1.1 |
+| <img src="assets/icons/rust.svg" width="16" height="16" valign="middle" alt="Rust" /> **Rust** | [![Crates.io](https://img.shields.io/crates/v/tapirus.svg?style=flat-square&logo=rust)](https://crates.io/crates/tapirus) | `cargo add tapirus` | BUSL-1.1 |
+| <img src="assets/icons/python.svg" width="16" height="16" valign="middle" alt="Python" /> **Python** | [![PyPI](https://img.shields.io/pypi/v/tapirus.svg?style=flat-square&logo=pypi)](https://pypi.org/project/tapirus/) | `pip install tapirus` | MIT |
+| <img src="assets/icons/nodejs.svg" width="16" height="16" valign="middle" alt="Node.js" /> **Node.js / TS** | [![npm](https://img.shields.io/npm/v/tapirus.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/tapirus) | `npm install tapirus` | MIT |
+| <img src="assets/icons/go.svg" width="16" height="16" valign="middle" alt="Go" /> **Go** | [![Go Reference](https://pkg.go.dev/badge/github.com/tapiruslab/TapirusDB/sdks/go.svg)](https://pkg.go.dev/github.com/tapiruslab/TapirusDB/sdks/go) | `go get github.com/tapiruslab/TapirusDB/sdks/go` | MIT |
+| <img src="assets/icons/php.svg" width="16" height="16" valign="middle" alt="PHP" /> **PHP** | [![Packagist](https://img.shields.io/badge/packagist-v1.0.0-orange.svg?style=flat-square&logo=php)](https://packagist.org/packages/tapiruslab/tapirusdb) | `composer require tapiruslab/tapirusdb` | MIT |
+| <img src="assets/icons/docker.svg" width="16" height="16" valign="middle" alt="Docker" /> **Docker** | [![Docker](https://img.shields.io/badge/ghcr.io-tapirusdb-2496ed?style=flat-square&logo=docker)](https://github.com/tapiruslab/TapirusDB/pkgs/container/tapirusdb) | `docker pull ghcr.io/tapiruslab/tapirusdb:latest` | BUSL-1.1 |
+| <img src="assets/icons/windows.svg" width="16" height="16" valign="middle" alt="Windows" /> **Windows** | [![Winget](https://img.shields.io/badge/winget-tapirus.yaml-0078d4?style=flat-square&logo=windows)](https://github.com/tapiruslab/TapirusDB/blob/main/winget/tapirus.yaml) | `winget install --manifest ...` | BUSL-1.1 |
+| <img src="assets/icons/homebrew.svg" width="16" height="16" valign="middle" alt="Homebrew" /> **Homebrew** | [![Homebrew](https://img.shields.io/badge/brew-tapirus.rb-fbb040?style=flat-square&logo=homebrew)](https://github.com/tapiruslab/TapirusDB/blob/main/Formula/tapirus.rb) | `brew install .../tapirus.rb` | BUSL-1.1 |
 
 ---
 
