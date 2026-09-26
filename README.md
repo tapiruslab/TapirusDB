@@ -680,7 +680,7 @@ Read the full distributed specification in [`docs/TAPISAURUS_DISTRIBUTED_BLUEPRI
 
 ## Documentation & Architecture
 
-* 📖 [**Production API Cookbook & Code Recipes**](docs/COOKBOOK.md) *(Hybrid RRF Search, GraphRAG, Bulk Ingestion, Time-Travel, Window Functions)*
+* 📖 [**Production API Cookbook & Code Recipes**](docs/COOKBOOK.md) *(Simple Website/Desktop RAG, 1M+ Low-Spec Research Analytics, Hybrid RRF Search, GraphRAG, Bulk Ingestion, Time-Travel, Window Functions)*
 * 🧠 [**Tutorial: Autonomous AI Agent Memory in 30 Minutes**](docs/tutorials/ai_agent_memory_in_30_minutes.md)
 * ⚡ [**Comparative Benchmark vs. DuckDB & LanceDB**](benches/comparison/benchmark_vs_lance_duck.py)
 * 🔌 [**Multi-Language SDK & C-ABI Integration Guide**](sdks/README.md)
