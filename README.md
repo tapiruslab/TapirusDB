@@ -91,6 +91,19 @@ Modern AI and edge developers are forced into **Fragmented Polyglot Persistence*
 * 🖥️ **Tapirus Studio (Free GUI)**: [Run Live in Browser](https://tapirusdb.com/studio/index.html) • [Studio Source Code (GitHub)](https://github.com/tapiruslab/TapirusDB/tree/main/studio)
 * 📦 **Pre-Compiled Binary Assets**: [GitHub Releases](https://github.com/tapiruslab/TapirusDB/releases)
 
+#### Supported Platforms & Distributions
+
+TapirusDB is 100% self-contained with zero cloud or daemon dependencies. Pre-compiled binaries run out-of-the-box across:
+
+| Platform Family | Architecture | Supported Operating Systems & Distros |
+| :--- | :--- | :--- |
+| **Linux (Universal glibc)** | `x86_64`, `aarch64` | **Debian, Ubuntu, Fedora, RHEL, CentOS, Rocky Linux, AlmaLinux, Arch Linux, openSUSE, Amazon Linux 2/2023** |
+| **Linux (musl & Containers)** | `x86_64`, `aarch64` | **Alpine Linux, Docker / OCI (`ghcr.io/tapiruslab/tapirusdb`), Embedded Linux / IoT** |
+| **macOS** | Apple Silicon & Intel | **macOS 12+ (Monterey, Ventura, Sonoma, Sequoia)** |
+| **Windows** | `x86_64` | **Windows 10, Windows 11, Windows Server 2019/2022/2025** |
+| **WebAssembly (WASM)** | `wasm32` | **All modern web browsers (Chrome, Edge, Safari, Firefox)** via [Tapirus Studio](https://tapirusdb.com/studio) |
+
+
 #### Package Managers (Terminal & CLI)
 ```bash
 # macOS & Linux (Homebrew)

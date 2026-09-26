@@ -106,7 +106,7 @@ fn main() {
     println!("\n==========================================================================");
     println!("     🦛 TAPIRUSDB SCIENTIFIC TAIL-LATENCY BENCHMARK SUITE (Safe Rust)    ");
     println!("==========================================================================");
-    println!("Platform       : Linux x86_64 (WSL2 / Ubuntu 24.04)");
+    println!("Platform       : {} {} (Universal POSIX / Multi-Arch)", std::env::consts::OS, std::env::consts::ARCH);
     println!("Compiler       : rustc 1.98.0 | Optimization: Level 3 (Release)");
     println!("Page Size      : 4,096 B | Nonce: Monotonic 96-bit | Memory: Zero-Unsafe");
     println!("Harness Config : Warm-up Enabled | Seed: 0x19890604 | Distribution: Normal/Uniform\n");

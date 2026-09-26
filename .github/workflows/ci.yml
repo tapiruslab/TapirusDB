@@ -8,12 +8,18 @@ on:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - name: "Linux Universal (Debian, Ubuntu, Fedora, RHEL)"
+            os: ubuntu-latest
+          - name: "macOS (Apple Silicon & Intel)"
+            os: macos-latest
+          - name: "Windows (x86_64 MSVC)"
+            os: windows-latest
 
     steps:
       - name: Checkout Code
@@ -30,6 +36,25 @@ jobs:
 
       - name: Run Full Test Suite
         run: cargo test --workspace --verbose
+
+  test-alpine-musl:
+    name: Test (Linux Alpine musl)
+    runs-on: ubuntu-latest
+    container:
+      image: rust:alpine
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Alpine Build Dependencies
+        run: apk add --no-cache musl-dev gcc
+
+      - name: Check Compiler & Lints (musl)
+        run: cargo check --workspace --verbose
+
+      - name: Run Full Test Suite (musl)
+        run: cargo test --workspace --verbose
+
 
   benchmark:
     name: Performance & Latency Benchmark
