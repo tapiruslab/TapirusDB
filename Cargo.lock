@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "tapirus"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "chacha20poly1305",
  "crc32fast",
@@ -478,14 +478,14 @@ dependencies = [
 
 [[package]]
 name = "tapirus-ffi"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "tapirus",
 ]
 
 [[package]]
 name = "tapirus-wasm"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "getrandom 0.4.3",
  "serde_json",

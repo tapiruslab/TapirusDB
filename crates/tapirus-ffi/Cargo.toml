@@ -1,6 +1,6 @@
 [package]
 name = "tapirus-ffi"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 authors = ["Ahmad Faiz <faiz@tapirusdb.com>"]
 license = "BUSL-1.1"
