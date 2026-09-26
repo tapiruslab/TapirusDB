@@ -82,9 +82,12 @@ pub fn pbkdf2_hmac_sha256(passphrase: &[u8], salt: &[u8], iterations: u32) -> [u
     result
 }
 
-/// Derive a 256-bit cryptographic key from a user passphrase and database salt using PBKDF2
+/// Derive a 256-bit cryptographic key from a user passphrase and database salt using PBKDF2.
+///
+/// Uses `PBKDF2_RECOMMENDED_ITERATIONS` (100,000) per OWASP/NIST guidelines for
+/// production brute-force resistance. Use `derive_key_with_iterations` for test/dev fast mode.
 pub fn derive_key(passphrase: &str, salt: &[u8; 16]) -> [u8; 32] {
-    pbkdf2_hmac_sha256(passphrase.as_bytes(), salt, PBKDF2_FAST_ITERATIONS)
+    pbkdf2_hmac_sha256(passphrase.as_bytes(), salt, PBKDF2_RECOMMENDED_ITERATIONS)
 }
 
 /// Derive a 256-bit cryptographic key with explicitly specified PBKDF2 iteration count
@@ -306,13 +309,13 @@ mod tests {
     #[test]
     fn test_cipher_roundtrip_page() {
         let salt = [7u8; 16];
-        let cipher = DatabaseCipher::from_passphrase("super-secret-robot-key", salt);
+        let cipher = DatabaseCipher::from_passphrase_with_iterations("super-secret-robot-key", salt, PBKDF2_FAST_ITERATIONS);
 
         // Test KCV verification
         let kcv = cipher.generate_kcv().unwrap();
         assert!(cipher.verify_kcv(&kcv));
 
-        let wrong_cipher = DatabaseCipher::from_passphrase("wrong-password", salt);
+        let wrong_cipher = DatabaseCipher::from_passphrase_with_iterations("wrong-password", salt, PBKDF2_FAST_ITERATIONS);
         assert!(!wrong_cipher.verify_kcv(&kcv));
 
         // Test Page 2 encryption
@@ -339,7 +342,7 @@ mod tests {
     #[test]
     fn test_cipher_roundtrip_page1() {
         let salt = [3u8; 16];
-        let cipher = DatabaseCipher::from_passphrase("mars-rover-mission", salt);
+        let cipher = DatabaseCipher::from_passphrase_with_iterations("mars-rover-mission", salt, PBKDF2_FAST_ITERATIONS);
 
         let mut page1 = vec![0u8; 4096];
         page1[0..8].copy_from_slice(b"TAPIRUS\0"); // Plaintext header preserved
@@ -382,7 +385,7 @@ mod tests {
     #[test]
     fn test_monotonic_nonce_uniqueness() {
         let salt = [11u8; 16];
-        let cipher = DatabaseCipher::from_passphrase("quantum_encryption_2026", salt);
+        let cipher = DatabaseCipher::from_passphrase_with_iterations("quantum_encryption_2026", salt, PBKDF2_FAST_ITERATIONS);
 
         let page_data = vec![0xaau8; 4096];
 

@@ -37,6 +37,8 @@ docs/INTERNAL_*
 audit/
 scratch/
 *.audit.md
+*audit*
+
 
 # Large Model Binaries & Installers (Local Only)
 *.gguf

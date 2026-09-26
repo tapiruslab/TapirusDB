@@ -406,7 +406,7 @@ let route = db.graph_query("
 
 ## Architectural Comparison
 
-| Capability | **TapirusDB v0.1.3** | Traditional Relational (SQLite / DuckDB) | Dedicated Vector DBs | Graph Databases (Neo4j) | Document Stores (MongoDB) |
+| Capability | **TapirusDB v1.0.0** | Traditional Relational (SQLite / DuckDB) | Dedicated Vector DBs | Graph Databases (Neo4j) | Document Stores (MongoDB) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Runtime Architecture** | **In-Process Single File** | In-Process Single File | Server Daemon / Cloud | Server Daemon (JVM) | Server Daemon (`mongod`) |
 | **Memory Safety Model** | **100% Safe Rust (`forbid`)** | C / C++ (Manual memory) | Rust / Go / C++ | Java / JVM | C++ |
