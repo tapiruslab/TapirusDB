@@ -84,23 +84,29 @@ class FFIWrapper:
         lib.tapirus_close.argtypes = [ctypes.c_void_p]
         lib.tapirus_close.restype = None
 
-        # tapirus_execute
-        lib.tapirus_execute.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        # tapirus_execute(conn, sql, &err_msg) -> int32
+        lib.tapirus_execute.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_char_p)]
         lib.tapirus_execute.restype = ctypes.c_int32
 
-        # tapirus_query
-        lib.tapirus_query.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-        lib.tapirus_query.restype = ctypes.c_void_p
+        # tapirus_query_json(conn, sql, &json_out, &err_msg) -> int32
+        lib.tapirus_query_json.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.POINTER(ctypes.c_char_p),
+        ]
+        lib.tapirus_query_json.restype = ctypes.c_int32
 
-        # tapirus_free_string
-        lib.tapirus_free_string.argtypes = [ctypes.c_void_p]
+        # tapirus_checkpoint(conn) -> int64
+        if hasattr(lib, "tapirus_checkpoint"):
+            lib.tapirus_checkpoint.argtypes = [ctypes.c_void_p]
+            lib.tapirus_checkpoint.restype = ctypes.c_int64
+
+        # tapirus_free_string(ptr)
+        lib.tapirus_free_string.argtypes = [ctypes.c_char_p]
         lib.tapirus_free_string.restype = None
 
-        # tapirus_last_error
-        lib.tapirus_last_error.argtypes = [ctypes.c_void_p]
-        lib.tapirus_last_error.restype = ctypes.c_void_p
-
-        # tapirus_version
+        # tapirus_version() -> const char*
         lib.tapirus_version.argtypes = []
         lib.tapirus_version.restype = ctypes.c_char_p
 

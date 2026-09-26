@@ -252,19 +252,35 @@ The Node.js SDK allows JavaScript/TypeScript backends to interact with TapirusDB
 
 ### Installation
 ```bash
-npm install @tapirus/sdk
+npm install tapirus
+# Or from local source:
+cd sdks/nodejs && npm link
 ```
 
 ### Usage Example
 ```javascript
-const tapirus = require('@tapirus/sdk');
+const tapirus = require('tapirus');
 
-const db = tapirus.open(':memory:');
-db.execute("CREATE TABLE users (id INTEGER, name TEXT);");
-db.execute("INSERT INTO users VALUES (1, 'Alice');");
+const db = tapirus.open('analytics.tapir');
+db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, salary INTEGER, dept TEXT);");
+db.execute("INSERT INTO users VALUES (1, 'Alice', 9000, 'Eng');");
+db.execute("INSERT INTO users VALUES (2, 'Bob', 8000, 'Eng');");
 
-const users = db.query("SELECT * FROM users;");
-console.log(users);
+// 1. Relational SQL with Window Functions
+const ranked = db.query(`
+  SELECT id, name, salary,
+         ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) AS rn,
+         DENSE_RANK() OVER (ORDER BY salary DESC) AS drank
+  FROM users;
+`);
+console.log('Ranked users:', ranked);
+
+// 2. Vector Similarity Search
+const matches = db.vectorSearch('articles', 'embedding', [0.12, 0.45, -0.67], 5);
+
+// 3. Native Graph Algorithms
+const pagerank = db.graphAlgorithm('PAGERANK', { damping: 0.85, iterations: 20 });
+console.log('PageRank:', pagerank);
 ```
 
 ---
@@ -275,6 +291,7 @@ For systems programming, IoT firmware, or custom language foreign function bindi
 
 ```c
 #include <stdio.h>
+#include <stdlib.h>
 #include "tapirus.h"
 
 int main() {
@@ -286,14 +303,23 @@ int main() {
     }
 
     // Execute schema migration
-    tapirus_execute(db, "CREATE TABLE sensor_log (id INTEGER, temp REAL, ts INTEGER);");
-    tapirus_execute(db, "INSERT INTO sensor_log VALUES (1, 23.4, 1790400000);");
+    char* err_msg = NULL;
+    int32_t affected = tapirus_execute(db, "CREATE TABLE sensor_log (id INTEGER, temp REAL, ts INTEGER);", &err_msg);
+    if (affected < 0) {
+        printf("Error: %s\n", err_msg ? err_msg : "Unknown error");
+        tapirus_free_string(err_msg);
+    }
+    tapirus_execute(db, "INSERT INTO sensor_log VALUES (1, 23.4, 1790400000);", NULL);
 
     // Query JSON formatted results
-    char* json = tapirus_query(db, "SELECT * FROM sensor_log;");
-    if (json) {
-        printf("Result: %s\n", json);
-        tapirus_free_string(json);
+    char* json_out = NULL;
+    int32_t rc = tapirus_query_json(db, "SELECT * FROM sensor_log;", &json_out, &err_msg);
+    if (rc == 0 && json_out) {
+        printf("Result: %s\n", json_out);
+        tapirus_free_string(json_out);
+    } else if (err_msg) {
+        printf("Query error: %s\n", err_msg);
+        tapirus_free_string(err_msg);
     }
 
     // Close connection

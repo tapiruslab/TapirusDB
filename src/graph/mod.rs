@@ -603,6 +603,255 @@ impl GraphEngine {
         ranks
     }
 
+    /// Compute Weakly Connected Components (WCC) for all nodes in the graph
+    /// Returns a map of node_id -> component_id (0, 1, 2, ...)
+    pub fn connected_components(&self) -> HashMap<u64, usize> {
+        let mut components: HashMap<u64, usize> = HashMap::new();
+        let mut current_comp_id = 0;
+
+        for &node_id in self.nodes.keys() {
+            if components.contains_key(&node_id) {
+                continue;
+            }
+
+            // BFS from node_id traversing edges in both directions
+            let mut queue = VecDeque::new();
+            queue.push_back(node_id);
+            components.insert(node_id, current_comp_id);
+
+            while let Some(curr) = queue.pop_front() {
+                // Outgoing neighbors
+                if let Some(edge_ids) = self.outgoing.get(&curr) {
+                    for &eid in edge_ids {
+                        if let Some(edge) = self.edges.get(&eid) {
+                            let neighbor = edge.to_id;
+                            if !components.contains_key(&neighbor) && self.nodes.contains_key(&neighbor) {
+                                components.insert(neighbor, current_comp_id);
+                                queue.push_back(neighbor);
+                            }
+                        }
+                    }
+                }
+
+                // Incoming neighbors
+                if let Some(edge_ids) = self.incoming.get(&curr) {
+                    for &eid in edge_ids {
+                        if let Some(edge) = self.edges.get(&eid) {
+                            let neighbor = edge.from_id;
+                            if !components.contains_key(&neighbor) && self.nodes.contains_key(&neighbor) {
+                                components.insert(neighbor, current_comp_id);
+                                queue.push_back(neighbor);
+                            }
+                        }
+                    }
+                }
+            }
+
+            current_comp_id += 1;
+        }
+
+        components
+    }
+
+    /// Compute Betweenness Centrality scores for all nodes using Brandes' algorithm
+    pub fn betweenness_centrality(&self, normalized: bool) -> HashMap<u64, f32> {
+        let mut cb: HashMap<u64, f32> = self.nodes.keys().map(|&id| (id, 0.0)).collect();
+        let n = self.nodes.len();
+        if n < 3 {
+            return cb;
+        }
+
+        for &s in self.nodes.keys() {
+            let mut stack: Vec<u64> = Vec::new();
+            let mut p: HashMap<u64, Vec<u64>> = HashMap::new();
+            let mut sigma: HashMap<u64, f32> = self.nodes.keys().map(|&v| (v, 0.0)).collect();
+            let mut d: HashMap<u64, i64> = self.nodes.keys().map(|&v| (v, -1)).collect();
+
+            sigma.insert(s, 1.0);
+            d.insert(s, 0);
+
+            let mut queue = VecDeque::new();
+            queue.push_back(s);
+
+            while let Some(v) = queue.pop_front() {
+                stack.push(v);
+                let d_v = *d.get(&v).unwrap_or(&-1);
+
+                // Consider outgoing neighbors
+                if let Some(edge_ids) = self.outgoing.get(&v) {
+                    for &eid in edge_ids {
+                        if let Some(edge) = self.edges.get(&eid) {
+                            let w = edge.to_id;
+                            if !self.nodes.contains_key(&w) {
+                                continue;
+                            }
+                            let d_w = *d.get(&w).unwrap_or(&-1);
+                            // w found for the first time?
+                            if d_w < 0 {
+                                queue.push_back(w);
+                                d.insert(w, d_v + 1);
+                            }
+                            // shortest path to w via v?
+                            if *d.get(&w).unwrap_or(&-1) == d_v + 1 {
+                                let sigma_v = *sigma.get(&v).unwrap_or(&0.0);
+                                *sigma.entry(w).or_insert(0.0) += sigma_v;
+                                p.entry(w).or_default().push(v);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut delta: HashMap<u64, f32> = self.nodes.keys().map(|&v| (v, 0.0)).collect();
+            while let Some(w) = stack.pop() {
+                if let Some(preds) = p.get(&w) {
+                    let delta_w = *delta.get(&w).unwrap_or(&0.0);
+                    let sigma_w = *sigma.get(&w).unwrap_or(&1.0);
+                    for &v in preds {
+                        let sigma_v = *sigma.get(&v).unwrap_or(&0.0);
+                        let coeff = (sigma_v / sigma_w.max(1e-9)) * (1.0 + delta_w);
+                        *delta.entry(v).or_insert(0.0) += coeff;
+                    }
+                }
+                if w != s {
+                    let d_w = *delta.get(&w).unwrap_or(&0.0);
+                    *cb.entry(w).or_insert(0.0) += d_w;
+                }
+            }
+        }
+
+        if normalized && n > 2 {
+            let scale = 1.0 / ((n - 1) * (n - 2)) as f32;
+            for val in cb.values_mut() {
+                *val *= scale;
+            }
+        }
+
+        cb
+    }
+
+    /// Fast Louvain Modularity Community Detection
+    /// Returns node_id -> community_id mapping
+    pub fn louvain_communities(&self) -> HashMap<u64, usize> {
+        let n = self.nodes.len();
+        if n == 0 {
+            return HashMap::new();
+        }
+
+        let mut communities: HashMap<u64, usize> = HashMap::new();
+        let mut node_list: Vec<u64> = self.nodes.keys().copied().collect();
+        node_list.sort_unstable();
+
+        for (idx, &id) in node_list.iter().enumerate() {
+            communities.insert(id, idx);
+        }
+
+        let mut total_weight = 0.0f32;
+        let mut node_degree: HashMap<u64, f32> = HashMap::new();
+
+        for (&id, _) in &self.nodes {
+            let mut deg = 0.0f32;
+            if let Some(edge_ids) = self.outgoing.get(&id) {
+                for &eid in edge_ids {
+                    if let Some(edge) = self.edges.get(&eid) {
+                        deg += edge.weight.max(0.001);
+                    }
+                }
+            }
+            if let Some(edge_ids) = self.incoming.get(&id) {
+                for &eid in edge_ids {
+                    if let Some(edge) = self.edges.get(&eid) {
+                        deg += edge.weight.max(0.001);
+                    }
+                }
+            }
+            node_degree.insert(id, deg);
+            total_weight += deg;
+        }
+
+        let m = (total_weight / 2.0).max(1.0);
+
+        let mut comm_tot: HashMap<usize, f32> = HashMap::new();
+        for (&id, &comm) in &communities {
+            let deg = node_degree.get(&id).copied().unwrap_or(0.0);
+            *comm_tot.entry(comm).or_insert(0.0) += deg;
+        }
+
+        for _ in 0..15 {
+            let mut moved = false;
+
+            for &u in &node_list {
+                let current_comm = *communities.get(&u).unwrap();
+                let k_u = node_degree.get(&u).copied().unwrap_or(0.0);
+
+                let mut neighbor_comms: HashMap<usize, f32> = HashMap::new();
+                if let Some(edge_ids) = self.outgoing.get(&u) {
+                    for &eid in edge_ids {
+                        if let Some(edge) = self.edges.get(&eid) {
+                            if let Some(&target_comm) = communities.get(&edge.to_id) {
+                                *neighbor_comms.entry(target_comm).or_insert(0.0) += edge.weight.max(0.001);
+                            }
+                        }
+                    }
+                }
+                if let Some(edge_ids) = self.incoming.get(&u) {
+                    for &eid in edge_ids {
+                        if let Some(edge) = self.edges.get(&eid) {
+                            if let Some(&source_comm) = communities.get(&edge.from_id) {
+                                *neighbor_comms.entry(source_comm).or_insert(0.0) += edge.weight.max(0.001);
+                            }
+                        }
+                    }
+                }
+
+                *comm_tot.entry(current_comm).or_insert(0.0) -= k_u;
+
+                let k_u_in_curr = neighbor_comms.get(&current_comm).copied().unwrap_or(0.0);
+                let tot_curr = *comm_tot.get(&current_comm).unwrap_or(&0.0);
+                let mut best_comm = current_comm;
+                let mut best_gain = (k_u_in_curr / (2.0 * m)) - ((tot_curr * k_u) / (4.0 * m * m));
+
+                for (&c, &k_u_in) in &neighbor_comms {
+                    if c == current_comm {
+                        continue;
+                    }
+                    let tot_c = *comm_tot.get(&c).unwrap_or(&0.0);
+                    let gain = (k_u_in / (2.0 * m)) - ((tot_c * k_u) / (4.0 * m * m));
+                    if gain > best_gain {
+                        best_gain = gain;
+                        best_comm = c;
+                    }
+                }
+
+                communities.insert(u, best_comm);
+                *comm_tot.entry(best_comm).or_insert(0.0) += k_u;
+
+                if best_comm != current_comm {
+                    moved = true;
+                }
+            }
+
+            if !moved {
+                break;
+            }
+        }
+
+        let mut comm_map: HashMap<usize, usize> = HashMap::new();
+        let mut next_id = 0;
+        let mut result = HashMap::new();
+
+        for (&node_id, &comm) in &communities {
+            let normalized_id = *comm_map.entry(comm).or_insert_with(|| {
+                let id = next_id;
+                next_id += 1;
+                id
+            });
+            result.insert(node_id, normalized_id);
+        }
+
+        result
+    }
+
     /// Convert graph into a contiguous Compressed Sparse Row (CSR) topology
     pub fn to_csr(&self) -> CsrGraph {
         CsrGraph::from_graph_engine(self)
@@ -662,4 +911,41 @@ mod tests {
         assert_eq!(nodes.len(), 3); // 2, 1 (incoming), 3 (outgoing)
         assert_eq!(edges.len(), 2);
     }
+
+    #[test]
+    fn test_graph_advanced_algorithms() {
+        let mut graph = GraphEngine::new();
+
+        // Component 1: 1 - 2 - 3 (dense cluster)
+        graph.add_node(1, "A", "").unwrap();
+        graph.add_node(2, "B", "").unwrap();
+        graph.add_node(3, "C", "").unwrap();
+        graph.add_edge(1, 2, "LINK", 10.0, "").unwrap();
+        graph.add_edge(2, 3, "LINK", 10.0, "").unwrap();
+        graph.add_edge(3, 1, "LINK", 10.0, "").unwrap();
+
+        // Component 2: 4 - 5
+        graph.add_node(4, "D", "").unwrap();
+        graph.add_node(5, "E", "").unwrap();
+        graph.add_edge(4, 5, "LINK", 10.0, "").unwrap();
+
+        // 1. Weakly Connected Components
+        let wcc = graph.connected_components();
+        assert_eq!(wcc.len(), 5);
+        assert_eq!(wcc[&1], wcc[&2]);
+        assert_eq!(wcc[&2], wcc[&3]);
+        assert_eq!(wcc[&4], wcc[&5]);
+        assert_ne!(wcc[&1], wcc[&4]);
+
+        // 2. Betweenness Centrality
+        let bc = graph.betweenness_centrality(false);
+        assert_eq!(bc.len(), 5);
+
+        // 3. Louvain Communities
+        let comms = graph.louvain_communities();
+        assert_eq!(comms.len(), 5);
+        assert_eq!(comms[&1], comms[&2]);
+        assert_eq!(comms[&4], comms[&5]);
+    }
 }
+

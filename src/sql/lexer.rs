@@ -82,6 +82,25 @@ pub enum Token {
     Return,
     Analyze,
 
+    // Window Function Keywords
+    Over,
+    Partition,
+    RowNumber,
+    Rank,
+    DenseRank,
+    Ntile,
+    Lag,
+    Lead,
+    Rows,
+    Unbounded,
+    Preceding,
+    Following,
+    Current,
+    Row,
+
+    // Graph Algorithm
+    Algorithm,
+
     // Literals & Identifiers
     Ident(String),
     StringLit(String),
@@ -409,6 +428,23 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
                 "WITH" => Token::With,
                 "RETURN" => Token::Return,
                 "ANALYZE" => Token::Analyze,
+                // Window function keywords
+                "OVER" => Token::Over,
+                "PARTITION" => Token::Partition,
+                "ROW_NUMBER" => Token::RowNumber,
+                "RANK" => Token::Rank,
+                "DENSE_RANK" => Token::DenseRank,
+                "NTILE" => Token::Ntile,
+                "LAG" => Token::Lag,
+                "LEAD" => Token::Lead,
+                "ROWS" => Token::Rows,
+                "UNBOUNDED" => Token::Unbounded,
+                "PRECEDING" => Token::Preceding,
+                "FOLLOWING" => Token::Following,
+                "CURRENT" => Token::Current,
+                "ROW" => Token::Row,
+                // Graph algorithm keyword
+                "ALGORITHM" => Token::Algorithm,
                 _ => Token::Ident(word),
             };
             tokens.push(tok);

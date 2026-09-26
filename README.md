@@ -51,6 +51,7 @@ Modern AI and edge developers are forced into **Fragmented Polyglot Persistence*
 * 🦀 **100% Pure Safe Rust (`#![forbid(unsafe_code)]`)**: Guaranteed memory safety at compile-time. Zero buffer overflows, zero dangling pointers, zero use-after-free vulnerabilities, and zero C/C++ memory corruption CVEs.
 * 📦 **True In-Process Architecture (Zero-IPC)**: Compiles and links directly into your binary (Rust, Python, TypeScript, C/C++, Go). No background database servers (`mysqld`, `postgres`, `mongod`), zero network serialization overhead, and sub-microsecond in-memory query traversal.
 * ⚡ **Quad-Model Data Consolidation**: Seamlessly unifies **Relational SQL-92**, **HNSW & IVF Vector Search**, **openCypher Property Graphs**, and **MongoDB-style JSON Documents** inside a single B+Tree slotted-page file.
+* 📈 **Advanced SQL Window Functions & Graph Algorithms**: Built-in ANSI SQL window operations (`ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `NTILE()`, `LAG()`, `LEAD()`) and native graph topology algorithms (`GRAPH ALGORITHM louvain`, `betweenness`, `connected_components`, `pagerank`).
 * 🧠 **Production GraphRAG & AI Memory**: Built-in seed-and-traverse GraphRAG with Tri-Modal Reciprocal Rank Fusion (RRF), episodic memory with exponential temporal decay, and isolated agent namespaces.
 * 🎯 **Dynamic 16-Lane SIMD & RaBitQ 32x Quantization**: Parallel AVX-512 / AVX2 / NEON vector kernels combined with Fast Walsh-Hadamard 1-bit/2-bit random rotation quantization, reducing 1536-D embeddings from 6,144 bytes to **196 bytes** with single-cycle `POPCNT` distance evaluation.
 * 🕸️ **Compressed Sparse Row (CSR) Topology & openCypher**: Contiguous adjacency arrays on disk and in memory for zero-allocation slice neighbor sweeps, paired with standard declarative openCypher syntax (`MATCH ... WHERE ... RETURN ...`).
@@ -279,37 +280,51 @@ fn main() -> Result<()> {
 
 #### Python: Clean Native Integration
 ```python
-from tapirus import Tapirus
+import tapirus
 
-with Tapirus.open("app.tapir", passphrase="master_vault_key") as db:
-    # ACID Transaction
-    db.execute("BEGIN;")
-    db.execute("CREATE TABLE telemetry (id INTEGER PRIMARY KEY, sensor TEXT, value REAL);")
-    db.execute("INSERT INTO telemetry VALUES (1, 'temperature', 23.8);")
-    db.execute("COMMIT;")
+# Connect directly to local encrypted vault or in-memory
+conn = tapirus.connect("app.tapir")
 
-    # Direct Python dictionary results
-    records = db.query("SELECT * FROM telemetry WHERE value > 20.0;")
-    print(records)  # [{'id': 1, 'sensor': 'temperature', 'value': 23.8}]
+# 1. Relational SQL & Window Functions
+conn.execute("CREATE TABLE telemetry (id INTEGER PRIMARY KEY, sensor TEXT, value REAL);")
+conn.execute("INSERT INTO telemetry VALUES (1, 'temp', 23.8), (2, 'temp', 24.1), (3, 'temp', 22.9);")
+records = conn.query("""
+    SELECT id, sensor, value, 
+           ROW_NUMBER() OVER (ORDER BY value DESC) as rank 
+    FROM telemetry;
+""")
+print(records)  # [{'id': 2, 'sensor': 'temp', 'value': 24.1, 'rank': 1}, ...]
+
+# 2. Native Vector Search
+conn.execute("CREATE TABLE docs (id INTEGER PRIMARY KEY, vec VECTOR(3));")
+conn.execute("INSERT INTO docs VALUES (1, [0.9, 0.1, 0.0]), (2, [0.1, 0.9, 0.0]);")
+top_docs = conn.vector_search("docs", "vec", [0.85, 0.15, 0.0], top_k=1)
+
+# 3. Native Graph Algorithms
+community_map = conn.graph_algorithm("louvain")
+conn.checkpoint()
 ```
 
 #### Node.js & TypeScript: Zero-Daemon Embedded Database
-```javascript
-// Install: npm install tapirus
-// Run script: node app.mjs
-import { open, Tapirus } from "tapirus";
+```typescript
+import { TapirusClient, open } from "tapirusdb";
 
-const db = open("production.tapir");
+// Connect to single-file database
+const db = new TapirusClient({ dbPath: "production.tapir" });
 
-// Relational SQL
-db.execute("CREATE TABLE IF NOT EXISTS users (id INT, name TEXT, active INT);");
-db.execute("INSERT INTO users VALUES (1, 'Faiz', 1);");
+// 1. Relational SQL with Window Functions
+await db.execute("CREATE TABLE users (id INT PRIMARY KEY, name TEXT, score REAL);");
+await db.execute("INSERT INTO users VALUES (1, 'Alice', 95.5), (2, 'Bob', 88.0);");
+const ranked = await db.query(`
+  SELECT name, score, 
+         RANK() OVER (ORDER BY score DESC) as leaderboard_rank 
+  FROM users;
+`);
+console.log(ranked);
 
-// Query rows as JSON objects
-const rows = db.query("SELECT * FROM users WHERE active = 1;");
-console.log(rows); // [ { id: 1, raw: "INSERT INTO users VALUES (1, 'Faiz', 1)" } ]
-
-db.close();
+// 2. Built-in SIMD Vector Search & Graph Clustering
+const neighbors = await db.vectorSearch("docs", "vec", [0.9, 0.1, 0.0], 5);
+const communities = await db.graphAlgorithm("louvain");
 ```
 
 ---
@@ -665,6 +680,9 @@ Read the full distributed specification in [`docs/TAPISAURUS_DISTRIBUTED_BLUEPRI
 
 ## Documentation & Architecture
 
+* [**Tutorial: Autonomous AI Agent Memory in 30 Minutes**](docs/tutorials/ai_agent_memory_in_30_minutes.md)
+* [**Comparative Benchmark vs. DuckDB & LanceDB**](benches/comparison/benchmark_vs_lance_duck.py)
+* [**Multi-Language SDK & C-ABI Integration Guide**](sdks/README.md)
 * [**Architecture Blueprint & Binary File Layout**](BLUEPRINT.md)
 * [**GraphRAG & Cloud S3/R2 Remote Storage**](docs/GRAPHRAG_AND_REMOTE_STORAGE.md)
 * [**Robotics, Edge Silicon & Autonomous Vehicles**](docs/ROBOTICS_AUTOMOTIVE_EDGE.md)

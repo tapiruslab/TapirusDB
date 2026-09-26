@@ -88,6 +88,43 @@ fn main() {
         }
     };
 
+    // Non-interactive execution: tapirus [DB] [-c SQL | --sql SQL | --json SQL | "SELECT ..."]
+    if args.len() > 2 {
+        let (sql_cmd, is_json) = if args[2] == "-c" || args[2] == "--sql" {
+            (args.get(3).cloned().unwrap_or_default(), false)
+        } else if args[2] == "--json" {
+            (args.get(3).cloned().unwrap_or_default(), true)
+        } else if !args[2].starts_with('-') {
+            (args[2..].join(" "), false)
+        } else {
+            (String::new(), false)
+        };
+
+        if !sql_cmd.is_empty() {
+            if is_json {
+                match conn.query(&sql_cmd) {
+                    Ok(rows) => {
+                        let json_rows: Vec<serde_json::Value> = rows.iter().map(|r| {
+                            let mut map = serde_json::Map::new();
+                            for (c, v) in r.columns().iter().zip(r.values().iter()) {
+                                map.insert(c.clone(), serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
+                            }
+                            serde_json::Value::Object(map)
+                        }).collect();
+                        println!("{}", serde_json::to_string(&json_rows).unwrap_or_else(|_| "[]".to_string()));
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                execute_statement(&conn, &sql_cmd);
+            }
+            return;
+        }
+    }
+
     println!("{BANNER}");
     println!("TapirusDB v{VERSION} — The Safe-Rust Embedded Quad-Model AI Engine");
     println!("Connected to: {target} (Page Size: 4,096 B | 100% Safe Rust)");

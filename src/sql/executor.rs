@@ -1282,6 +1282,7 @@ impl SQLExecutor {
             | Statement::GraphTraverse { .. }
             | Statement::GraphShortestPath { .. }
             | Statement::GraphMatch { .. }
+            | Statement::GraphAlgorithm { .. }
             | Statement::WithCte { .. } => {
                 Err(Error::SqlSyntax(
                     "Query statement passed to execute(); use query() instead".into(),
@@ -1702,6 +1703,11 @@ impl SQLExecutor {
                     }
 
                     return Ok(vec![Row::new(agg_cols, agg_vals)]);
+                }
+
+                // Evaluate window functions if present in columns
+                if columns.iter().any(|c| has_window_function(c)) {
+                    evaluate_window_functions(&mut left_rows, &columns)?;
                 }
 
                 // Apply ORDER BY sorting if requested
@@ -2171,6 +2177,87 @@ impl SQLExecutor {
                 }
 
                 Ok(rows)
+            }
+
+            Statement::GraphAlgorithm { algorithm, options } => {
+                match algorithm.as_str() {
+                    "PAGERANK" => {
+                        let damping: f32 = options.get("damping").and_then(|v| v.parse().ok()).unwrap_or(0.85);
+                        let iterations: usize = options.get("iterations").and_then(|v| v.parse().ok()).unwrap_or(20);
+                        let tol: f32 = options.get("tolerance").and_then(|v| v.parse().ok()).unwrap_or(1e-4);
+                        let ranks = self.graph.pagerank(damping, iterations, tol);
+
+                        let cols = vec!["node_id".to_string(), "label".to_string(), "pagerank".to_string()];
+                        let mut rows = Vec::new();
+                        let mut sorted: Vec<(u64, f32)> = ranks.into_iter().collect();
+                        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                        for (id, rank) in sorted {
+                            let label = self.graph.get_node(id).map(|n| n.label.clone()).unwrap_or_default();
+                            rows.push(Row::new(cols.clone(), vec![
+                                Value::Integer(id as i64),
+                                Value::Text(label),
+                                Value::Real(rank as f64),
+                            ]));
+                        }
+                        Ok(rows)
+                    }
+                    "CONNECTED_COMPONENTS" | "COMPONENTS" | "WCC" => {
+                        let components = self.graph.connected_components();
+                        let cols = vec!["node_id".to_string(), "label".to_string(), "component_id".to_string()];
+                        let mut rows = Vec::new();
+                        let mut sorted: Vec<(u64, usize)> = components.into_iter().collect();
+                        sorted.sort_by_key(|&(id, comp)| (comp, id));
+
+                        for (id, comp) in sorted {
+                            let label = self.graph.get_node(id).map(|n| n.label.clone()).unwrap_or_default();
+                            rows.push(Row::new(cols.clone(), vec![
+                                Value::Integer(id as i64),
+                                Value::Text(label),
+                                Value::Integer(comp as i64),
+                            ]));
+                        }
+                        Ok(rows)
+                    }
+                    "BETWEENNESS" | "BETWEENNESS_CENTRALITY" => {
+                        let normalized = options.get("normalized").map(|v| v != "false" && v != "0").unwrap_or(true);
+                        let scores = self.graph.betweenness_centrality(normalized);
+                        let cols = vec!["node_id".to_string(), "label".to_string(), "betweenness".to_string()];
+                        let mut rows = Vec::new();
+                        let mut sorted: Vec<(u64, f32)> = scores.into_iter().collect();
+                        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                        for (id, score) in sorted {
+                            let label = self.graph.get_node(id).map(|n| n.label.clone()).unwrap_or_default();
+                            rows.push(Row::new(cols.clone(), vec![
+                                Value::Integer(id as i64),
+                                Value::Text(label),
+                                Value::Real(score as f64),
+                            ]));
+                        }
+                        Ok(rows)
+                    }
+                    "LOUVAIN" | "COMMUNITIES" => {
+                        let communities = self.graph.louvain_communities();
+                        let cols = vec!["node_id".to_string(), "label".to_string(), "community_id".to_string()];
+                        let mut rows = Vec::new();
+                        let mut sorted: Vec<(u64, usize)> = communities.into_iter().collect();
+                        sorted.sort_by_key(|&(id, comm)| (comm, id));
+
+                        for (id, comm) in sorted {
+                            let label = self.graph.get_node(id).map(|n| n.label.clone()).unwrap_or_default();
+                            rows.push(Row::new(cols.clone(), vec![
+                                Value::Integer(id as i64),
+                                Value::Text(label),
+                                Value::Integer(comm as i64),
+                            ]));
+                        }
+                        Ok(rows)
+                    }
+                    unknown => Err(Error::SqlSyntax(format!(
+                        "Unknown graph algorithm '{unknown}'. Supported: PAGERANK, CONNECTED_COMPONENTS, BETWEENNESS, LOUVAIN"
+                    ))),
+                }
             }
 
             other => Err(Error::SqlSyntax(format!(
@@ -2719,18 +2806,336 @@ pub fn row_matches_conditions(row: &Row, conditions: &[WhereCondition]) -> bool 
     true
 }
 
+fn parse_col_and_alias(col: &str) -> (&str, Option<&str>) {
+    let trimmed = col.trim();
+    if let Some(pos) = trimmed.to_ascii_uppercase().rfind(" AS ") {
+        let expr = trimmed[..pos].trim();
+        let alias = trimmed[pos + 4..].trim();
+        if !alias.is_empty() {
+            return (expr, Some(alias));
+        }
+    }
+    (trimmed, None)
+}
+
+fn has_window_function(col: &str) -> bool {
+    let u = col.to_ascii_uppercase();
+    u.contains(" OVER ") || u.contains(" OVER(")
+}
+
+#[derive(Debug, Clone)]
+struct ParsedWindowCol {
+    raw: String,
+    expr: String,
+    alias: Option<String>,
+    func: String,
+    arg: String,
+    offset: usize,
+    partition_by: Vec<String>,
+    order_by: Option<(String, bool)>,
+}
+
+fn parse_window_function(col_str: &str) -> Option<ParsedWindowCol> {
+    let (expr, alias) = parse_col_and_alias(col_str);
+    let u = expr.to_ascii_uppercase();
+    let over_pos = u.find(" OVER ")
+        .or_else(|| u.find(" OVER("))?;
+
+    let func_part = expr[..over_pos].trim();
+    let open_p = func_part.find('(')?;
+    let close_p = func_part.rfind(')')?;
+    let func = func_part[..open_p].trim().to_ascii_uppercase();
+    let arg_inner = func_part[open_p + 1..close_p].trim();
+
+    let mut arg = arg_inner.to_string();
+    let mut offset = 1usize;
+
+    if func == "LAG" || func == "LEAD" {
+        if let Some(comma) = arg_inner.find(',') {
+            arg = arg_inner[..comma].trim().to_string();
+            let off_str = arg_inner[comma + 1..].trim();
+            if let Ok(n) = off_str.parse::<usize>() {
+                offset = n;
+            }
+        }
+    } else if func == "NTILE" {
+        if let Ok(n) = arg_inner.parse::<usize>() {
+            offset = n.max(1);
+        }
+    }
+
+    let spec_part = &expr[over_pos..];
+    let spec_open = spec_part.find('(')?;
+    let spec_close = spec_part.rfind(')')?;
+    let spec_inner = spec_part[spec_open + 1..spec_close].trim();
+    let spec_u = spec_inner.to_ascii_uppercase();
+
+    let mut partition_by = Vec::new();
+    let mut order_by = None;
+
+    if let Some(p_idx) = spec_u.find("PARTITION BY") {
+        let after_p = spec_inner[p_idx + 12..].trim();
+        let end_p = after_p.to_ascii_uppercase().find("ORDER BY")
+            .unwrap_or_else(|| after_p.len());
+        let p_cols_str = after_p[..end_p].trim();
+        for c in p_cols_str.split(',') {
+            let trimmed = c.trim();
+            if !trimmed.is_empty() {
+                partition_by.push(trimmed.to_string());
+            }
+        }
+    }
+
+    if let Some(o_idx) = spec_u.find("ORDER BY") {
+        let after_o = spec_inner[o_idx + 8..].trim();
+        let parts: Vec<&str> = after_o.split_whitespace().collect();
+        if !parts.is_empty() {
+            let col = parts[0].trim().to_string();
+            let is_asc = if parts.len() > 1 && parts[1].eq_ignore_ascii_case("DESC") {
+                false
+            } else {
+                true
+            };
+            order_by = Some((col, is_asc));
+        }
+    }
+
+    Some(ParsedWindowCol {
+        raw: col_str.to_string(),
+        expr: expr.to_string(),
+        alias: alias.map(|s| s.to_string()),
+        func,
+        arg,
+        offset,
+        partition_by,
+        order_by,
+    })
+}
+
+fn evaluate_window_functions(rows: &mut Vec<Row>, columns: &[String]) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let n_rows = rows.len();
+
+    for col in columns {
+        if let Some(w) = parse_window_function(col) {
+            let mut partitions: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
+            for i in 0..n_rows {
+                let r = &rows[i];
+                let mut key = Vec::new();
+                for p_col in &w.partition_by {
+                    let v = format!("{:?}", r.get_value(p_col).unwrap_or(&Value::Null));
+                    key.push(v);
+                }
+                partitions.entry(key).or_default().push(i);
+            }
+
+            let mut computed_values: Vec<(usize, Value)> = Vec::with_capacity(n_rows);
+
+            for (_key, mut p_indices) in partitions {
+                if let Some((ref o_col, is_asc)) = w.order_by {
+                    p_indices.sort_by(|&a_idx, &b_idx| {
+                        let val_a = rows[a_idx].get_value(o_col).unwrap_or(&Value::Null);
+                        let val_b = rows[b_idx].get_value(o_col).unwrap_or(&Value::Null);
+                        if is_asc {
+                            val_a.compare(val_b)
+                        } else {
+                            val_b.compare(val_a)
+                        }
+                    });
+                }
+
+                let p_len = p_indices.len();
+                let mut prev_order_val: Option<Value> = None;
+                let mut current_rank = 1usize;
+                let mut current_dense_rank = 1usize;
+
+                for (pos, &row_idx) in p_indices.iter().enumerate() {
+                    let computed_val = match w.func.as_str() {
+                        "ROW_NUMBER" => Value::Integer((pos + 1) as i64),
+                        "RANK" => {
+                            if let Some((ref o_col, _)) = w.order_by {
+                                let cur_val = rows[row_idx].get_value(o_col).cloned().unwrap_or(Value::Null);
+                                if pos > 0 {
+                                    if let Some(ref prev) = prev_order_val {
+                                        if prev != &cur_val {
+                                            current_rank = pos + 1;
+                                        }
+                                    }
+                                }
+                                prev_order_val = Some(cur_val);
+                            } else {
+                                current_rank = pos + 1;
+                            }
+                            Value::Integer(current_rank as i64)
+                        }
+                        "DENSE_RANK" => {
+                            if let Some((ref o_col, _)) = w.order_by {
+                                let cur_val = rows[row_idx].get_value(o_col).cloned().unwrap_or(Value::Null);
+                                if pos > 0 {
+                                    if let Some(ref prev) = prev_order_val {
+                                        if prev != &cur_val {
+                                            current_dense_rank += 1;
+                                        }
+                                    }
+                                }
+                                prev_order_val = Some(cur_val);
+                            } else {
+                                current_dense_rank = pos + 1;
+                            }
+                            Value::Integer(current_dense_rank as i64)
+                        }
+                        "NTILE" => {
+                            let k = w.offset.max(1);
+                            let bucket = (pos * k) / p_len.max(1) + 1;
+                            Value::Integer(bucket as i64)
+                        }
+                        "LAG" => {
+                            if pos >= w.offset {
+                                let target_row_idx = p_indices[pos - w.offset];
+                                rows[target_row_idx].get_value(&w.arg).cloned().unwrap_or(Value::Null)
+                            } else {
+                                Value::Null
+                            }
+                        }
+                        "LEAD" => {
+                            if pos + w.offset < p_len {
+                                let target_row_idx = p_indices[pos + w.offset];
+                                rows[target_row_idx].get_value(&w.arg).cloned().unwrap_or(Value::Null)
+                            } else {
+                                Value::Null
+                            }
+                        }
+                        "COUNT" => {
+                            let is_count_all = w.arg == "*" || w.arg == "1" || w.arg.is_empty();
+                            if is_count_all {
+                                Value::Integer(p_len as i64)
+                            } else {
+                                let mut count = 0i64;
+                                for &idx in &p_indices {
+                                    if let Some(v) = rows[idx].get_value(&w.arg) {
+                                        if v != &Value::Null {
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                                Value::Integer(count)
+                            }
+                        }
+                        "SUM" => {
+                            let mut sum = 0.0f64;
+                            let mut is_int = true;
+                            let mut int_sum = 0i64;
+                            for &idx in &p_indices {
+                                match rows[idx].get_value(&w.arg) {
+                                    Some(Value::Integer(i)) => {
+                                        int_sum += *i;
+                                        sum += *i as f64;
+                                    }
+                                    Some(Value::Real(f)) => {
+                                        is_int = false;
+                                        sum += *f;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if is_int {
+                                Value::Integer(int_sum)
+                            } else {
+                                Value::Real(sum)
+                            }
+                        }
+                        "AVG" => {
+                            let mut sum = 0.0f64;
+                            let mut count = 0usize;
+                            for &idx in &p_indices {
+                                match rows[idx].get_value(&w.arg) {
+                                    Some(Value::Integer(i)) => {
+                                        sum += *i as f64;
+                                        count += 1;
+                                    }
+                                    Some(Value::Real(f)) => {
+                                        sum += *f;
+                                        count += 1;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if count > 0 {
+                                Value::Real(sum / count as f64)
+                            } else {
+                                Value::Null
+                            }
+                        }
+                        "MIN" => {
+                            let mut min_val: Option<Value> = None;
+                            for &idx in &p_indices {
+                                if let Some(v) = rows[idx].get_value(&w.arg) {
+                                    if v != &Value::Null {
+                                        if min_val.is_none() || min_val.as_ref().map(|m| v.compare(m).is_lt()).unwrap_or(false) {
+                                            min_val = Some(v.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            min_val.unwrap_or(Value::Null)
+                        }
+                        "MAX" => {
+                            let mut max_val: Option<Value> = None;
+                            for &idx in &p_indices {
+                                if let Some(v) = rows[idx].get_value(&w.arg) {
+                                    if v != &Value::Null {
+                                        if max_val.is_none() || max_val.as_ref().map(|m| v.compare(m).is_gt()).unwrap_or(false) {
+                                            max_val = Some(v.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            max_val.unwrap_or(Value::Null)
+                        }
+                        _ => Value::Null,
+                    };
+
+                    computed_values.push((row_idx, computed_val));
+                }
+            }
+
+            for (row_idx, val) in computed_values {
+                rows[row_idx].push_column(w.expr.clone(), val.clone());
+                rows[row_idx].push_column(w.raw.clone(), val.clone());
+                if let Some(ref al) = w.alias {
+                    rows[row_idx].push_column(al.clone(), val);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn project_row(row: &Row, requested_cols: &[String]) -> Result<Row> {
+    let mut names = Vec::with_capacity(requested_cols.len());
     let mut vals = Vec::with_capacity(requested_cols.len());
     for col in requested_cols {
-        let val = row.get_field_or_json_path(col).unwrap_or(Value::Null);
+        let (expr, alias) = parse_col_and_alias(col);
+        let val = row.get_field_or_json_path(expr)
+            .or_else(|| row.get_field_or_json_path(col))
+            .unwrap_or(Value::Null);
+        names.push(alias.unwrap_or(expr).to_string());
         vals.push(val);
     }
-    Ok(Row::new(requested_cols.to_vec(), vals))
+    Ok(Row::new(names, vals))
 }
 
 fn is_aggregate_query(columns: &[String]) -> bool {
     columns.iter().any(|c| {
-        let upper = c.to_uppercase();
+        let (expr, _) = parse_col_and_alias(c);
+        let upper = expr.to_ascii_uppercase();
+        if upper.contains(" OVER ") || upper.contains(" OVER(") {
+            return false;
+        }
         upper.starts_with("COUNT(")
             || upper.starts_with("SUM(")
             || upper.starts_with("AVG(")
@@ -2931,5 +3336,84 @@ mod tests {
             .expect("Execute direct match");
         assert_eq!(rows2.len(), 1);
         assert_eq!(rows2[0].get::<String>("a.name").unwrap(), "Faiz");
+    }
+
+    #[test]
+    fn test_executor_window_functions() {
+        let mut pager = Pager::open_in_memory(4096, 128).expect("Pager open");
+        let mut executor = SQLExecutor::new(&mut pager).expect("Init executor");
+
+        executor
+            .execute(&mut pager, parse_sql("CREATE TABLE emp (id INTEGER PRIMARY KEY, name TEXT, dept TEXT, salary INTEGER);").unwrap())
+            .unwrap();
+
+        executor.execute(&mut pager, parse_sql("INSERT INTO emp (id, name, dept, salary) VALUES (1, 'Alice', 'Eng', 9000);").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("INSERT INTO emp (id, name, dept, salary) VALUES (2, 'Bob', 'Eng', 8000);").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("INSERT INTO emp (id, name, dept, salary) VALUES (3, 'Charlie', 'Eng', 8000);").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("INSERT INTO emp (id, name, dept, salary) VALUES (4, 'David', 'Sales', 7000);").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("INSERT INTO emp (id, name, dept, salary) VALUES (5, 'Eve', 'Sales', 6000);").unwrap()).unwrap();
+
+        // 1. ROW_NUMBER with PARTITION BY and ORDER BY
+        let sql_rn = "SELECT id, name, dept, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) AS rn FROM emp ORDER BY id ASC;";
+        let rows_rn = executor.query(&mut pager, parse_sql(sql_rn).unwrap()).expect("Query ROW_NUMBER");
+        assert_eq!(rows_rn.len(), 5);
+        // Alice is rank 1 in Eng
+        assert_eq!(rows_rn[0].get::<i64>("rn").unwrap(), 1);
+        // David is rank 1 in Sales
+        assert_eq!(rows_rn[3].get::<i64>("rn").unwrap(), 1);
+        // Eve is rank 2 in Sales
+        assert_eq!(rows_rn[4].get::<i64>("rn").unwrap(), 2);
+
+        // 2. DENSE_RANK
+        let sql_dr = "SELECT id, salary, DENSE_RANK() OVER (ORDER BY salary DESC) AS drank FROM emp ORDER BY salary DESC;";
+        let rows_dr = executor.query(&mut pager, parse_sql(sql_dr).unwrap()).expect("Query DENSE_RANK");
+        assert_eq!(rows_dr[0].get::<i64>("drank").unwrap(), 1); // 9000
+        assert_eq!(rows_dr[1].get::<i64>("drank").unwrap(), 2); // 8000
+        assert_eq!(rows_dr[2].get::<i64>("drank").unwrap(), 2); // 8000 tie
+        assert_eq!(rows_dr[3].get::<i64>("drank").unwrap(), 3); // 7000
+
+        // 3. LAG and LEAD
+        let sql_lag = "SELECT id, salary, LAG(salary, 1) OVER (ORDER BY id ASC) AS prev_sal, LEAD(salary, 1) OVER (ORDER BY id ASC) AS next_sal FROM emp ORDER BY id ASC;";
+        let rows_lag = executor.query(&mut pager, parse_sql(sql_lag).unwrap()).expect("Query LAG and LEAD");
+        assert_eq!(rows_lag[0].get_value("prev_sal"), Some(&Value::Null));
+        assert_eq!(rows_lag[0].get::<i64>("next_sal").unwrap(), 8000);
+        assert_eq!(rows_lag[1].get::<i64>("prev_sal").unwrap(), 9000);
+
+        // 4. Window SUM with PARTITION BY
+        let sql_sum = "SELECT id, dept, SUM(salary) OVER (PARTITION BY dept) AS total_dept FROM emp ORDER BY id ASC;";
+        let rows_sum = executor.query(&mut pager, parse_sql(sql_sum).unwrap()).expect("Query Window SUM");
+        assert_eq!(rows_sum[0].get::<i64>("total_dept").unwrap(), 25000); // Eng: 9000+8000+8000
+        assert_eq!(rows_sum[3].get::<i64>("total_dept").unwrap(), 13000); // Sales: 7000+6000
+    }
+
+    #[test]
+    fn test_executor_graph_algorithms() {
+        let mut pager = Pager::open_in_memory(4096, 128).expect("Pager open");
+        let mut executor = SQLExecutor::new(&mut pager).expect("Init executor");
+
+        executor.execute(&mut pager, parse_sql("GRAPH INSERT NODE 1 LABEL \"Server\" PROPERTIES \"{}\";").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("GRAPH INSERT NODE 2 LABEL \"Database\" PROPERTIES \"{}\";").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("GRAPH INSERT NODE 3 LABEL \"Cache\" PROPERTIES \"{}\";").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("GRAPH INSERT EDGE 1 2 LABEL \"CONNECTS\";").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("GRAPH INSERT EDGE 2 3 LABEL \"CONNECTS\";").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("GRAPH INSERT EDGE 3 1 LABEL \"CONNECTS\";").unwrap()).unwrap();
+
+        // 1. GRAPH ALGORITHM PAGERANK
+        let pr_rows = executor.query(&mut pager, parse_sql("GRAPH ALGORITHM PAGERANK;").unwrap()).expect("PageRank query");
+        assert_eq!(pr_rows.len(), 3);
+        assert_eq!(pr_rows[0].columns(), &["node_id", "label", "pagerank"]);
+
+        // 2. GRAPH ALGORITHM CONNECTED_COMPONENTS
+        let cc_rows = executor.query(&mut pager, parse_sql("GRAPH ALGORITHM CONNECTED_COMPONENTS;").unwrap()).expect("WCC query");
+        assert_eq!(cc_rows.len(), 3);
+        assert_eq!(cc_rows[0].get::<i64>("component_id").unwrap(), cc_rows[1].get::<i64>("component_id").unwrap());
+
+        // 3. GRAPH ALGORITHM BETWEENNESS
+        let bc_rows = executor.query(&mut pager, parse_sql("GRAPH ALGORITHM BETWEENNESS;").unwrap()).expect("BC query");
+        assert_eq!(bc_rows.len(), 3);
+
+        // 4. GRAPH ALGORITHM LOUVAIN
+        let lv_rows = executor.query(&mut pager, parse_sql("GRAPH ALGORITHM LOUVAIN;").unwrap()).expect("Louvain query");
+        assert_eq!(lv_rows.len(), 3);
     }
 }

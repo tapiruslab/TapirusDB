@@ -380,6 +380,13 @@ pub enum Statement {
         /// Optional target table name to analyze (None means all tables)
         table: Option<String>,
     },
+    /// GRAPH ALGORITHM <name> [options...]
+    GraphAlgorithm {
+        /// Name of the graph algorithm: "PAGERANK", "CONNECTED_COMPONENTS", "BETWEENNESS", "LOUVAIN"
+        algorithm: String,
+        /// Optional configuration options (e.g. "damping", "iterations", "normalized")
+        options: std::collections::HashMap<String, String>,
+    },
 }
 
 /// Substitute '?' positional placeholders in a token stream with bound Values
@@ -542,6 +549,21 @@ pub fn tokens_to_sql(tokens: &[Token]) -> String {
             Token::Colon => s.push(':'),
             Token::Dash => s.push('-'),
             Token::Arrow => s.push_str("->"),
+            Token::Over => s.push_str("OVER"),
+            Token::Partition => s.push_str("PARTITION"),
+            Token::RowNumber => s.push_str("ROW_NUMBER"),
+            Token::Rank => s.push_str("RANK"),
+            Token::DenseRank => s.push_str("DENSE_RANK"),
+            Token::Ntile => s.push_str("NTILE"),
+            Token::Lag => s.push_str("LAG"),
+            Token::Lead => s.push_str("LEAD"),
+            Token::Rows => s.push_str("ROWS"),
+            Token::Unbounded => s.push_str("UNBOUNDED"),
+            Token::Preceding => s.push_str("PRECEDING"),
+            Token::Following => s.push_str("FOLLOWING"),
+            Token::Current => s.push_str("CURRENT"),
+            Token::Row => s.push_str("ROW"),
+            Token::Algorithm => s.push_str("ALGORITHM"),
         }
     }
     s
@@ -820,11 +842,119 @@ fn parse_insert(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     })
 }
 
+fn parse_window_spec(tokens: &[Token], cursor: &mut usize) -> Result<String> {
+    expect_token(tokens, cursor, &Token::Over)?;
+    expect_token(tokens, cursor, &Token::OpenParen)?;
+    let mut parts = Vec::new();
+
+    // Check for PARTITION BY
+    if check_token(tokens, *cursor, &Token::Partition) {
+        *cursor += 1;
+        expect_token(tokens, cursor, &Token::By)?;
+        let mut p_cols = Vec::new();
+        while *cursor < tokens.len() {
+            let col = parse_column_ident(tokens, cursor)?;
+            p_cols.push(col);
+            if check_token(tokens, *cursor, &Token::Comma) {
+                *cursor += 1;
+            } else {
+                break;
+            }
+        }
+        parts.push(format!("PARTITION BY {}", p_cols.join(", ")));
+    }
+
+    // Check for ORDER BY
+    if check_token(tokens, *cursor, &Token::Order) {
+        *cursor += 1;
+        expect_token(tokens, cursor, &Token::By)?;
+        let col = parse_column_ident(tokens, cursor)?;
+        let mut dir = "ASC";
+        if check_token(tokens, *cursor, &Token::Desc) {
+            *cursor += 1;
+            dir = "DESC";
+        } else if check_token(tokens, *cursor, &Token::Asc) {
+            *cursor += 1;
+            dir = "ASC";
+        }
+        parts.push(format!("ORDER BY {col} {dir}"));
+    }
+
+    // Optional ROWS frame
+    if check_token(tokens, *cursor, &Token::Rows) {
+        *cursor += 1;
+        let mut frame_words = Vec::new();
+        while *cursor < tokens.len() && !check_token(tokens, *cursor, &Token::CloseParen) {
+            let tok = get_token(tokens, cursor)?;
+            match tok {
+                Token::Between => frame_words.push("BETWEEN".to_string()),
+                Token::Unbounded => frame_words.push("UNBOUNDED".to_string()),
+                Token::Preceding => frame_words.push("PRECEDING".to_string()),
+                Token::Following => frame_words.push("FOLLOWING".to_string()),
+                Token::Current => frame_words.push("CURRENT".to_string()),
+                Token::Row => frame_words.push("ROW".to_string()),
+                Token::And => frame_words.push("AND".to_string()),
+                Token::IntLit(n) => frame_words.push(n.to_string()),
+                other => frame_words.push(format!("{other:?}")),
+            }
+        }
+        parts.push(format!("ROWS {}", frame_words.join(" ")));
+    }
+
+    expect_token(tokens, cursor, &Token::CloseParen)?;
+    Ok(format!("OVER ({})", parts.join(" ")))
+}
+
 fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<String> {
     if *cursor >= tokens.len() {
         return Err(Error::SqlSyntax("Unexpected end of tokens in column list".into()));
     }
-    match &tokens[*cursor] {
+    let mut expr = match &tokens[*cursor] {
+        Token::RowNumber | Token::Rank | Token::DenseRank => {
+            let func_name = match &tokens[*cursor] {
+                Token::RowNumber => "ROW_NUMBER",
+                Token::Rank => "RANK",
+                Token::DenseRank => "DENSE_RANK",
+                _ => unreachable!(),
+            };
+            *cursor += 1;
+            expect_token(tokens, cursor, &Token::OpenParen)?;
+            expect_token(tokens, cursor, &Token::CloseParen)?;
+            let window_spec = parse_window_spec(tokens, cursor)?;
+            format!("{func_name}() {window_spec}")
+        }
+        Token::Ntile => {
+            *cursor += 1;
+            expect_token(tokens, cursor, &Token::OpenParen)?;
+            let n = match get_token(tokens, cursor)? {
+                Token::IntLit(val) => *val,
+                other => return Err(Error::SqlSyntax(format!("Expected integer in NTILE, got {other:?}"))),
+            };
+            expect_token(tokens, cursor, &Token::CloseParen)?;
+            let window_spec = parse_window_spec(tokens, cursor)?;
+            format!("NTILE({n}) {window_spec}")
+        }
+        Token::Lag | Token::Lead => {
+            let func_name = match &tokens[*cursor] {
+                Token::Lag => "LAG",
+                Token::Lead => "LEAD",
+                _ => unreachable!(),
+            };
+            *cursor += 1;
+            expect_token(tokens, cursor, &Token::OpenParen)?;
+            let col = parse_column_ident(tokens, cursor)?;
+            let mut offset = 1;
+            if check_token(tokens, *cursor, &Token::Comma) {
+                *cursor += 1;
+                match get_token(tokens, cursor)? {
+                    Token::IntLit(val) => offset = *val,
+                    other => return Err(Error::SqlSyntax(format!("Expected integer offset in {func_name}, got {other:?}"))),
+                }
+            }
+            expect_token(tokens, cursor, &Token::CloseParen)?;
+            let window_spec = parse_window_spec(tokens, cursor)?;
+            format!("{func_name}({col}, {offset}) {window_spec}")
+        }
         Token::Count | Token::Sum | Token::Avg | Token::Min | Token::Max => {
             let func_name = match &tokens[*cursor] {
                 Token::Count => "COUNT",
@@ -847,7 +977,12 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
                 parse_column_ident(tokens, cursor)?
             };
             expect_token(tokens, cursor, &Token::CloseParen)?;
-            Ok(format!("{func_name}({arg})"))
+            if check_token(tokens, *cursor, &Token::Over) {
+                let window_spec = parse_window_spec(tokens, cursor)?;
+                format!("{func_name}({arg}) {window_spec}")
+            } else {
+                format!("{func_name}({arg})")
+            }
         }
         Token::Ident(id) if id.eq_ignore_ascii_case("JSON_EXTRACT") => {
             *cursor += 1;
@@ -859,10 +994,19 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
                 other => return Err(Error::SqlSyntax(format!("Expected string path in JSON_EXTRACT, got {other:?}"))),
             };
             expect_token(tokens, cursor, &Token::CloseParen)?;
-            Ok(format!("JSON_EXTRACT({col}, '{path}')"))
+            format!("JSON_EXTRACT({col}, '{path}')")
         }
-        _ => parse_column_ident(tokens, cursor),
+        _ => parse_column_ident(tokens, cursor)?,
+    };
+
+    // Check optional AS alias
+    if check_token(tokens, *cursor, &Token::As) {
+        *cursor += 1;
+        let alias = parse_identifier_or_keyword(tokens, cursor)?;
+        expr = format!("{expr} AS {alias}");
     }
+
+    Ok(expr)
 }
 
 fn parse_column_ident(tokens: &[Token], cursor: &mut usize) -> Result<String> {
@@ -1586,6 +1730,34 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         if s.eq_ignore_ascii_case("MATCH") {
             return parse_graph_match(tokens, cursor);
         }
+    }
+
+    if check_token(tokens, *cursor, &Token::Algorithm)
+        || matches!(get_token_peek(tokens, *cursor), Ok(Token::Ident(s)) if s.eq_ignore_ascii_case("ALGORITHM"))
+    {
+        *cursor += 1;
+        let algo_name = parse_identifier_or_keyword(tokens, cursor)?.to_uppercase();
+        let mut options = std::collections::HashMap::new();
+
+        while *cursor < tokens.len() && !check_token(tokens, *cursor, &Token::Semicolon) {
+            let key = parse_identifier_or_keyword(tokens, cursor)?.to_lowercase();
+            if check_token(tokens, *cursor, &Token::Equals) {
+                *cursor += 1;
+            }
+            let val = match get_token(tokens, cursor)? {
+                Token::FloatLit(f) => f.to_string(),
+                Token::IntLit(i) => i.to_string(),
+                Token::StringLit(s) => s.clone(),
+                Token::Ident(s) => s.clone(),
+                other => return Err(Error::SqlSyntax(format!("Unexpected value for option {key}: {other:?}"))),
+            };
+            options.insert(key, val);
+        }
+
+        return Ok(Statement::GraphAlgorithm {
+            algorithm: algo_name,
+            options,
+        });
     }
 
     if check_token(tokens, *cursor, &Token::Insert) {

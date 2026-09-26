@@ -50,12 +50,12 @@ class Connection:
             return self._emulate_execute(sql)
 
         lib = self._ffi._lib
-        affected = lib.tapirus_execute(self._handle, sql.encode("utf-8"))
+        err_ptr = ctypes.c_char_p()
+        affected = lib.tapirus_execute(self._handle, sql.encode("utf-8"), ctypes.byref(err_ptr))
         if affected < 0:
-            err_ptr = lib.tapirus_last_error(self._handle)
             msg = "Query execution error"
-            if err_ptr:
-                msg = ctypes.string_at(err_ptr).decode("utf-8", errors="replace")
+            if err_ptr.value:
+                msg = err_ptr.value.decode("utf-8", errors="replace")
                 lib.tapirus_free_string(err_ptr)
             raise QueryError(msg)
         return affected
@@ -69,20 +69,72 @@ class Connection:
             return self._emulate_query(sql)
 
         lib = self._ffi._lib
-        res_ptr = lib.tapirus_query(self._handle, sql.encode("utf-8"))
-        if not res_ptr:
-            err_ptr = lib.tapirus_last_error(self._handle)
+        json_ptr = ctypes.c_char_p()
+        err_ptr = ctypes.c_char_p()
+        rc = lib.tapirus_query_json(
+            self._handle,
+            sql.encode("utf-8"),
+            ctypes.byref(json_ptr),
+            ctypes.byref(err_ptr),
+        )
+        if rc != 0:
             msg = "Query failed"
-            if err_ptr:
-                msg = ctypes.string_at(err_ptr).decode("utf-8", errors="replace")
+            if err_ptr.value:
+                msg = err_ptr.value.decode("utf-8", errors="replace")
                 lib.tapirus_free_string(err_ptr)
             raise QueryError(msg)
 
         try:
-            raw_str = ctypes.string_at(res_ptr).decode("utf-8", errors="replace")
+            raw_str = json_ptr.value.decode("utf-8", errors="replace") if json_ptr.value else "[]"
             return json.loads(raw_str)
         finally:
-            lib.tapirus_free_string(res_ptr)
+            if json_ptr.value:
+                lib.tapirus_free_string(json_ptr)
+
+    def vector_search(
+        self,
+        table: str,
+        vector_col: str,
+        query_vector: List[float],
+        top_k: int = 5,
+        where: Optional[str] = None,
+        columns: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Perform sub-millisecond vector similarity search."""
+        cols_str = ", ".join(columns) if columns else "*"
+        vec_str = "[" + ", ".join(f"{x:.6f}" for x in query_vector) + "]"
+        sql = f"SELECT {cols_str} FROM {table} VECTOR NEAR {vector_col} = {vec_str} TOP {top_k}"
+        if where:
+            sql += f" WHERE {where}"
+        return self.query(sql)
+
+    def graph_query(self, cypher_or_sql: str) -> List[Dict[str, Any]]:
+        """Execute a graph query (MATCH ... or GRAPH TRAVERSE / SHORTEST_PATH)."""
+        return self.query(cypher_or_sql)
+
+    def graph_algorithm(self, algorithm: str, **kwargs) -> List[Dict[str, Any]]:
+        """Run a native graph algorithm (PAGERANK, CONNECTED_COMPONENTS, BETWEENNESS, LOUVAIN)."""
+        opts = " ".join(f"{k} {v}" for k, v in kwargs.items())
+        sql = f"GRAPH ALGORITHM {algorithm.upper()}"
+        if opts:
+            sql += f" {opts}"
+        return self.query(sql)
+
+    def checkpoint(self) -> int:
+        """Manually flush the Write-Ahead Log (.tapir-wal) to the main database file."""
+        if self._is_closed:
+            raise ConnectionError("Cannot checkpoint on closed connection")
+        if self._emulator or not hasattr(self._ffi._lib, "tapirus_checkpoint"):
+            return 0
+        return self._ffi._lib.tapirus_checkpoint(self._handle)
+
+    def version(self) -> str:
+        """Return the TapirusDB library version string."""
+        if not self._emulator and hasattr(self._ffi._lib, "tapirus_version"):
+            v_ptr = self._ffi._lib.tapirus_version()
+            if v_ptr:
+                return ctypes.string_at(v_ptr).decode("utf-8")
+        return "1.0.1"
 
     def close(self):
         """Close and deallocate connection resources."""

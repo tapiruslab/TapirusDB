@@ -148,6 +148,16 @@ impl Row {
         Self { columns, values }
     }
 
+    /// Push or overwrite a column value in the row
+    pub fn push_column(&mut self, col_name: String, val: Value) {
+        if let Some(pos) = self.columns.iter().position(|c| col_name_matches(c, &col_name)) {
+            self.values[pos] = val;
+        } else {
+            self.columns.push(col_name);
+            self.values.push(val);
+        }
+    }
+
     /// Extract a typed column by name (supports both qualified "table.col" and unqualified "col")
     pub fn get<T: FromValue>(&self, col_name: &str) -> Result<T> {
         let idx = self.columns.iter().position(|c| col_name_matches(c, col_name))
