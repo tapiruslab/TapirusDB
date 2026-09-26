@@ -680,16 +680,22 @@ Read the full distributed specification in [`docs/TAPISAURUS_DISTRIBUTED_BLUEPRI
 
 ## Documentation & Architecture
 
-* [**Tutorial: Autonomous AI Agent Memory in 30 Minutes**](docs/tutorials/ai_agent_memory_in_30_minutes.md)
-* [**Comparative Benchmark vs. DuckDB & LanceDB**](benches/comparison/benchmark_vs_lance_duck.py)
-* [**Multi-Language SDK & C-ABI Integration Guide**](sdks/README.md)
-* [**Architecture Blueprint & Binary File Layout**](BLUEPRINT.md)
-* [**GraphRAG & Cloud S3/R2 Remote Storage**](docs/GRAPHRAG_AND_REMOTE_STORAGE.md)
-* [**Robotics, Edge Silicon & Autonomous Vehicles**](docs/ROBOTICS_AUTOMOTIVE_EDGE.md)
-* [**Scientific Systems Architecture Paper**](PAPER_TAPIRUSDB.md)
-* [**C ABI & Native Foreign Function Interface**](include/tapirus.h)
-* [**Formal Verification Suite (TLA+)**](docs/formal_verification/README.md)
-* [**Software License (BSL 1.1)**](LICENSE)
+* 📖 [**Production API Cookbook & Code Recipes**](docs/COOKBOOK.md) *(Hybrid RRF Search, GraphRAG, Bulk Ingestion, Time-Travel, Window Functions)*
+* 🧠 [**Tutorial: Autonomous AI Agent Memory in 30 Minutes**](docs/tutorials/ai_agent_memory_in_30_minutes.md)
+* ⚡ [**Comparative Benchmark vs. DuckDB & LanceDB**](benches/comparison/benchmark_vs_lance_duck.py)
+* 🔌 [**Multi-Language SDK & C-ABI Integration Guide**](sdks/README.md)
+* 📐 **Systems Architecture Deep Dives**:
+  * [**01: 4KB Slotted-Page Storage Engine & Buffer Pool**](docs/architecture/01_STORAGE_ENGINE_AND_PAGING.md)
+  * [**02: WAL2 Transactions, ARIES Recovery & Crash Durability**](docs/architecture/02_WAL_TRANSACTIONS_AND_RECOVERY.md)
+  * [**03: Dynamic SIMD Vector Acceleration & RaBitQ 32x Quantization**](docs/architecture/03_SIMD_VECTOR_AND_QUANTIZATION.md)
+  * [**04: Compressed Sparse Row (CSR) & openCypher Graph Engine**](docs/architecture/04_GRAPHBLAS_AND_OPENCYPHER.md)
+* 🗺️ [**Architecture Blueprint & Binary File Layout**](BLUEPRINT.md)
+* ☁️ [**GraphRAG & Cloud S3/R2 Remote Storage**](docs/GRAPHRAG_AND_REMOTE_STORAGE.md)
+* 🚗 [**Robotics, Edge Silicon & Autonomous Vehicles**](docs/ROBOTICS_AUTOMOTIVE_EDGE.md)
+* 📜 [**Scientific Systems Architecture Paper**](PAPER_TAPIRUSDB.md)
+* ⚙️ [**C ABI & Native Foreign Function Interface**](include/tapirus.h)
+* 🛡️ [**Formal Verification Suite (TLA+)**](docs/formal_verification/README.md)
+* ⚖️ [**Software License (BSL 1.1)**](LICENSE)
 
 ---
 
