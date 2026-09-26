@@ -24,10 +24,22 @@ from .exceptions import (
     ConstraintError,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
+
+def version() -> str:
+    """Returns the TapirusDB engine version."""
+    from .ffi import get_ffi
+    ffi = get_ffi()
+    if ffi.is_native_available and hasattr(ffi._lib, "tapirus_version"):
+        v = ffi._lib.tapirus_version()
+        if v:
+            return v.decode("utf-8")
+    return __version__
+
 __all__ = [
     "connect",
     "Connection",
+    "version",
     "TapirusError",
     "ConnectionError",
     "QueryError",

@@ -6,6 +6,8 @@
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
 
 function findBinary() {
   const envPath = process.env.TAPIRUS_BIN_PATH;
@@ -44,13 +46,21 @@ class TapirusConnection {
     this.isClosed = false;
     this._bin = findBinary();
     this._localTables = {};
+
+    if (this.path === ':memory:') {
+      this._isTemp = true;
+      this._actualPath = path.join(os.tmpdir(), `tapirus_mem_${crypto.randomBytes(6).toString('hex')}.tapir`);
+    } else {
+      this._isTemp = false;
+      this._actualPath = this.path;
+    }
   }
 
   execute(sql) {
     if (this.isClosed) throw new Error('TapirusConnection is closed');
 
     if (this._bin) {
-      const args = [this.path, '-c', sql];
+      const args = [this._actualPath, '-c', sql];
       const res = spawnSync(this._bin, args, { encoding: 'utf-8' });
       if (res.status !== 0) {
         throw new Error(res.stderr || res.stdout || 'Execution failed');
@@ -65,19 +75,41 @@ class TapirusConnection {
     if (this.isClosed) throw new Error('TapirusConnection is closed');
 
     if (this._bin) {
-      const args = [this.path, '--json', sql];
+      const args = [this._actualPath, '--json', sql];
       const res = spawnSync(this._bin, args, { encoding: 'utf-8' });
       if (res.status !== 0) {
         throw new Error(res.stderr || res.stdout || 'Query failed');
       }
       try {
-        return JSON.parse(res.stdout.trim() || '[]');
+        const parsed = JSON.parse(res.stdout.trim() || '[]');
+        if (Array.isArray(parsed)) {
+          return parsed.map(r => this._normalizeRow(r));
+        }
+        return parsed;
       } catch (e) {
         throw new Error(`Failed to parse TapirusDB JSON output: ${res.stdout}`);
       }
     }
 
     return this._emulateQuery(sql);
+  }
+
+  _normalizeRow(r) {
+    if (r && typeof r === 'object' && !Array.isArray(r)) {
+      const out = {};
+      for (const [col, rawVal] of Object.entries(r)) {
+        let val = rawVal;
+        if (val && typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length === 1) {
+          const key = Object.keys(val)[0];
+          if (['Integer', 'Text', 'Real', 'Blob', 'Vector', 'Null'].includes(key)) {
+            val = val[key];
+          }
+        }
+        out[col] = val;
+      }
+      return out;
+    }
+    return r;
   }
 
   vectorSearch(table, vectorCol, queryVector, topK = 5, where = null) {
@@ -100,6 +132,10 @@ class TapirusConnection {
 
   close() {
     this.isClosed = true;
+    if (this._isTemp && fs.existsSync(this._actualPath)) {
+      try { fs.unlinkSync(this._actualPath); } catch (_) {}
+      try { fs.unlinkSync(`${this._actualPath}-wal`); } catch (_) {}
+    }
   }
 
   _emulateExecute(sql) {

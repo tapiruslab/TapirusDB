@@ -86,10 +86,27 @@ class Connection:
 
         try:
             raw_str = json_ptr.value.decode("utf-8", errors="replace") if json_ptr.value else "[]"
-            return json.loads(raw_str)
+            parsed = json.loads(raw_str)
+            if isinstance(parsed, list):
+                return [self._normalize_row(r) for r in parsed]
+            return parsed
         finally:
             if json_ptr.value:
                 lib.tapirus_free_string(json_ptr)
+
+    def _normalize_row(self, r: Any) -> Dict[str, Any]:
+        if isinstance(r, dict) and "columns" in r and "values" in r:
+            cols = r.get("columns", [])
+            vals = r.get("values", [])
+            out = {}
+            for c, v in zip(cols, vals):
+                if isinstance(v, dict) and len(v) == 1:
+                    val = next(iter(v.values()))
+                else:
+                    val = v
+                out[c] = val
+            return out
+        return r
 
     def vector_search(
         self,
