@@ -96,7 +96,9 @@ fn test_fuzz_randomized_crud_transactions_and_schema_evolution() {
                     }
                     exists
                 };
-                if !exists_in_tx {
+                if exists_in_tx {
+                    assert!(res.is_err(), "Duplicate primary key {id} should be rejected: {:?}", res);
+                } else {
                     if res.is_err() {
                         eprintln!("FAILED at op_idx {op_idx}: {sql} => {res:?}");
                     }
@@ -123,7 +125,8 @@ fn test_fuzz_randomized_crud_transactions_and_schema_evolution() {
                     }
                 }
                 if !visible_ids.is_empty() {
-                    let keys: Vec<i64> = visible_ids.into_iter().collect();
+                    let mut keys: Vec<i64> = visible_ids.into_iter().collect();
+                    keys.sort_unstable();
                     let target_id = keys[rng.gen_range(0, keys.len())];
                     let new_balance = (rng.gen_range(100, 500_000) as f64) / 100.0;
 
@@ -167,7 +170,8 @@ fn test_fuzz_randomized_crud_transactions_and_schema_evolution() {
                     }
                 }
                 if !visible_ids.is_empty() {
-                    let keys: Vec<i64> = visible_ids.into_iter().collect();
+                    let mut keys: Vec<i64> = visible_ids.into_iter().collect();
+                    keys.sort_unstable();
                     let target_id = keys[rng.gen_range(0, keys.len())];
 
                     let del_sql = format!("DELETE FROM accounts WHERE id = {target_id};");

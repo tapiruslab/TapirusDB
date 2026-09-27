@@ -11,7 +11,7 @@ RUN apk add --no-cache musl-dev gcc git
 WORKDIR /app
 COPY . .
 
-RUN cargo build --release --workspace
+RUN cargo build --release --bin tapirus
 
 # Stage 2: Minimal runtime image
 FROM alpine:3.20
