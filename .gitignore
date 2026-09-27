@@ -44,9 +44,12 @@ scratch/
 *.gguf
 OllamaSetup.exe
 
-# Agent Skills (Local)
+# Agent Skills & Private Directives (Local Only / Strictly Never Commit)
 .agents/
 skills-lock.json
+AGENT.md
+agent.md
+Agent.md
 
 # Commercial & Proprietary Desktop Products (Keep Secret / Local Only)
 studio/

@@ -2317,14 +2317,14 @@ mod tests {
 
     #[test]
     fn test_parse_insert() {
-        let sql = "INSERT INTO users (id, name, embedding) VALUES (1, 'Faiz', [0.1, 0.2, 0.3]);";
+        let sql = "INSERT INTO users (id, name, embedding) VALUES (1, 'Alex', [0.1, 0.2, 0.3]);";
         let stmt = parse_sql(sql).expect("Parse INSERT");
         match stmt {
             Statement::Insert { table, values, .. } => {
                 assert_eq!(table, "users");
                 assert_eq!(values.len(), 3);
                 assert_eq!(values[0], Value::Integer(1));
-                assert_eq!(values[1], Value::Text("Faiz".into()));
+                assert_eq!(values[1], Value::Text("Alex".into()));
                 assert_eq!(values[2], Value::Vector(vec![0.1, 0.2, 0.3]));
             }
             _ => panic!("Expected Insert"),
@@ -2374,7 +2374,7 @@ mod tests {
 
     #[test]
     fn test_parse_returning_and_upsert() {
-        let sql1 = "INSERT INTO users (id, name) VALUES (1, 'Faiz') RETURNING id, name;";
+        let sql1 = "INSERT INTO users (id, name) VALUES (1, 'Alex') RETURNING id, name;";
         let stmt1 = parse_sql(sql1).expect("Parse INSERT RETURNING");
         match stmt1 {
             Statement::Insert { table, conflict_action, returning, .. } => {
@@ -2385,7 +2385,7 @@ mod tests {
             _ => panic!("Expected Insert"),
         }
 
-        let sql2 = "INSERT OR REPLACE INTO users (id, name) VALUES (1, 'Faiz') RETURNING *;";
+        let sql2 = "INSERT OR REPLACE INTO users (id, name) VALUES (1, 'Alex') RETURNING *;";
         let stmt2 = parse_sql(sql2).expect("Parse INSERT OR REPLACE RETURNING *");
         match stmt2 {
             Statement::Insert { table, conflict_action, returning, .. } => {

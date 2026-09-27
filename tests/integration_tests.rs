@@ -95,8 +95,8 @@ fn test_tri_model_graphrag_workflow() -> Result<()> {
         // Knowledge Graph: Link entities and relationships
         db.graph_add_node(101, "Paper", r#"{"author":"Vaswani et al."}"#)?;
         db.graph_add_node(102, "Paper", r#"{"topic":"Borrow Checker"}"#)?;
-        db.graph_add_node(103, "System", r#"{"author":"Ahmad Faiz"}"#)?;
-        db.graph_add_node(200, "Person", r#"{"name":"Faiz"}"#)?;
+        db.graph_add_node(103, "System", r#"{"author":"Alex Chen"}"#)?;
+        db.graph_add_node(200, "Person", r#"{"name":"Alex"}"#)?;
         db.graph_add_node(300, "Organization", r#"{"name":"Tapirus Tech Lab"}"#)?;
 
         // Create knowledge edges

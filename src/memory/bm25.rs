@@ -207,7 +207,7 @@ mod tests {
     fn test_bm25_search_scoring() {
         let mut index = Bm25Index::new();
         index.index_document(1, "The quick brown fox jumps over the lazy dog");
-        index.index_document(2, "Ahmad Faiz built TapirusDB for embedded edge AI memory");
+        index.index_document(2, "The engineering team built TapirusDB for embedded edge AI memory");
         index.index_document(3, "TapirusDB is ultra fast and safe in Pure Safe Rust");
 
         let results = index.search("TapirusDB Safe Rust", 5);

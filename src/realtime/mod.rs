@@ -149,7 +149,7 @@ mod tests {
             table: "users".to_string(),
             row_id: 1,
             timestamp: 1700000000,
-            data: serde_json::json!({"name": "Faiz"}),
+            data: serde_json::json!({"name": "Alex"}),
         });
 
         assert_eq!(counter.load(Ordering::SeqCst), 1);

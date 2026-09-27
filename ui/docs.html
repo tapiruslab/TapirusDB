@@ -1292,7 +1292,7 @@ fn main() -> Result<()> {
     ")?;
 
     // 4. Property Graph Node & Edge (GraphRAG)
-    db.graph_add_node(1, "Author", r#"{"name":"Faiz"}"#)?;
+    db.graph_add_node(1, "Author", r#"{"name":"Alex Chen"}"#)?;
     db.graph_add_node(2, "Concept", r#"{"name":"Quad-Model"}"#)?;
     db.graph_add_edge(1, 2, "INVENTED", 1.0, "")?;
 
@@ -1464,7 +1464,7 @@ users = db.collection("users")
 
 # Insert nested JSON payload
 user_id = users.insert_one({
-    "name": "Faiz",
+    "name": "Alex",
     "telemetry": {
         "status": "active",
         "tokens": 4500,
@@ -1555,7 +1555,7 @@ db.execute(`
 `);
 
 // 3. Insert and Query
-db.execute("INSERT INTO users VALUES (1, 'Faiz', 1);");
+db.execute("INSERT INTO users VALUES (1, 'Alex', 1);");
 const rows = db.query("SELECT * FROM users WHERE active = 1;");
 console.log("SQL Rows:", rows);
 
@@ -1701,7 +1701,7 @@ func main() {
             `3. [Score: 0.8920] "ChaCha20-Poly1305 Cryptographic Disk Authentication"`;
         } else if (q.toUpperCase().startsWith("MATCH")) {
           out.innerHTML = `[SUCCESS] Graph Traversal Matched (1 Hop, CSR Sub-Slice 0.55 µs):\n` +
-            `Node(Developer {name: "Ahmad Faiz"}) --[:MAINTAINS {role: "Architect"}]--> Node(Database {engine: "TapirusDB", version: "v1.0.0"})`;
+            `Node(Developer {name: "Alex Chen"}) --[:MAINTAINS {role: "Architect"}]--> Node(Database {engine: "TapirusDB", version: "v1.0.0"})`;
         } else {
           out.innerHTML = `[SUCCESS] Agent Memory Recalled via Reciprocal Rank Fusion (RRF):\n` +
             `1. "Prefers 100% Safe Rust embedded storage with < 4 MB idle RAM." (Relevance: 0.96)\n` +

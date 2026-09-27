@@ -78,7 +78,7 @@ fn test_vector_to_graph_chaining() -> Result<()> {
     conn.graph_add_node_with_vector(
         20,
         "Author",
-        r#"{"name":"Ahmad Faiz"}"#,
+        r#"{"name":"Alex Chen"}"#,
         Some(&[0.0, 0.8, 0.2, 0.0]),
     )?;
     conn.graph_add_node_with_vector(

@@ -88,7 +88,7 @@ fn test_memory_hybrid_vector_and_bm25_recall() {
 
     let id1 = conn
         .memory_remember(
-            "Ahmad Faiz designed TapirusDB page-level ChaCha20 encryption",
+            "Alex Chen designed TapirusDB page-level ChaCha20 encryption",
             Some(&v_eng),
             0.9,
             &["security"],
@@ -104,9 +104,9 @@ fn test_memory_hybrid_vector_and_bm25_recall() {
         )
         .expect("Remember 2");
 
-    // Hybrid query combining exact name "Ahmad Faiz" with semantic vector
+    // Hybrid query combining exact name "Alex Chen" with semantic vector
     let filter = MemoryRecallFilter::default().with_weights(0.5, 0.5, 0.0, 0.0);
-    let results = conn.memory_recall(Some("Ahmad Faiz"), Some(&v_eng), 5, &filter);
+    let results = conn.memory_recall(Some("Alex Chen"), Some(&v_eng), 5, &filter);
 
     assert!(!results.is_empty());
     assert_eq!(results[0].entry.id, id1);
@@ -169,7 +169,7 @@ fn test_memory_graph_associative_expansion() {
     let now = 1_700_000_000;
 
     let id1 = conn
-        .memory_remember_at("TapirusDB was created by Ahmad Faiz", None, 0.9, &[], now)
+        .memory_remember_at("TapirusDB was created by Alex Chen", None, 0.9, &[], now)
         .expect("Remember 1");
 
     let id2 = conn
@@ -178,9 +178,9 @@ fn test_memory_graph_associative_expansion() {
 
     conn.memory_link(id1, id2).expect("Link memories");
 
-    // Search specifically for "Ahmad Faiz" with graph expansion enabled
+    // Search specifically for "Alex Chen" with graph expansion enabled
     let filter = MemoryRecallFilter::default().with_graph_hops(1);
-    let results = conn.memory_recall_at(Some("Ahmad Faiz"), None, 5, &filter, now);
+    let results = conn.memory_recall_at(Some("Alex Chen"), None, 5, &filter, now);
 
     assert!(results.len() >= 2);
     assert_eq!(results[0].entry.id, id1);
@@ -200,7 +200,7 @@ fn test_memory_prune_decayed() {
 
     // High importance, old memory (e.g. user core identity fact)
     let _id_old_high = conn
-        .memory_remember_at("User name is Faiz", None, 0.95, &[], t0)
+        .memory_remember_at("User name is Alex", None, 0.95, &[], t0)
         .expect("Remember high");
 
     assert_eq!(conn.memory_count(), 2);

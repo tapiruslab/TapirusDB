@@ -178,7 +178,7 @@ fn eval_tri_model_hybrid() {
 
     conn.graph_add_node(1, "Paper", r#"{"title":"Safe Memory Architecture"}"#).unwrap();
     conn.graph_add_node(2, "Paper", r#"{"title":"Graph Intelligence Systems"}"#).unwrap();
-    conn.graph_add_node(3, "Author", r#"{"name":"Faiz"}"#).unwrap();
+    conn.graph_add_node(3, "Author", r#"{"name":"Alex Chen"}"#).unwrap();
     conn.graph_add_edge(3, 1, "AUTHORED", 1.0, "").unwrap();
     conn.graph_add_edge(3, 2, "AUTHORED", 1.0, "").unwrap();
 

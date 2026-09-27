@@ -1382,7 +1382,7 @@ mod tests {
     #[test]
     fn test_connection_graph_api() {
         let conn = Connection::open_in_memory().expect("Open in-memory");
-        conn.graph_add_node(1, "Person", r#"{"name":"Faiz"}"#).unwrap();
+        conn.graph_add_node(1, "Person", r#"{"name":"Alex"}"#).unwrap();
         conn.graph_add_node(2, "Project", r#"{"name":"TapirusDB"}"#).unwrap();
         conn.graph_add_edge(1, 2, "FOUNDER_OF", 1.0, "").unwrap();
 

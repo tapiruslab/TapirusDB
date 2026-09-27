@@ -616,7 +616,7 @@ db.execute(`
 `);
 
 // 3. Insert records
-db.execute("INSERT INTO users VALUES (1, 'Faiz', 1);");
+db.execute("INSERT INTO users VALUES (1, 'Alex', 1);");
 db.execute("INSERT INTO users VALUES (2, 'Developer', 1);");
 
 // 4. Query records via SQL
@@ -644,7 +644,7 @@ console.log("==> Database closed cleanly.");</code></pre>
               <div class="code-header"><span>Console Output</span></div>
               <pre><code>==> Connected to TapirusDB successfully!
 ==> Query Results: [
-  { id: 1, raw: 'INSERT INTO users VALUES (1, "Faiz", 1)' },
+  { id: 1, raw: 'INSERT INTO users VALUES (1, "Alex", 1)' },
   { id: 2, raw: 'INSERT INTO users VALUES (2, "Developer", 1)' }
 ]
 ==> Database closed cleanly.</code></pre>
@@ -660,7 +660,7 @@ console.log("==> Database closed cleanly.");</code></pre>
                 <button class="code-copy-btn" onclick="copyCode(this)">Copy Code</button>
               </div>
               <pre><code># 1. Type node and press Enter:
-PS C:\Users\afaiz\my-tapirus-app> node
+PS C:\workspace\my-tapirus-app> node
 Welcome to Node.js v20.x.x.
 Type ".help" for more information.
 
@@ -668,9 +668,9 @@ Type ".help" for more information.
 > const { open } = require('tapirus');
 > const db = open('test.tapir');
 > db.execute("CREATE TABLE users (id INT, name TEXT);");
-> db.execute("INSERT INTO users VALUES (1, 'Faiz');");
+> db.execute("INSERT INTO users VALUES (1, 'Alex');");
 > db.query("SELECT * FROM users;");
-[ { id: 1, raw: 'INSERT INTO users VALUES (1, "Faiz")' } ]
+[ { id: 1, raw: 'INSERT INTO users VALUES (1, "Alex")' } ]
 
 # 3. Press Ctrl + C twice to exit.</code></pre>
             </div>

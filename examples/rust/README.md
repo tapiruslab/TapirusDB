@@ -40,7 +40,7 @@ fn main() -> Result<()> {
     // 3. Schema-less Document Collection (MongoDB-style)
     let users = db.collection("users")?;
     let doc_id = users.insert_one(&json!({
-        "name": "Faiz",
+        "name": "Alex",
         "company": "Tapirus Tech Lab",
         "role": "Systems Architect"
     }))?;

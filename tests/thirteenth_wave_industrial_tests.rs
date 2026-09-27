@@ -22,8 +22,8 @@ fn test_pillar1_subqueries_and_ctes() {
 
     conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER);")
         .unwrap();
-    conn.execute("INSERT INTO users VALUES (1, 'Faiz', 30);").unwrap();
-    conn.execute("INSERT INTO users VALUES (2, 'Ahmad', 22);").unwrap();
+    conn.execute("INSERT INTO users VALUES (1, 'Alex', 30);").unwrap();
+    conn.execute("INSERT INTO users VALUES (2, 'Danial', 22);").unwrap();
     conn.execute("INSERT INTO users VALUES (3, 'Sara', 28);").unwrap();
 
     conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL);")
@@ -36,7 +36,7 @@ fn test_pillar1_subqueries_and_ctes() {
         .query("WITH adults AS (SELECT id, name, age FROM users WHERE age >= 25) SELECT name, age FROM adults ORDER BY age DESC;")
         .unwrap();
     assert_eq!(cte_rows.len(), 2);
-    assert_eq!(cte_rows[0].get::<String>("name").unwrap(), "Faiz");
+    assert_eq!(cte_rows[0].get::<String>("name").unwrap(), "Alex");
     assert_eq!(cte_rows[1].get::<String>("name").unwrap(), "Sara");
 
     // 2. CTE with explicit column aliases
@@ -51,7 +51,7 @@ fn test_pillar1_subqueries_and_ctes() {
         .unwrap();
     assert_eq!(sub_rows.len(), 2);
     let names: Vec<String> = sub_rows.into_iter().map(|r| r.get::<String>("name").unwrap()).collect();
-    assert!(names.contains(&"Faiz".to_string()));
+    assert!(names.contains(&"Alex".to_string()));
     assert!(names.contains(&"Sara".to_string()));
 }
 

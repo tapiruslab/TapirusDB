@@ -580,14 +580,14 @@ tapirus production.tapir
 tapirus> CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
 Query OK, 1 row(s) affected
 
-tapirus> INSERT INTO users VALUES (1, 'Ahmad Faiz');
+tapirus> INSERT INTO users VALUES (1, 'Alex Chen');
 Query OK, 1 row(s) affected
 
 tapirus> SELECT * FROM users;
 +----+------------+
 | id | name       |
 +----+------------+
-| 1  | Ahmad Faiz |
+| 1  | Alex Chen  |
 +----+------------+
 (1 row(s))
 ```

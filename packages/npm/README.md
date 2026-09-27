@@ -55,7 +55,7 @@ const db = await TapirusDatabase.open('production.tapir');
 
 // Create table
 await db.execute('CREATE TABLE IF NOT EXISTS users (id INT, name TEXT);');
-await db.execute('INSERT INTO users VALUES (1, "Faiz");');
+await db.execute('INSERT INTO users VALUES (1, "Alex");');
 
 // Query table
 const rows = await db.query('SELECT * FROM users;');
@@ -65,7 +65,7 @@ console.log('Query result:', rows);
 ### Step 3: Run your script with Node.js
 ```powershell
 node app.mjs
-# Output: Query result: [ { id: 1, raw: "INSERT INTO users VALUES (1, 'Faiz')" } ]
+# Output: Query result: [ { id: 1, raw: "INSERT INTO users VALUES (1, 'Alex')" } ]
 ```
 
 ---

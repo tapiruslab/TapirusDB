@@ -1,4 +1,4 @@
-﻿# TapirusDB — Architectural Blueprint & Binary Specification
+# TapirusDB — Architectural Blueprint & Binary Specification
 
 > **Project Name:** TapirusDB (`tapirus`)  
 > **Tagline:** One Engine. Four Models. Zero Data Sprawl.  

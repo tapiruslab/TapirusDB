@@ -271,7 +271,7 @@ fn test_opencypher_create_statement() {
     let conn = Connection::open_in_memory().expect("Failed to open connection");
 
     // Execute Cypher CREATE via conn.execute
-    let affected = conn.execute("CREATE (x:Developer {name: 'Faiz', specialty: 'Databases'})")
+    let affected = conn.execute("CREATE (x:Developer {name: 'Alex', specialty: 'Databases'})")
         .expect("CREATE statement failed");
     assert_eq!(affected, 1);
 
@@ -279,5 +279,5 @@ fn test_opencypher_create_statement() {
     let nodes = conn.graph_nodes();
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].label, "Developer");
-    assert!(nodes[0].properties.contains("Faiz"));
+    assert!(nodes[0].properties.contains("Alex"));
 }

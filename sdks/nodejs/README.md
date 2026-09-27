@@ -62,7 +62,7 @@ const db = open('production.tapir');
 
 // Create table and insert records
 db.execute('CREATE TABLE IF NOT EXISTS users (id INT, name TEXT, active INT);');
-db.execute("INSERT INTO users VALUES (1, 'Faiz', 1);");
+db.execute("INSERT INTO users VALUES (1, 'Alex', 1);");
 
 // Query rows
 const rows = db.query('SELECT * FROM users WHERE active = 1;');
@@ -78,7 +78,7 @@ const { open, Tapirus } = require('tapirus');
 
 const db = open('production.tapir');
 db.execute('CREATE TABLE IF NOT EXISTS users (id INT, name TEXT, active INT);');
-db.execute("INSERT INTO users VALUES (1, 'Faiz', 1);");
+db.execute("INSERT INTO users VALUES (1, 'Alex', 1);");
 
 const rows = db.query('SELECT * FROM users;');
 console.log('Query result:', rows);
@@ -88,19 +88,19 @@ db.close();
 ### Step 3: Run your script with Node.js
 ```powershell
 node app.mjs
-# Output: Query result: [ { id: 1, raw: "INSERT INTO users VALUES (1, 'Faiz', 1)" } ]
+# Output: Query result: [ { id: 1, raw: "INSERT INTO users VALUES (1, 'Alex', 1)" } ]
 ```
 
 ### Step 4: Interactive Mode (Node.js REPL)
 If you want to type commands interactively in PowerShell:
 ```powershell
-PS C:\Users\afaiz\my-tapirus-app> node
+PS C:\workspace\my-tapirus-app> node
 > const { open } = require('tapirus');
 > const db = open('production.tapir');
 > db.execute("CREATE TABLE users (id INT, name TEXT);");
-> db.execute("INSERT INTO users VALUES (1, 'Faiz');");
+> db.execute("INSERT INTO users VALUES (1, 'Alex');");
 > db.query("SELECT * FROM users;");
-[ { id: 1, raw: "INSERT INTO users VALUES (1, 'Faiz')" } ]
+[ { id: 1, raw: "INSERT INTO users VALUES (1, 'Alex')" } ]
 ```
 
 ---
@@ -208,7 +208,7 @@ const users = db.collection('users');
 
 // Insert nested JSON payload
 const docId = users.insertOne({
-  username: 'faiz',
+  username: 'alex',
   profile: { role: 'Architect', location: 'Kuala Lumpur' },
   models: ['phi-3', 'qwen-2.5']
 });

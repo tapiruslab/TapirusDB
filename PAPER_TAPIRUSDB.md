@@ -1,4 +1,4 @@
-﻿# TapirusDB: A Memory-Safe, Single-File Multi-Model Database Engine Unifying Relational SQL, Vector Graph Indexing, Documents, and GraphRAG with Native Page-Level AEAD
+# TapirusDB: A Memory-Safe, Single-File Multi-Model Database Engine Unifying Relational SQL, Vector Graph Indexing, Documents, and GraphRAG with Native Page-Level AEAD
 
 **Author:** Ahmad Faiz  
 **Affiliation:** Tapirus Tech Lab (`faiz@tapirusdb.com`) • [tapirusdb.com](https://tapirusdb.com)  
@@ -206,7 +206,7 @@ To accommodate dynamic, nested JSON payloads without requiring pre-defined table
 ```rust
 let users = db.collection("users")?;
 let doc_id = users.insert_one(&json!({
-    "name": "Faiz",
+    "name": "Alex",
     "role": "Chief Architect",
     "metrics": [98.5, 99.1]
 }))?;

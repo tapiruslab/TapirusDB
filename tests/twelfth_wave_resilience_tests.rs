@@ -74,7 +74,7 @@ fn test_json_path_secondary_index_and_point_lookup() {
 
     // Insert JSON accounts
     let user1 = json!({
-        "name": "Faiz",
+        "name": "Alex",
         "location": { "city": "Cyberjaya", "country": "MY" },
         "active": true
     }).to_string();
@@ -86,7 +86,7 @@ fn test_json_path_secondary_index_and_point_lookup() {
     }).to_string();
 
     let user3 = json!({
-        "name": "Ahmad",
+        "name": "Danial",
         "location": { "city": "Cyberjaya", "country": "MY" },
         "active": false
     }).to_string();
@@ -106,7 +106,7 @@ fn test_json_path_secondary_index_and_point_lookup() {
 
     // Verify extracted field projections
     let names: Vec<String> = rows.iter().map(|r| r.get("profile.name").unwrap()).collect();
-    assert!(names.contains(&"Faiz".to_string()) && names.contains(&"Ahmad".to_string()));
+    assert!(names.contains(&"Alex".to_string()) && names.contains(&"Danial".to_string()));
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn test_json_extract_function_in_sql() {
     let doc1 = json!({
         "order_id": "ORD-101",
         "amount": 250,
-        "customer": { "name": "Faiz", "tier": "gold" }
+        "customer": { "name": "Alex", "tier": "gold" }
     }).to_string();
 
     let doc2 = json!({

@@ -324,7 +324,7 @@ fn test_parameterized_queries_and_sql_safety() -> Result<()> {
 
     db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, bio TEXT, balance REAL);")?;
 
-    let malicious_input = "Faiz'; DROP TABLE users; --";
+    let malicious_input = "Robert'; DROP TABLE users; --";
     let bio_with_quotes = "I'm a system's engineer & Rust enthusiast.";
 
     let inserted = db.execute_with_params(

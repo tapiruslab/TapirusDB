@@ -725,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "tapirus-nodejs"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "napi",
  "napi-build",
@@ -735,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "tapirus-python"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "pyo3",
  "tapirus",

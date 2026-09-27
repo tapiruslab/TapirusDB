@@ -371,7 +371,7 @@ mod tests {
         let cols = vec!["id".into(), "name".into(), "score".into(), "embedding".into()];
         let vals = vec![
             Value::Integer(1),
-            Value::Text("Faiz".into()),
+            Value::Text("Alex".into()),
             Value::Real(99.5),
             Value::Vector(vec![0.1, 0.2, 0.3]),
         ];
@@ -383,7 +383,7 @@ mod tests {
         let embedding: Vec<f32> = row.get("embedding").expect("Failed to get embedding");
 
         assert_eq!(id, 1);
-        assert_eq!(name, "Faiz");
+        assert_eq!(name, "Alex");
         assert!((score - 99.5).abs() < 1e-4);
         assert_eq!(embedding.len(), 3);
     }

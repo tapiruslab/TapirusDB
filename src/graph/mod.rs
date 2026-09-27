@@ -866,7 +866,7 @@ mod tests {
     fn test_graph_add_and_neighbors() {
         let mut graph = GraphEngine::new();
 
-        graph.add_node(1, "Person", r#"{"name":"Faiz"}"#).unwrap();
+        graph.add_node(1, "Person", r#"{"name":"Alex"}"#).unwrap();
         graph.add_node(2, "Project", r#"{"name":"TapirusDB"}"#).unwrap();
         graph.add_node(3, "Organization", r#"{"name":"Tapirus Tech Lab"}"#).unwrap();
 
@@ -877,7 +877,7 @@ mod tests {
         assert_eq!(graph.node_count(), 3);
         assert_eq!(graph.edge_count(), 3);
 
-        // Find outgoing neighbors of Faiz (node 1)
+        // Find outgoing neighbors of Alex (node 1)
         let neighbors = graph.neighbors(1, Direction::Outgoing, None);
         assert_eq!(neighbors.len(), 2);
 

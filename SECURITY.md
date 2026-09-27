@@ -21,7 +21,7 @@ If you discover or suspect a security vulnerability in TapirusDB, **please do no
 
 Please report it privately via email:
 
-* **Email:** [security@tapirusdb.com](mailto:security@tapirusdb.com) or [faiz@tapirusdb.com](mailto:faiz@tapirusdb.com)
+* **Email:** [security@tapirusdb.com](mailto:security@tapirusdb.com)
 * **Subject:** `[SECURITY] TapirusDB Vulnerability Report - <Brief Description>`
 
 ### Please Include:

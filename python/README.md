@@ -130,7 +130,7 @@ with Connection.open("production.tapir") as db:
 
     # Insert nested JSON document
     doc_id = users.insert_one({
-        "username": "faiz",
+        "username": "alex",
         "preferences": {"theme": "light", "telemetry": False},
         "tags": ["architect", "rust"]
     })

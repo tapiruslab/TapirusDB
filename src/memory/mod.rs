@@ -667,14 +667,14 @@ mod tests {
         let mut engine = MemoryEngine::new();
         let now = 1_000_000;
 
-        let id1 = engine.remember("Ahmad Faiz is the architect of TapirusDB", None, 0.9, &[], now);
+        let id1 = engine.remember("Alex Chen is the architect of TapirusDB", None, 0.9, &[], now);
         let id2 = engine.remember("TapirusDB uses ChaCha20-Poly1305 AEAD page encryption", None, 0.8, &[], now);
 
         engine.associate(id1, id2).expect("Associate memories");
 
-        // Query only mentions "Ahmad Faiz"
+        // Query only mentions "Alex Chen"
         let filter = MemoryRecallFilter::default().with_graph_hops(1);
-        let results = engine.recall(Some("Ahmad Faiz"), None, 5, &filter, now);
+        let results = engine.recall(Some("Alex Chen"), None, 5, &filter, now);
 
         // Should retrieve id1 directly, and id2 via associative graph link!
         assert!(results.len() >= 2);

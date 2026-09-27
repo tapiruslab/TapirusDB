@@ -3501,7 +3501,7 @@ mod tests {
         executor
             .execute(
                 &mut pager,
-                parse_sql(r#"GRAPH INSERT NODE 1 LABEL "Person" PROPERTIES "{\"name\":\"Faiz\",\"role\":\"founder\"}";"#).unwrap(),
+                parse_sql(r#"GRAPH INSERT NODE 1 LABEL "Person" PROPERTIES "{\"name\":\"Alex\",\"role\":\"founder\"}";"#).unwrap(),
             )
             .unwrap();
         executor
@@ -3524,7 +3524,7 @@ mod tests {
             .expect("Execute graph match");
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].get::<String>("a.name").unwrap(), "Faiz");
+        assert_eq!(rows[0].get::<String>("a.name").unwrap(), "Alex");
         assert_eq!(rows[0].get::<String>("b.title").unwrap(), "TapirusDB");
 
         // 2. Direct MATCH without GRAPH keyword
@@ -3533,7 +3533,7 @@ mod tests {
             .query(&mut pager, parse_sql(match_sql).unwrap())
             .expect("Execute direct match");
         assert_eq!(rows2.len(), 1);
-        assert_eq!(rows2[0].get::<String>("a.name").unwrap(), "Faiz");
+        assert_eq!(rows2[0].get::<String>("a.name").unwrap(), "Alex");
     }
 
     #[test]

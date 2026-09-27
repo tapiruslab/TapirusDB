@@ -134,7 +134,7 @@ mod tests {
         let collection = conn.collection("users").expect("Open collection");
 
         let doc1 = json!({
-            "name": "Faiz",
+            "name": "Alex",
             "role": "Chief Architect",
             "skills": ["Rust", "AI", "Databases"],
             "active": true
@@ -158,7 +158,7 @@ mod tests {
         let fetched = collection.find_by_id(1).expect("Find doc1");
         assert!(fetched.is_some());
         let val = fetched.unwrap();
-        assert_eq!(val["name"], "Faiz");
+        assert_eq!(val["name"], "Alex");
         assert_eq!(val["role"], "Chief Architect");
         assert_eq!(val["skills"][0], "Rust");
 
