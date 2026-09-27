@@ -365,16 +365,48 @@ fn handle_http_client(mut stream: TcpStream, db: Arc<Mutex<Connection>>) {
         return;
     }
 
-    // Built-in Web Client UI
+    // Built-in Web Client UI & Server Info
     if method == "GET" && (path == "/" || path == "/index.html") {
-        let html = include_str!("../../ui/index.html");
+        let html = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TapirusDB Server</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+.card { background: #1e293b; padding: 2.5rem; border-radius: 14px; border: 1px solid #334155; text-align: center; max-width: 520px; box-shadow: 0 20px 35px rgba(0,0,0,0.35); }
+.badge { display: inline-block; background: #0284c7; color: #ffffff; padding: 4px 12px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; margin-bottom: 1.25rem; letter-spacing: 0.04em; }
+h1 { margin: 0 0 0.75rem; font-size: 1.65rem; color: #38bdf8; font-weight: 700; }
+p { color: #94a3b8; font-size: 0.95rem; line-height: 1.6; margin: 0 0 1.25rem; }
+code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em; }
+.btn-group { display: flex; gap: 10px; justify-content: center; margin-top: 1.5rem; }
+.btn { display: inline-flex; align-items: center; justify-content: center; background: #0284c7; color: #ffffff; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-weight: 600; font-size: 0.9rem; transition: background 0.2s; }
+.btn:hover { background: #0369a1; }
+.btn-secondary { background: #334155; color: #f8fafc; }
+.btn-secondary:hover { background: #475569; }
+</style>
+</head>
+<body>
+<div class="card">
+<div class="badge">TAPIRUSDB IN-PROCESS ENGINE</div>
+<h1>TapirusDB HTTP Server</h1>
+<p>The native engine daemon is active and ready to process Relational SQL, HNSW Vector embeddings, and openCypher Graph queries.</p>
+<p>API Endpoints: <code>/sql</code> &bull; <code>/api/sql</code> &bull; <code>/health</code></p>
+<div class="btn-group">
+<a href="https://tapirusdb.com" target="_blank" class="btn">Official Website</a>
+<a href="https://tapirusdb.com/docs.html" target="_blank" class="btn btn-secondary">Documentation</a>
+</div>
+</div>
+</body>
+</html>"#;
         send_http_response(&mut stream, "200 OK", "text/html; charset=utf-8", html);
         return;
     }
 
-    // Built-in Documentation Portal
+    // Built-in Documentation Portal - Clean Redirect
     if method == "GET" && (path == "/docs" || path == "/docs.html") {
-        let html = include_str!("../../ui/docs.html");
+        let html = r#"<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0; url=https://tapirusdb.com/docs.html"></head><body>Redirecting to <a href="https://tapirusdb.com/docs.html">TapirusDB Documentation</a>...</body></html>"#;
         send_http_response(&mut stream, "200 OK", "text/html; charset=utf-8", html);
         return;
     }
