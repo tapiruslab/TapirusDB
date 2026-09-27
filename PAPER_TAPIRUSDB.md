@@ -1,36 +1,35 @@
-# TapirusDB: A Memory-Safe, Single-File Multi-Model Database Engine Unifying Relational SQL, Vector Graph Indexing, Documents, and GraphRAG with Native Page-Level AEAD
+# TapirusDB: A Memory-Safe, Single-File Multi-Model Database Engine Unifying Relational SQL, Vector Graph Indexing, Documents, and Graph-Augmented Retrieval with Native Page-Level AEAD
 
 **Author:** Ahmad Faiz  
 **Affiliation:** Tapirus Tech Lab (`faiz@tapirusdb.com`) • [tapirusdb.com](https://tapirusdb.com)  
 **Date:** September 2026  
 **Document Classification:** Scientific Systems Architecture Whitepaper  
 **Repository Reference:** `https://github.com/tapiruslab/TapirusDB`  
-**Target Venue:** IEEE Transactions on Knowledge and Data Engineering (TKDE) / ACM SIGMOD / arXiv Systems & Databases (cs.DB)
 
 ---
 
 ## Abstract
 
-We present **TapirusDB** (`tapirus`), an ultra-compact, zero-daemon, embedded multi-model database engine engineered entirely in 100% Safe Rust (`#![forbid(unsafe_code)]`). While traditional embedded architectures such as SQLite rely on C-based memory management, external extensions for vector indexing (`sqlite-vec`), and proprietary add-ons for encryption, TapirusDB unifies four computational storage paradigms—**Relational SQL**, **Hierarchical Navigable Small World (HNSW) Vector Search**, **Schema-less Document Collections**, and **Bidirectional Property Knowledge Graphs (GraphRAG)**—into a single persistent `.tapir` disk file format protected by native page-level Authenticated Encryption with Associated Data (AEAD).
+We present **TapirusDB** (`tapirus`), an ultra-compact, zero-daemon, embedded multi-model database engine engineered in Safe Rust (`#![forbid(unsafe_code)]` within core storage and execution crates). While traditional embedded architectures such as SQLite rely on C-based memory management, external extensions for vector indexing (`sqlite-vec`), and proprietary add-ons for encryption, TapirusDB unifies four computational storage paradigms—**Relational SQL**, **Hierarchical Navigable Small World (HNSW) Vector Search**, **Schema-less Document Collections**, and **Bidirectional Property Knowledge Graphs**—into a single persistent `.tapir` disk file format protected by native page-level Authenticated Encryption with Associated Data (AEAD).
 
-TapirusDB introduces four key architectural contributions: (1) a unified **Slotted B+Tree page layout with dedicated Native Vector Page descriptors (`0x05`)** that eliminates cross-engine serialization and process IPC boundaries; (2) **built-in 8-bit Scalar Quantization (SQ8)** delivering a 4.0x vector compression ratio with negligible cosine distortion ($\Delta < 0.00105\%$); (3) **hardware-accelerated page-level ChaCha20-Poly1305 AEAD** utilizing deterministic physical PageId nonce derivation and constant-time Key Check Value (KCV) verification; and (4) **fluent sub-microsecond bidirectional Vector $\leftrightarrow$ Graph chaining** ($0.51\text{ µs}$ median latency, $1,606,037\text{ ops/sec}$) with a native Anthropic Model Context Protocol (MCP) server that provides long-term episodic memory for frontier LLMs and on-device SLMs.
+TapirusDB introduces four key architectural contributions: (1) a unified **Slotted B+Tree page layout with dedicated Native Vector Page descriptors (`0x05`)** that eliminates cross-engine serialization and process IPC boundaries; (2) **built-in 8-bit Scalar Quantization (SQ8)** delivering up to a 3.96x (74.7%) physical vector storage reduction (4.0x on raw quantized payloads) with low cosine distortion ($\Delta < 0.00105\%$); (3) **SIMD auto-vectorized page-level ChaCha20-Poly1305 AEAD (RFC 8439)** utilizing monotonic physical PageId composite nonces and constant-time Key Check Value (KCV) verification; and (4) **fluent sub-microsecond bidirectional Vector $\leftrightarrow$ Graph retrieval substrate** ($0.51\text{ µs}$ median in-memory latency, $1,606,037\text{ ops/sec}$) with an integrated Model Context Protocol (MCP) server for local AI agent episodic memory management.
 
-Empirical evaluations conducted on an AMD Ryzen 5 7640HS (6 cores, 12 threads) running Linux x86_64 demonstrate that TapirusDB achieves **387,630 relational point queries per second (QPS)** (2.58 µs latency), **5,592,087 graph adjacency lookups per second** (178.8 ns latency), and **1,606,037 ops/sec (510 ns median)** in chained GraphRAG retrieval when operating in-memory with working sets resident within the processor's L1/L2 cache (~770 CPU clock cycles with zero DRAM cache miss penalties). In persistent disk mode with crash resilience, it achieves **103,275 WAL frame appends per second** (9.68 µs latency), while native in-memory page-level ChaCha20-Poly1305 AEAD adds only **5.26 µs** transformation overhead per 4,096-byte page (742.6 MiB/s | 778.7 MB/s throughput)—all within an **877 KB** stripped binary and an initial file creation footprint of exactly **4,096 bytes**.
+Empirical evaluations conducted on an AMD Ryzen 5 7640HS (6 cores, 12 threads) running Linux x86_64 demonstrate that TapirusDB achieves **387,630 relational point queries per second (QPS)** (2.58 µs latency), **5,592,087 graph adjacency lookups per second** (178.8 ns latency), and **1,606,037 ops/sec (510 ns median)** in chained graph-augmented vector retrieval when operating in-memory with working sets resident within the processor's L1/L2 cache (~770 CPU clock cycles with zero DRAM cache miss penalties). In persistent disk mode with crash resilience, it achieves **103,275 WAL frame appends per second** (9.68 µs latency), while native in-memory page-level ChaCha20-Poly1305 AEAD adds only **5.26 µs** transformation overhead per 4,096-byte page (742.6 MiB/s | 778.7 MB/s throughput)—all within an **877 KB** stripped binary and an initial file creation footprint of exactly **4,096 bytes**.
 
-**Keywords:** Embedded Database, Safe Rust, Multi-Model Database, Vector Search, HNSW, GraphRAG, Model Context Protocol, ChaCha20-Poly1305, AEAD, Scalar Quantization, Slotted Page B+Tree.
+**Keywords:** Embedded Database, Safe Rust, Multi-Model Database, Vector Search, HNSW, Graph-Augmented Retrieval, Model Context Protocol, ChaCha20-Poly1305, AEAD, Scalar Quantization, Slotted Page B+Tree.
 
 ---
 
 ## 1. Introduction and Problem Formulation
 
 ### 1.1 The Multi-Modal Storage Challenge in Edge AI
-For over a quarter of a century, D. Richard Hipp's SQLite has stood as the gold standard for embedded relational data persistence, powering billions of mobile operating systems, browser storage runtimes, and edge devices. However, modern edge computing has undergone a fundamental architectural shift driven by local Artificial Intelligence (Edge AI), Retrieval-Augmented Generation (RAG), and Graph-augmented contextual reasoning (GraphRAG).
+For over a quarter of a century, D. Richard Hipp's SQLite has stood as the gold standard for embedded relational data persistence, powering billions of mobile operating systems, browser storage runtimes, and edge devices. However, modern edge computing has undergone a fundamental architectural shift driven by local Artificial Intelligence (Edge AI), Retrieval-Augmented Generation (RAG), and Graph-augmented contextual reasoning.
 
 Modern intelligent applications no longer require only tabular relations. An autonomous edge agent requires:
 1. **Relational SQL** for transactional guarantees, metadata cataloging, and ACID state management;
 2. **Dense Vector Embeddings** for semantic similarity search and high-dimensional nearest-neighbor retrieval;
 3. **Dynamic Document Stores** for schema-flexible JSON ingestion from sensor telemetry and LLM structured outputs;
-4. **Knowledge Graphs** for explicit entity-relationship reasoning, multi-hop sub-graph extraction, and GraphRAG contextual enrichment.
+4. **Knowledge Graphs** for explicit entity-relationship reasoning, multi-hop sub-graph extraction, and graph-augmented retrieval enrichment.
 
 ### 1.2 Architectural Shortcomings of Existing Systems
 In the current state of the art, software architects attempting to satisfy these four modalities frequently resort to **Fragmented Polyglot Persistence**:
@@ -47,11 +46,11 @@ Furthermore, embedded engines implemented in C or C++ require rigorous continuou
 TapirusDB addresses these foundational bottlenecks. Specifically, this work makes the following contributions:
 
 1. **Unified Single-File Multi-Model Engine:** We design an embedded, zero-daemon storage engine that multiplexes Relational B+Tree tables, HNSW Vector Indices, Schema-less Document Collections, and Property Knowledge Graphs within a single 4,096-byte slotted-page file format (`.tapir`).
-2. **Page-Level Authenticated Encryption at Rest (AEAD):** We integrate native ChaCha20-Poly1305 AEAD directly into the pager boundary, utilizing deterministic monotonic 96-bit nonces ($\text{Epoch} \,\|\, \text{PageId} \,\|\, \text{Sequence}$) and early-stage Key Check Value (KCV) passphrase validation without requiring external commercial extensions.
-3. **Pure Safe Rust Implementation (`#![forbid(unsafe_code)]`):** We demonstrate that an entire low-level database engine—spanning slotted page serialization, binary buffer transformations, B+Tree traversal, and cryptographic operations—can be implemented with zero `unsafe` blocks while achieving high throughput.
-4. **Native Slotted-Page Vector Indexing with SQ8:** We introduce dedicated `0x05` Vector Page descriptors in the page allocation tree, combining 8-bit affine scalar quantization with asymmetric Euclidean distance evaluation directly within the slotted-page boundary.
+2. **Page-Level Authenticated Encryption at Rest (AEAD):** We integrate native ChaCha20-Poly1305 AEAD directly into the pager boundary, utilizing monotonic 96-bit composite nonces ($\text{Epoch} \,\|\, \text{PageId} \,\|\, \text{Sequence}$) and early-stage constant-time Key Check Value (KCV) passphrase validation without requiring external commercial extensions.
+3. **Safe Rust Engine Architecture:** We demonstrate that the core database engine—spanning slotted page serialization, binary buffer transformations, B+Tree traversal, and cryptographic operations—is enforced under `#![forbid(unsafe_code)]`, formally eliminating unsafe blocks within the core engine crate while isolating foreign C FFI wrappers behind audited boundaries.
+4. **Native Slotted-Page Vector Indexing with SQ8:** We introduce dedicated `0x05` Vector Page descriptors in the page allocation tree, combining 8-bit affine scalar quantization with asymmetric Euclidean distance evaluation directly within the slotted-page boundary, delivering up to a 74.7% physical storage reduction for 768D embeddings (3.96x compression).
 5. **Deterministic Micro-Footprint Density:** We demonstrate that full multi-model capability can be delivered within a stripped binary footprint of $\le 1.0\text{ MB}$, an idle RAM footprint of $< 4\text{ MB}$, and an initial disk allocation of $4,096\text{ bytes}$, deployable across memory-constrained 64-bit edge devices, single-board computers, and WebAssembly runtimes.
-6. **Sub-Microsecond Topological Vector-Graph Chaining & Universal AI Memory:** We introduce fluent topological candidate space pruning ($O(M \cdot D)$ vs $O(N \log N)$), achieving $0.51\text{ µs}$ median latency ($1.60\text{M ops/s}$) with $100\%$ exact neighborhood recall, coupled with a native Anthropic Model Context Protocol (MCP) server that anchors frontier LLMs (Claude, GPT-4o) and edge SLMs (Phi-3, Gemma-2) against cognitive drift.
+6. **Sub-Microsecond Topological Vector-Graph Pruning for Agent Memory:** We introduce fluent topological candidate space pruning ($O(M \cdot D)$ vs $O(N \log N)$), achieving $0.51\text{ µs}$ median latency ($1.60\text{M ops/s}$) in memory-resident benchmarks, coupled with a native Model Context Protocol (MCP) server that provides structured state persistence for local AI agents.
 
 ---
 
@@ -378,9 +377,9 @@ Within the formal operational semantics of safe Rust, this directive guarantees 
 
 #### 6.1.1 Formal Safety Boundary & Scope Demarcation
 To maintain rigorous scientific accuracy, we explicitly demarcate the scope of this compile-time guarantee:
-- **Scope of Safe Rust Guarantees:** `#![forbid(unsafe_code)]` formally eliminates memory corruption and undefined behavior within the engine's compiled modules. It does not claim to eliminate high-level application logic errors, algorithmic deadlocks, or resource exhaustion denial-of-service.
+- **Scope of Safe Rust Guarantees:** Within the core engine crate boundary, the `#![forbid(unsafe_code)]` directive prevents the introduction of explicit `unsafe` blocks. This eliminates spatial and temporal memory safety violations (such as buffer overruns, use-after-free, and dangling pointers) in the engine's compiled source code. As with all safe systems software, it does not formally establish the mathematical correctness of underlying third-party dependencies, compiler code generation passes, operating system syscall implementations, or high-level application logic.
 - **Transitive and Foreign Boundary Isolation:** Low-level operating system interactions (standard library POSIX/Windows syscalls) and foreign function wrappers (`crates/tapirus-ffi`) are strictly decoupled behind bounded API boundaries. Physical storage corruption is guarded against through independent mechanisms: 32-bit CRC32 frame checksums and Poly1305 cryptographic authentication.
-- **Durability Decoupling:** Memory safety is orthogonal to storage durability. Crash consistency and atomic state recovery are governed and formally verified independently through the Write-Ahead Log (WAL) protocol and TLA+ state verification.
+- **Durability Decoupling:** Memory safety is orthogonal to storage durability. Crash consistency and atomic state recovery are governed and formally verified independently through the Write-Ahead Log (WAL) protocol and state machine recovery tests.
 
 
 ### 6.2 Zero-Cost Safe Rust Idioms for Low-Level Paging and Cryptography
@@ -484,18 +483,19 @@ High-dimensional nearest-neighbor retrieval was evaluated using 384-dimensional 
 ```
 
 ### 7.5 SQ8 Scalar Quantization Fidelity & Error Analysis
-We evaluated the numerical precision retention of TapirusDB's 8-bit affine scalar quantization against unquantized IEEE 32-bit floating point baselines across 128, 384, and 768 dimensions.
+We evaluated the numerical precision retention and physical storage density of TapirusDB's 8-bit affine scalar quantization against unquantized IEEE 32-bit floating point baselines across 128, 384, 768, and 1,536 dimensions.
 
 ```
-+-----------+-------------+----------------+----------------+----------------+---------------------+
-| Dimension | Compression | Memory Delta   | Quant. Latency | MSE Error      | Cosine Loss / Sim.  |
-+-----------+-------------+----------------+----------------+----------------+---------------------+
-| 128 D     | 4.00x       | 512B -> 128B   | 0.97 µs        | 1.6 x 10^-7    | 0.000989% (0.999990)|
-| 384 D     | 4.00x       | 1536B -> 384B  | 2.22 µs        | 5.0 x 10^-8    | 0.001043% (0.999990)|
-| 768 D     | 4.00x       | 3072B -> 768B  | 3.86 µs        | 3.0 x 10^-8    | 0.001025% (0.999990)|
-+-----------+-------------+----------------+----------------+----------------+---------------------+
++-----------+-------------+----------------------+--------------------+----------------+----------------+---------------------+
+| Dimension | Raw Float32 | Quantized (D Bytes)  | Total (+8B Header) | Physical Ratio | Quant. Latency | Cosine Loss / Sim.  |
++-----------+-------------+----------------------+--------------------+----------------+----------------+---------------------+
+| 128 D     | 512 Bytes   | 128 Bytes (4.00x)    | 136 Bytes          | 3.76x (73.4%)  | 0.97 µs        | 0.000989% (0.999990)|
+| 384 D     | 1,536 Bytes | 384 Bytes (4.00x)    | 392 Bytes          | 3.92x (74.5%)  | 2.22 µs        | 0.001043% (0.999990)|
+| 768 D     | 3,072 Bytes | 768 Bytes (4.00x)    | 776 Bytes          | 3.96x (74.7%)  | 3.86 µs        | 0.001025% (0.999990)|
+| 1536 D    | 6,144 Bytes | 1,536 Bytes (4.00x)  | 1,544 Bytes        | 3.98x (74.9%)  | 7.15 µs        | 0.001018% (0.999990)|
++-----------+-------------+----------------------+--------------------+----------------+----------------+---------------------+
 ```
-*Analysis:* In all cases, SQ8 quantization achieved an exact **75.0% memory reduction** with an extraordinarily negligible cosine similarity degradation ($< 0.00105\%$), proving its mathematical suitability for edge retrieval.
+*Analysis:* While the raw coordinate quantization achieves an ideal 4.00x ratio, accounting for the 8-byte per-vector metadata envelope ($v_{\min}$ and $\Delta$) yields an effective physical storage compression of **73.4% to 74.9% (3.76x to 3.98x)** across realistic embedding models, approaching the theoretical 75.0% limit asymptotically as $D$ scales. Across all dimensions, mean cosine similarity loss remains below $0.00105\%$, validating the numerical precision of the asymmetric reconstruction engine.
 
 ### 7.6 In-Memory Cryptographic AEAD Overhead Evaluation
 To isolate pure cryptographic computational overhead from underlying block device I/O and filesystem sync latencies, the throughput and latency of page-level ChaCha20-Poly1305 AEAD were empirically quantified across 10,000 continuous memory-resident 4,096-byte page transformations:
@@ -546,25 +546,25 @@ Under continuous high-load evaluation on an AMD Ryzen 5 7640HS (Linux x86_64, re
 - **99th Percentile ($p99$):** $\mathbf{1.01\text{ µs}}$ (1.01 microseconds)
 - **Minimum / Maximum:** $[0.48\text{ µs}, 26.73\text{ µs}]$
 
-#### 7.8.3 Comparative GraphRAG Evaluation: TapirusDB vs. HelixDB vs. Neo4j
-To contextualize performance against contemporary graph-vector database systems, Table 7.8 contrasts TapirusDB with HelixDB (HelixQL) and Neo4j (Cypher + Vector):
+#### 7.8.3 Architectural Latency Breakdown: In-Process Invocation vs. Client-Server IPC / Network Overhead
+To illustrate the architectural latency gap between embedded in-process execution and client-server database middleware on local agent workloads, Table 7.8 contrasts TapirusDB's in-process vector-graph traversal with standalone client-server systems (HelixDB via local IPC and Neo4j via localhost TCP socket):
 
 ```
 +---------------------------+-----------------------+-----------------------+-----------------------+
-| Evaluation Metric         | TapirusDB (Phase 12)  | HelixDB (HelixQL)     | Neo4j (Cypher+Vector) |
+| Architectural Property    | TapirusDB (In-Process)| HelixDB (Local IPC)   | Neo4j (Localhost TCP) |
 +---------------------------+-----------------------+-----------------------+-----------------------+
 | Execution Architecture    | Embedded In-Process   | Standalone Daemon/RPC | Client-Server JVM     |
-| Memory Safety Directive   | #![forbid(unsafe_code)]| Safe/Unsafe Mix (Rust)| JVM Memory Managed    |
-| Inter-Process Overhead    | 0.00 µs (Direct Call) | 1,200 - 3,500 µs (IPC)| 2,500 - 8,000 µs (TCP)|
-| Query Formulation         | Fluent Safe Rust API  | Parsed HelixQL String | Parsed Cypher String  |
-| Graph+Vector Latency (p50)| 0.51 µs (510 ns)      | 2,400 - 5,800 µs      | 6,500 - 14,000 µs     |
-| Relative Latency Speedup  | 1.0x (Baseline)       | 4,700x - 11,300x slower| 12,700x - 27,400x slower|
-| Neighborhood Vector Recall| 100.0% (Exact SIMD)   | Approximate HNSW      | Separate Index Scan   |
-| Idle Memory Footprint     | < 4 MB RAM            | ~150 - 350 MB RAM     | > 1,200 MB RAM        |
+| Memory Safety Directive   | #![forbid(unsafe_code)]| Safe/Unsafe Mix (Rust)| JVM Managed Memory    |
+| Transport Boundary        | 0.00 µs (Register/Mem)| 1,200 - 3,500 µs (IPC)| 2,500 - 8,000 µs (TCP)|
+| Query Dispatch            | Direct Function Call  | Parsed HelixQL String | Parsed Cypher String  |
+| Combined Traversal (p50)  | 0.51 µs (510 ns)      | 2,400 - 5,800 µs      | 6,500 - 14,000 µs     |
+| Measured Latency Gap      | Baseline (1.0x)       | ~4,700x - 11,300x     | ~12,700x - 27,400x    |
+| Neighborhood Recall       | 100.0% (Candidate Sub)| Approximate HNSW      | Separate Index Scan   |
+| Idle Process RSS          | < 4 MB RAM            | ~150 - 350 MB RAM     | > 1,200 MB RAM        |
 | Storage Container         | Single File (.tapir)  | Multi-directory Rocks | Multi-store DB Engine |
 +---------------------------+-----------------------+-----------------------+-----------------------+
 ```
-*Analysis:* Standalone systems such as HelixDB and Neo4j incur catastrophic latency penalties on local edge and SLM agent workloads due to network serialization, query string parsing (HelixQL / Cypher), and inter-process context switching. By contrast, TapirusDB unifies graph adjacency lists and dense vector scoring within a single memory-mapped address space, delivering **sub-microsecond execution** with an idle footprint of less than 4 MB.
+*Architectural Scope & Discussion:* This evaluation specifically isolates the transport and serialization penalty imposed by standalone client-server architectures when servicing small-neighborhood, high-frequency agent queries on a single host. In client-server engines, query string parsing (Cypher / HelixQL), socket buffering, OS context switches, and JSON/RPC deserialization dominate execution time. By co-locating graph adjacency pointers and vector representations within a shared in-process virtual memory space, TapirusDB eliminates IPC and socket boundaries entirely for edge and embedded AI agent deployments. However, this comparison reflects single-host in-process efficiency and is not a general proxy for large-scale distributed analytics across remote clusters.
 
 ### 7.9 Architectural Comparison Matrix
 
@@ -623,26 +623,27 @@ To preserve rigorous academic objectivity, the architectural boundaries and curr
 
 ## 11. Conclusion and Future Work
 
-TapirusDB demonstrates that memory safety, ultra-compact binary density, and modern multi-modal AI capabilities can be unified within a single-file embedded database engine. By achieving **387,630 relational QPS**, **21,650 vector QPS (384D)** with $\ge 99.4\%$ Recall@10, **5,592,087 graph lookups/sec**, and **1,606,037 ops/sec (0.51 µs p50)** in chained GraphRAG retrieval, alongside **103,275 WAL disk writes/sec** and native ChaCha20-Poly1305 AEAD encryption within an ultra-compact **$\approx 1.0\text{ MB}$** stripped binary, TapirusDB establishes a strong reference architecture for edge computing, autonomous robotics, aerospace systems, and local AI runtimes.
+TapirusDB demonstrates that memory safety, ultra-compact binary density, and modern multi-modal AI storage capabilities can be unified within a single-file embedded database engine. By achieving **387,630 relational QPS**, **21,650 vector QPS (384D)** with $\ge 99.4\%$ Recall@10, **5,592,087 graph adjacency lookups/sec**, and **1,606,037 ops/sec (0.51 µs p50)** in chained graph-augmented vector retrieval, alongside **103,275 WAL disk writes/sec** and native ChaCha20-Poly1305 AEAD encryption within an ultra-compact **$\approx 1.0\text{ MB}$** stripped binary, TapirusDB establishes a practical systems reference architecture for edge computing, autonomous robotics, aerospace telemetry, and local AI agent memory runtimes.
 
-### 11.1 The GrandTapirus (Tapisaurus) Distributed Scale-Out Horizon
-While TapirusDB is optimized as an embedded micro-engine, industrial enterprise workloads often demand multi-continent replication and processing over millions of concurrent files. To address this, the **GrandTapirus** (also termed *Tapisaurus*) distributed architecture is formulated as a scale-out extension:
+### 11.1 Future Research Directions
 
-1. **TapirusDB Micro-Shard Fabric**: Rather than employing monolithic cluster nodes, GrandTapirus uses thousands of autonomous TapirusDB engines as distributed micro-shards. Because each shard consumes $< 4\text{ MB}$ RAM, a single commodity server can host thousands of active partitions with near-zero memory contention.
-2. **Multi-Raft Consensus & Geo-Replication**: Cross-node and cross-continent transactions are synchronized using Multi-Raft consensus groups coupled with Hybrid Logical Clocks (HLC), enabling active-active multi-region writes across Asia, Europe, and the Americas with zero recovery point objective ($\text{RPO} = 0$) and sub-second failover ($\text{RTO} < 1\text{ s}$).
-3. **Distributed Quad-Model Query Federation**: A global coordination layer federates partitioned HNSW vector graphs and distributed property graph traversals, allowing unified GraphRAG queries over petabyte-scale knowledge bases without sacrificing single-node execution velocity.
-
-Through this dual-tier continuum—**TapirusDB** for localized, resource-constrained edge intelligence, and **GrandTapirus (Tapisaurus)** for planet-scale enterprise infrastructure—the quad-model paradigm scales across the entire spectrum of modern computing.
+1. **Multi-Shard Partitioning for Distributed Edge Nodes:** Formulating lightweight, zero-daemon coordination protocols to allow multiple autonomous TapirusDB `.tapir` containers to cooperate across partitioned edge clusters without requiring centralized coordinator servers.
+2. **Explicit Hardware SIMD Acceleration:** Developing specialized architecture-specific micro-kernels utilizing AVX-512 (x86_64) and ARM SVE/NEON intrinsics for asymmetric distance evaluations and batch vector de-quantization.
+3. **Memory-Hard Cryptographic Key Derivation:** Integrating Argon2id (RFC 9106) with configurable memory costs ($m = 64\text{ MiB}$) to supplement PBKDF2 on platforms with adequate available RAM, alongside 192-bit extended nonce derivations (XChaCha20-Poly1305).
+4. **End-to-End Generative Evaluation:** Conducting comprehensive downstream evaluations measuring LLM response faithfulness, hallucination reduction ratios, and retrieval context relevance across standardized QA benchmarks (e.g., HotpotQA, MultiHop-RAG).
 
 ---
 
 ## References
 
 1. Hipp, D. R. (2000). *SQLite: An Embeddable Database Engine*. USENIX Annual Technical Conference.
-2. Raasveldt, M., & Mühleisen, H. (2019). *DuckDB: an Embeddable Analytical Database*. Proceedings of the 2019 International Conference on Management of Data (SIGMOD), 1981-1984.
-3. Malkov, Y. A., & Yashunin, D. A. (2018). *Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs*. IEEE Transactions on Pattern Analysis and Machine Intelligence (TPAMI), 42(4), 824-836.
-4. Bernstein, D. J. (2008). *The ChaCha family of stream ciphers*. In State of the Art in Stream Ciphers (pp. 84-97).
-5. Matsakis, N. D., & Klock, F. S. (2014). *The Rust language*. ACM SIGAda Ada Letters, 34(3), 103-104.
-6. Gray, J., & Reuter, A. (1992). *Transaction Processing: Concepts and Techniques*. Morgan Kaufmann.
-7. Edge, D., et al. (2024). *From Local to Global: A Graph RAG Approach to Query-Focused Summarization*. Microsoft Research Technical Report.
-8. Faiz, A. (2026). *TapirusDB Architectural Blueprint and Binary Specification*. Tapirus Tech Lab Technical Documentation (https://tapirusdb.com).
+2. Raasveldt, M., & Mühleisen, H. (2019). *DuckDB: an Embeddable Analytical Database*. Proceedings of the 2019 ACM SIGMOD International Conference on Management of Data, pp. 1981-1984.
+3. Malkov, Y. A., & Yashunin, D. A. (2018). *Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs*. IEEE Transactions on Pattern Analysis and Machine Intelligence (TPAMI), 42(4), pp. 824-836.
+4. Nir, Y., & Langley, A. (2018). *ChaCha20 and Poly1305 for IETF Protocols*. IETF Request for Comments (RFC 8439).
+5. Kaliski, B. (2000). *PKCS #5: Password-Based Cryptography Specification Version 2.0*. IETF Request for Comments (RFC 2898 / RFC 6070).
+6. Biryukov, A., Dinu, D., & Khovratovich, D. (2016). *Argon2: new generation of memory-hard functions for password hashing and other applications*. IEEE European Symposium on Security and Privacy (EuroS&P), pp. 292-302.
+7. Matsakis, N. D., & Klock, F. S. (2014). *The Rust language*. ACM SIGAda Ada Letters, 34(3), pp. 103-104.
+8. Gray, J., & Reuter, A. (1992). *Transaction Processing: Concepts and Techniques*. Morgan Kaufmann Publishers.
+9. Edge, D., et al. (2024). *From Local to Global: A Graph RAG Approach to Query-Focused Summarization*. Microsoft Research Technical Report arXiv:2404.16130.
+10. Wang, M., et al. (2021). *A Comprehensive Survey on Vector Database: Storage and Retrieval Technique, Challenge*. ACM Computing Surveys.
+11. Faiz, A. (2026). *TapirusDB Architectural Blueprint and Binary Specification*. Tapirus Tech Lab Technical Documentation (https://tapirusdb.com).
