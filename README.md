@@ -78,7 +78,6 @@ Modern AI and edge developers are forced into **Fragmented Polyglot Persistence*
 * [Verified Benchmarks & Latency Comparison](#verified-benchmarks)
 * [When (and When NOT) to Use TapirusDB](#when-and-when-not-to-use-tapirusdb)
 * [Formal Safety Verification (TLA+)](#formal-safety-verification)
-* [Roadmap: Tapisaurus Distributed Continuum](#roadmap-tapisaurus-distributed-continuum)
 * [Documentation & Architectural Specs](#documentation--architecture)
 
 ---
@@ -350,7 +349,7 @@ let rows = db.query("
 ")?;
 ```
 * **Advanced Query Engine**: Built-in subqueries, CTEs (`WITH ... AS`), `INNER/LEFT JOIN`, and Cost-Based Optimizer (CBO).
-* **Transparent Encryption Included**: Hardware-accelerated ChaCha20-Poly1305 encryption at rest without paying for proprietary SQLite commercial extensions.
+* **Transparent Encryption Included**: SIMD-accelerated ChaCha20-Poly1305 AEAD encryption at rest (RFC 8439) without paying for proprietary SQLite commercial extensions.
 
 ### 2. Embedded MongoDB Alternative (Schema-less JSON Documents)
 Need to store dynamic payloads, user settings, or sensor telemetry with flexible schemas?
@@ -554,7 +553,7 @@ TapirusDB's quad-model engine (Relational SQL + Vector Search + openCypher Graph
 | **Scientific Research & Academic Labs** | **Single-file `.tapir` dataset container** guarantees 100% reproducible paper workflows; **Graph + Vector + SQL** models molecular pathways and tabular metrics in Python/Jupyter with zero Docker dependencies. |
 | **In-Process Telemetry & Edge BI** | **SIMD vectorized accumulators** compute `AVG`/`SUM`/`COUNT` across millions of sensor readings in microseconds; **Transparent LZ4** cuts disk usage by 70% with zero cloud egress cost. |
 | **Privacy-First Smart Home & Home Assistant** | **Graph** maps Zigbee/Matter/Thread device meshes; **Vector** performs local voice intent matching offline; **WAL** guarantees crash durability across home power outages on Raspberry Pi (<4MB RAM). |
-| **Air-Gapped Sovereign Hardware & Edge IoT** | Operates on Raspberry Pi, avionics, drones, and naval vessels with **zero server daemons**, **< 4 MB idle RAM**, and **hardware-accelerated ChaCha20-Poly1305 encryption** at rest. |
+| **Air-Gapped Sovereign Hardware & Edge IoT** | Operates on Raspberry Pi, avionics, drones, and naval vessels with **zero server daemons**, **< 4 MB idle RAM**, and **SIMD-accelerated ChaCha20-Poly1305 AEAD encryption** at rest. |
 
 ---
 
@@ -629,12 +628,12 @@ Benchmarks executed on native NVMe SSD hardware (`cargo bench --bench tapirus_be
 | **WAL Durable Disk Writes** | **107,875 writes/sec**| 9.15 µs | 6.71 µs | 62.21 µs |
 | **AI Memory Ingest (BM25 Indexing)** | **416,529 ops/sec** | 2.30 µs | 1.77 µs | 4.38 µs |
 
-### Latency Comparison: Traditional Frankenstack vs. TapirusDB In-Process
+### Architectural Latency Breakdown: Network/IPC Middleware vs. In-Process Memory Traversal
 ```text
-Cloud Vector DB (gRPC Roundtrip)  [████████████████████████████████████████] 25,000 µs (25.0 ms)
-Dedicated Graph DB (HTTP/JVM)     [████████████████████████]                 15,000 µs (15.0 ms)
-Relational SQL Server (TCP IPC)   [████████]                                  5,000 µs (5.0 ms)
-TapirusDB Combined Graph-Vector   [▌]                                          0.55 µs (Sub-microsecond, ~45,000x faster)
+Cloud Vector DB (gRPC Roundtrip)  [████████████████████████████████████████] 25,000 µs (25.0 ms - WAN Network Hop)
+Dedicated Graph DB (HTTP/JVM)     [████████████████████████]                 15,000 µs (15.0 ms - TCP / JVM GC)
+Relational SQL Server (TCP IPC)   [████████]                                  5,000 µs (5.0 ms - Unix Socket / IPC)
+TapirusDB Combined Graph-Vector   [▌]                                          0.51 µs (In-Process CPU Memory Bus)
 ```
 
 ---
@@ -646,10 +645,10 @@ Engineering honesty is paramount. Choosing the right storage engine requires und
 | Workload & Scenario | Recommended Engine | Architectural Rationale |
 | :--- | :---: | :--- |
 | **Local AI Agents & LLM RAG Memory** | ✅ **TapirusDB** | Microsecond episodic retrieval, combined vector + openCypher graph in one atomic `.tapir` file. |
-| **Embedded Edge, Robotics & IoT Hardware** | ✅ **TapirusDB** | < 4 MB idle RAM, 100% Safe Rust, zero background daemon processes or JVM runtimes. |
+| **Embedded Edge, Robotics & IoT Hardware** | ✅ **TapirusDB** | < 4 MB idle RAM, 100% Safe Rust core, zero background daemon processes or JVM runtimes. |
 | **Desktop Apps, CLI Tools & Local-First Web** | ✅ **TapirusDB** | Single-file portability, zero server configuration, pure client-side SQLite/Mongo alternative. |
 | **Petabyte Distributed Big Data Warehousing** | ❌ **ClickHouse / Snowflake** | TapirusDB is optimized for operational single-node/in-process workloads, not massive multi-rack OLAP scans. |
-| **Multi-Region Active-Active Distributed Writes** | ❌ **CockroachDB / Spanner** | For global multi-master write replication, use dedicated distributed consensus databases (or wait for Tapisaurus). |
+| **Multi-Region Active-Active Distributed Writes** | ❌ **CockroachDB / Spanner** | For global multi-master write replication, use dedicated distributed consensus databases. |
 | **Complex Analytical BI Cubes over Billions of Rows** | ❌ **DuckDB / ClickHouse** | DuckDB is superior for vectorized columnar OLAP; TapirusDB excels at transactional, graph, vector, and episodic AI memory. |
 
 ---
@@ -661,47 +660,26 @@ Engineering honesty is paramount. Choosing the right storage engine requires und
 
 ---
 
-## Roadmap: Tapisaurus Distributed Continuum
-
-```text
-                        TAPIRUS DATA ARCHITECTURE
-                                     │
-         ┌───────────────────────────┴───────────────────────────┐
-         ▼                                                       ▼
-   TAPIRUSDB (Embedded In-Process)                 TAPISAURUS (Distributed Mesh)
-   • Single-file container (.tapir)                • Distributed partitioned micro-shards
-   • Memory footprint: < 4 MB RAM                  • Raft-consensus multi-region replication
-   • Zero IPC overhead                             • Scale-out enterprise analytics
-   • Best for: SLMs, edge IoT, desktop, mobile     • Best for: High-availability cloud clusters
-```
-
-Read the full distributed specification in [`docs/TAPISAURUS_DISTRIBUTED_BLUEPRINT.md`](docs/TAPISAURUS_DISTRIBUTED_BLUEPRINT.md).
-
----
-
 ## Documentation & Architecture
 
 * 📖 [**Production API Cookbook & Code Recipes**](docs/COOKBOOK.md) *(Simple Website/Desktop RAG, 1M+ Low-Spec Research Analytics, Hybrid RRF Search, GraphRAG, Bulk Ingestion, Time-Travel, Window Functions)*
 * 🧠 [**Tutorial: Autonomous AI Agent Memory in 30 Minutes**](docs/tutorials/ai_agent_memory_in_30_minutes.md)
-* ⚡ [**Comparative Benchmark vs. DuckDB & LanceDB**](benches/comparison/benchmark_vs_lance_duck.py)
 * 🔌 [**Multi-Language SDK & C-ABI Integration Guide**](sdks/README.md)
 * 📐 **Systems Architecture Deep Dives**:
   * [**01: 4KB Slotted-Page Storage Engine & Buffer Pool**](docs/architecture/01_STORAGE_ENGINE_AND_PAGING.md)
   * [**02: WAL2 Transactions, ARIES Recovery & Crash Durability**](docs/architecture/02_WAL_TRANSACTIONS_AND_RECOVERY.md)
   * [**03: Dynamic SIMD Vector Acceleration & RaBitQ 32x Quantization**](docs/architecture/03_SIMD_VECTOR_AND_QUANTIZATION.md)
   * [**04: Compressed Sparse Row (CSR) & openCypher Graph Engine**](docs/architecture/04_GRAPHBLAS_AND_OPENCYPHER.md)
-* 🗺️ [**Architecture Blueprint & Binary File Layout**](BLUEPRINT.md)
 * ☁️ [**GraphRAG & Cloud S3/R2 Remote Storage**](docs/GRAPHRAG_AND_REMOTE_STORAGE.md)
-* 🚗 [**Robotics, Edge Silicon & Autonomous Vehicles**](docs/ROBOTICS_AUTOMOTIVE_EDGE.md)
 * 📜 [**Scientific Systems Architecture Paper**](PAPER_TAPIRUSDB.md)
 * ⚙️ [**C ABI & Native Foreign Function Interface**](include/tapirus.h)
 * 🛡️ [**Formal Verification Suite (TLA+)**](docs/formal_verification/README.md)
-* ⚖️ [**Software License (BSL 1.1)**](LICENSE)
+* ⚖️ [**Software License (BUSL 1.1)**](LICENSE)
 
 ---
 
 <div align="center">
-  <b>TapirusDB — Engineered with 100% Safe Rust for the Modern AI Era.</b><br/>
-  <i>Architected & Maintained by Ahmad Faiz • Tapirus Tech Lab (<a href="https://tapirusdb.com">TapirusDB.com</a>)</i><br/>
-  <small>Contact: <a href="mailto:faiz@tapirusdb.com">faiz@tapirusdb.com</a></small>
+  <b>TapirusDB — Engineered in Safe Rust for Sovereign AI & Edge Systems.</b><br/>
+  <i>Developed & Maintained by TapirusDB Contributors • Tapirus Tech Lab (<a href="https://tapirusdb.com">tapirusdb.com</a>)</i><br/>
+  <small>Contact: <a href="mailto:contact@tapirusdb.com">contact@tapirusdb.com</a></small>
 </div>

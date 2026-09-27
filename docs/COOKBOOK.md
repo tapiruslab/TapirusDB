@@ -15,7 +15,7 @@ TapirusDB unifies four storage models (Relational SQL, HNSW Vectors, openCypher 
 4. [Recipe 4: Episodic Agent Memory with Exponential Temporal Decay](#recipe-4-episodic-agent-memory-with-exponential-temporal-decay)
 5. [Recipe 5: Analytical SQL Window Functions for Turn & Event Ranking](#recipe-5-analytical-sql-window-functions-for-turn--event-ranking)
 6. [Recipe 6: Point-in-Time Historical Time-Travel Queries](#recipe-6-point-in-time-historical-time-travel-queries)
-7. [Recipe 7: Hardware-Accelerated ChaCha20-Poly1305 Vault Encryption at Rest](#recipe-7-hardware-accelerated-chacha20-poly1305-vault-encryption-at-rest)
+7. [Recipe 7: SIMD-Accelerated ChaCha20-Poly1305 Vault Encryption at Rest](#recipe-7-simd-accelerated-chacha20-poly1305-vault-encryption-at-rest)
 8. [Recipe 8: Zero-Downtime Hot Online Vacuum & Storage Maintenance](#recipe-8-zero-downtime-hot-online-vacuum--storage-maintenance)
 9. [Recipe 9: Simple Embedded RAG for Website & Desktop Apps (Zero-Server Search)](#recipe-9-simple-embedded-rag-for-website--desktop-apps-zero-server-search)
 10. [Recipe 10: 1,000,000+ Record Scientific / Research Analysis on Low-Spec Laptops (<4MB RAM)](#recipe-10-1000000-record-scientific--research-analysis-on-low-spec-laptops-4mb-ram)
@@ -292,7 +292,7 @@ WHERE account_id = 'usr_881';
 
 ---
 
-## Recipe 7: Hardware-Accelerated ChaCha20-Poly1305 Vault Encryption at Rest
+## Recipe 7: SIMD-Accelerated ChaCha20-Poly1305 Vault Encryption at Rest
 
 ### The Problem
 Sensitive vector embeddings and private agent memories stored on edge devices (laptops, drones, IoT) risk physical data theft.

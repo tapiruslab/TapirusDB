@@ -245,4 +245,4 @@ runAgentMemory().catch(console.error);
 
 1. **Use `:memory:` for ephemeral agent tasks**: If your agent is processing a single workflow, use an in-memory database to achieve over 150,000 operations per second with zero disk I/O.
 2. **Periodic Checkpointing**: Call `conn.checkpoint()` after every session to flush WAL journals back into the main `.tapir` container file.
-3. **Encryption at Rest**: If handling sensitive agent tokens or user secrets, supply a passphrase when opening the vault to automatically activate ChaCha20-Poly1305 hardware-accelerated encryption.
+3. **Encryption at Rest**: If handling sensitive agent tokens or user secrets, supply a passphrase when opening the vault to automatically activate ChaCha20-Poly1305 SIMD-accelerated AEAD encryption.

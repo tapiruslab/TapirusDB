@@ -5,7 +5,7 @@ Connect to TapirusDB from Go using idiomatic CGO dynamic linking and C ABI wrapp
 ## 🚀 Features
 - **In-Process Performance:** Eliminate network round-trips; query your database directly from Go goroutines.
 - **Quad-Model Data Engine:** Combine relational SQL queries with AI vectors and knowledge graph traversal.
-- **ChaCha20-Poly1305 Security:** Full hardware-accelerated encryption at rest.
+- **ChaCha20-Poly1305 Security:** Full SIMD-accelerated AEAD encryption at rest.
 
 ## 🛠️ Requirements & Running
 
