@@ -27,7 +27,6 @@
 > • **🌐 Run Instant In-Browser**: [tapirusdb.com/studio](https://tapirusdb.com/studio/index.html) *(Zero installation required)*  
 > • **⬇️ Official Download Landing Page**: [tapirusdb.com/download.html](https://tapirusdb.com/download.html) *(Windows, macOS, Linux, CLI)*  
 > • **📦 Releases & Binary Downloads**: [github.com/tapiruslab/TapirusDB/releases](https://github.com/tapiruslab/TapirusDB/releases)  
-> • **💻 Studio Source Code Directory**: [github.com/tapiruslab/TapirusDB/tree/main/studio](https://github.com/tapiruslab/TapirusDB/tree/main/studio)
 
 </div>
 
@@ -90,7 +89,7 @@ Modern AI and edge developers are forced into **Fragmented Polyglot Persistence*
 #### Official Downloads Hub & Visual Studio
 * ⬇️ **Official Download Landing Page**: [tapirusdb.com/download.html](https://tapirusdb.com/download.html) (Windows, macOS, Linux, CLI)
 * 🤖 **Edge AI, Robotics & Smart IoT Portal**: [tapirusdb.com/edge.html](https://tapirusdb.com/edge.html) *(Robotics SLAM, Wear-Leveling, Mobile SLMs)*
-* 🖥️ **Tapirus Studio (Free GUI)**: [Run Live in Browser](https://tapirusdb.com/studio/index.html) • [Studio Source Code (GitHub)](https://github.com/tapiruslab/TapirusDB/tree/main/studio)
+* 🖥️ **Tapirus Studio (Free GUI)**: [Run Live in Browser](https://tapirusdb.com/studio/index.html) *(Zero installation required)*
 * 📦 **Pre-Compiled Binary Assets**: [GitHub Releases](https://github.com/tapiruslab/TapirusDB/releases)
 
 #### Supported Platforms & Distributions
