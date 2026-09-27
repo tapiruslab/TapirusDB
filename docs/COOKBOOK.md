@@ -19,6 +19,7 @@ TapirusDB unifies four storage models (Relational SQL, HNSW Vectors, openCypher 
 8. [Recipe 8: Zero-Downtime Hot Online Vacuum & Storage Maintenance](#recipe-8-zero-downtime-hot-online-vacuum--storage-maintenance)
 9. [Recipe 9: Simple Embedded RAG for Website & Desktop Apps (Zero-Server Search)](#recipe-9-simple-embedded-rag-for-website--desktop-apps-zero-server-search)
 10. [Recipe 10: 1,000,000+ Record Scientific / Research Analysis on Low-Spec Laptops (<4MB RAM)](#recipe-10-1000000-record-scientific--research-analysis-on-low-spec-laptops-4mb-ram)
+11. [Recipe 11: In-Browser WebAssembly (Client-Side Static Web) & Cloudflare Workers Edge API](#recipe-11-in-browser-webassembly-client-side-static-web--cloudflare-workers-edge-api)
 
 ---
 
@@ -530,5 +531,105 @@ SELECT
 FROM sensor_readings
 GROUP BY device_id
 HAVING AVG(temperature) > 28.5;
+```
+
+---
+
+## Recipe 11: In-Browser WebAssembly (Client-Side Static Web) & Cloudflare Workers Edge API
+
+### The Problem
+Building web applications or serverless APIs that require local semantic search, SQL querying, and persistent AI memory usually forces developers into renting managed database servers (PostgreSQL, Supabase, Pinecone), incurring $25–$100+/month hosting fees, cold-start latency, and privacy compliance hurdles.
+
+### The Solution
+TapirusDB compiles directly to **WebAssembly (`wasm32-unknown-unknown`)** into an ~800 KB binary. You can run the entire quad-model database engine client-side in the user's browser (zero server costs) or on Cloudflare Workers edge serverless runtimes with 0ms cold starts!
+
+### In-Browser Static Web (HTML & JavaScript)
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TapirusDB Browser Client-Side Demo</title>
+</head>
+<body>
+  <h1>TapirusDB In-Browser WebAssembly</h1>
+  <button id="queryBtn">Run SQL & AI Vector Search</button>
+  <pre id="out"></pre>
+
+  <script type="module">
+    import init, { TapirusWasm } from './tapirus_wasm.js';
+
+    async function run() {
+      // 1. Initialize compiled WebAssembly engine (~800 KB)
+      await init();
+
+      // 2. Open an in-memory database instance
+      const db = new TapirusWasm();
+
+      // 3. Execute SQL DDL and DML directly inside user's browser
+      db.execute(`
+        CREATE TABLE notes (
+          id INTEGER PRIMARY KEY,
+          title TEXT,
+          category TEXT
+        );
+      `);
+      db.execute("INSERT INTO notes VALUES (1, 'Meeting with Architecture Team', 'work');");
+      db.execute("INSERT INTO notes VALUES (2, 'Weekly Grocery Checklist', 'personal');");
+
+      // 4. Store episodic AI agent memory in client-side WASM
+      db.memory_remember("User prefers dark mode and minimalist aesthetics", 0.95, "pref,ui");
+
+      // 5. Query relational records & recall semantic memory
+      const rows = JSON.parse(db.query_json("SELECT * FROM notes WHERE category = 'work';"));
+      const memories = JSON.parse(db.memory_recall_json("interface preferences", 2));
+
+      document.getElementById('out').textContent = JSON.stringify({ rows, memories }, null, 2);
+    }
+
+    document.getElementById('queryBtn').addEventListener('click', run);
+  </script>
+</body>
+</html>
+```
+
+### Cloudflare Workers Edge API (JavaScript)
+```javascript
+import { TapirusWasm } from '@tapirus/wasm';
+
+export default {
+  async fetch(request, env, ctx) {
+    // 0ms cold-start in V8 isolate
+    const db = new TapirusWasm();
+
+    db.execute(`
+      CREATE TABLE IF NOT EXISTS visitor_telemetry (
+        id INTEGER PRIMARY KEY,
+        ip TEXT,
+        country TEXT,
+        created_at TEXT
+      );
+    `);
+
+    const clientIP = request.headers.get("cf-connecting-ip") || "127.0.0.1";
+    const country = request.cf?.country || "US";
+    const now = new Date().toISOString();
+
+    db.execute(`
+      INSERT INTO visitor_telemetry (ip, country, created_at)
+      VALUES (1, '${clientIP}', '${country}', '${now}');
+    `);
+
+    const logs = JSON.parse(db.query_json("SELECT * FROM visitor_telemetry;"));
+
+    return new Response(JSON.stringify({
+      engine: "TapirusDB Safe-Rust WASM",
+      edge_node: request.cf?.colo || "EDGE",
+      logs
+    }, null, 2), {
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+};
 ```
 
