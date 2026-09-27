@@ -14,6 +14,7 @@
 [![Documentation](https://img.shields.io/badge/docs-tapirusdb.com-0070f3.svg?style=flat-square)](https://tapirusdb.com)
 [![Downloads Hub](https://img.shields.io/badge/downloads-tapirusdb.com%2Fdownload-0284c7.svg?style=flat-square&logo=download)](https://tapirusdb.com/download.html)
 [![Tapirus Studio](https://img.shields.io/badge/Studio_GUI-Free_Workbench-10b981.svg?style=flat-square&logo=react)](https://tapirusdb.com/studio/index.html)
+[![Edge AI & Robotics](https://img.shields.io/badge/Edge_AI-Robotics_%26_IoT-0284c7.svg?style=flat-square)](https://tapirusdb.com/edge.html)
 [![GitHub Releases](https://img.shields.io/github/v/release/tapiruslab/TapirusDB?style=flat-square&color=blue)](https://github.com/tapiruslab/TapirusDB/releases)
 
 <br/>
@@ -88,6 +89,7 @@ Modern AI and edge developers are forced into **Fragmented Polyglot Persistence*
 
 #### Official Downloads Hub & Visual Studio
 * ⬇️ **Official Download Landing Page**: [tapirusdb.com/download.html](https://tapirusdb.com/download.html) (Windows, macOS, Linux, CLI)
+* 🤖 **Edge AI, Robotics & Smart IoT Portal**: [tapirusdb.com/edge.html](https://tapirusdb.com/edge.html) *(Robotics SLAM, Wear-Leveling, Mobile SLMs)*
 * 🖥️ **Tapirus Studio (Free GUI)**: [Run Live in Browser](https://tapirusdb.com/studio/index.html) • [Studio Source Code (GitHub)](https://github.com/tapiruslab/TapirusDB/tree/main/studio)
 * 📦 **Pre-Compiled Binary Assets**: [GitHub Releases](https://github.com/tapiruslab/TapirusDB/releases)
 
