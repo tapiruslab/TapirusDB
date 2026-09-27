@@ -235,7 +235,9 @@ where $\text{dist}_G(v_c, u)$ denotes the shortest-path geodesic distance in $G$
 
 ### 3.5 Frontier Edge Paradigms: Multimodal Perception, Embodied Robotics, Autonomous Swarms, and Industrial IoT
 
-To address the latency, connectivity, and privacy constraints of physical edge environments, TapirusDB extends its quad-model core with purpose-engineered sub-architectures designed for embodied intelligence.
+> *The following subsections describe architectural suitability for emerging edge deployment paradigms, demonstrating how TapirusDB's existing quad-model primitives map to domain-specific workloads. These scenarios represent validated architectural patterns rather than purpose-built subsystems.*
+
+To address the latency, connectivity, and privacy constraints of physical edge environments, TapirusDB's quad-model core provides foundational primitives applicable to embodied intelligence scenarios.
 
 #### 3.5.1 Heterogeneous Multimodal Perception Architecture
 In perceptual systems (such as autonomous vehicles and drone surveillance), a single observational frame generates multiple disjoint feature spaces simultaneously. TapirusDB allows arbitrary relations to define multiple, dimensionally independent vector columns within the slotted-page schema:
@@ -272,8 +274,8 @@ Unlike legacy database architectures that rely on commercial closed-source wrapp
 | (Page 1: Bytes 0..99 Unencrypted File Header, Bytes 100..4079 Encrypted Data: 3,980B usable)  |
 +---------------------------------------------------------------+
                                 |
-          [ SIMD-Vectorized ChaCha20 Stream Cipher ]
-          Key: 256-bit derived via PBKDF2-HMAC-SHA256 (600k iter) / Argon2id
+          [ ChaCha20 Stream Cipher (LLVM Auto-Vectorized) ]
+          Key: 256-bit derived via PBKDF2-HMAC-SHA256 (600k iter)
       Nonce: 12-byte Monotonic Composite Nonce: E (4B) || P (4B) || S (4B)
      AAD: Domain Separation Tag || Epoch (4B) || PageId (4B)
                                 |
@@ -291,8 +293,8 @@ To defend against offline dictionary attacks and GPU-accelerated hash cracking, 
 $$K_{\text{db}} = \text{PBKDF2-HMAC-SHA256}(\text{Passphrase}, \, \text{Salt}, \, c, \, \text{dkLen}=32)$$
 
 - **Default Security Profile:** In strict compliance with modern **OWASP Password Storage Guidelines**, the recommended default iteration count is set to $c = 600,000$ iterations.
-- **Lightweight Edge Profile:** For severely resource-constrained micro-devices and test suites, a baseline profile of $c = 100,000$ iterations is supported.
-- **Memory-Hard Architectural Roadmap:** For platforms with available DRAM, TapirusDB specifies compatibility with **Argon2id (RFC 9106)** configured with parameters $m = 64\text{ MiB}, t = 3, p = 4$, providing memory-hard defense against ASIC and FPGA custom parallel hardware.
+- **Lightweight Edge Profile:** For severely resource-constrained micro-devices and test suites, a baseline profile of $c = 10,000$ iterations is supported via `PBKDF2_FAST_ITERATIONS`.
+- **Memory-Hard KDF Roadmap (Future Work):** A future release targets **Argon2id (RFC 9106)** with parameters $m = 64\text{ MiB}, t = 3, p = 4$, providing memory-hard defense against ASIC and FPGA custom parallel hardware. This is not yet implemented in the current release.
 
 ### 4.2 Monotonically Sequenced Nonce Derivation & Lifecycle Management
 In authenticated stream ciphers such as ChaCha20-Poly1305, **nonce reuse under the same encryption key is catastrophic** (RFC 8439 Section 3). In a transactional database, pages (such as catalog Page 1 or B+Tree root Page 2) are repeatedly modified and re-written. Deriving nonces solely from `PageId` would result in fatal nonce collisions across successive commits:
@@ -357,7 +359,7 @@ TapirusDB adopts an in-memory WAL index hash map. When a reader requests Page $P
 Readers never block writers; writers appending to the WAL log never block active concurrent readers.
 
 ### 5.3 Automated & Manual Checkpointing
-Upon reaching a configurable threshold (default: 1,000 frames) or on explicit invocation of `db.checkpoint()`, committed frames are reconciled into the primary `.tapir` file, the file is synchronized with disk via `fdatasync`, and the WAL file is truncated.
+Upon reaching a configurable threshold (default: 1,000 frames) or on explicit invocation of `db.checkpoint()`, committed frames are reconciled into the primary `.tapir` file, the file is synchronized with disk via `fsync` (`sync_all`), and the WAL file is truncated.
 
 ---
 

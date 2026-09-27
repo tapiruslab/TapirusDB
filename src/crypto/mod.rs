@@ -9,6 +9,7 @@ use crate::pager::PageId;
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 /// Poly1305 MAC authentication tag size in bytes
 pub const TAG_SIZE: usize = 16;
@@ -25,9 +26,10 @@ pub const KCV_MAGIC: &[u8] = b"TAPIRUS_CIPHER_KCV_V1";
 /// Usable unencrypted slotted page content size when encryption is enabled
 pub const ENCRYPTED_PAGE_USABLE_SIZE: usize = 4096 - TAG_SIZE; // 4080 bytes
 
-/// Standard iterations for PBKDF2-HMAC-SHA256 password key derivation in production
-pub const PBKDF2_RECOMMENDED_ITERATIONS: u32 = 100_000;
-/// Fast iterations for PBKDF2-HMAC-SHA256 used in development and fast unit testing
+/// Standard iterations for PBKDF2-HMAC-SHA256 password key derivation in production.
+/// Compliant with OWASP 2023 Password Storage Guidelines (minimum 600,000 iterations).
+pub const PBKDF2_RECOMMENDED_ITERATIONS: u32 = 600_000;
+/// Lightweight iterations for PBKDF2-HMAC-SHA256 used in development and fast unit testing
 pub const PBKDF2_FAST_ITERATIONS: u32 = 10_000;
 
 /// Compute standard HMAC-SHA256 (RFC 2104)
@@ -84,7 +86,7 @@ pub fn pbkdf2_hmac_sha256(passphrase: &[u8], salt: &[u8], iterations: u32) -> [u
 
 /// Derive a 256-bit cryptographic key from a user passphrase and database salt using PBKDF2.
 ///
-/// Uses `PBKDF2_RECOMMENDED_ITERATIONS` (100,000) per OWASP/NIST guidelines for
+/// Uses `PBKDF2_RECOMMENDED_ITERATIONS` (600,000) per OWASP 2023 guidelines for
 /// production brute-force resistance. Use `derive_key_with_iterations` for test/dev fast mode.
 pub fn derive_key(passphrase: &str, salt: &[u8; 16]) -> [u8; 32] {
     pbkdf2_hmac_sha256(passphrase.as_bytes(), salt, PBKDF2_RECOMMENDED_ITERATIONS)
@@ -188,19 +190,14 @@ impl DatabaseCipher {
     }
 
     /// Constant-time verification of stored KCV against candidate key.
-    /// Uses cumulative XOR reduction and compiler memory barriers to thwart timing attacks.
+    /// Uses the audited `subtle` crate (`ConstantTimeEq`) to prevent timing side-channel leakage.
     /// Returns `false` (not-equal) on internal error rather than panicking.
     pub fn verify_kcv(&self, stored_kcv: &[u8; 16]) -> bool {
         let expected = match self.generate_kcv() {
             Ok(v) => v,
             Err(_) => return false,
         };
-        let mut diff = 0u8;
-        for i in 0..16 {
-            diff |= expected[i] ^ stored_kcv[i];
-        }
-        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
-        diff == 0
+        expected.ct_eq(stored_kcv).into()
     }
 
     /// Encrypt a 4,096-byte in-memory page into a 4,096-byte disk page

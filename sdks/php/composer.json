@@ -17,9 +17,9 @@
     "license": "MIT",
     "authors": [
         {
-            "name": "Ahmad Faiz",
-            "email": "faiz@tapirusdb.com",
-            "role": "Lead Architect",
+            "name": "TapirusDB Contributors",
+            "email": "contact@tapirusdb.com",
+            "role": "Core Maintainers",
             "homepage": "https://tapirusdb.com"
         }
     ],

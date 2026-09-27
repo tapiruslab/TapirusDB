@@ -2,7 +2,7 @@
 name = "tapirus"
 version = "1.0.1"
 edition = "2024"
-authors = ["Ahmad Faiz <faiz@tapirusdb.com>"]
+authors = ["TapirusDB Contributors <contact@tapirusdb.com>"]
 license = "BUSL-1.1"
 description = "The Safe-Rust Embedded Multi-Model Database & AI Agent Memory Engine"
 repository = "https://github.com/tapiruslab/TapirusDB"
@@ -49,6 +49,7 @@ crc32fast = "1.4"
 # Encryption at Rest (AEAD ChaCha20-Poly1305 & SHA256 Key Derivation)
 chacha20poly1305 = "0.10"
 sha2 = "0.10"
+subtle = "2.6"
 
 # Serialization & Deserialization
 serde = { version = "1.0", features = ["derive"] }

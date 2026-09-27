@@ -39,6 +39,9 @@ scratch/
 *.audit.md
 *audit*
 
+# Speculative / Concept Documents (Local Only)
+docs/TAPISAURUS_DISTRIBUTED_BLUEPRINT.md
+docs/ROBOTICS_AUTOMOTIVE_EDGE.md
 
 # Large Model Binaries & Installers (Local Only)
 *.gguf
@@ -54,8 +57,15 @@ Agent.md
 # Commercial & Proprietary Desktop Products (Keep Secret / Local Only)
 studio/
 
+# Internal Architecture Documents (Local Only)
+BLUEPRINT.md
+ui/
+
 # Standalone Website Repository
 tapirusdb-site/
+
+# Example Lock Files (Avoid Dependency Resolution Conflicts)
+examples/rust/Cargo.lock
 
 # Security, Keys & Credentials (Strictly Never Commit)
 .env

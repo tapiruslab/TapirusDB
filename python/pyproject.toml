@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "tapirus"
 version = "1.0.0"
 authors = [
-  { name="Ahmad Faiz", email="faiz@tapirusdb.com" },
+  { name="TapirusDB Contributors", email="contact@tapirusdb.com" },
 ]
 description = "The Safe-Rust Embedded Multi-Model Database & AI Agent Memory Engine"
 readme = "README.md"

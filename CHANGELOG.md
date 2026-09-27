@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Implemented `VectorizedAccumulator` in `src/sql/vectorized.rs` providing fast-path 4x loop-unrolled primitive scans for `SUM`, `AVG`, `MIN`, `MAX`, and `COUNT` without per-row `Row` struct allocations.
   - **SQLite C ABI Drop-in Compatibility Layer**:
     - Exported standard SQLite C ABI symbols in `crates/tapirus-ffi/src/lib.rs`: `sqlite3_open_v2`, `sqlite3_prepare_v2`, `sqlite3_step`, `sqlite3_column_*`, `sqlite3_close`, `sqlite3_errmsg`, `sqlite3_changes`, `sqlite3_libversion`.
-    - Created standard C header file `include/sqlite3.h` allowing ORMs (Prisma, SQLAlchemy, Knex) and SQLite drivers to connect to TapirusDB as a drop-in replacement.
+    - Created standard C header file `include/tapirus_sqlite3_compat.h` allowing ORMs (Prisma, SQLAlchemy, Knex) and SQLite drivers to connect to TapirusDB as a drop-in replacement.
   - **Tapirus Studio Desktop Native Packaging (Tauri v2)**:
     - Configured standalone Tauri v2 native desktop application packaging in `studio/src-tauri` with native windowing and local TapirusDB engine bindings producing <10MB standalone executables.
 
