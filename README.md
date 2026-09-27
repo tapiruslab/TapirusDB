@@ -1,6 +1,12 @@
 <div align="center">
 
-# TapirusDB
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/Logo-TapirusDB-2.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/Logo-TapirusDB.png">
+  <img alt="TapirusDB" src="assets/Logo-TapirusDB.png" width="340" />
+</picture>
+
+<br/><br/>
 
 ### The Embedded Cognitive Memory & Multi-Model Engine for Sovereign AI & Edge Systems
 **Sub-Microsecond Agent Memory • openCypher Knowledge Graphs • Vector Search • Relational SQL • Documents**  
