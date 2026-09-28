@@ -1102,6 +1102,22 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
             expect_token(tokens, cursor, &Token::CloseParen)?;
             format!("JSON_EXTRACT({col}, '{path}')")
         }
+        Token::Ident(id) if id.eq_ignore_ascii_case("TAP_CLASSIFY")
+            || id.eq_ignore_ascii_case("TAP_SCORE")
+            || id.eq_ignore_ascii_case("TAP_VERIFY")
+            || id.eq_ignore_ascii_case("TAP_ROUTE") => {
+            let func_name = id.to_ascii_uppercase();
+            *cursor += 1;
+            expect_token(tokens, cursor, &Token::OpenParen)?;
+            let col = parse_column_ident(tokens, cursor)?;
+            expect_token(tokens, cursor, &Token::Comma)?;
+            let arg2 = match get_token(tokens, cursor)? {
+                Token::StringLit(s) => s.clone(),
+                other => return Err(Error::SqlSyntax(format!("Expected string literal in {func_name}, got {other:?}"))),
+            };
+            expect_token(tokens, cursor, &Token::CloseParen)?;
+            format!("{func_name}({col}, '{arg2}')")
+        }
         _ => parse_column_ident(tokens, cursor)?,
     };
 

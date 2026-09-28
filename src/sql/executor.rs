@@ -2956,8 +2956,14 @@ pub fn row_matches_resolved(row: &Row, expr: &ResolvedWhereExpr) -> bool {
     match expr {
         ResolvedWhereExpr::Condition(cond) => {
             let val = match row.get_field_or_json_path(&cond.column) {
-                Some(v) => v,
-                None => return false,
+                Some(v) => v.clone(),
+                None => {
+                    if let Ok(Some(tap_v)) = try_eval_tap_function(row, &cond.column) {
+                        tap_v
+                    } else {
+                        return false;
+                    }
+                }
             };
             matches_condition(&val, &cond.op, &cond.value)
         }
@@ -2969,8 +2975,14 @@ pub fn row_matches_resolved(row: &Row, expr: &ResolvedWhereExpr) -> bool {
         }
         ResolvedWhereExpr::InList { column, values, negated } => {
             let val = match row.get_field_or_json_path(column) {
-                Some(v) => v,
-                None => return false,
+                Some(v) => v.clone(),
+                None => {
+                    if let Ok(Some(tap_v)) = try_eval_tap_function(row, column) {
+                        tap_v
+                    } else {
+                        return false;
+                    }
+                }
             };
             if val.is_null() {
                 return false;
@@ -3318,13 +3330,106 @@ fn project_row(row: &Row, requested_cols: &[String]) -> Result<Row> {
     let mut vals = Vec::with_capacity(requested_cols.len());
     for col in requested_cols {
         let (expr, alias) = parse_col_and_alias(col);
-        let val = row.get_field_or_json_path(expr)
-            .or_else(|| row.get_field_or_json_path(col))
-            .unwrap_or(Value::Null);
+        let val = if let Some(tap_val) = try_eval_tap_function(row, expr)? {
+            tap_val
+        } else {
+            row.get_field_or_json_path(expr)
+                .or_else(|| row.get_field_or_json_path(col))
+                .unwrap_or(Value::Null)
+        };
         names.push(alias.unwrap_or(expr).to_string());
         vals.push(val);
     }
     Ok(Row::new(names, vals))
+}
+
+fn try_eval_tap_function(row: &Row, expr: &str) -> Result<Option<Value>> {
+    let trimmed = expr.trim();
+    let upper = trimmed.to_ascii_uppercase();
+
+    let (func_type, rest) = if upper.starts_with("TAP_CLASSIFY(") {
+        ("CLASSIFY", &trimmed[13..])
+    } else if upper.starts_with("TAP_SCORE(") {
+        ("SCORE", &trimmed[10..])
+    } else if upper.starts_with("TAP_VERIFY(") {
+        ("VERIFY", &trimmed[11..])
+    } else if upper.starts_with("TAP_ROUTE(") {
+        ("ROUTE", &trimmed[10..])
+    } else {
+        return Ok(None);
+    };
+
+    if !rest.ends_with(')') {
+        return Ok(None);
+    }
+    let inner = rest[..rest.len() - 1].trim();
+
+    // Split by the first comma that is not inside quotes or brackets
+    let mut split_pos = None;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut bracket_depth: u32 = 0;
+
+    for (idx, ch) in inner.char_indices() {
+        match ch {
+            '\'' if !in_double_quote => in_single_quote = !in_single_quote,
+            '"' if !in_single_quote => in_double_quote = !in_double_quote,
+            '[' if !in_single_quote && !in_double_quote => bracket_depth += 1,
+            ']' if !in_single_quote && !in_double_quote => bracket_depth = bracket_depth.saturating_sub(1),
+            ',' if !in_single_quote && !in_double_quote && bracket_depth == 0 => {
+                split_pos = Some(idx);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let (raw_arg1, raw_arg2) = match split_pos {
+        Some(pos) => (inner[..pos].trim(), inner[pos + 1..].trim()),
+        None => (inner, ""),
+    };
+
+    let arg1_val = if let Some(v) = row.get_field_or_json_path(raw_arg1).or_else(|| row.get_value(raw_arg1).cloned()) {
+        match v {
+            Value::Text(s) => s.clone(),
+            other => other.to_string(),
+        }
+    } else {
+        strip_quotes(raw_arg1).to_string()
+    };
+
+    let arg2_val = strip_quotes(raw_arg2);
+
+    match func_type {
+        "CLASSIFY" => {
+            let label = crate::tap::sql_bridge::eval_tap_classify(&arg1_val, arg2_val)?;
+            Ok(Some(Value::Text(label)))
+        }
+        "SCORE" => {
+            let score = crate::tap::sql_bridge::eval_tap_score(&arg1_val, arg2_val)?;
+            Ok(Some(Value::Real(score as f64)))
+        }
+        "VERIFY" => {
+            let verified = crate::tap::sql_bridge::eval_tap_verify(&arg1_val, arg2_val)?;
+            Ok(Some(Value::Integer(if verified { 1 } else { 0 })))
+        }
+        "ROUTE" => {
+            let route = crate::tap::sql_bridge::eval_tap_route(&arg1_val, arg2_val)?;
+            Ok(Some(Value::Text(route)))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn strip_quotes(s: &str) -> &str {
+    let trimmed = s.trim();
+    if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+        || (trimmed.starts_with('"') && trimmed.ends_with('"')) {
+        if trimmed.len() >= 2 {
+            return &trimmed[1..trimmed.len() - 1];
+        }
+    }
+    trimmed
 }
 
 fn is_aggregate_query(columns: &[String]) -> bool {
@@ -3613,5 +3718,40 @@ mod tests {
         // 4. GRAPH ALGORITHM LOUVAIN
         let lv_rows = executor.query(&mut pager, parse_sql("GRAPH ALGORITHM LOUVAIN;").unwrap()).expect("Louvain query");
         assert_eq!(lv_rows.len(), 3);
+    }
+
+    #[test]
+    fn test_executor_tap_decision_functions() {
+        let mut pager = Pager::open_in_memory(4096, 128).expect("Pager open");
+        let mut executor = SQLExecutor::new(&mut pager).expect("Init executor");
+
+        executor.execute(&mut pager, parse_sql("CREATE TABLE tickets (id INTEGER PRIMARY KEY, content TEXT, category TEXT);").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("INSERT INTO tickets VALUES (1, 'Urgent billing payment failed during checkout', 'billing');").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("INSERT INTO tickets VALUES (2, 'Cannot connect to wifi router hardware', 'hardware');").unwrap()).unwrap();
+
+        // 1. SELECT with TAP_CLASSIFY
+        let rows = executor.query(&mut pager, parse_sql("SELECT id, TAP_CLASSIFY(content, 'billing, technical, sales') AS predicted FROM tickets;").unwrap()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get::<String>("predicted").unwrap(), "billing");
+
+        // 2. SELECT with TAP_VERIFY in projection
+        let rows_v = executor.query(&mut pager, parse_sql("SELECT id, TAP_VERIFY(content, 'payment error occurred') AS is_payment_issue FROM tickets;").unwrap()).unwrap();
+        assert_eq!(rows_v.len(), 2);
+        assert_eq!(rows_v[0].get::<i64>("is_payment_issue").unwrap(), 1);
+
+        // 3. SELECT with TAP_SCORE in projection
+        let rows_s = executor.query(&mut pager, parse_sql("SELECT id, TAP_SCORE(content, 'urgent priority') AS urgency FROM tickets;").unwrap()).unwrap();
+        assert_eq!(rows_s.len(), 2);
+        assert!(rows_s[0].get::<f64>("urgency").unwrap() > 0.4);
+
+        // 4. SELECT with TAP_ROUTE in projection
+        let rows_r = executor.query(&mut pager, parse_sql("SELECT id, TAP_ROUTE(content, 'escalate_billing, triage, hardware_team') AS next_step FROM tickets;").unwrap()).unwrap();
+        assert_eq!(rows_r.len(), 2);
+        assert_eq!(rows_r[0].get::<String>("next_step").unwrap(), "escalate_billing");
+
+        // 5. WHERE clause filtering with TAP_VERIFY
+        let rows_where = executor.query(&mut pager, parse_sql("SELECT id, category FROM tickets WHERE TAP_VERIFY(content, 'wifi router hardware connection failure') = 1;").unwrap()).unwrap();
+        assert_eq!(rows_where.len(), 1);
+        assert_eq!(rows_where[0].get::<i64>("id").unwrap(), 2);
     }
 }

@@ -71,4 +71,12 @@ pub enum Error {
     /// Serialization or deserialization error
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    /// Tap decision engine or internal cognitive error
+    #[error("Tap decision error: {0}")]
+    DecisionError(String),
+
+    /// Internal error
+    #[error("Internal error: {0}")]
+    Internal(String),
 }

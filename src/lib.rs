@@ -15,8 +15,9 @@ pub mod error;
 pub mod graph;
 pub mod memory;
 pub mod pager;
-pub mod sql;
 pub mod realtime;
+pub mod sql;
+pub mod tap;
 pub mod traits;
 pub mod vector;
 
@@ -42,6 +43,10 @@ pub use pager::{
 };
 pub use realtime::{ChangeEvent, ChangeOp, RealtimeBus};
 pub use sql::{bind_parameters, parse_sql, parse_tokens, SQLExecutor, Statement};
+pub use tap::{
+    ClassificationResult, RouteResult, ScoreResult, TapConfig, TapEngine, TapInferenceEngine,
+    TapRuntime, TapTokenizer, TapWeights, VerifyResult,
+};
 pub use traits::{DatabaseConnection, FromValue, Row, Value, VectorIndexEngine};
 pub use vector::{DistanceMetric, HnswIndex, ProductQuantizer, QuantizedVector8, QuantizedVectorPQ, Vector};
 
@@ -310,6 +315,11 @@ impl Connection {
     /// Return reference to internal memory engine lock
     pub fn memory_engine(&self) -> &Arc<RwLock<MemoryEngine>> {
         &self.memory
+    }
+
+    /// Access the Tap Sub-Millisecond Cognitive Decision Engine
+    pub fn tap(&self) -> &'static TapEngine {
+        crate::tap::sql_bridge::get_global_tap_engine()
     }
 
     // --- High-Performance Graph API ---
@@ -1537,5 +1547,16 @@ mod tests {
         assert!(!results.is_empty());
         assert_eq!(results[0].entry.id, id1);
         assert!(results[0].combined_score > 0.0);
+    }
+
+    #[test]
+    fn test_turnkey_tap_decision_engine() {
+        let conn = Connection::open_in_memory().expect("Open in-memory");
+        let verdict = conn.tap().classify("Urgent billing payment failed on checkout", &["billing", "tech", "sales"]).unwrap();
+        assert_eq!(verdict.top_choice, "billing");
+        assert!(verdict.confidence > 0.4);
+
+        let verified = conn.tap().verify("Client provided active subscription receipt", "active subscription receipt valid").unwrap();
+        assert!(verified.is_verified);
     }
 }
