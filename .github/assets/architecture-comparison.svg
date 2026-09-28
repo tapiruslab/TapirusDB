@@ -1,323 +1,209 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1140 620" width="100%" height="100%" style="background:#080C14; border-radius:14px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', Helvetica, Arial, sans-serif;">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1140 460" width="100%" height="100%" style="background:#FFFFFF; border-radius:16px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Plus Jakarta Sans', sans-serif;">
   <defs>
-    <!-- Calm Background Grid -->
-    <pattern id="archGrid" width="32" height="32" patternUnits="userSpaceOnUse">
-      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#141D2B" stroke-width="0.8" stroke-opacity="0.6"/>
+    <!-- Background Grid -->
+    <pattern id="lightGrid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <path d="M 28 0 L 0 0 0 28" fill="none" stroke="#F1F5F9" stroke-width="1"/>
     </pattern>
 
-    <!-- Subtle Dot Pattern -->
-    <pattern id="archDots" width="16" height="16" patternUnits="userSpaceOnUse">
-      <circle cx="2" cy="2" r="0.75" fill="#1E293B" fill-opacity="0.4"/>
-    </pattern>
+    <!-- Subtle Shadows -->
+    <filter id="cardShadow" x="-4%" y="-4%" width="108%" height="108%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="4" stdDeviation="12" flood-color="#0F172A" flood-opacity="0.05"/>
+    </filter>
 
-    <!-- Card Backgrounds: Serene, Deep Tone -->
-    <linearGradient id="legacyCardBg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#111622" stop-opacity="0.95"/>
-      <stop offset="100%" stop-color="#0B0F18" stop-opacity="1"/>
+    <!-- Panel Gradients (Light) -->
+    <linearGradient id="badPanelLight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFF8F8"/>
+      <stop offset="100%" stop-color="#FFF1F2"/>
     </linearGradient>
 
-    <linearGradient id="tapirusCardBg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#0D1922" stop-opacity="0.95"/>
-      <stop offset="100%" stop-color="#081219" stop-opacity="1"/>
-    </linearGradient>
-
-    <!-- Gentle Borders (Calm, Professional) -->
-    <linearGradient id="legacyBorder" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#F43F5E" stop-opacity="0.35"/>
-      <stop offset="50%" stop-color="#64748B" stop-opacity="0.2"/>
-      <stop offset="100%" stop-color="#334155" stop-opacity="0.3"/>
-    </linearGradient>
-
-    <linearGradient id="tapirusBorder" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#10B981" stop-opacity="0.5"/>
-      <stop offset="50%" stop-color="#06B6D4" stop-opacity="0.3"/>
-      <stop offset="100%" stop-color="#3B82F6" stop-opacity="0.25"/>
-    </linearGradient>
-
-    <!-- Divider Beam -->
-    <linearGradient id="dividerBeam" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#334155" stop-opacity="0"/>
-      <stop offset="30%" stop-color="#475569" stop-opacity="0.6"/>
-      <stop offset="50%" stop-color="#64748B" stop-opacity="0.8"/>
-      <stop offset="70%" stop-color="#475569" stop-opacity="0.6"/>
-      <stop offset="100%" stop-color="#334155" stop-opacity="0"/>
+    <linearGradient id="goodPanelLight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F6FDF9"/>
+      <stop offset="100%" stop-color="#EDFDF5"/>
     </linearGradient>
   </defs>
 
-  <!-- Base Background -->
-  <rect width="1140" height="620" rx="14" fill="#080C14"/>
-  <rect width="1140" height="620" fill="url(#archGrid)"/>
+  <!-- Canvas Background -->
+  <rect width="1140" height="460" rx="16" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1.5"/>
+  <rect width="1140" height="460" fill="url(#lightGrid)"/>
 
-  <!-- =========================================================================
-       LEFT PANEL: TRADITIONAL FRAGMENTED STACK
-       ========================================================================= -->
-  <g transform="translate(28, 28)">
-    <!-- Container Card -->
-    <rect width="518" height="564" rx="12" fill="url(#legacyCardBg)" stroke="url(#legacyBorder)" stroke-width="1.2"/>
-    <rect width="518" height="564" rx="12" fill="url(#archDots)"/>
+  <!-- ================= LEFT PANEL: THE FRAGILE FRANKENSTACK (LIGHT) ================= -->
+  <g transform="translate(28, 22)">
+    <rect width="520" height="416" rx="14" fill="url(#badPanelLight)" stroke="#FECDD3" stroke-width="1.4" filter="url(#cardShadow)"/>
 
     <!-- Header Badge -->
-    <g transform="translate(22, 20)">
-      <rect width="232" height="26" rx="13" fill="#24151C" stroke="#F43F5E" stroke-opacity="0.3" stroke-width="1"/>
-      <circle cx="13" cy="13" r="4" fill="#F43F5E" fill-opacity="0.8"/>
-      <text x="26" y="17" fill="#FDA4AF" font-size="10.5" font-weight="700" letter-spacing="0.7">TRADITIONAL MULTI-PROCESS STACK</text>
-    </g>
+    <rect x="22" y="18" width="216" height="24" rx="12" fill="#FFE4E6" stroke="#FDA4AF" stroke-width="1"/>
+    <circle cx="34" cy="30" r="3.5" fill="#E11D48"/>
+    <text x="44" y="34" fill="#9F1239" font-size="10" font-weight="700" letter-spacing="0.6">FRAGMENTED MULTI-DAEMON</text>
 
     <!-- Title & Subtitle -->
-    <text x="22" y="74" fill="#F8FAFC" font-size="15" font-weight="700">Fragmented Multi-Daemon Architecture</text>
-    <text x="22" y="92" fill="#94A3B8" font-size="11.5">3+ disparate database servers connected via network sockets and IPC</text>
+    <text x="22" y="66" fill="#0F172A" font-size="18" font-weight="700">The Fragile Frankenstack</text>
+    <text x="22" y="84" fill="#64748B" font-size="11.5">3 to 4 disparate databases glued over network sockets &amp; IPC</text>
 
-    <!-- 1. Application Host Process Node -->
-    <g transform="translate(22, 106)">
-      <rect width="474" height="58" rx="8" fill="#131B29" stroke="#334155" stroke-width="1.2"/>
-      
-      <!-- Icon & Label -->
-      <g transform="translate(14, 13)">
-        <rect width="32" height="32" rx="6" fill="#1E293B" stroke="#475569" stroke-width="0.8"/>
-        <!-- App Code Icon -->
-        <path d="M 12 11 L 7 16 L 12 21 M 20 11 L 25 16 L 20 21" stroke="#94A3B8" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- App Node -->
+    <g transform="translate(22, 98)">
+      <rect width="476" height="34" rx="6" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+      <text x="14" y="21" fill="#0F172A" font-size="11.5" font-weight="600">Your App Process</text>
+      <text x="122" y="21" fill="#64748B" font-size="11">(Node.js, Python, Rust, Go)</text>
+      <rect x="368" y="5" width="96" height="24" rx="4" fill="#FFF1F2" stroke="#FECDD3" stroke-width="0.8"/>
+      <text x="416" y="21" fill="#BE123C" font-size="10" font-weight="600" text-anchor="middle">4 Socket Drivers</text>
+    </g>
+
+    <!-- Network Serialization Bottleneck Barrier -->
+    <g transform="translate(22, 140)">
+      <rect width="476" height="28" rx="6" fill="#FFF1F2" stroke="#F43F5E" stroke-opacity="0.4" stroke-dasharray="4,3"/>
+      <text x="238" y="18" fill="#BE123C" font-size="10.5" font-weight="600" text-anchor="middle">⚠️ 40–90 ms Network Roundtrip &amp; Serialization Overhead</text>
+    </g>
+
+    <!-- 4 Disparate Server Badges (2x2 Grid) -->
+    <g transform="translate(22, 176)">
+      <!-- Vector DB -->
+      <g transform="translate(0, 0)">
+        <rect width="232" height="46" rx="7" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+        <text x="12" y="19" fill="#0F172A" font-size="11.5" font-weight="600">☁️ Vector DB</text>
+        <text x="86" y="19" fill="#64748B" font-size="10">(Pinecone)</text>
+        <text x="12" y="34" fill="#E11D48" font-size="9.5">$70–$300/mo • HTTP API hop</text>
       </g>
-      
-      <text x="56" y="27" fill="#F1F5F9" font-size="12.5" font-weight="700">Your Application Process</text>
-      <text x="56" y="43" fill="#94A3B8" font-size="10.5">Host Runtime: Node.js • Python • Go • Java • C#</text>
-      
-      <g transform="translate(346, 16)">
-        <rect width="114" height="26" rx="5" fill="#1A2234" stroke="#3B4A63" stroke-width="0.8"/>
-        <text x="57" y="17" fill="#CBD5E1" font-size="10" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" text-anchor="middle">3 Driver Sockets</text>
+
+      <!-- Graph DB -->
+      <g transform="translate(244, 0)">
+        <rect width="232" height="46" rx="7" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+        <text x="12" y="19" fill="#0F172A" font-size="11.5" font-weight="600">🕸️ Graph DB</text>
+        <text x="84" y="19" fill="#64748B" font-size="10">(Neo4j)</text>
+        <text x="12" y="34" fill="#E11D48" font-size="9.5">&gt;1.2GB JVM heap • GC pauses</text>
+      </g>
+
+      <!-- Relational SQL -->
+      <g transform="translate(0, 52)">
+        <rect width="232" height="46" rx="7" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+        <text x="12" y="19" fill="#0F172A" font-size="11.5" font-weight="600">🗄️ Relational SQL</text>
+        <text x="116" y="19" fill="#64748B" font-size="10">(Postgres)</text>
+        <text x="12" y="34" fill="#E11D48" font-size="9.5">Port 5432 • Connection pool</text>
+      </g>
+
+      <!-- Document Store -->
+      <g transform="translate(244, 52)">
+        <rect width="232" height="46" rx="7" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+        <text x="12" y="19" fill="#0F172A" font-size="11.5" font-weight="600">📁 Document / S3</text>
+        <text x="118" y="19" fill="#64748B" font-size="10">(MongoDB)</text>
+        <text x="12" y="34" fill="#E11D48" font-size="9.5">Dual-write sync drift risk</text>
       </g>
     </g>
 
-    <!-- 2. Network Latency & Overhead Barrier -->
-    <g transform="translate(22, 172)">
-      <rect width="474" height="36" rx="6" fill="#191118" stroke="#F43F5E" stroke-opacity="0.25" stroke-width="1" stroke-dasharray="4,4"/>
-      <text x="237" y="18" fill="#FDA4AF" font-size="10" font-weight="600" text-anchor="middle">⚠️ NETWORK OVERHEAD: Sockets • gRPC • HTTP REST • TLS Serialization</text>
-      <text x="237" y="30" fill="#FB7185" font-size="9" text-anchor="middle">+15ms to +50ms network round-trip penalty per query</text>
-    </g>
+    <!-- Scorecard Footer (3 Columns) -->
+    <g transform="translate(22, 288)">
+      <rect width="476" height="108" rx="8" fill="#FFFFFF" stroke="#FECDD3" stroke-width="1.2"/>
+      <text x="16" y="20" fill="#9F1239" font-size="10" font-weight="700" letter-spacing="0.6">ARCHITECTURAL BOTTLENECK SCORECARD</text>
 
-    <!-- 3. Disparate Database Daemons -->
-    <!-- Server 1: Vector DB -->
-    <g transform="translate(22, 216)">
-      <rect width="474" height="48" rx="8" fill="#111824" stroke="#334155" stroke-width="1"/>
-      <rect x="0" y="0" width="4" height="48" rx="2" fill="#F43F5E" fill-opacity="0.75"/>
-      <g transform="translate(14, 10)">
-        <rect width="28" height="28" rx="5" fill="#1C2433"/>
-        <circle cx="14" cy="14" r="5" fill="none" stroke="#60A5FA" stroke-width="1.2"/>
-        <circle cx="14" cy="14" r="2" fill="#60A5FA"/>
+      <g transform="translate(16, 42)">
+        <text x="0" y="0" fill="#475569" font-size="11">Query Latency:</text>
+        <text x="115" y="0" fill="#E11D48" font-size="13" font-weight="700" font-family="monospace">45 – 95 ms</text>
+        <text x="210" y="0" fill="#64748B" font-size="10.5">(WAN network hop)</text>
       </g>
-      <text x="52" y="22" fill="#F1F5F9" font-size="12" font-weight="600">Vector Database Server</text>
-      <text x="210" y="22" fill="#94A3B8" font-size="10.5">(Pinecone / Milvus / Qdrant)</text>
-      <text x="52" y="37" fill="#FDA4AF" font-size="9.5">~500 MB RAM idle • Remote network hop • Recurring monthly API cost</text>
-    </g>
-
-    <!-- Server 2: Graph DB -->
-    <g transform="translate(22, 270)">
-      <rect width="474" height="48" rx="8" fill="#111824" stroke="#334155" stroke-width="1"/>
-      <rect x="0" y="0" width="4" height="48" rx="2" fill="#F43F5E" fill-opacity="0.75"/>
-      <g transform="translate(14, 10)">
-        <rect width="28" height="28" rx="5" fill="#1C2433"/>
-        <circle cx="9" cy="9" r="2.5" fill="#38BDF8"/>
-        <circle cx="19" cy="9" r="2.5" fill="#38BDF8"/>
-        <circle cx="14" cy="19" r="2.5" fill="#38BDF8"/>
-        <line x1="9" y1="9" x2="19" y2="9" stroke="#38BDF8" stroke-width="1"/>
-        <line x1="9" y1="9" x2="14" y2="19" stroke="#38BDF8" stroke-width="1"/>
+      <g transform="translate(16, 66)">
+        <text x="0" y="0" fill="#475569" font-size="11">Idle Memory:</text>
+        <text x="115" y="0" fill="#E11D48" font-size="13" font-weight="700" font-family="monospace">&gt; 2,500 MB</text>
+        <text x="210" y="0" fill="#64748B" font-size="10.5">(3 background daemons)</text>
       </g>
-      <text x="52" y="22" fill="#F1F5F9" font-size="12" font-weight="600">Graph Database Server</text>
-      <text x="210" y="22" fill="#94A3B8" font-size="10.5">(Neo4j / Memgraph)</text>
-      <text x="52" y="37" fill="#FDA4AF" font-size="9.5">~1.2 GB RAM JVM heap • Dual-write synchronization lag &amp; ETL drift</text>
-    </g>
-
-    <!-- Server 3: Relational SQL -->
-    <g transform="translate(22, 324)">
-      <rect width="474" height="48" rx="8" fill="#111824" stroke="#334155" stroke-width="1"/>
-      <rect x="0" y="0" width="4" height="48" rx="2" fill="#F43F5E" fill-opacity="0.75"/>
-      <g transform="translate(14, 10)">
-        <rect width="28" height="28" rx="5" fill="#1C2433"/>
-        <ellipse cx="14" cy="10" rx="8" ry="3" fill="none" stroke="#F59E0B" stroke-width="1.2"/>
-        <path d="M 6 10 L 6 18 C 6 20 22 20 22 18 L 22 10" fill="none" stroke="#F59E0B" stroke-width="1.2"/>
-      </g>
-      <text x="52" y="22" fill="#F1F5F9" font-size="12" font-weight="600">Relational SQL Server</text>
-      <text x="210" y="22" fill="#94A3B8" font-size="10.5">(PostgreSQL / MySQL)</text>
-      <text x="52" y="37" fill="#FDA4AF" font-size="9.5">~350 MB RAM daemon • Port 5432 / 3306 management • Connection pool overhead</text>
-    </g>
-
-    <!-- 4. Cumulative Bottlenecks Metrics Box -->
-    <g transform="translate(22, 382)">
-      <rect width="474" height="162" rx="10" fill="#140E16" stroke="#F43F5E" stroke-opacity="0.3" stroke-width="1.2"/>
-      <text x="18" y="24" fill="#FDA4AF" font-size="10.5" font-weight="700" letter-spacing="0.6">CUMULATIVE ARCHITECTURAL BOTTLENECKS</text>
-      
-      <!-- Metric Line 1: Latency -->
-      <g transform="translate(18, 44)">
-        <text x="0" y="0" fill="#94A3B8" font-size="11">Total Latency:</text>
-        <text x="130" y="0" fill="#FB7185" font-size="11.5" font-weight="700" font-family="ui-monospace, monospace">45 – 95 ms</text>
-        <text x="210" y="0" fill="#64748B" font-size="10.5">per single reasoning cycle</text>
-      </g>
-
-      <!-- Metric Line 2: Memory -->
-      <g transform="translate(18, 72)">
-        <text x="0" y="0" fill="#94A3B8" font-size="11">Idle Memory:</text>
-        <text x="130" y="0" fill="#FB7185" font-size="11.5" font-weight="700" font-family="ui-monospace, monospace">&gt; 2.05 GB RAM</text>
-        <text x="235" y="0" fill="#64748B" font-size="10.5">across 3 separate daemons</text>
-      </g>
-
-      <!-- Metric Line 3: Consistency -->
-      <g transform="translate(18, 100)">
-        <text x="0" y="0" fill="#94A3B8" font-size="11">Data Consistency:</text>
-        <text x="130" y="0" fill="#FDA4AF" font-size="10.5">Fragile dual-write drift; no cross-model ACID guarantee</text>
-      </g>
-
-      <!-- Metric Line 4: DevOps Burden -->
-      <g transform="translate(18, 128)">
-        <text x="0" y="0" fill="#94A3B8" font-size="11">Deployment:</text>
-        <text x="130" y="0" fill="#FDA4AF" font-size="10.5">Multi-container Docker Compose / Kubernetes mandatory</text>
+      <g transform="translate(16, 90)">
+        <text x="0" y="0" fill="#475569" font-size="11">Infrastructure:</text>
+        <text x="115" y="0" fill="#9F1239" font-size="12" font-weight="700">$$$ Cloud Bills</text>
+        <text x="220" y="0" fill="#64748B" font-size="10.5">(Kubernetes / Docker required)</text>
       </g>
     </g>
   </g>
 
-  <!-- =========================================================================
-       CENTER DIVIDER: CALM SLATE BEAM & VS BADGE
-       ========================================================================= -->
-  <line x1="570" y1="36" x2="570" y2="584" stroke="url(#dividerBeam)" stroke-width="1.2"/>
-  <g transform="translate(570, 310)">
-    <circle r="21" fill="#0D131F" stroke="#334155" stroke-width="1.5"/>
-    <circle r="17" fill="#090E17" stroke="#1E293B" stroke-width="0.8"/>
-    <text x="0" y="4.5" fill="#94A3B8" font-size="11" font-weight="800" text-anchor="middle" letter-spacing="1">VS</text>
+  <!-- ================= CENTER TRANSFORMATION BADGE ================= -->
+  <g transform="translate(570, 230)">
+    <line x1="0" y1="-185" x2="0" y2="185" stroke="#CBD5E1" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <circle r="20" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" filter="url(#cardShadow)"/>
+    <text x="0" y="4.5" fill="#334155" font-size="10.5" font-weight="800" text-anchor="middle" letter-spacing="0.8">VS</text>
   </g>
 
-  <!-- =========================================================================
-       RIGHT PANEL: TAPIRUSDB UNIFIED ARCHITECTURE
-       ========================================================================= -->
-  <g transform="translate(594, 28)">
-    <!-- Container Card -->
-    <rect width="518" height="564" rx="12" fill="url(#tapirusCardBg)" stroke="url(#tapirusBorder)" stroke-width="1.4"/>
-    <rect width="518" height="564" rx="12" fill="url(#archDots)"/>
+  <!-- ================= RIGHT PANEL: TAPIRUSDB SOVEREIGN ENGINE (LIGHT) ================= -->
+  <g transform="translate(592, 22)">
+    <rect width="520" height="416" rx="14" fill="url(#goodPanelLight)" stroke="#A7F3D0" stroke-width="1.5" filter="url(#cardShadow)"/>
 
     <!-- Header Badge -->
-    <g transform="translate(22, 20)">
-      <rect width="224" height="26" rx="13" fill="#092A20" stroke="#10B981" stroke-opacity="0.4" stroke-width="1"/>
-      <circle cx="13" cy="13" r="4" fill="#10B981"/>
-      <text x="26" y="17" fill="#34D399" font-size="10.5" font-weight="700" letter-spacing="0.7">TAPIRUSDB UNIFIED ARCHITECTURE</text>
-    </g>
+    <rect x="22" y="18" width="220" height="24" rx="12" fill="#DCFCE7" stroke="#86EFAC" stroke-width="1"/>
+    <circle cx="34" cy="30" r="3.5" fill="#059669"/>
+    <text x="44" y="34" fill="#166534" font-size="10" font-weight="700" letter-spacing="0.6">SOVEREIGN IN-PROCESS RUNTIME</text>
 
     <!-- Title & Subtitle -->
-    <text x="22" y="74" fill="#FFFFFF" font-size="15" font-weight="700">Zero-Network, In-Process Quad-Engine</text>
-    <text x="22" y="92" fill="#94A3B8" font-size="11.5">Relational, Vector, Graph &amp; Documents united in one address space</text>
+    <text x="22" y="66" fill="#0F172A" font-size="18" font-weight="700">TapirusDB Sovereign Engine</text>
+    <text x="22" y="84" fill="#047857" font-size="11.5">Quad-model cognitive memory consolidated in 1 encrypted file</text>
 
-    <!-- 1. The Host Process & Unified Engine Boundary -->
-    <g transform="translate(22, 106)">
-      <rect width="474" height="266" rx="10" fill="#0A1821" stroke="#10B981" stroke-opacity="0.35" stroke-width="1.2"/>
+    <!-- Unified Container Card -->
+    <g transform="translate(22, 98)">
+      <rect width="476" height="178" rx="10" fill="#FFFFFF" stroke="#10B981" stroke-opacity="0.4" stroke-width="1.2"/>
       
-      <!-- Host Process Header -->
-      <g transform="translate(14, 12)">
-        <text x="0" y="0" fill="#34D399" font-size="10.5" font-weight="700" letter-spacing="0.6">YOUR APPLICATION PROCESS (HOST RUNTIME)</text>
-        <text x="0" y="15" fill="#64748B" font-size="9.5">Direct FFI Bindings: Rust • TypeScript / Node.js • Python • Go • PHP • WASM</text>
+      <!-- Container Top Info -->
+      <g transform="translate(14, 14)">
+        <text x="0" y="0" fill="#0F172A" font-size="12.5" font-weight="700">Single File Container: production.tapir</text>
+        <text x="0" y="16" fill="#047857" font-size="10.5">Linked directly in host runtime • Zero IPC • Shared In-Memory Address Space</text>
       </g>
 
-      <!-- TapirusDB Core Engine (Inside Memory) -->
-      <g transform="translate(12, 36)">
-        <rect width="450" height="138" rx="8" fill="#0B2521" stroke="#06B6D4" stroke-opacity="0.3" stroke-width="1"/>
-        
-        <!-- Engine Header Bar -->
-        <g transform="translate(12, 14)">
-          <text x="0" y="0" fill="#FFFFFF" font-size="12" font-weight="700">TapirusDB Core Engine (100% Safe Rust)</text>
-          <text x="0" y="14" fill="#6EE7B7" font-size="9.5">Shared In-Memory Address Space • Zero-Copy Pointer Dereference • Zero IPC</text>
+      <!-- 4 Unified Models in 1 Row -->
+      <g transform="translate(14, 44)">
+        <!-- SQL -->
+        <g transform="translate(0, 0)">
+          <rect width="106" height="60" rx="6" fill="#F0FDF4" stroke="#86EFAC" stroke-width="0.8"/>
+          <text x="53" y="19" fill="#0F172A" font-size="10.5" font-weight="700" text-anchor="middle">Relational SQL</text>
+          <text x="53" y="34" fill="#047857" font-size="9" text-anchor="middle">ANSI SQL-92</text>
+          <text x="53" y="48" fill="#065F46" font-size="8.5" text-anchor="middle">ACID B+Tree</text>
         </g>
 
-        <!-- Quad-Model 4 Balanced Columns -->
-        <!-- Model 1: SQL -->
-        <g transform="translate(10, 36)">
-          <rect width="102" height="58" rx="6" fill="#073A2E" stroke="#10B981" stroke-opacity="0.4" stroke-width="0.8"/>
-          <text x="51" y="18" fill="#FFFFFF" font-size="10" font-weight="700" text-anchor="middle">Relational SQL</text>
-          <text x="51" y="32" fill="#6EE7B7" font-size="8.5" text-anchor="middle">ANSI SQL-92</text>
-          <text x="51" y="44" fill="#A7F3D0" font-size="8" text-anchor="middle">ACID B+Tree Joins</text>
+        <!-- Vectors -->
+        <g transform="translate(114, 0)">
+          <rect width="106" height="60" rx="6" fill="#F0FDF4" stroke="#86EFAC" stroke-width="0.8"/>
+          <text x="53" y="19" fill="#0F172A" font-size="10.5" font-weight="700" text-anchor="middle">HNSW Vectors</text>
+          <text x="53" y="34" fill="#047857" font-size="9" text-anchor="middle">1536-D SIMD</text>
+          <text x="53" y="48" fill="#065F46" font-size="8.5" text-anchor="middle">Sub-ms PQ/IVF</text>
         </g>
 
-        <!-- Model 2: Vector -->
-        <g transform="translate(118, 36)">
-          <rect width="102" height="58" rx="6" fill="#073A2E" stroke="#10B981" stroke-opacity="0.4" stroke-width="0.8"/>
-          <text x="51" y="18" fill="#FFFFFF" font-size="10" font-weight="700" text-anchor="middle">HNSW Vectors</text>
-          <text x="51" y="32" fill="#6EE7B7" font-size="8.5" text-anchor="middle">Cosine / L2 SIMD</text>
-          <text x="51" y="44" fill="#A7F3D0" font-size="8" text-anchor="middle">1536-D Paged Index</text>
+        <!-- Graph -->
+        <g transform="translate(228, 0)">
+          <rect width="106" height="60" rx="6" fill="#F0FDF4" stroke="#86EFAC" stroke-width="0.8"/>
+          <text x="53" y="19" fill="#0F172A" font-size="10.5" font-weight="700" text-anchor="middle">openCypher</text>
+          <text x="53" y="34" fill="#047857" font-size="9" text-anchor="middle">CSR Topology</text>
+          <text x="53" y="48" fill="#065F46" font-size="8.5" text-anchor="middle">GraphRAG Fast</text>
         </g>
 
-        <!-- Model 3: Graph -->
-        <g transform="translate(226, 36)">
-          <rect width="102" height="58" rx="6" fill="#073A2E" stroke="#10B981" stroke-opacity="0.4" stroke-width="0.8"/>
-          <text x="51" y="18" fill="#FFFFFF" font-size="10" font-weight="700" text-anchor="middle">openCypher Graph</text>
-          <text x="51" y="32" fill="#6EE7B7" font-size="8.5" text-anchor="middle">Multi-Hop Traversal</text>
-          <text x="51" y="44" fill="#A7F3D0" font-size="8" text-anchor="middle">GraphRAG Search</text>
+        <!-- Docs -->
+        <g transform="translate(342, 0)">
+          <rect width="106" height="60" rx="6" fill="#F0FDF4" stroke="#86EFAC" stroke-width="0.8"/>
+          <text x="53" y="19" fill="#0F172A" font-size="10.5" font-weight="700" text-anchor="middle">JSON Docs</text>
+          <text x="53" y="34" fill="#047857" font-size="9" text-anchor="middle">Schemaless</text>
+          <text x="53" y="48" fill="#065F46" font-size="8.5" text-anchor="middle">Hybrid RRF</text>
         </g>
-
-        <!-- Model 4: Documents -->
-        <g transform="translate(334, 36)">
-          <rect width="106" height="58" rx="6" fill="#073A2E" stroke="#10B981" stroke-opacity="0.4" stroke-width="0.8"/>
-          <text x="53" y="18" fill="#FFFFFF" font-size="10" font-weight="700" text-anchor="middle">JSON Documents</text>
-          <text x="53" y="32" fill="#6EE7B7" font-size="8.5" text-anchor="middle">Schemaless Store</text>
-          <text x="53" y="44" fill="#A7F3D0" font-size="8" text-anchor="middle">Hybrid RRF Ranking</text>
-        </g>
-
-        <!-- In-Memory Bus Footnote -->
-        <text x="225" y="118" fill="#A7F3D0" font-size="9.5" text-anchor="middle">⚡ Ultra-low latency memory bus: cross-model queries chain in 0.55 µs without socket hops</text>
       </g>
 
-      <!-- Zero-Copy Direct Connection Arrow -->
-      <path d="M 237 174 L 237 186" stroke="#34D399" stroke-width="1.8"/>
-      <polygon points="237,188 233,181 241,181" fill="#34D399"/>
-
-      <!-- Single File Storage Container (.tapir) -->
-      <g transform="translate(12, 188)">
-        <rect width="450" height="66" rx="8" fill="#072820" stroke="#10B981" stroke-opacity="0.5" stroke-width="1.2"/>
-        
-        <!-- Vault Icon -->
-        <g transform="translate(14, 15)">
-          <rect width="36" height="36" rx="6" fill="#0A382C" stroke="#34D399" stroke-opacity="0.4" stroke-width="0.8"/>
-          <path d="M 18 11 C 15 11 13 13 13 16 L 13 18 L 23 18 L 23 16 C 23 13 21 11 18 11 Z M 11 18 L 25 18 L 25 26 L 11 26 Z" fill="#34D399"/>
-        </g>
-
-        <text x="58" y="27" fill="#FFFFFF" font-size="12" font-weight="700">Single Container File: production.tapir</text>
-        <text x="58" y="42" fill="#A7F3D0" font-size="9.5">4,096-Byte Slotted-Page Pager • Pure LZ4 (3.8 GB/s) • Zero Unsafe Rust</text>
-        <text x="58" y="55" fill="#6EE7B7" font-size="9">ChaCha20-Poly1305 AEAD Encryption • Zero Open Network Ports</text>
-
-        <!-- WAL Badge -->
-        <g transform="translate(356, 17)">
-          <rect width="82" height="32" rx="5" fill="#0A3F30" stroke="#10B981" stroke-opacity="0.5" stroke-width="0.8"/>
-          <text x="41" y="15" fill="#34D399" font-size="9.5" font-weight="700" text-anchor="middle">ACID WAL2</text>
-          <text x="41" y="26" fill="#A7F3D0" font-size="8" text-anchor="middle">Crash-Resistant</text>
-        </g>
+      <!-- In-Memory Bus Highlight Bar -->
+      <g transform="translate(14, 118)">
+        <rect width="448" height="44" rx="6" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="1"/>
+        <text x="224" y="18" fill="#047857" font-size="10.5" font-weight="700" text-anchor="middle">⚡ 0.51 µs In-Process Memory Bus • 100x Faster Than Network</text>
+        <text x="224" y="33" fill="#065F46" font-size="9.5" text-anchor="middle">Atomic 4-Model Transactions • ChaCha20-Poly1305 AEAD • Zero Network Ports</text>
       </g>
     </g>
 
-    <!-- 2. Proven Enterprise Performance Metrics Box -->
-    <g transform="translate(22, 382)">
-      <rect width="474" height="162" rx="10" fill="#081E17" stroke="#10B981" stroke-opacity="0.4" stroke-width="1.2"/>
-      <text x="18" y="24" fill="#34D399" font-size="10.5" font-weight="700" letter-spacing="0.6">PROVEN IN-PROCESS PERFORMANCE GAINS</text>
-      
-      <!-- Metric Line 1: Latency -->
-      <g transform="translate(18, 44)">
-        <text x="0" y="0" fill="#94A3B8" font-size="11">Chaining Latency:</text>
-        <text x="130" y="0" fill="#34D399" font-size="11.5" font-weight="700" font-family="ui-monospace, monospace">0.55 µs</text>
-        <text x="182" y="0" fill="#E2E8F0" font-size="11">chaining •</text>
-        <text x="240" y="0" fill="#34D399" font-size="11.5" font-weight="700" font-family="ui-monospace, monospace">22.8 µs</text>
-        <text x="296" y="0" fill="#6EE7B7" font-size="10.5">(100x faster)</text>
-      </g>
+    <!-- Scorecard Footer (3 Columns) -->
+    <g transform="translate(22, 288)">
+      <rect width="476" height="108" rx="8" fill="#FFFFFF" stroke="#A7F3D0" stroke-width="1.2"/>
+      <text x="16" y="20" fill="#065F46" font-size="10" font-weight="700" letter-spacing="0.6">PROVEN IN-PROCESS PERFORMANCE GAINS</text>
 
-      <!-- Metric Line 2: Memory -->
-      <g transform="translate(18, 72)">
-        <text x="0" y="0" fill="#94A3B8" font-size="11">Memory Footprint:</text>
-        <text x="130" y="0" fill="#34D399" font-size="11.5" font-weight="700" font-family="ui-monospace, monospace">&lt; 4 MB Idle RAM</text>
-        <text x="240" y="0" fill="#6EE7B7" font-size="10.5">(99.8% lighter footprint)</text>
+      <g transform="translate(16, 42)">
+        <text x="0" y="0" fill="#475569" font-size="11">Query Latency:</text>
+        <text x="115" y="0" fill="#059669" font-size="13" font-weight="700" font-family="monospace">0.51 µs</text>
+        <text x="180" y="0" fill="#047857" font-size="10.5">(100x faster in CPU memory)</text>
       </g>
-
-      <!-- Metric Line 3: Consistency -->
-      <g transform="translate(18, 100)">
-        <text x="0" y="0" fill="#94A3B8" font-size="11">Data Integrity:</text>
-        <text x="130" y="0" fill="#F1F5F9" font-size="10.5">True ACID cross-model transactions in a single commit</text>
+      <g transform="translate(16, 66)">
+        <text x="0" y="0" fill="#475569" font-size="11">Idle Memory:</text>
+        <text x="115" y="0" fill="#059669" font-size="13" font-weight="700" font-family="monospace">&lt; 4 MB RAM</text>
+        <text x="210" y="0" fill="#047857" font-size="10.5">(99.8% lighter footprint)</text>
       </g>
-
-      <!-- Metric Line 4: Infrastructure Cost -->
-      <g transform="translate(18, 128)">
-        <text x="0" y="0" fill="#94A3B8" font-size="11">Infrastructure:</text>
-        <text x="130" y="0" fill="#34D399" font-size="11.5" font-weight="700" font-family="ui-monospace, monospace">$0 Cloud Bills</text>
-        <text x="228" y="0" fill="#E2E8F0" font-size="10.5">• 100% sovereign, local-first &amp; embedded</text>
+      <g transform="translate(16, 90)">
+        <text x="0" y="0" fill="#475569" font-size="11">Infrastructure:</text>
+        <text x="115" y="0" fill="#059669" font-size="12" font-weight="700">$0 Cloud Bills</text>
+        <text x="210" y="0" fill="#64748B" font-size="10.5">• 100% sovereign, local-first &amp; offline</text>
       </g>
     </g>
   </g>
