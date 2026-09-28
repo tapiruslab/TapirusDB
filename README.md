@@ -3,7 +3,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/Logo-TapirusDB-2.png">
   <source media="(prefers-color-scheme: light)" srcset="assets/Logo-TapirusDB.png">
-  <img alt="TapirusDB" src="assets/Logo-TapirusDB.png" width="340" />
+  <img alt="TapirusDB" src="assets/Logo-TapirusDB.png" width="540" />
 </picture>
 
 <br/>
