@@ -12,7 +12,7 @@
 //!    hallucination-free Markdown context for Frontier LLMs & On-Device SLMs.
 
 use crate::error::Result;
-use crate::graph::{Direction, Edge, GraphEngine};
+use crate::graph::{Direction, Edge, GraphEngine, Node};
 use crate::vector::{cosine_similarity, ProductQuantizer};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -39,6 +39,15 @@ pub struct GraphRagConfig {
     pub min_score: f32,
     /// Maximum number of final contextual entities to return (default: 5)
     pub limit: usize,
+    /// Optional Tenant ID filter for multi-tenant Sovereign AI agent isolation
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// Optional ACL / Role-based access control filter (e.g. ["admin", "analyst", "public"])
+    #[serde(default)]
+    pub allowed_roles: Option<Vec<String>>,
+    /// Optional exact metadata key-value filters
+    #[serde(default)]
+    pub metadata_filter: Option<HashMap<String, serde_json::Value>>,
 }
 
 impl Default for GraphRagConfig {
@@ -53,6 +62,9 @@ impl Default for GraphRagConfig {
             direction: Some(Direction::Both),
             min_score: 0.0,
             limit: 5,
+            tenant_id: None,
+            allowed_roles: None,
+            metadata_filter: None,
         }
     }
 }
@@ -88,6 +100,115 @@ impl GraphRagConfig {
         self.lexical_weight = lexical;
         self
     }
+
+    /// Set tenant ID for strict multi-tenant isolation
+    pub fn with_tenant<S: Into<String>>(mut self, tenant_id: S) -> Self {
+        self.tenant_id = Some(tenant_id.into());
+        self
+    }
+
+    /// Set allowed roles / ACL tags for permission-aware retrieval
+    pub fn with_roles<I, S>(mut self, roles: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.allowed_roles = Some(roles.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Set metadata key-value filter
+    pub fn with_metadata_filter(mut self, filter: HashMap<String, serde_json::Value>) -> Self {
+        self.metadata_filter = Some(filter);
+        self
+    }
+}
+
+/// Validate whether an entity Node satisfies the security tenant and ACL permission policies
+pub fn is_node_permitted(config: &GraphRagConfig, node: &Node) -> bool {
+    let json_val: Option<serde_json::Value> = serde_json::from_str(&node.properties).ok();
+
+    // 1. Multi-Tenant Isolation
+    if let Some(ref req_tenant) = config.tenant_id {
+        let matches_tenant = if let Some(ref json) = json_val {
+            let t_val = json.get("tenant_id")
+                .or_else(|| json.get("tenant"))
+                .or_else(|| json.get("tenantId"))
+                .or_else(|| json.get("org_id"));
+            match t_val {
+                Some(serde_json::Value::String(s)) => s == req_tenant || s == "*",
+                _ => false,
+            }
+        } else {
+            node.properties.contains(&format!("tenant_id={req_tenant}"))
+                || node.properties.contains(&format!("tenant={req_tenant}"))
+                || node.properties.contains(&format!("\"tenant_id\": \"{req_tenant}\""))
+                || node.properties.contains(&format!("\"tenant\": \"{req_tenant}\""))
+        };
+
+        if !matches_tenant {
+            return false;
+        }
+    }
+
+    // 2. Role-Based Access Control (RBAC) / Access Control List (ACL)
+    if let Some(ref allowed_roles) = config.allowed_roles {
+        let is_allowed = if let Some(ref json) = json_val {
+            // Check public visibility
+            let is_public = json.get("visibility")
+                .and_then(|v| v.as_str())
+                .map(|v| v.eq_ignore_ascii_case("public"))
+                .unwrap_or(false);
+
+            if is_public {
+                true
+            } else {
+                let node_roles = json.get("roles")
+                    .or_else(|| json.get("role"))
+                    .or_else(|| json.get("acl"))
+                    .or_else(|| json.get("groups"));
+
+                match node_roles {
+                    Some(serde_json::Value::Array(arr)) => {
+                        arr.iter().any(|item| {
+                            if let Some(r_str) = item.as_str() {
+                                allowed_roles.iter().any(|ar| ar.eq_ignore_ascii_case(r_str))
+                            } else {
+                                false
+                            }
+                        })
+                    }
+                    Some(serde_json::Value::String(r_str)) => {
+                        allowed_roles.iter().any(|ar| ar.eq_ignore_ascii_case(r_str))
+                    }
+                    None => true, // Nodes without restricted roles are considered accessible
+                    _ => false,
+                }
+            }
+        } else {
+            // Non-JSON properties fallback: match any role token
+            allowed_roles.iter().any(|r| node.properties.to_lowercase().contains(&r.to_lowercase()))
+        };
+
+        if !is_allowed {
+            return false;
+        }
+    }
+
+    // 3. Exact Metadata Key-Value Filter
+    if let Some(ref filter) = config.metadata_filter {
+        if let Some(ref json) = json_val {
+            for (k, v) in filter {
+                if json.get(k) != Some(v) {
+                    return false;
+                }
+            }
+        } else {
+            return false;
+        }
+    }
+
+    true
 }
 
 /// An individual entity match retrieved and ranked by the GraphRAG pipeline
@@ -148,6 +269,9 @@ impl GraphRagEngine {
 
         if let Some(q_vec) = query_vec {
             for node in &all_nodes {
+                if !is_node_permitted(config, node) {
+                    continue;
+                }
                 if let Some(ref n_vec) = node.vector {
                     if n_vec.len() == q_vec.len() {
                         let sim = if let Some(quantizer) = pq {
@@ -174,6 +298,9 @@ impl GraphRagEngine {
                 .collect();
 
             for node in &all_nodes {
+                if !is_node_permitted(config, node) {
+                    continue;
+                }
                 let text = format!("{} {}", node.label, node.properties).to_lowercase();
                 let match_count = terms.iter().filter(|&t| text.contains(t)).count();
                 if match_count > 0 {
@@ -210,6 +337,9 @@ impl GraphRagEngine {
 
             let neighbors = graph.neighbors(curr_id, traversal_dir, None);
             for (neighbor_node, edge) in neighbors {
+                if !is_node_permitted(config, &neighbor_node) {
+                    continue;
+                }
                 let next_hops = curr_hops + 1;
                 let next_weight = curr_weight * (edge.weight / (1.0 + next_hops as f32));
 
@@ -375,7 +505,14 @@ impl GraphRagEngine {
         // Step 4: Synthesize Prompt Context for LLM / SLM
         // ------------------------------------------------------------------
         let mut prompt_context = String::new();
-        prompt_context.push_str("### 🧠 Verified Knowledge Graph Context\n\n");
+        if let Some(ref tenant) = config.tenant_id {
+            let roles_desc = config.allowed_roles.as_ref().map(|r| r.join(", ")).unwrap_or_else(|| "Any".to_string());
+            prompt_context.push_str(&format!("### 🧠 Verified Knowledge Graph Context (Tenant: `{tenant}` | Roles: [{roles_desc}])\n\n"));
+        } else if let Some(ref roles) = config.allowed_roles {
+            prompt_context.push_str(&format!("### 🧠 Verified Knowledge Graph Context (Roles: [{}])\n\n", roles.join(", ")));
+        } else {
+            prompt_context.push_str("### 🧠 Verified Knowledge Graph Context\n\n");
+        }
         prompt_context.push_str("#### Entities & Facts:\n");
 
         for r in &final_results {

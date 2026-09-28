@@ -3,10 +3,10 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/Logo-TapirusDB-2.png">
   <source media="(prefers-color-scheme: light)" srcset="assets/Logo-TapirusDB.png">
-  <img alt="TapirusDB" src="assets/Logo-TapirusDB.png" width="340" />
+  <img alt="TapirusDB" src="assets/Logo-TapirusDB.png" width="540" />
 </picture>
 
-<br/><br/>
+<br/>
 
 ### The Embedded Cognitive Memory & Multi-Model Engine for Sovereign AI & Edge Systems
 **Sub-Microsecond Agent Memory • openCypher Knowledge Graphs • Vector Search • Relational SQL • Documents**  
@@ -25,8 +25,8 @@
 
 <br/>
 
-> **"Stop stitching Pinecone, Neo4j, and SQLite together."**  
-> TapirusDB is the high-performance, embedded cognitive memory engine for local AI agents, robotics, and sovereign edge hardware. It collapses vector similarity, knowledge graphs, relational metadata, and JSON documents into a **single encrypted `.tapir` file** with sub-microsecond in-process retrieval ($0.55\ \mu\text{s}$) and zero memory corruption risk.
+> **"Build private AI memory without operating a data stack."**  
+> TapirusDB is the high-performance, embedded cognitive memory engine for local AI agents, robotics, and sovereign edge hardware. It collapses vector similarity, knowledge graphs, relational metadata, and JSON documents into a **single encrypted `.tapir` file** with sub-microsecond in-process retrieval ($0.51\ \mu\text{s}$) and zero memory corruption risk.
 
 > 🖥️ **Need a Visual Database Manager (like phpMyAdmin or Supabase Studio)?**  
 > Use **[Tapirus Studio](https://tapirusdb.com/studio/index.html)** — our free visual GUI companion for TapirusDB!  
@@ -61,7 +61,10 @@ Modern AI and edge developers are forced into **Fragmented Polyglot Persistence*
 * 🧠 **Production GraphRAG & AI Memory**: Built-in seed-and-traverse GraphRAG with Tri-Modal Reciprocal Rank Fusion (RRF), episodic memory with exponential temporal decay, and isolated agent namespaces.
 * 🎯 **Dynamic 16-Lane SIMD & RaBitQ 32x Quantization**: Parallel AVX-512 / AVX2 / NEON vector kernels combined with Fast Walsh-Hadamard 1-bit/2-bit random rotation quantization, reducing 1536-D embeddings from 6,144 bytes to **196 bytes** with single-cycle `POPCNT` distance evaluation.
 * 🕸️ **Compressed Sparse Row (CSR) Topology & openCypher**: Contiguous adjacency arrays on disk and in memory for zero-allocation slice neighbor sweeps, paired with standard declarative openCypher syntax (`MATCH ... WHERE ... RETURN ...`).
-* 🔒 **Native ChaCha20-Poly1305 AEAD Encryption**: Zero-overhead authenticated page-level encryption with SHA-256 key derivation and constant-time Key Check Value (KCV) verification.
+* ⚛️ **Atomic Four-Model Transactions**: Single ACID transaction committing or rolling back across SQL rows, JSON documents, openCypher graph edges, and Vector embeddings simultaneously with zero torn states.
+* 🔐 **Multi-Tenant & Role-Scoped GraphRAG**: Native tenant isolation (`tenant_id`) and role-based ACL filtering (`allowed_roles`) across knowledge graph traversal and vector scoring.
+* 🛡️ **Physical Integrity Audit & Safe Hot Backups**: Zero-downtime atomic backup snapshots, KCV key validation, and slotted-page CRC32 consistency verification (`tapirus backup`, `tapirus restore`, `tapirus verify`).
+* 🚀 **Streaming Data Importer & Protected REST Daemon**: High-throughput streaming ingest for CSV (auto-inferred schema), JSONL, and Markdown straight into tables and AI memory; secure embedded REST server (`tapirus serve`) with constant-time Bearer/API-key verification.
 * 🌐 **S3/R2 Remote Range Streaming**: On-demand 4KB page streaming directly from cloud object stores via HTTP Range requests with zero local disk footprint.
 * 🤖 **Native Model Context Protocol (MCP)**: Out-of-the-box stdio JSON-RPC 2.0 server (`tapirus mcp`) for Claude Desktop, Cursor, and Gemini autonomous agents.
 
@@ -532,6 +535,8 @@ User Query ──► [IVF/PQ Asymmetric Seeding] ──► Top 2-3 Seed Entities
 
 $$\text{RRF}(e) = \sum_{m \in \{\text{vec}, \text{lex}, \text{graph}\}} \frac{w_m}{k_{\text{rrf}} + \text{rank}_m(e)}$$
 
+* **Enterprise Multi-Tenant & Scoped ACLs**: Filter graph traversals and vector candidate ranking on-the-fly using `tenant_id` and `allowed_roles` (`conn.graph_rag_query_scoped()`), ensuring sensitive contextual subgraphs never leak across tenants or privilege tiers.
+
 ### Pillar 4: Cost-Based Query Optimizer (CBO) & Statistics
 TapirusDB features an automated cost-based query optimizer (`src/sql/planner.rs`):
 * Computes disk I/O page fetch costs and CPU tuple comparison costs.
@@ -544,6 +549,11 @@ Traditional distributed stacks decouple graph databases and vector stores, causi
 * **Vector-to-Graph (Seed-and-Traverse GraphRAG)**: Uses ANN centroids to locate seed nodes, then instantly expands 1-hop and 2-hop CSR slices to extract factual context, eliminating LLM hallucinations.
 * **Autonomous Agent Long-Term Memory (LTM)**: Automatically balances semantic vector similarity ($S_v$), BM25 lexical precision ($S_l$), and exponential temporal recency decay:
   $$\text{RecallScore}(m) = w_v \cdot S_v + w_l \cdot S_l + w_r \cdot e^{-\lambda \Delta t} + w_i \cdot \text{Importance}$$
+
+### Pillar 6: Unified Quad-Model Atomic Transactions (ACID)
+Unlike fragmented multi-database architectures where cross-model consistency is impossible without complex distributed consensus (2PC/Sagas), TapirusDB provides **true single-transaction atomicity across all four data models**:
+* **Single Atomic Commit**: A transaction can update a Relational SQL state row, insert an unstructured JSON document, link openCypher knowledge graph nodes and edges, and index a vector embedding within a single `conn.begin_transaction()`.
+* **Zero Torn States**: If any operation fails or the host process loses power, Write-Ahead Log (WAL) crash recovery rolls back all four models simultaneously to their exact pre-transaction state, eliminating cross-model state corruption forever.
 
 ---
 
@@ -598,11 +608,17 @@ tapirus> SELECT * FROM users;
 (1 row(s))
 ```
 
-### 3. Built-in HTTP REST Server (`tapirus serve`)
-Launch an embedded database as a high-throughput REST API with zero external dependencies:
+### 3. Built-in Protected HTTP REST Server (`tapirus serve`)
+Launch an embedded database as a high-throughput, secure REST API with zero external dependencies:
 ```bash
-tapirus serve --port 3005 --passphrase "vault_secret" production.tapir
+# Launch with token authentication and database encryption
+tapirus serve --port 3005 --api-key "your_secret_api_key" --passphrase "vault_secret" production.tapir
 ```
+
+* **Constant-Time Verification**: Prevents timing side-channel attacks via `subtle::ConstantTimeEq`.
+* **Flexible Authentication**: Provide the key via `Authorization: Bearer <KEY>`, `X-API-Key: <KEY>`, or query `?api_key=<KEY>`.
+* **Healthcheck Probe**: `GET /health` or `GET /api/health` returns operational status without authentication.
+* **Query Execution**: `POST /api/sql` or `POST /sql` accepts SQL queries, graph traversals, and document queries.
 
 ### 4. Autonomous AI Agent MCP Server (`tapirus mcp`)
 Connect Claude Desktop, Cursor, or Gemini to TapirusDB over stdio:
@@ -615,6 +631,34 @@ Connect Claude Desktop, Cursor, or Gemini to TapirusDB over stdio:
     }
   }
 }
+```
+
+### 5. High-Throughput Streaming Data Importer (`tapirus import`)
+Stream massive datasets directly into TapirusDB with automatic schema inference and transactional batching:
+
+```bash
+# 1. Ingest CSV with automated type inference (INTEGER, REAL, TEXT) into SQL tables
+tapirus import csv data/telemetry.csv --table sensors --batch 1000 --db production.tapir
+
+# 2. Ingest streaming JSON Lines (JSONL) into Document collections
+tapirus import jsonl data/products.jsonl --collection catalog --batch 500 --db production.tapir
+
+# 3. Semantic Markdown Ingestion into AI Episodic Memory & Knowledge Graph
+tapirus import md docs/spec.md --namespace robotics --tags "hardware,specs" --session-id "session_01" --db production.tapir
+```
+
+### 6. Hot Backup, Safe Restore & Physical Integrity Audit (`tapirus backup`, `restore`, `verify`)
+Enterprise-grade durability, snapshotting, and auditing tools for mission-critical edge deployments:
+
+```bash
+# Atomic online backup snapshot (validates encryption KCV prior to copying)
+tapirus backup production.tapir backups/prod_2026_snapshot.tapir
+
+# Safe restore (validates page headers and file geometry)
+tapirus restore backups/prod_2026_snapshot.tapir restored_production.tapir
+
+# Deep physical integrity audit (scans slotted pages, verifies CRC32 checksums, checks encryption keys)
+tapirus verify production.tapir
 ```
 
 ---
@@ -642,6 +686,28 @@ Dedicated Graph DB (HTTP/JVM)     [███████████████
 Relational SQL Server (TCP IPC)   [████████]                                  5,000 µs (5.0 ms - Unix Socket / IPC)
 TapirusDB Combined Graph-Vector   [▌]                                          0.51 µs (In-Process CPU Memory Bus)
 ```
+
+### ⚡ Verified Tail-Latency & Physical Resource Footprint (Anti-Placebo)
+
+Tested on native NVMe SSD hardware with true Write-Ahead Log (WAL) durability:
+
+| Dimension | TapirusDB (In-Process) | Traditional Network DBs | Concrete Operational Value |
+| :--- | :---: | :---: | :--- |
+| **Graph-Vector Retrieval** | **0.51 µs** (median) | ~25,000 µs (25 ms) | Sub-microsecond local reasoning vs. WAN gRPC network serialization hop. |
+| **Durable Disk Writes** | **107,875 writes/sec** | ~2,000–8,000 ops/sec | Real ACID WAL disk commits, not volatile in-memory caching. |
+| **Idle Memory Footprint** | **< 4 MB RAM** | > 1.2 GB (multi-daemon) | Fits comfortably in Raspberry Pi, edge robotics, and local desktop apps. |
+| **Initial File Footprint** | **4,096 Bytes** | Server cluster required | Single encrypted `.tapir` container; zero cloud daemons to configure. |
+
+> 🔬 **Transparent & Peer-Reviewed Methodology:**  
+> We publish complete hardware specifications, statistical variance ($\sigma$), and cache-miss analysis in our [Systems Architecture Paper (PAPER_TAPIRUSDB.md)](PAPER_TAPIRUSDB.md).
+>
+> **Verify & run the benchmark suite yourself on your machine (1 command):**
+> ```bash
+> git clone https://github.com/tapiruslab/TapirusDB.git
+> cd TapirusDB
+> cargo bench --bench tapirus_bench
+> ```
+> *Full tail percentiles (p50, p95, p99, Min, Max) will be automatically exported to `target/tapirus_bench_results.json` for independent peer review.*
 
 ---
 

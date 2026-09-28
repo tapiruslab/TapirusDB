@@ -45,6 +45,48 @@ pub use sql::{bind_parameters, parse_sql, parse_tokens, SQLExecutor, Statement};
 pub use traits::{DatabaseConnection, FromValue, Row, Value, VectorIndexEngine};
 pub use vector::{DistanceMetric, HnswIndex, ProductQuantizer, QuantizedVector8, QuantizedVectorPQ, Vector};
 
+/// Comprehensive diagnostic report of database page, cryptographic, and structural integrity
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IntegrityReport {
+    /// Format version
+    pub version: u16,
+    /// Page size in bytes
+    pub page_size: usize,
+    /// Total pages recorded in header
+    pub total_pages: u32,
+    /// Number of pages successfully verified
+    pub pages_verified: u32,
+    /// Header CRC32 checksum validity
+    pub header_crc_valid: bool,
+    /// Stored CRC32 checksum
+    pub stored_crc: u32,
+    /// Calculated CRC32 checksum
+    pub calculated_crc: u32,
+    /// Is page-level ChaCha20-Poly1305 encryption enabled
+    pub is_encrypted: bool,
+    /// Is transparent LZ4 page compression enabled
+    pub is_compressed: bool,
+    /// Active WAL sequence
+    pub wal_sequence: u32,
+    /// Number of user-defined relational tables
+    pub tables_count: usize,
+    /// Number of JSON document collections
+    pub collections_count: usize,
+    /// Knowledge graph nodes count
+    pub graph_nodes_count: usize,
+    /// Knowledge graph edges count
+    pub graph_edges_count: usize,
+    /// List of corruption or anomaly error descriptions (empty if 100% clean)
+    pub errors: Vec<String>,
+}
+
+impl IntegrityReport {
+    /// Check whether the database has 100% integrity with zero errors
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty() && self.header_crc_valid
+    }
+}
+
 /// TapirusDB package version string
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -422,6 +464,25 @@ impl Connection {
         self.graph_rag_query(query_text, None, &config)
     }
 
+    /// Execute an ACL and Tenant-aware GraphRAG query with multi-tenant isolation and role clearance
+    pub fn graph_rag_query_scoped(
+        &self,
+        query_text: &str,
+        query_vec: Option<&[f32]>,
+        tenant_id: Option<&str>,
+        allowed_roles: Option<&[&str]>,
+        limit: usize,
+    ) -> Result<GraphRagContext> {
+        let mut config = GraphRagConfig::default().with_limit(limit);
+        if let Some(t) = tenant_id {
+            config = config.with_tenant(t);
+        }
+        if let Some(roles) = allowed_roles {
+            config = config.with_roles(roles.iter().map(|&s| s.to_string()));
+        }
+        self.graph_rag_query(query_text, query_vec, &config)
+    }
+
     // --- High-Performance Document DB API (MongoDB-like) ---
 
     /// Open or create a schema-less JSON Document Collection (analogous to MongoDB collection)
@@ -735,6 +796,67 @@ impl Connection {
     pub fn vacuum_into<P: AsRef<Path>>(&self, dest_path: P) -> Result<u32> {
         let mut pager = self.pager.write();
         pager.backup_to(dest_path.as_ref())
+    }
+
+    /// Perform a comprehensive cryptographic, page-level, and structural schema audit of the database.
+    pub fn check_integrity(&self) -> Result<IntegrityReport> {
+        let mut pager = self.pager.write();
+        let _ = pager.checkpoint();
+        let _ = pager.sync_header();
+        let total_pages = pager.total_pages();
+        let page_size = pager.page_size();
+        let version = pager.header().version;
+        let is_encrypted = pager.header().encryption_flags == 1;
+        let is_compressed = pager.is_compressed();
+        let wal_sequence = pager.header().wal_sequence;
+        let stored_crc = pager.header().header_crc32;
+        let calculated_crc = pager.header().calculate_crc();
+        let header_crc_valid = stored_crc == calculated_crc;
+
+        let mut errors = Vec::new();
+        if !header_crc_valid {
+            errors.push(format!("Header CRC32 mismatch: stored 0x{stored_crc:08X}, calculated 0x{calculated_crc:08X}"));
+        }
+
+        let mut pages_verified = 0;
+        for pid in 1..=total_pages {
+            match pager.read_page(pid) {
+                Ok(page) => {
+                    if page.len() != page_size {
+                        errors.push(format!("Page {pid} corrupted: length {} != {page_size}", page.len()));
+                    } else {
+                        pages_verified += 1;
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!("Page {pid} read/decryption error: {e}"));
+                }
+            }
+        }
+        drop(pager);
+
+        let executor = self.executor.read();
+        let tables_count = executor.tables().len();
+        let (graph_nodes_count, graph_edges_count) = (executor.graph().node_count(), executor.graph().edge_count());
+        let collections_count = self.collections().len();
+
+        Ok(IntegrityReport {
+            version,
+            page_size,
+            total_pages,
+            pages_verified,
+            header_crc_valid,
+            stored_crc,
+            calculated_crc,
+            is_encrypted,
+            is_compressed,
+            wal_sequence,
+            tables_count,
+            collections_count,
+            graph_nodes_count,
+            graph_edges_count,
+            errors,
+        })
     }
 
     /// Export uncheckpointed WAL frames for real-time streaming replication.

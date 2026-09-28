@@ -96,3 +96,39 @@ fn test_streaming_wal_replication_primitives() {
     assert_eq!(rep_check.len(), 1);
     assert_eq!(rep_check[0].get::<String>("msg").unwrap(), "Replicated Event");
 }
+
+#[test]
+fn test_connection_check_integrity_encrypted() {
+    let dir = tempdir().expect("Create temp dir");
+    let enc_db = dir.path().join("secure_vault.tapir");
+    let passphrase = "Tapirus-Super-Secure-Passphrase-2026!";
+
+    // 1. Open encrypted database and populate multi-model structures
+    let conn = Connection::open_encrypted(&enc_db, passphrase).expect("Open encrypted db");
+    conn.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT, balance REAL);").unwrap();
+    conn.execute("INSERT INTO accounts (id, name, balance) VALUES (1, 'Alice', 10500.50);").unwrap();
+    conn.execute("INSERT INTO accounts (id, name, balance) VALUES (2, 'Bob', 4200.00);").unwrap();
+
+    // Document collection
+    let col = conn.collection("user_profiles").unwrap();
+    col.insert_one(&serde_json::json!({"user": "alice", "tier": "gold", "active": true})).unwrap();
+
+    // Knowledge graph
+    conn.graph_add_node(101, "AliceNode", r#"{"role": "admin"}"#).unwrap();
+    conn.graph_add_node(102, "BobNode", r#"{"role": "user"}"#).unwrap();
+    conn.graph_add_edge(101, 102, "TRANSFERS_TO", 1.0, "{}").unwrap();
+
+    // 2. Perform comprehensive audit
+    let report = conn.check_integrity().expect("Integrity check");
+
+    assert!(report.is_ok(), "Database should report 100% integrity without errors: {:?}", report.errors);
+    assert!(report.is_encrypted, "Database must be marked as encrypted");
+    assert!(report.header_crc_valid, "Database header CRC32 must be valid");
+    assert_eq!(report.pages_verified, report.total_pages, "All pages must be decrypted and verified");
+    assert!(report.tables_count >= 1, "User table accounts must be detected");
+    assert_eq!(report.collections_count, 1, "Collection user_profiles must be detected");
+    assert_eq!(report.graph_nodes_count, 2, "Graph must have 2 nodes");
+    assert_eq!(report.graph_edges_count, 1, "Graph must have 1 edge");
+    assert!(report.errors.is_empty(), "No errors should be recorded");
+}
+

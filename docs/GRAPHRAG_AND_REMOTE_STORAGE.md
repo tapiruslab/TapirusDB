@@ -98,6 +98,20 @@ fn main() -> Result<()> {
 
     println!("Synthesized Context for LLM:\n{}", context.prompt_context);
 
+    // 4. Enterprise Multi-Tenant & Role-Scoped GraphRAG
+    let scoped_config = GraphRagConfig::default()
+        .with_seeds(2)
+        .with_max_hops(2)
+        .with_tenant("tenant_enterprise_01")
+        .with_roles(vec!["engineer".to_string(), "auditor".to_string()]);
+
+    let scoped_context = db.graph_rag_query_scoped(
+        "Einstein Relativity",
+        Some(&query_vector),
+        &scoped_config,
+    )?;
+    println!("Scoped Context:\n{}", scoped_context.prompt_context);
+
     Ok(())
 }
 ```

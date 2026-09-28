@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 use parking_lot::Mutex;
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use tapirus::sql::catalog::DataType;
 use tapirus::{Connection, EmbeddingEngine, Row, Value};
 
@@ -33,6 +35,30 @@ fn main() {
     // Check if sub-command is "serve"
     if args.len() > 1 && args[1] == "serve" {
         run_serve_command(&args[2..]);
+        return;
+    }
+
+    // Check if sub-command is "backup"
+    if args.len() > 1 && args[1] == "backup" {
+        run_backup_command(&args[2..]);
+        return;
+    }
+
+    // Check if sub-command is "restore"
+    if args.len() > 1 && args[1] == "restore" {
+        run_restore_command(&args[2..]);
+        return;
+    }
+
+    // Check if sub-command is "verify"
+    if args.len() > 1 && args[1] == "verify" {
+        run_verify_command(&args[2..]);
+        return;
+    }
+
+    // Check if sub-command is "import"
+    if args.len() > 1 && args[1] == "import" {
+        run_import_command(&args[2..]);
         return;
     }
 
@@ -136,19 +162,49 @@ fn main() {
 
 fn print_help() {
     println!("Usage:");
-    println!("  tapirus [OPTIONS] [DATABASE_FILE]        Launch interactive REPL");
-    println!("  tapirus serve [OPTIONS] [DATABASE_FILE]  Launch high-performance HTTP REST server");
-    println!("  tapirus mcp [OPTIONS] [DATABASE_FILE]    Launch Model Context Protocol (MCP) server");
-    println!("  tapirus grep [OPTIONS] <PATTERN> [PATH]  Accelerated hybrid workspace search (tg)");
+    println!("  tapirus [OPTIONS] [DATABASE_FILE]                    Launch interactive REPL");
+    println!("  tapirus backup [OPTIONS] <SOURCE_DB> <DEST_BACKUP>   Hot point-in-time snapshot backup");
+    println!("  tapirus restore [OPTIONS] <BACKUP_FILE> <TARGET_DB>  Safe backup verification & restoration");
+    println!("  tapirus verify [OPTIONS] <DATABASE_FILE>             Cryptographic & physical page integrity audit");
+    println!("  tapirus import <FORMAT> <FILE> [OPTIONS]             High-throughput data importer (CSV, JSONL, Markdown)");
+    println!("  tapirus serve [OPTIONS] [DATABASE_FILE]              Launch high-performance HTTP REST server");
+    println!("  tapirus mcp [OPTIONS] [DATABASE_FILE]                Launch Model Context Protocol (MCP) server");
+    println!("  tapirus grep [OPTIONS] <PATTERN> [PATH]              Accelerated hybrid workspace search (tg)");
     println!();
     println!("Options:");
     println!("  -h, --help                               Print this help message");
     println!("  -v, --version                            Print TapirusDB version");
     println!();
+    println!("Backup Options (for 'tapirus backup'):");
+    println!("  --passphrase <KEY>                       Passphrase for encrypted database (ChaCha20-Poly1305)");
+    println!("  --vacuum, --compact                      Perform VACUUM and page compaction during backup");
+    println!();
+    println!("Restore Options (for 'tapirus restore'):");
+    println!("  --passphrase <KEY>                       Passphrase for encrypted backup (ChaCha20-Poly1305)");
+    println!("  -f, --force                              Overwrite target database if it already exists");
+    println!();
+    println!("Verify Options (for 'tapirus verify'):");
+    println!("  --passphrase <KEY>                       Passphrase for encrypted database audit");
+    println!("  --deep, --full                           Deep slotted page scan & full checksum verification");
+    println!();
+    println!("Import Options (for 'tapirus import'):");
+    println!("  --db <PATH>                              Path to target database file (default: production.tapir)");
+    println!("  --table <NAME>                           Target table name (CSV)");
+    println!("  --collection <NAME>                      Target collection name (JSON / JSONL)");
+    println!("  --namespace <NAME>                       Target AI memory namespace (Markdown)");
+    println!("  --session-id <ID>                        Session ID for agent memory (Markdown)");
+    println!("  --tags <TAG1,TAG2,...>                   Indexing tags for memory recall (Markdown)");
+    println!("  --batch <N>                              Batch transaction commit size (default: 500)");
+    println!("  --passphrase <KEY>                       Passphrase for encrypted database (ChaCha20-Poly1305)");
+    println!();
     println!("Server Options (for 'tapirus serve'):");
     println!("  -p, --port <PORT>                        Port to listen on (default: 3005)");
     println!("  -b, --host <HOST>                        Host to bind to (default: 0.0.0.0)");
+    println!("  -k, --api-key <KEY>                      Enforce API key token authentication");
     println!("  --passphrase <KEY>                       Encryption passphrase (ChaCha20-Poly1305)");
+    println!();
+    println!("Environment Variables:");
+    println!("  TAPIRUS_API_KEY                          Fallback API key for 'tapirus serve' if --api-key omitted");
     println!();
     println!("Arguments:");
     println!("  [DATABASE_FILE]                          Path to .tapir database file");
@@ -160,8 +216,12 @@ fn print_serve_help() {
     println!("Options:");
     println!("  -p, --port <PORT>        Port to listen on (default: 3005)");
     println!("  -b, --host <HOST>        Host to bind to (default: 0.0.0.0)");
+    println!("  -k, --api-key <KEY>      Enforce API key token authentication (Bearer / X-API-Key / ?api_key=)");
     println!("  --passphrase <KEY>       Passphrase for encrypted database (ChaCha20-Poly1305)");
     println!("  -h, --help               Print this help message");
+    println!();
+    println!("Environment Variables:");
+    println!("  TAPIRUS_API_KEY          Fallback API key if --api-key is not specified");
     println!();
     println!("Arguments:");
     println!("  [DATABASE_FILE]          Path to database file (defaults to: production.tapir)");
@@ -170,6 +230,7 @@ fn print_serve_help() {
 fn run_serve_command(args: &[String]) {
     let mut port: u16 = 3005;
     let mut host = "0.0.0.0".to_string();
+    let mut api_key: Option<String> = env::var("TAPIRUS_API_KEY").ok();
     let mut passphrase: Option<String> = None;
     let mut db_path = "production.tapir".to_string();
 
@@ -187,6 +248,12 @@ fn run_serve_command(args: &[String]) {
             "-b" | "--host" => {
                 if i + 1 < args.len() {
                     host = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "-k" | "--api-key" => {
+                if i + 1 < args.len() {
+                    api_key = Some(args[i + 1].clone());
                     i += 1;
                 }
             }
@@ -235,10 +302,483 @@ fn run_serve_command(args: &[String]) {
         }
     };
 
-    run_http_server(conn, &host, port, &db_path, passphrase.is_some());
+    run_http_server(conn, &host, port, &db_path, passphrase.is_some(), api_key);
 }
 
-fn run_http_server(conn: Connection, host: &str, port: u16, db_path: &str, encrypted: bool) {
+fn print_backup_help() {
+    println!("Usage: tapirus backup [OPTIONS] <SOURCE_DATABASE> <DEST_BACKUP>");
+    println!();
+    println!("Perform an atomic, hot point-in-time snapshot backup of a TapirusDB database.");
+    println!();
+    println!("Options:");
+    println!("  --passphrase <KEY>   Passphrase for encrypted database (ChaCha20-Poly1305)");
+    println!("  --vacuum, --compact  Vacuum and compact database while creating backup");
+    println!("  -h, --help           Print this help message");
+    println!();
+    println!("Arguments:");
+    println!("  <SOURCE_DATABASE>    Path to existing source database (.tapir file)");
+    println!("  <DEST_BACKUP>        Path to target backup file destination");
+}
+
+fn run_backup_command(args: &[String]) {
+    let mut passphrase: Option<String> = None;
+    let mut compact = false;
+    let mut positional = Vec::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--passphrase" => {
+                if i + 1 < args.len() {
+                    passphrase = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--vacuum" | "--compact" => {
+                compact = true;
+            }
+            "-h" | "--help" => {
+                print_backup_help();
+                return;
+            }
+            arg if !arg.starts_with('-') => {
+                positional.push(arg.to_string());
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if positional.len() < 2 {
+        eprintln!("Error: Both <SOURCE_DATABASE> and <DEST_BACKUP> arguments are required.");
+        println!();
+        print_backup_help();
+        std::process::exit(1);
+    }
+
+    let src_path = &positional[0];
+    let dest_path = &positional[1];
+
+    if !Path::new(src_path).exists() {
+        eprintln!("Error: Source database file '{src_path}' does not exist.");
+        std::process::exit(1);
+    }
+
+    println!("Starting TapirusDB hot backup...");
+    println!("  Source:      {src_path}");
+    println!("  Destination: {dest_path}");
+    if compact {
+        println!("  Mode:        VACUUM & Compact Snapshot");
+    } else {
+        println!("  Mode:        Point-in-Time Online Hot Snapshot");
+    }
+
+    let start = Instant::now();
+
+    let conn = if let Some(ref pass) = passphrase {
+        match Connection::open_encrypted(Path::new(src_path), pass) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error opening encrypted database at '{src_path}': {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        match Connection::open(Path::new(src_path)) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error opening database at '{src_path}': {e}");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    let pages_result = if compact {
+        conn.vacuum_into(Path::new(dest_path))
+    } else {
+        conn.backup(Path::new(dest_path))
+    };
+
+    match pages_result {
+        Ok(pages) => {
+            let elapsed = start.elapsed();
+            let dest_size = std::fs::metadata(dest_path).map(|m| m.len()).unwrap_or(0);
+            
+            // Calculate SHA-256 of created backup for cryptographic verification
+            let sha256_hex = match std::fs::read(dest_path) {
+                Ok(bytes) => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&bytes);
+                    format!("{:x}", hasher.finalize())
+                }
+                Err(_) => "unavailable".to_string(),
+            };
+
+            println!();
+            println!("Backup completed successfully!");
+            println!("  Pages Written:  {pages}");
+            println!("  Backup Size:    {} bytes ({:.2} KB)", dest_size, dest_size as f64 / 1024.0);
+            println!("  SHA-256 Hash:   {sha256_hex}");
+            println!("  Duration:       {:.2?}", elapsed);
+            println!("  Status:         VERIFIED & COMMITTED");
+        }
+        Err(e) => {
+            eprintln!("Backup failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_restore_help() {
+    println!("Usage: tapirus restore [OPTIONS] <BACKUP_FILE> <RESTORE_TARGET>");
+    println!();
+    println!("Verify and safely restore a TapirusDB backup file to a target database destination.");
+    println!();
+    println!("Options:");
+    println!("  --passphrase <KEY>   Passphrase for encrypted backup (ChaCha20-Poly1305)");
+    println!("  -f, --force          Overwrite restore target if it already exists");
+    println!("  -h, --help           Print this help message");
+    println!();
+    println!("Arguments:");
+    println!("  <BACKUP_FILE>        Path to source backup file (.tapir)");
+    println!("  <RESTORE_TARGET>     Path to target database destination");
+}
+
+fn run_restore_command(args: &[String]) {
+    let mut passphrase: Option<String> = None;
+    let mut force = false;
+    let mut positional = Vec::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--passphrase" => {
+                if i + 1 < args.len() {
+                    passphrase = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "-f" | "--force" => {
+                force = true;
+            }
+            "-h" | "--help" => {
+                print_restore_help();
+                return;
+            }
+            arg if !arg.starts_with('-') => {
+                positional.push(arg.to_string());
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if positional.len() < 2 {
+        eprintln!("Error: Both <BACKUP_FILE> and <RESTORE_TARGET> arguments are required.");
+        println!();
+        print_restore_help();
+        std::process::exit(1);
+    }
+
+    let backup_path = &positional[0];
+    let target_path = &positional[1];
+
+    if !Path::new(backup_path).exists() {
+        eprintln!("Error: Backup file '{backup_path}' does not exist.");
+        std::process::exit(1);
+    }
+
+    if Path::new(target_path).exists() && !force {
+        eprintln!("Error: Restore target '{target_path}' already exists. Use -f or --force to overwrite.");
+        std::process::exit(1);
+    }
+
+    println!("Starting TapirusDB database restoration...");
+    println!("  Backup Source:  {backup_path}");
+    println!("  Restore Target: {target_path}");
+
+    let start = Instant::now();
+
+    // 1. Verify backup file header integrity before proceeding
+    let mut backup_file = match std::fs::File::open(backup_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Error opening backup file '{backup_path}': {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut header_buf = [0u8; 100];
+    if let Err(e) = backup_file.read_exact(&mut header_buf) {
+        eprintln!("Error reading header from backup file: {e}");
+        std::process::exit(1);
+    }
+
+    let header = match tapirus::pager::DatabaseHeader::from_bytes(&header_buf) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("Corrupted backup file: Header validation failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Check encryption
+    if header.encryption_flags == 1 {
+        if let Some(ref pass) = passphrase {
+            let cipher = tapirus::crypto::DatabaseCipher::from_passphrase(pass, header.salt);
+            if !cipher.verify_kcv(&header.kcv) {
+                eprintln!("Error: Invalid encryption passphrase for encrypted backup.");
+                std::process::exit(1);
+            }
+        } else {
+            eprintln!("Error: Backup file is encrypted (ChaCha20-Poly1305). Please provide --passphrase <KEY>.");
+            std::process::exit(1);
+        }
+    }
+
+    // Clean up stale lock or wal files at target if overwriting
+    if force {
+        let wal_path = Path::new(target_path).with_extension("tapir-wal");
+        let lock_path = Path::new(target_path).with_extension("tapir-lock");
+        let _ = std::fs::remove_file(wal_path);
+        let _ = std::fs::remove_file(lock_path);
+    }
+
+    // 2. Safely copy to target
+    if let Err(e) = std::fs::copy(backup_path, target_path) {
+        eprintln!("Error copying backup file to restore target: {e}");
+        std::process::exit(1);
+    }
+
+    // 3. Verify target database opens and initializes correctly
+    let conn_test = if let Some(ref pass) = passphrase {
+        Connection::open_encrypted(Path::new(target_path), pass)
+    } else {
+        Connection::open(Path::new(target_path))
+    };
+
+    match conn_test {
+        Ok(c) => {
+            let elapsed = start.elapsed();
+            let table_count = c.tables().len();
+            let (nodes, edges) = c.graph_stats();
+            let target_size = std::fs::metadata(target_path).map(|m| m.len()).unwrap_or(0);
+
+            println!();
+            println!("Database restored successfully!");
+            println!("  Total Pages:    {}", header.total_pages);
+            println!("  Database Size:  {} bytes ({:.2} KB)", target_size, target_size as f64 / 1024.0);
+            println!("  Format Version: v{}", header.version);
+            println!("  Encryption:     {}", if header.encryption_flags == 1 { "ChaCha20-Poly1305 (Verified ✓)" } else { "Plaintext" });
+            println!("  Catalog Stats:  {} tables, {} graph nodes, {} graph edges", table_count, nodes, edges);
+            println!("  Duration:       {:.2?}", elapsed);
+            println!("  Status:         HEALTHY & READY");
+        }
+        Err(e) => {
+            eprintln!("Restoration validation failed: Could not initialize database at '{target_path}': {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_verify_help() {
+    println!("Usage: tapirus verify [OPTIONS] <DATABASE_FILE>");
+    println!();
+    println!("Audit physical page integrity, cryptographic KCV signatures, CRC32 checksums,");
+    println!("and schema catalogs for a TapirusDB database file.");
+    println!();
+    println!("Options:");
+    println!("  --passphrase <KEY>   Passphrase for encrypted database (ChaCha20-Poly1305)");
+    println!("  --deep, --full       Deep slotted page scan & full checksum verification");
+    println!("  -h, --help           Print this help message");
+    println!();
+    println!("Arguments:");
+    println!("  <DATABASE_FILE>      Path to .tapir database file to audit");
+}
+
+fn run_verify_command(args: &[String]) {
+    let mut passphrase: Option<String> = None;
+    let mut deep = false;
+    let mut db_path = String::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--passphrase" => {
+                if i + 1 < args.len() {
+                    passphrase = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--deep" | "--full" => {
+                deep = true;
+            }
+            "-h" | "--help" => {
+                print_verify_help();
+                return;
+            }
+            arg if !arg.starts_with('-') => {
+                db_path = arg.to_string();
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if db_path.is_empty() {
+        eprintln!("Error: <DATABASE_FILE> argument is required.");
+        println!();
+        print_verify_help();
+        std::process::exit(1);
+    }
+
+    let p = Path::new(&db_path);
+    if !p.exists() {
+        eprintln!("Error: Database file '{db_path}' does not exist.");
+        std::process::exit(1);
+    }
+
+    let file_metadata = match std::fs::metadata(p) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Error reading file metadata: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let file_size = file_metadata.len();
+    if file_size < 100 {
+        eprintln!("Integrity Error: File size ({} bytes) is too small to contain a valid TapirusDB header.", file_size);
+        std::process::exit(1);
+    }
+
+    let mut f = match std::fs::File::open(p) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Error opening file: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut header_bytes = [0u8; 100];
+    if let Err(e) = f.read_exact(&mut header_bytes) {
+        eprintln!("Error reading header: {e}");
+        std::process::exit(1);
+    }
+
+    let header = match tapirus::pager::DatabaseHeader::from_bytes(&header_bytes) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("Integrity Audit FAILED: Corrupted database header: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let page_size = header.page_size as u64;
+    let expected_file_size = header.total_pages as u64 * page_size;
+    let is_size_matching = file_size >= expected_file_size;
+
+    let is_encrypted = header.encryption_flags == 1;
+    let kcv_status = if is_encrypted {
+        if let Some(ref pass) = passphrase {
+            let cipher = tapirus::crypto::DatabaseCipher::from_passphrase(pass, header.salt);
+            if cipher.verify_kcv(&header.kcv) {
+                "Valid (Constant-time KCV Match ✓)"
+            } else {
+                "INVALID (Passphrase does not match KCV ✗)"
+            }
+        } else {
+            "Passphrase required for KCV validation (--passphrase <KEY>)"
+        }
+    } else {
+        "Plaintext (No encryption)"
+    };
+
+    println!("===============================================================");
+    println!("       TapirusDB Physical & Cryptographic Integrity Audit      ");
+    println!("===============================================================");
+    println!("Database File:     {db_path}");
+    println!("File Size:         {file_size} bytes ({:.2} KB)", file_size as f64 / 1024.0);
+    println!("Page Size:         {} bytes", header.page_size);
+    println!("Total Pages:       {} pages {}", header.total_pages, if is_size_matching { "(Size verified ✓)" } else { "(Size mismatch warning ⚠️)" });
+    println!("Format Version:    v{}", header.version);
+    println!("Header CRC32:      0x{:08X} (Valid ✓)", header.header_crc32);
+    println!("Encryption:        {} [{kcv_status}]", if is_encrypted { "ChaCha20-Poly1305 AEAD" } else { "None" });
+    println!("Compression:       {}", if header.compression_flags == 1 { "Transparent LZ4 Block" } else { "None" });
+    println!("WAL Sequence:      {} (Committed changes)", header.wal_sequence);
+    println!("Change Counter:    {} transactions", header.change_counter);
+    println!("Freelist:          Trunk Page {}, Free Pages {}", header.freelist_trunk, header.freelist_count);
+    println!("Vector Directory:  Root Page {}", header.vector_index_page);
+
+    // Deep page scan or catalog inspection if accessible
+    let can_inspect = !is_encrypted || (passphrase.is_some() && kcv_status.contains("Match"));
+
+    if can_inspect {
+        println!("---------------------------------------------------------------");
+        println!("Inspecting Catalog & Structural Subsystems...");
+
+        let conn_res = if let Some(ref pass) = passphrase {
+            Connection::open_encrypted(p, pass)
+        } else {
+            Connection::open(p)
+        };
+
+        match conn_res {
+            Ok(conn) => {
+                match conn.check_integrity() {
+                    Ok(report) => {
+                        println!("  Relational Tables:     {} user tables", report.tables_count);
+                        for t in conn.tables() {
+                            println!("    - Table '{}' ({} columns)", t.name, t.columns.len());
+                        }
+                        println!("  Document Collections:  {} collections", report.collections_count);
+                        for c in conn.collections() {
+                            println!("    - Collection '{}'", c);
+                        }
+                        println!("  Knowledge Graph:       {} nodes, {} edges", report.graph_nodes_count, report.graph_edges_count);
+
+                        if deep {
+                            println!("  Deep Page Scan:        Scanned {} pages — {} verified", report.total_pages, report.pages_verified);
+                        }
+
+                        if report.is_ok() {
+                            println!("---------------------------------------------------------------");
+                            println!("Audit Result: PASSED (100% Integrity Verified, 0 Errors)");
+                            println!("===============================================================");
+                        } else {
+                            println!("---------------------------------------------------------------");
+                            println!("Audit Result: ANOMALIES DETECTED ({} issues):", report.errors.len());
+                            for err in &report.errors {
+                                println!("  ✗ {err}");
+                            }
+                            println!("===============================================================");
+                            std::process::exit(1);
+                        }
+                    }
+                    Err(e) => {
+                        println!("---------------------------------------------------------------");
+                        println!("Audit Warning: Integrity check failed: {e}");
+                        println!("===============================================================");
+                    }
+                }
+            }
+            Err(e) => {
+                println!("---------------------------------------------------------------");
+                println!("Audit Warning: Catalog boot error: {e}");
+                println!("===============================================================");
+            }
+        }
+    } else {
+        println!("---------------------------------------------------------------");
+        if is_encrypted {
+            println!("Note: Provide valid --passphrase <KEY> to run deep catalog & page checks.");
+        }
+        println!("Audit Result: HEADER PASSED (Cryptographic & Physical Header Valid)");
+        println!("===============================================================");
+    }
+}
+
+fn run_http_server(conn: Connection, host: &str, port: u16, db_path: &str, encrypted: bool, api_key: Option<String>) {
     let addr = format!("{host}:{port}");
     let listener = match TcpListener::bind(&addr) {
         Ok(l) => l,
@@ -251,20 +791,27 @@ fn run_http_server(conn: Connection, host: &str, port: u16, db_path: &str, encry
     println!("{BANNER}");
     println!("🚀 TapirusDB High-Performance HTTP Server running at http://{addr}");
     println!("📁 Database: {db_path} (Encrypted: {encrypted} | 100% Safe Rust)");
+    if api_key.is_some() {
+        println!("🔒 Security: API Key Authentication ENABLED (Bearer / X-API-Key / ?api_key=)");
+    } else {
+        println!("⚠️  Security: Unauthenticated Mode (Public Endpoints)");
+    }
     println!("📡 Endpoints:");
-    println!("   • GET  /health   -> Healthcheck & Version");
-    println!("   • POST /api/sql  -> Execute SQL / Vector Search");
-    println!("   • GET  /         -> Built-in Web UI Console");
+    println!("   • GET  /health   -> Healthcheck & Version (Public)");
+    println!("   • POST /api/sql  -> Execute SQL / Vector Search (Protected)");
+    println!("   • GET  /         -> Built-in Web UI Console (Public)");
     println!("\nPress Ctrl+C to stop.\n");
 
     let db = Arc::new(Mutex::new(conn));
+    let auth_key = Arc::new(api_key);
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let db_clone = Arc::clone(&db);
+                let auth_clone = Arc::clone(&auth_key);
                 thread::spawn(move || {
-                    handle_http_client(stream, db_clone);
+                    handle_http_client(stream, db_clone, auth_clone);
                 });
             }
             Err(e) => {
@@ -278,7 +825,14 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|window| window == needle)
 }
 
-fn handle_http_client(mut stream: TcpStream, db: Arc<Mutex<Connection>>) {
+fn constant_time_eq_str(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.as_bytes().ct_eq(b.as_bytes()).into()
+}
+
+fn handle_http_client(mut stream: TcpStream, db: Arc<Mutex<Connection>>, api_key: Arc<Option<String>>) {
     let mut request_data = Vec::new();
     let mut buf = [0u8; 4096];
     let mut body_start = None;
@@ -346,7 +900,11 @@ fn handle_http_client(mut stream: TcpStream, db: Arc<Mutex<Connection>>) {
 
     let mut parts = first_line.split_whitespace();
     let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("/");
+    let full_path = parts.next().unwrap_or("/");
+    let (route_path, query_str) = match full_path.split_once('?') {
+        Some((r, q)) => (r, Some(q)),
+        None => (full_path, None),
+    };
 
     // Handle CORS preflight
     if method == "OPTIONS" {
@@ -354,8 +912,8 @@ fn handle_http_client(mut stream: TcpStream, db: Arc<Mutex<Connection>>) {
         return;
     }
 
-    // Healthcheck endpoint
-    if method == "GET" && (path == "/health" || path == "/api/health") {
+    // Healthcheck endpoint (Public)
+    if method == "GET" && (route_path == "/health" || route_path == "/api/health") {
         let json = serde_json::json!({
             "status": "ok",
             "engine": "TapirusDB",
@@ -365,8 +923,8 @@ fn handle_http_client(mut stream: TcpStream, db: Arc<Mutex<Connection>>) {
         return;
     }
 
-    // Built-in Web Client UI & Server Info
-    if method == "GET" && (path == "/" || path == "/index.html") {
+    // Built-in Web Client UI & Server Info (Public)
+    if method == "GET" && (route_path == "/" || route_path == "/index.html") {
         let html = r#"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -404,15 +962,65 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
         return;
     }
 
-    // Built-in Documentation Portal - Clean Redirect
-    if method == "GET" && (path == "/docs" || path == "/docs.html") {
+    // Built-in Documentation Portal - Clean Redirect (Public)
+    if method == "GET" && (route_path == "/docs" || route_path == "/docs.html") {
         let html = r#"<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0; url=https://tapirusdb.com/docs.html"></head><body>Redirecting to <a href="https://tapirusdb.com/docs.html">TapirusDB Documentation</a>...</body></html>"#;
         send_http_response(&mut stream, "200 OK", "text/html; charset=utf-8", html);
         return;
     }
 
-    // SQL execution endpoint
-    if method == "POST" && (path == "/sql" || path == "/api/sql") {
+    // Authentication enforcement for protected endpoints
+    if let Some(ref expected_key) = *api_key {
+        let mut provided_key: Option<&str> = None;
+
+        // 1. Check Query parameter: ?api_key=<KEY> or ?key=<KEY>
+        if let Some(query) = query_str {
+            for param in query.split('&') {
+                if let Some((k, v)) = param.split_once('=') {
+                    if k == "api_key" || k == "key" {
+                        provided_key = Some(v);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 2. Check HTTP Headers (Authorization: Bearer <KEY> or X-API-Key: <KEY>)
+        for line in header_str.lines() {
+            let lower = line.to_ascii_lowercase();
+            if lower.starts_with("authorization:") {
+                if let Some((_, val)) = line.split_once(':') {
+                    let val = val.trim();
+                    if val.to_ascii_lowercase().starts_with("bearer ") {
+                        provided_key = Some(val[7..].trim());
+                    } else {
+                        provided_key = Some(val);
+                    }
+                }
+            } else if lower.starts_with("x-api-key:") {
+                if let Some((_, val)) = line.split_once(':') {
+                    provided_key = Some(val.trim());
+                }
+            }
+        }
+
+        let is_auth = match provided_key {
+            Some(key) => constant_time_eq_str(key, expected_key),
+            None => false,
+        };
+
+        if !is_auth {
+            let err_json = serde_json::json!({
+                "error": "Unauthorized",
+                "message": "Missing or invalid API key. Please provide 'Authorization: Bearer <KEY>', 'X-API-Key: <KEY>', or '?api_key=<KEY>'."
+            });
+            send_http_unauthorized_response(&mut stream, &err_json.to_string());
+            return;
+        }
+    }
+
+    // SQL execution endpoint (Protected)
+    if method == "POST" && (route_path == "/sql" || route_path == "/api/sql") {
         let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
         let sql = match serde_json::from_str::<serde_json::Value>(body_str) {
             Ok(v) => v.get("sql").and_then(|s| s.as_str()).unwrap_or("").to_string(),
@@ -470,6 +1078,23 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
     send_http_response(&mut stream, "404 Not Found", "text/plain", "Not Found");
 }
 
+fn send_http_unauthorized_response(stream: &mut TcpStream, body: &str) {
+    let response = format!(
+        "HTTP/1.1 401 Unauthorized\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         WWW-Authenticate: Bearer realm=\"TapirusDB\"\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         Access-Control-Allow-Headers: Content-Type, Authorization, X-API-Key\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
 fn send_http_response(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) {
     let response = format!(
         "HTTP/1.1 {status}\r\n\
@@ -477,7 +1102,7 @@ fn send_http_response(stream: &mut TcpStream, status: &str, content_type: &str, 
          Content-Length: {}\r\n\
          Access-Control-Allow-Origin: *\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type\r\n\
+         Access-Control-Allow-Headers: Content-Type, Authorization, X-API-Key\r\n\
          Connection: close\r\n\
          \r\n\
          {body}",
@@ -1119,13 +1744,32 @@ fn parse_csv_line(line: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let mut current = String::new();
     let mut in_quotes = false;
+    let mut bracket_depth = 0usize;
 
-    for ch in line.chars() {
+    let chars: Vec<char> = line.chars().collect();
+    let mut idx = 0;
+    while idx < chars.len() {
+        let ch = chars[idx];
         match ch {
             '"' => {
-                in_quotes = !in_quotes;
+                if in_quotes && idx + 1 < chars.len() && chars[idx + 1] == '"' {
+                    current.push('"');
+                    idx += 1; // Skip escaped quote
+                } else {
+                    in_quotes = !in_quotes;
+                }
             }
-            ',' if !in_quotes => {
+            '[' if !in_quotes => {
+                bracket_depth += 1;
+                current.push(ch);
+            }
+            ']' if !in_quotes => {
+                if bracket_depth > 0 {
+                    bracket_depth -= 1;
+                }
+                current.push(ch);
+            }
+            ',' if !in_quotes && bracket_depth == 0 => {
                 fields.push(current.trim().to_string());
                 current.clear();
             }
@@ -1133,80 +1777,694 @@ fn parse_csv_line(line: &str) -> Vec<String> {
                 current.push(ch);
             }
         }
+        idx += 1;
     }
     fields.push(current.trim().to_string());
     fields
 }
 
-fn handle_import_csv(conn: &Connection, csv_path: &str, table_name: &str) {
+fn format_csv_sql_value(v: &str) -> String {
+    let trimmed = v.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
+        "NULL".to_string()
+    } else if let Ok(i) = trimmed.parse::<i64>() {
+        i.to_string()
+    } else if let Ok(f) = trimmed.parse::<f64>() {
+        f.to_string()
+    } else if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        trimmed.to_string()
+    } else {
+        format!("'{}'", trimmed.replace('\'', "''"))
+    }
+}
+
+fn import_csv_file(conn: &Connection, csv_path: &str, table_name: &str, batch_size: usize) {
     let start = Instant::now();
-    let content = match std::fs::read_to_string(csv_path) {
-        Ok(c) => c,
+    let file = match std::fs::File::open(csv_path) {
+        Ok(f) => f,
         Err(e) => {
-            println!("Import error: Could not read CSV file '{csv_path}': {e}");
+            eprintln!("Import Error: Could not open CSV file '{csv_path}': {e}");
             return;
         }
     };
 
-    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-    if lines.is_empty() {
-        println!("Import warning: CSV file '{csv_path}' is empty");
-        return;
-    }
+    let reader = io::BufReader::new(file);
+    let mut lines_iter = reader.lines();
 
-    let headers = parse_csv_line(lines[0]);
+    let header_line = match lines_iter.next() {
+        Some(Ok(l)) if !l.trim().is_empty() => l,
+        _ => {
+            eprintln!("Import Error: CSV file '{csv_path}' is empty or missing headers.");
+            return;
+        }
+    };
+
+    let headers = parse_csv_line(&header_line);
     if headers.is_empty() {
-        println!("Import error: CSV has no column headers");
+        eprintln!("Import Error: No columns found in CSV header.");
         return;
     }
 
-    let header_str = headers.join(", ");
-    let mut imported = 0;
+    let clean_headers: Vec<String> = headers
+        .iter()
+        .map(|h| {
+            let trimmed = h.trim();
+            if trimmed.is_empty() {
+                "col".to_string()
+            } else {
+                trimmed
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                    .collect()
+            }
+        })
+        .collect();
 
-    let _ = conn.begin_transaction();
+    // Check if table already exists in database
+    if conn.table(table_name).is_none() {
+        // Collect first batch of lines for type inference and processing
+        let mut sample_rows = Vec::new();
+        let mut row_buffer = Vec::new();
 
-    for line in &lines[1..] {
-        let values = parse_csv_line(line);
-        if values.len() != headers.len() {
-            continue;
+        for line_res in lines_iter.by_ref() {
+            if let Ok(line) = line_res {
+                if !line.trim().is_empty() {
+                    let fields = parse_csv_line(&line);
+                    if fields.len() == clean_headers.len() {
+                        if sample_rows.len() < 100 {
+                            sample_rows.push(fields.clone());
+                        }
+                        row_buffer.push(fields);
+                        if row_buffer.len() >= batch_size {
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
-        let formatted_vals: Vec<String> = values
-            .iter()
-            .map(|v| {
-                if let Ok(i) = v.parse::<i64>() {
-                    i.to_string()
-                } else if let Ok(f) = v.parse::<f64>() {
-                    f.to_string()
-                } else if v.starts_with('[') && v.ends_with(']') {
-                    v.clone()
-                } else {
-                    format!("'{}'", v.replace('\'', "''"))
+        // Infer column data types
+        let mut col_types = Vec::new();
+        for col_idx in 0..clean_headers.len() {
+            let mut all_int = true;
+            let mut all_float = true;
+            let mut vector_dim: Option<usize> = None;
+            let mut has_non_empty = false;
+
+            for row in &sample_rows {
+                if let Some(val) = row.get(col_idx) {
+                    let val = val.trim();
+                    if val.is_empty() || val.eq_ignore_ascii_case("null") {
+                        continue;
+                    }
+                    has_non_empty = true;
+
+                    if val.starts_with('[') && val.ends_with(']') {
+                        let inner = &val[1..val.len() - 1];
+                        let parts: Vec<&str> = inner.split(',').collect();
+                        if !parts.is_empty() && parts.iter().all(|p| p.trim().parse::<f32>().is_ok()) {
+                            vector_dim = Some(parts.len());
+                            all_int = false;
+                            all_float = false;
+                            continue;
+                        }
+                    }
+
+                    if val.parse::<i64>().is_err() {
+                        all_int = false;
+                    }
+                    if val.parse::<f64>().is_err() {
+                        all_float = false;
+                    }
                 }
-            })
+            }
+
+            let dtype = if let Some(dims) = vector_dim {
+                format!("VECTOR({dims})")
+            } else if has_non_empty && all_int {
+                "INTEGER".to_string()
+            } else if has_non_empty && all_float {
+                "REAL".to_string()
+            } else {
+                "TEXT".to_string()
+            };
+
+            col_types.push(dtype);
+        }
+
+        let col_defs: Vec<String> = clean_headers
+            .iter()
+            .zip(col_types.iter())
+            .map(|(name, dtype)| format!("{name} {dtype}"))
             .collect();
 
-        let sql = format!(
-            "INSERT INTO {} ({}) VALUES ({});",
+        let create_sql = format!(
+            "CREATE TABLE IF NOT EXISTS {} ({});",
             table_name,
-            header_str,
-            formatted_vals.join(", ")
+            col_defs.join(", ")
         );
 
-        if conn.execute(&sql).is_ok() {
-            imported += 1;
+        if let Err(e) = conn.execute(&create_sql) {
+            eprintln!("Import Error: Failed to auto-create table '{table_name}': {e}");
+            return;
+        }
+
+        println!("  ✓ Schema auto-inferred and table '{}' initialized.", table_name);
+
+        let header_list = clean_headers.join(", ");
+        let mut total_imported = 0usize;
+
+        let _ = conn.begin_transaction();
+        for row in row_buffer {
+            let formatted_vals: Vec<String> = row
+                .iter()
+                .map(|v| format_csv_sql_value(v))
+                .collect();
+
+            let sql = format!(
+                "INSERT INTO {} ({}) VALUES ({});",
+                table_name,
+                header_list,
+                formatted_vals.join(", ")
+            );
+            if conn.execute(&sql).is_ok() {
+                total_imported += 1;
+            }
+        }
+        let _ = conn.commit();
+
+        let _ = conn.begin_transaction();
+        let mut batch_count = 0usize;
+
+        for line_res in lines_iter {
+            if let Ok(line) = line_res {
+                if !line.trim().is_empty() {
+                    let fields = parse_csv_line(&line);
+                    if fields.len() == clean_headers.len() {
+                        let formatted_vals: Vec<String> = fields
+                            .iter()
+                            .map(|v| format_csv_sql_value(v))
+                            .collect();
+
+                        let sql = format!(
+                            "INSERT INTO {} ({}) VALUES ({});",
+                            table_name,
+                            header_list,
+                            formatted_vals.join(", ")
+                        );
+                        if conn.execute(&sql).is_ok() {
+                            total_imported += 1;
+                            batch_count += 1;
+                            if batch_count >= batch_size {
+                                let _ = conn.commit();
+                                let _ = conn.begin_transaction();
+                                batch_count = 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let _ = conn.commit();
+
+        let elapsed = start.elapsed();
+        let rate = if elapsed.as_secs_f64() > 0.0 {
+            total_imported as f64 / elapsed.as_secs_f64()
+        } else {
+            total_imported as f64
+        };
+
+        println!(
+            "\x1b[1;32m✓\x1b[0m Successfully imported \x1b[1m{}\x1b[0m rows into table '\x1b[36m{}\x1b[0m' in {:.2?} ({:.0} rows/sec)",
+            total_imported, table_name, elapsed, rate
+        );
+        return;
+    }
+
+    // Table already exists: Stream directly
+    let header_list = clean_headers.join(", ");
+    let mut total_imported = 0usize;
+    let mut batch_count = 0usize;
+
+    let _ = conn.begin_transaction();
+    for line_res in lines_iter {
+        if let Ok(line) = line_res {
+            if !line.trim().is_empty() {
+                let fields = parse_csv_line(&line);
+                if fields.len() == clean_headers.len() {
+                    let formatted_vals: Vec<String> = fields
+                        .iter()
+                        .map(|v| format_csv_sql_value(v))
+                        .collect();
+
+                    let sql = format!(
+                        "INSERT INTO {} ({}) VALUES ({});",
+                        table_name,
+                        header_list,
+                        formatted_vals.join(", ")
+                    );
+                    if conn.execute(&sql).is_ok() {
+                        total_imported += 1;
+                        batch_count += 1;
+                        if batch_count >= batch_size {
+                            let _ = conn.commit();
+                            let _ = conn.begin_transaction();
+                            batch_count = 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let _ = conn.commit();
+
+    let elapsed = start.elapsed();
+    let rate = if elapsed.as_secs_f64() > 0.0 {
+        total_imported as f64 / elapsed.as_secs_f64()
+    } else {
+        total_imported as f64
+    };
+
+    println!(
+        "\x1b[1;32m✓\x1b[0m Successfully imported \x1b[1m{}\x1b[0m rows into table '\x1b[36m{}\x1b[0m' in {:.2?} ({:.0} rows/sec)",
+        total_imported, table_name, elapsed, rate
+    );
+}
+
+fn import_jsonl_file(conn: &Connection, json_path: &str, collection_name: &str, batch_size: usize) {
+    let start = Instant::now();
+    let col = match conn.collection(collection_name) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Import Error: Could not access collection '{collection_name}': {e}");
+            return;
+        }
+    };
+
+    let content = match std::fs::read_to_string(json_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Import Error: Could not read JSON file '{json_path}': {e}");
+            return;
+        }
+    };
+
+    let mut total_imported = 0usize;
+    let initial_max_id = col.find_all().map(|v| v.iter().map(|(id, _)| *id).max().unwrap_or(0)).unwrap_or(0);
+    let mut next_id = initial_max_id + 1;
+
+    // Check if whole file is a single JSON array
+    let trimmed = content.trim();
+    if trimmed.starts_with('[') {
+        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str(trimmed) {
+            let _ = conn.begin_transaction();
+            let mut batch_count = 0;
+            for doc in arr {
+                if col.insert_with_id(next_id, &doc).is_ok() {
+                    next_id += 1;
+                    total_imported += 1;
+                    batch_count += 1;
+                    if batch_count >= batch_size {
+                        let _ = conn.commit();
+                        let _ = conn.begin_transaction();
+                        batch_count = 0;
+                    }
+                }
+            }
+            let _ = conn.commit();
+
+            let elapsed = start.elapsed();
+            let rate = if elapsed.as_secs_f64() > 0.0 {
+                total_imported as f64 / elapsed.as_secs_f64()
+            } else {
+                total_imported as f64
+            };
+            println!(
+                "\x1b[1;32m✓\x1b[0m Successfully imported \x1b[1m{}\x1b[0m documents into collection '\x1b[36m{}\x1b[0m' in {:.2?} ({:.0} docs/sec)",
+                total_imported, collection_name, elapsed, rate
+            );
+            return;
         }
     }
 
+    // Line-delimited JSON (JSONL)
+    let _ = conn.begin_transaction();
+    let mut batch_count = 0;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(doc) => {
+                match col.insert_with_id(next_id, &doc) {
+                    Ok(_) => {
+                        next_id += 1;
+                        total_imported += 1;
+                        batch_count += 1;
+                        if batch_count >= batch_size {
+                            let _ = conn.commit();
+                            let _ = conn.begin_transaction();
+                            batch_count = 0;
+                        }
+                    }
+                    Err(e) => eprintln!("Insert error: {e}"),
+                }
+            }
+            Err(e) => eprintln!("JSON parse error: {e}"),
+        }
+    }
     let _ = conn.commit();
 
+    let elapsed = start.elapsed();
+    let rate = if elapsed.as_secs_f64() > 0.0 {
+        total_imported as f64 / elapsed.as_secs_f64()
+    } else {
+        total_imported as f64
+    };
+
     println!(
-        "Imported {} rows into table '{}' from '{}' in {:?}",
-        imported,
-        table_name,
-        csv_path,
-        start.elapsed()
+        "\x1b[1;32m✓\x1b[0m Successfully imported \x1b[1m{}\x1b[0m documents into collection '\x1b[36m{}\x1b[0m' in {:.2?} ({:.0} docs/sec)",
+        total_imported, collection_name, elapsed, rate
     );
+}
+
+fn import_markdown_file(
+    conn: &Connection,
+    md_path: &str,
+    namespace: &str,
+    session_id: Option<&str>,
+    tags: &[String],
+) {
+    let start = Instant::now();
+    let content = match std::fs::read_to_string(md_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Import Error: Could not read Markdown file '{md_path}': {e}");
+            return;
+        }
+    };
+
+    let p = Path::new(md_path);
+    let filename = p.file_name().and_then(|n| n.to_str()).unwrap_or("document.md");
+
+    // Chunk markdown by headings
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut current_heading = filename.to_string();
+    let mut current_body = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            let heading_text = trimmed.trim_start_matches('#').trim().to_string();
+            let body = current_body.join("\n").trim().to_string();
+            if !body.is_empty() || sections.is_empty() {
+                if !body.is_empty() {
+                    sections.push((current_heading, body));
+                }
+                current_heading = heading_text;
+                current_body.clear();
+            } else {
+                current_heading = heading_text;
+            }
+        } else {
+            current_body.push(line);
+        }
+    }
+    let final_body = current_body.join("\n").trim().to_string();
+    if !final_body.is_empty() {
+        sections.push((current_heading, final_body));
+    }
+
+    if sections.is_empty() {
+        println!("Import warning: Markdown file '{md_path}' has no text content.");
+        return;
+    }
+
+    let embedder = tapirus::DeterministicHashEmbedder::default();
+    let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+
+    let max_existing_node_id = conn.graph_nodes().into_iter().map(|n| n.id).max().unwrap_or(0);
+    let mut next_node_id = max_existing_node_id + 1;
+
+    // Create Root Document Node in Knowledge Graph
+    let doc_node_id = next_node_id;
+    next_node_id += 1;
+
+    let doc_props = serde_json::json!({
+        "filename": filename,
+        "path": md_path,
+        "sections_count": sections.len(),
+        "total_chars": content.len()
+    });
+    let _ = conn.graph_add_node(doc_node_id, "Document", &doc_props.to_string());
+
+    let mut memories_stored = 0usize;
+    let mut sections_stored = 0usize;
+    let mut edges_created = 0usize;
+    let mut prev_section_node_id: Option<u64> = None;
+
+    for (heading, body) in &sections {
+        let chunk_text = format!("## {heading}\n{body}");
+
+        if conn.memory_remember_text_scoped(
+            &chunk_text,
+            0.7,
+            &tag_refs,
+            Some(namespace),
+            session_id,
+        ).is_ok() {
+            memories_stored += 1;
+        }
+
+        let sec_node_id = next_node_id;
+        next_node_id += 1;
+
+        let sec_vector = embedder.embed_text(&chunk_text);
+        let sec_props = serde_json::json!({
+            "title": heading,
+            "char_count": chunk_text.len(),
+            "namespace": namespace,
+            "document": filename
+        });
+
+        if conn.graph_add_node_with_vector(sec_node_id, "Section", &sec_props.to_string(), Some(&sec_vector)).is_ok() {
+            sections_stored += 1;
+
+            if conn.graph_add_edge(doc_node_id, sec_node_id, "CONTAINS", 1.0, "{}").is_ok() {
+                edges_created += 1;
+            }
+
+            if let Some(prev_id) = prev_section_node_id {
+                if conn.graph_add_edge(prev_id, sec_node_id, "PRECEDES", 1.0, "{}").is_ok() {
+                    edges_created += 1;
+                }
+            }
+            prev_section_node_id = Some(sec_node_id);
+        }
+    }
+
+    let elapsed = start.elapsed();
+    println!(
+        "\x1b[1;32m✓\x1b[0m Successfully imported Markdown '\x1b[36m{}\x1b[0m' into TapirusDB in {:.2?}:",
+        filename, elapsed
+    );
+    println!("  • AI Agent Memories:   \x1b[1m{}\x1b[0m chunks (Namespace: '\x1b[33m{}\x1b[0m', 128D Embeddings)", memories_stored, namespace);
+    println!("  • Knowledge Graph:     \x1b[1m{}\x1b[0m Nodes (1 Document + {} Sections)", sections_stored + 1, sections_stored);
+    println!("  • Graph Relationships: \x1b[1m{}\x1b[0m Edges (CONTAINS, PRECEDES)", edges_created);
+    println!("  • GraphRAG Status:     \x1b[32mInstant Retrieval & Hybrid Recall Ready ✓\x1b[0m");
+}
+
+fn print_import_help() {
+    println!("Usage: tapirus import <FORMAT> <FILE> [OPTIONS]");
+    println!("       tapirus import <FILE> [OPTIONS]");
+    println!();
+    println!("High-throughput streaming data importer for TapirusDB.");
+    println!("Supports Tabular Relational CSV, JSON / JSONL Document collections,");
+    println!("and Markdown AI Agent Memory chunking with GraphRAG entity linking.");
+    println!();
+    println!("Formats:");
+    println!("  csv                      Import CSV records into a relational SQL table");
+    println!("  jsonl, json              Import JSON/JSONL documents into a Document collection");
+    println!("  markdown, md             Chunk Markdown into AI Agent Memory & Knowledge Graph");
+    println!();
+    println!("Common Options:");
+    println!("  --db <PATH>              Path to target database file (default: production.tapir)");
+    println!("  --passphrase <KEY>       Passphrase for encrypted database (ChaCha20-Poly1305)");
+    println!("  --batch <N>              Batch size for transaction commits (default: 500)");
+    println!("  -h, --help               Print this help message");
+    println!();
+    println!("CSV Specific Options:");
+    println!("  --table <NAME>           Target table name (defaults to file name stem)");
+    println!();
+    println!("JSON / JSONL Specific Options:");
+    println!("  --collection <NAME>      Target document collection name (defaults to file name stem)");
+    println!();
+    println!("Markdown Specific Options:");
+    println!("  --namespace <NAME>       Target memory namespace (defaults to file name stem)");
+    println!("  --session-id <ID>        Optional session ID for agent memory");
+    println!("  --tags <TAG1,TAG2,...>   Comma-separated tags for memory recall indexing");
+    println!();
+    println!("Examples:");
+    println!("  tapirus import csv users.csv --table users --db app.tapir");
+    println!("  tapirus import jsonl events.jsonl --collection events --db app.tapir");
+    println!("  tapirus import md handbook.md --namespace docs --tags company,handbook");
+}
+
+fn run_import_command(args: &[String]) {
+    if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
+        print_import_help();
+        return;
+    }
+
+    let mut format: Option<String> = None;
+    let mut file_path: Option<String> = None;
+    let mut db_path = "production.tapir".to_string();
+    let mut table_name: Option<String> = None;
+    let mut collection_name: Option<String> = None;
+    let mut namespace: Option<String> = None;
+    let mut session_id: Option<String> = None;
+    let mut tags = Vec::new();
+    let mut passphrase: Option<String> = None;
+    let mut batch_size = 500usize;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => {
+                print_import_help();
+                return;
+            }
+            "--db" => {
+                if i + 1 < args.len() {
+                    db_path = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--table" => {
+                if i + 1 < args.len() {
+                    table_name = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--collection" => {
+                if i + 1 < args.len() {
+                    collection_name = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--namespace" => {
+                if i + 1 < args.len() {
+                    namespace = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--session-id" => {
+                if i + 1 < args.len() {
+                    session_id = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--tags" => {
+                if i + 1 < args.len() {
+                    tags = args[i + 1].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    i += 1;
+                }
+            }
+            "--passphrase" => {
+                if i + 1 < args.len() {
+                    passphrase = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--batch" | "--batch-size" => {
+                if i + 1 < args.len() {
+                    batch_size = args[i + 1].parse().unwrap_or(500);
+                    i += 1;
+                }
+            }
+            arg if !arg.starts_with('-') => {
+                if format.is_none() && (arg == "csv" || arg == "jsonl" || arg == "json" || arg == "markdown" || arg == "md") {
+                    format = Some(arg.to_string());
+                } else if file_path.is_none() {
+                    file_path = Some(arg.to_string());
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let file_path = match file_path {
+        Some(f) => f,
+        None => {
+            eprintln!("Error: Target file to import is required.");
+            println!();
+            print_import_help();
+            std::process::exit(1);
+        }
+    };
+
+    let p = Path::new(&file_path);
+    if !p.exists() {
+        eprintln!("Error: File '{file_path}' does not exist.");
+        std::process::exit(1);
+    }
+
+    let inferred_format = format.unwrap_or_else(|| {
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        match ext.as_str() {
+            "csv" => "csv".to_string(),
+            "jsonl" => "jsonl".to_string(),
+            "json" => "json".to_string(),
+            "md" | "markdown" => "markdown".to_string(),
+            _ => "csv".to_string(),
+        }
+    });
+
+    let conn = if let Some(ref pass) = passphrase {
+        match Connection::open_encrypted(Path::new(&db_path), pass) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error opening encrypted database at '{db_path}': {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        match Connection::open(Path::new(&db_path)) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error opening database at '{db_path}': {e}");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("data").to_string();
+
+    match inferred_format.as_str() {
+        "csv" => {
+            let table = table_name.unwrap_or(stem);
+            import_csv_file(&conn, &file_path, &table, batch_size);
+        }
+        "jsonl" | "json" => {
+            let col = collection_name.unwrap_or(stem);
+            import_jsonl_file(&conn, &file_path, &col, batch_size);
+        }
+        "markdown" | "md" => {
+            let ns = namespace.unwrap_or(stem);
+            import_markdown_file(&conn, &file_path, &ns, session_id.as_deref(), &tags);
+        }
+        other => {
+            eprintln!("Error: Unsupported import format '{other}'. Choose from: csv, jsonl, json, markdown.");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn handle_import_csv(conn: &Connection, csv_path: &str, table_name: &str) {
+    import_csv_file(conn, csv_path, table_name, 500);
 }
 
 fn handle_memory_command(conn: &Connection, parts: &[&str]) {

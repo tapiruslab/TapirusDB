@@ -36,6 +36,7 @@ docs/audit/
 docs/INTERNAL_*
 audit/
 scratch/
+expert_notes_extracted.txt
 *.audit.md
 *audit*
 

@@ -128,3 +128,129 @@ fn test_remote_pager_s3_range_streaming_and_caching() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_graph_rag_tenant_and_acl_filtering() -> Result<()> {
+    let conn = Connection::open_in_memory()?;
+
+    // Ingest entities across two distinct enterprise tenants: "cyberdyne" and "weyland"
+    // Node 1: Cyberdyne Project Genesis (Admin only)
+    conn.graph_add_node_with_vector(
+        1,
+        "Project Genesis",
+        r#"{"tenant_id": "cyberdyne", "roles": ["admin"], "project": "genesis_ai"}"#,
+        Some(&[0.90, 0.10, 0.00]),
+    )?;
+
+    // Node 2: Cyberdyne Core Architecture (Admin & Analyst)
+    conn.graph_add_node_with_vector(
+        2,
+        "Genesis Architecture",
+        r#"{"tenant_id": "cyberdyne", "roles": ["admin", "analyst"], "project": "genesis_ai"}"#,
+        Some(&[0.85, 0.15, 0.00]),
+    )?;
+
+    // Node 3: Cyberdyne Public Briefing (Public visibility)
+    conn.graph_add_node_with_vector(
+        3,
+        "Genesis Public Overview",
+        r#"{"tenant_id": "cyberdyne", "visibility": "public", "project": "genesis_ai"}"#,
+        Some(&[0.80, 0.20, 0.00]),
+    )?;
+
+    // Node 4: Weyland Project Prometheus (Admin only, highly similar vector)
+    conn.graph_add_node_with_vector(
+        4,
+        "Project Prometheus",
+        r#"{"tenant_id": "weyland", "roles": ["admin"], "mission": "deep_space"}"#,
+        Some(&[0.95, 0.05, 0.00]),
+    )?;
+
+    // Node 5: Weyland Propulsion (Analyst only)
+    conn.graph_add_node_with_vector(
+        5,
+        "Prometheus Engine",
+        r#"{"tenant_id": "weyland", "roles": ["analyst"], "mission": "deep_space"}"#,
+        Some(&[0.88, 0.12, 0.00]),
+    )?;
+
+    // Intra-tenant and cross-tenant relationships
+    conn.graph_add_edge(1, 2, "INCLUDES", 1.0, "{}")?;
+    conn.graph_add_edge(2, 3, "EXPLAINS", 0.9, "{}")?;
+    conn.graph_add_edge(1, 4, "ESPIONAGE_TARGET", 0.8, "{}")?; // Cross-tenant boundary edge!
+    conn.graph_add_edge(4, 5, "PROPELLED_BY", 1.0, "{}")?;
+
+    let query_vector = [0.93, 0.07, 0.00];
+
+    // --- Scenario 1: Strict Multi-Tenant Isolation for "cyberdyne" ---
+    let config_cyberdyne = GraphRagConfig::default()
+        .with_seeds(3)
+        .with_max_hops(2)
+        .with_limit(10)
+        .with_tenant("cyberdyne")
+        .with_roles(["admin", "analyst"]);
+
+    let res_cyberdyne = conn.graph_rag_query("Genesis project", Some(&query_vector), &config_cyberdyne)?;
+    let retrieved_ids: Vec<u64> = res_cyberdyne.results.iter().map(|r| r.entity_id).collect();
+
+    // Node 4 (Weyland) has highest cosine similarity (0.95 vs 0.93), but MUST be strictly blocked!
+    assert!(!retrieved_ids.contains(&4), "Tenant Weyland Node 4 must not leak into Cyberdyne context");
+    assert!(!retrieved_ids.contains(&5), "Tenant Weyland Node 5 must not leak into Cyberdyne context");
+    assert!(retrieved_ids.contains(&1), "Cyberdyne Node 1 should be retrieved");
+    assert!(retrieved_ids.contains(&2), "Cyberdyne Node 2 should be retrieved");
+
+    // Traversal must NOT follow edge (1) -> (4) into unauthorized tenant
+    for r in &res_cyberdyne.results {
+        for e in &r.related_edges {
+            assert_ne!(e.to_id, 4, "Traversal must not leak cross-tenant edge to node 4");
+            assert_ne!(e.from_id, 4, "Traversal must not leak cross-tenant edge from node 4");
+        }
+    }
+    assert!(res_cyberdyne.prompt_context.contains("Tenant: `cyberdyne`"));
+
+    // --- Scenario 2: Strict Multi-Tenant Isolation for "weyland" ---
+    let config_weyland = GraphRagConfig::default()
+        .with_seeds(3)
+        .with_max_hops(2)
+        .with_limit(10)
+        .with_tenant("weyland")
+        .with_roles(["admin", "analyst"]);
+
+    let res_weyland = conn.graph_rag_query("Prometheus mission", Some(&query_vector), &config_weyland)?;
+    let weyland_ids: Vec<u64> = res_weyland.results.iter().map(|r| r.entity_id).collect();
+    assert!(weyland_ids.contains(&4), "Weyland Node 4 should be retrieved");
+    assert!(weyland_ids.contains(&5), "Weyland Node 5 should be retrieved");
+    assert!(!weyland_ids.contains(&1), "Cyberdyne Node 1 must not appear in Weyland query");
+    assert!(!weyland_ids.contains(&2), "Cyberdyne Node 2 must not appear in Weyland query");
+
+    // --- Scenario 3: Role-Based Access Control (Analyst vs Admin) ---
+    // User only has "analyst" role. Node 1 requires "admin", so it must be filtered out.
+    let config_analyst = GraphRagConfig::default()
+        .with_seeds(3)
+        .with_max_hops(2)
+        .with_limit(10)
+        .with_tenant("cyberdyne")
+        .with_roles(["analyst"]);
+
+    let res_analyst = conn.graph_rag_query("Genesis AI", Some(&query_vector), &config_analyst)?;
+    let analyst_ids: Vec<u64> = res_analyst.results.iter().map(|r| r.entity_id).collect();
+    assert!(!analyst_ids.contains(&1), "Admin-only Node 1 must be invisible to analyst role");
+    assert!(analyst_ids.contains(&2), "Node 2 permits analyst role");
+    assert!(analyst_ids.contains(&3), "Node 3 has public visibility");
+
+    // --- Scenario 4: Metadata Key-Value Filter ---
+    let mut meta_filter = std::collections::HashMap::new();
+    meta_filter.insert("mission".to_string(), serde_json::json!("deep_space"));
+
+    let config_meta = GraphRagConfig::default()
+        .with_tenant("weyland")
+        .with_roles(["admin", "analyst"])
+        .with_metadata_filter(meta_filter);
+
+    let res_meta = conn.graph_rag_query("space mission", Some(&query_vector), &config_meta)?;
+    for r in &res_meta.results {
+        assert!(r.properties.contains("deep_space"), "All results must match metadata filter");
+    }
+
+    Ok(())
+}

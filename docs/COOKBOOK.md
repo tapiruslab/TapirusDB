@@ -20,6 +20,8 @@ TapirusDB unifies four storage models (Relational SQL, HNSW Vectors, openCypher 
 9. [Recipe 9: Simple Embedded RAG for Website & Desktop Apps (Zero-Server Search)](#recipe-9-simple-embedded-rag-for-website--desktop-apps-zero-server-search)
 10. [Recipe 10: 1,000,000+ Record Scientific / Research Analysis on Low-Spec Laptops (<4MB RAM)](#recipe-10-1000000-record-scientific--research-analysis-on-low-spec-laptops-4mb-ram)
 11. [Recipe 11: In-Browser WebAssembly (Client-Side Static Web) & Cloudflare Workers Edge API](#recipe-11-in-browser-webassembly-client-side-static-web--cloudflare-workers-edge-api)
+12. [Recipe 12: Unified Four-Model Atomic Transactions (ACID Cross-Model Commit)](#recipe-12-unified-four-model-atomic-transactions-acid-cross-model-commit)
+13. [Recipe 13: Streaming CLI Data Importer & Physical Integrity Auditing](#recipe-13-streaming-cli-data-importer--physical-integrity-auditing)
 
 ---
 
@@ -631,5 +633,81 @@ export default {
     });
   }
 };
+```
+
+---
+
+## Recipe 12: Unified Four-Model Atomic Transactions (ACID Cross-Model Commit)
+
+### The Problem
+When building autonomous AI systems, an agent needs to record an action across multiple models:
+1. Update an account balance in a relational SQL table.
+2. Ingest an unstructured event payload into a JSON Document collection.
+3. Link an openCypher knowledge graph relationship edge.
+4. Index a dense vector embedding for semantic similarity.
+
+In a traditional decoupled stack, if step 3 fails, steps 1 and 2 cannot be rolled back without complex distributed saga coordinators.
+
+### The Solution
+TapirusDB executes all 4 models within the exact same Write-Ahead Log (WAL) transaction boundary:
+
+```rust
+use tapirus::{Connection, Result};
+
+fn main() -> Result<()> {
+    let mut conn = Connection::open("production.tapir")?;
+
+    // Begin cross-model atomic transaction
+    conn.begin_transaction()?;
+
+    // 1. Relational SQL
+    conn.execute("UPDATE agents SET status = 'ACTIVE' WHERE id = 1;")?;
+
+    // 2. JSON Document Collection
+    conn.doc_insert("logs", r#"{"agent_id": 1, "action": "MISSION_START", "confidence": 0.98}"#)?;
+
+    // 3. openCypher Knowledge Graph
+    conn.graph_add_node(100, "MissionAlpha", r#"{"type": "Surveillance"}"#)?;
+    conn.graph_add_edge(1, 100, "ASSIGNED_TO", 1.0, "{}")?;
+
+    // 4. Vector Embedding
+    conn.vector_insert("mission_embeddings", 100, &[0.12, 0.85, 0.44])?;
+
+    // Atomically commit all 4 models together!
+    // If any error occurs or power fails, WAL recovery rolls back all 4 models to prior state.
+    conn.commit_transaction()?;
+
+    Ok(())
+}
+```
+
+---
+
+## Recipe 13: Streaming CLI Data Importer & Physical Integrity Auditing
+
+### High-Throughput Streaming Ingestion (`tapirus import`)
+Ingest massive CSV, JSONL, and Markdown files with zero external server dependencies:
+
+```bash
+# Ingest CSV with automated SQL column type inference
+tapirus import csv telemetry.csv --table sensor_readings --batch 2000 --db production.tapir
+
+# Ingest streaming JSONL directly into document collections
+tapirus import jsonl documents.jsonl --collection knowledge_base --batch 1000 --db production.tapir
+
+# Ingest Markdown files directly into AI Episodic Memory & Knowledge Graph
+tapirus import md architecture_spec.md --namespace docs --tags "spec,v1" --db production.tapir
+```
+
+### Hot Online Backup & Physical Page Audit (`tapirus backup`, `restore`, `verify`)
+```bash
+# Online safe backup with cryptographic KCV verification
+tapirus backup production.tapir backups/prod_snapshot.tapir
+
+# Restore and validate page geometry
+tapirus restore backups/prod_snapshot.tapir restored_production.tapir
+
+# Deep physical audit: scans 4KB slotted pages, validates CRC32 checksums, audits free space
+tapirus verify production.tapir
 ```
 
