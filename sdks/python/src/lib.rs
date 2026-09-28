@@ -62,10 +62,44 @@ fn connect(path: &str, passphrase: Option<&str>) -> PyResult<Connection> {
     Connection::open(path, passphrase)
 }
 
+#[pyfunction]
+fn tap_classify(text: &str, candidates: Vec<String>) -> PyResult<(String, f32)> {
+    let engine = ::tapirus::tap::sql_bridge::get_global_tap_engine();
+    let cand_slices: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
+    let res = engine.classify(text, &cand_slices).map_err(|e| TapirusError::new_err(e.to_string()))?;
+    Ok((res.top_choice, res.confidence))
+}
+
+#[pyfunction]
+fn tap_verify(premise: &str, hypothesis: &str) -> PyResult<bool> {
+    let engine = ::tapirus::tap::sql_bridge::get_global_tap_engine();
+    let res = engine.verify(premise, hypothesis).map_err(|e| TapirusError::new_err(e.to_string()))?;
+    Ok(res.is_verified)
+}
+
+#[pyfunction]
+fn tap_score(text: &str, criteria: &str) -> PyResult<f32> {
+    let engine = ::tapirus::tap::sql_bridge::get_global_tap_engine();
+    let res = engine.score(text, criteria).map_err(|e| TapirusError::new_err(e.to_string()))?;
+    Ok(res.score)
+}
+
+#[pyfunction]
+fn tap_route(state: &str, routes: Vec<String>) -> PyResult<String> {
+    let engine = ::tapirus::tap::sql_bridge::get_global_tap_engine();
+    let route_slices: Vec<&str> = routes.iter().map(|s| s.as_str()).collect();
+    let res = engine.route(state, &route_slices).map_err(|e| TapirusError::new_err(e.to_string()))?;
+    Ok(res.selected_route)
+}
+
 #[pymodule]
 fn tapirus(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Connection>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
+    m.add_function(wrap_pyfunction!(tap_classify, m)?)?;
+    m.add_function(wrap_pyfunction!(tap_verify, m)?)?;
+    m.add_function(wrap_pyfunction!(tap_score, m)?)?;
+    m.add_function(wrap_pyfunction!(tap_route, m)?)?;
     m.add("TapirusError", py.get_type::<TapirusError>())?;
     m.add("ConnectionError", py.get_type::<ConnectionError>())?;
     m.add("QueryError", py.get_type::<QueryError>())?;
