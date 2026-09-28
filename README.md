@@ -6,7 +6,7 @@
   <img alt="TapirusDB" src="assets/Logo-TapirusDB.png" width="340" />
 </picture>
 
-<br/><br/>
+<br/>
 
 ### The Embedded Cognitive Memory & Multi-Model Engine for Sovereign AI & Edge Systems
 **Sub-Microsecond Agent Memory • openCypher Knowledge Graphs • Vector Search • Relational SQL • Documents**  
