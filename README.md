@@ -105,8 +105,11 @@ Traditionally, when autonomous AI agents make structured decisions (categorizing
 [ Traditional LLM API (e.g. GPT-4o-mini) ]  ══════════════════════════════════ 450ms - 800ms
 [ Remote Decision Microservice (HTTP)   ]  ══════════════════ 85ms - 150ms
 [ Python Decision Server (PyTorch)      ]  ════════ 35ms - 65ms
-[ TapirusDB Tap (In-Process Safe Rust)  ]  ═ 1.2ms - 2.8ms  🚀 (40x - 300x Faster!)
 ```
+
+<p align="center">
+  <img src=".github/assets/tap-decision-core.svg" alt="TapirusDB Tap Decision Core vs External LLM Stack" width="100%" />
+</p>
 
 ### The 4 Native Decision Primitives
 

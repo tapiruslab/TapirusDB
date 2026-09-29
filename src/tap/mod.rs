@@ -347,4 +347,34 @@ mod tests {
         let res = tap.route("High risk fraudulent transfer detected: block immediately", &["block_transfer", "standard_review", "allow"]).unwrap();
         assert_eq!(res.selected_route, "block_transfer");
     }
+
+    #[test]
+    fn test_tap_throughput_and_latency_benchmark() {
+        let tap = TapEngine::default();
+        let iterations = 2000;
+
+        let start = std::time::Instant::now();
+        for _ in 0..iterations {
+            let _ = tap.classify("Refund requested because product was broken on delivery", &["refund", "billing_support", "sales"]).unwrap();
+        }
+        let classify_total = start.elapsed();
+        let classify_us = classify_total.as_micros() as f64 / iterations as f64;
+        let classify_qps = iterations as f64 / classify_total.as_secs_f64();
+
+        let start_v = std::time::Instant::now();
+        for _ in 0..iterations {
+            let _ = tap.verify("The user has an active premium subscription", "user is active subscriber").unwrap();
+        }
+        let verify_total = start_v.elapsed();
+        let verify_us = verify_total.as_micros() as f64 / iterations as f64;
+        let verify_qps = iterations as f64 / verify_total.as_secs_f64();
+
+        println!("\n=== TAP DECISION CORE EMPIRICAL BENCHMARK ===");
+        println!("Classify Latency: {:.2} µs ({:.0} decisions/sec)", classify_us, classify_qps);
+        println!("Verify Latency:   {:.2} µs ({:.0} verifications/sec)", verify_us, verify_qps);
+        println!("==============================================\n");
+
+        assert!(classify_us < 1500.0, "Classify must take < 1.5 ms (sub-millisecond in release)");
+        assert!(verify_us < 1500.0, "Verify must take < 1.5 ms (sub-millisecond in release)");
+    }
 }
