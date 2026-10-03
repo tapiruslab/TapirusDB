@@ -8,14 +8,22 @@
 //! (300ms–800ms) and unpredictable hallucinations, Tap executes single-pass tensor projections
 //! directly over database memory records in **sub-millisecond Safe Rust (< 2ms)**.
 
+pub mod deep;
 pub mod primitives;
 pub mod runtime;
 pub mod sql_bridge;
 pub mod tokenizer;
 
-pub use primitives::{ClassificationResult, RouteResult, ScoreResult, VerifyResult};
+pub use deep::TapDeepEngine;
+pub use primitives::{
+    ClassificationResult, GroundedClassificationResult, GroundedVerifyResult, RouteResult,
+    ScoreResult, VerifyResult,
+};
 pub use runtime::{TapInferenceEngine, TapRuntime, TapWeights, TAP_MODEL_MAGIC};
-pub use sql_bridge::{eval_tap_classify, eval_tap_route, eval_tap_score, eval_tap_verify};
+pub use sql_bridge::{
+    eval_tap_classify, eval_tap_classify_grounded, eval_tap_route, eval_tap_score,
+    eval_tap_verify, eval_tap_verify_grounded, register_grounding_index,
+};
 pub use tokenizer::TapTokenizer;
 
 use crate::error::{Error, Result};
@@ -218,8 +226,14 @@ impl TapEngine {
 
         let overlap = compute_jaccard_overlap(&prem_words, &hyp_words);
 
-        // Negative indicators check
-        let negations = ["not", "never", "no", "cannot", "invalid", "violate", "reject", "false"];
+        // Pure grammatical polarity inverters across international languages
+        let negations = [
+            "not", "never", "untrue", "neither", "nor", "wont", "dont", "isnt", "arent", "didnt",
+            "tidak", "bukan", "tak", "takde", "jangan",
+            "nunca", "jamas",
+            "jamais",
+            "nicht", "kein", "keine",
+        ];
         let mut premise_neg = false;
         let mut hyp_neg = false;
         for &neg in &negations {
@@ -231,9 +245,11 @@ impl TapEngine {
             }
         }
 
-        let negation_penalty = if premise_neg != hyp_neg { -0.35 } else { 0.0 };
+        let negation_penalty = if premise_neg != hyp_neg { -1.00 } else { 0.0 };
 
-        let overlap_evidence = if overlap > 0.18 {
+        let overlap_evidence = if premise_neg != hyp_neg {
+            -0.60
+        } else if overlap > 0.18 {
             (overlap - 0.15) * self.config.lexical_weight
         } else {
             -0.40
@@ -253,6 +269,115 @@ impl TapEngine {
             confidence,
             threshold,
             margin,
+            latency_us,
+        })
+    }
+
+    /// HNSW-Grounded truth verification: cross-references an empirical premise and hypothesis
+    /// against an in-database HNSW vector index containing reference document chunks or policy embeddings.
+    pub fn verify_grounded(
+        &self,
+        premise: &str,
+        hypothesis: &str,
+        index: &crate::vector::HnswIndex,
+        top_k: usize,
+    ) -> Result<GroundedVerifyResult> {
+        let start = Instant::now();
+        let base_verify = self.verify(premise, hypothesis)?;
+
+        let prem_tokens = self.tokenizer.tokenize(premise);
+        let mut query_vec = self.runtime.forward_pool(&prem_tokens);
+
+        if query_vec.len() != index.dimensions {
+            if query_vec.len() > index.dimensions {
+                query_vec.truncate(index.dimensions);
+            } else {
+                query_vec.resize(index.dimensions, 0.0);
+            }
+        }
+
+        let k = top_k.max(1);
+        let knn_matches = index.search_knn(&query_vec, k, crate::vector::DistanceMetric::Cosine)?;
+
+        let mut retrieved_evidence = Vec::with_capacity(knn_matches.len());
+        let mut total_sim = 0.0f32;
+        for (id, dist) in knn_matches {
+            let sim = (1.0 - dist.clamp(0.0, 2.0) / 2.0).clamp(0.0, 1.0);
+            retrieved_evidence.push((id, sim));
+            total_sim += sim;
+        }
+
+        let avg_grounding = if !retrieved_evidence.is_empty() {
+            total_sim / retrieved_evidence.len() as f32
+        } else {
+            0.5
+        };
+
+        let grounded_confidence = ((base_verify.confidence * 0.60) + (avg_grounding * 0.40)).clamp(0.0, 1.0);
+        let is_verified = grounded_confidence >= base_verify.threshold;
+        let margin = grounded_confidence - base_verify.threshold;
+        let latency_us = start.elapsed().as_micros() as u64;
+
+        Ok(GroundedVerifyResult {
+            is_verified,
+            confidence: grounded_confidence,
+            threshold: base_verify.threshold,
+            margin,
+            retrieved_evidence,
+            grounding_score: avg_grounding,
+            latency_us,
+        })
+    }
+
+    /// HNSW-Grounded categorical classification: cross-references candidate labels
+    /// with empirical neighbor records in an in-database HNSW vector index.
+    pub fn classify_grounded(
+        &self,
+        input: &str,
+        candidates: &[&str],
+        index: &crate::vector::HnswIndex,
+        top_k: usize,
+    ) -> Result<GroundedClassificationResult> {
+        let start = Instant::now();
+        let base_class = self.classify(input, candidates)?;
+
+        let input_tokens = self.tokenizer.tokenize(input);
+        let mut query_vec = self.runtime.forward_pool(&input_tokens);
+        if query_vec.len() != index.dimensions {
+            if query_vec.len() > index.dimensions {
+                query_vec.truncate(index.dimensions);
+            } else {
+                query_vec.resize(index.dimensions, 0.0);
+            }
+        }
+
+        let k = top_k.max(1);
+        let knn_matches = index.search_knn(&query_vec, k, crate::vector::DistanceMetric::Cosine)?;
+
+        let mut retrieved_evidence = Vec::with_capacity(knn_matches.len());
+        let mut total_sim = 0.0f32;
+        for (id, dist) in knn_matches {
+            let sim = (1.0 - dist.clamp(0.0, 2.0) / 2.0).clamp(0.0, 1.0);
+            retrieved_evidence.push((id, sim));
+            total_sim += sim;
+        }
+
+        let avg_grounding = if !retrieved_evidence.is_empty() {
+            total_sim / retrieved_evidence.len() as f32
+        } else {
+            0.5
+        };
+
+        let modulated_conf = ((base_class.confidence * 0.65) + (avg_grounding * 0.35)).clamp(0.0, 1.0);
+        let latency_us = start.elapsed().as_micros() as u64;
+
+        Ok(GroundedClassificationResult {
+            top_choice: base_class.top_choice,
+            confidence: modulated_conf,
+            probabilities: base_class.probabilities,
+            retrieved_evidence,
+            grounding_score: avg_grounding,
+            entropy: base_class.entropy,
             latency_us,
         })
     }
@@ -376,5 +501,81 @@ mod tests {
 
         assert!(classify_us < 1500.0, "Classify must take < 1.5 ms (sub-millisecond in release)");
         assert!(verify_us < 1500.0, "Verify must take < 1.5 ms (sub-millisecond in release)");
+    }
+
+    #[test]
+    fn test_tap_multilingual_decision() {
+        let tap = TapEngine::default();
+
+        // 1. Bahasa Melayu / Pasar
+        let bm_res = tap.classify(
+            "Barang rosak dan pecah, nak refund balik duit",
+            &["refund", "tanya_soalan", "daftar_akaun"],
+        ).unwrap();
+        assert_eq!(bm_res.top_choice, "refund");
+
+        // 2. Multilingual negation check (Melayu: 'tidak')
+        let neg_res = tap.verify(
+            "Pengguna tidak bersetuju dengan syarat perjanjian",
+            "pengguna bersetuju dengan syarat perjanjian",
+        ).unwrap();
+        assert!(!neg_res.is_verified, "Negation 'tidak' must prevent false truth verification");
+
+        // 3. Spanish decision
+        let es_res = tap.classify(
+            "Por favor cancelar mi cuenta inmediatamente",
+            &["cancelar", "soporte", "pagar"],
+        ).unwrap();
+        assert_eq!(es_res.top_choice, "cancelar");
+
+        // 4. French decision
+        let fr_res = tap.classify(
+            "Demande urgente de remboursement pour commande perdue",
+            &["remboursement", "compte", "securite"],
+        ).unwrap();
+        assert_eq!(fr_res.top_choice, "remboursement");
+    }
+
+    #[test]
+    fn test_tap_grounded_with_hnsw() {
+        use crate::traits::VectorIndexEngine;
+        use crate::vector::{DistanceMetric, HnswIndex};
+
+        let tap = TapEngine::default();
+        let dim = tap.runtime.dim();
+        let mut index = HnswIndex::new(dim, DistanceMetric::Cosine);
+
+        // Populate HNSW index with policy vectors
+        let tokens_refund = tap.tokenizer.tokenize("Valid warranty return policy for damaged delivery item");
+        let vec_refund = tap.runtime.forward_pool(&tokens_refund);
+        index.insert_vector(101, &vec_refund).unwrap();
+
+        let tokens_fraud = tap.tokenizer.tokenize("Fraudulent stolen credit card suspicious account activity");
+        let vec_fraud = tap.runtime.forward_pool(&tokens_fraud);
+        index.insert_vector(202, &vec_fraud).unwrap();
+
+        // Test Grounded Truth Verification
+        let grounded_v = tap.verify_grounded(
+            "Customer provided photo proof of damaged delivery item",
+            "valid warranty return damaged delivery",
+            &index,
+            2,
+        ).unwrap();
+
+        assert!(grounded_v.is_verified);
+        assert!(!grounded_v.retrieved_evidence.is_empty());
+        assert_eq!(grounded_v.retrieved_evidence[0].0, 101); // Node 101 matched as closest policy
+        assert!(grounded_v.grounding_score > 0.5);
+
+        // Test Grounded Classification
+        let grounded_c = tap.classify_grounded(
+            "Customer claims parcel arrived broken with shattered parts",
+            &["warranty_return", "fraud_investigation"],
+            &index,
+            2,
+        ).unwrap();
+
+        assert!(!grounded_c.retrieved_evidence.is_empty());
+        assert!(grounded_c.confidence > 0.5);
     }
 }

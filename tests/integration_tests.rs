@@ -153,3 +153,119 @@ fn test_tri_model_graphrag_workflow() -> Result<()> {
     let _ = std::fs::remove_file(db_path.with_extension("tapir-wal"));
     Ok(())
 }
+
+#[test]
+fn test_tap_grounded_sql_decision_workflow() -> Result<()> {
+    use std::sync::Arc;
+    use tapirus::traits::VectorIndexEngine;
+    use tapirus::vector::{DistanceMetric, HnswIndex};
+    use tapirus::tap::register_grounding_index;
+
+    let db = Connection::open_in_memory()?;
+
+    // 1. Create table with audit entries
+    db.execute("CREATE TABLE complaints (id INTEGER PRIMARY KEY, message TEXT, department TEXT);")?;
+    db.execute("INSERT INTO complaints VALUES (1, 'Barang pecah bila sampai, mohon refund balik duit', 'support');")?;
+    db.execute("INSERT INTO complaints VALUES (2, 'Password reset email was never received', 'it');")?;
+
+    // 2. Setup HNSW grounding index
+    let mut hnsw = HnswIndex::new(64, DistanceMetric::Cosine);
+    let sample_vec = vec![0.05; 64];
+    hnsw.insert_vector(999, &sample_vec)?;
+    register_grounding_index("kb_policies", Arc::new(hnsw));
+
+    // 3. Query using TAP_CLASSIFY_GROUNDED and TAP_VERIFY_GROUNDED in SQL
+    let rows = db.query(
+        "SELECT id, \
+         TAP_CLASSIFY_GROUNDED(message, 'refund, login, sales', 'kb_policies', 1) AS category, \
+         TAP_VERIFY_GROUNDED(message, 'barang rosak mohon refund duit', 'kb_policies', 1) AS is_refund_request \
+         FROM complaints WHERE id = 1;",
+    )?;
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get::<String>("category")?, "refund");
+    assert_eq!(rows[0].get::<i64>("is_refund_request")?, 1);
+
+    Ok(())
+}
+
+#[test]
+fn test_online_chatbot_cognitive_flow() -> Result<()> {
+    let db = Connection::open_in_memory()?;
+
+    // 1. Initialize chatbot relational tables
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS tap_chat_logs (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT,
+            user_message TEXT,
+            bot_reply TEXT,
+            intent TEXT,
+            confidence REAL,
+            is_safe INTEGER,
+            latency_us INTEGER,
+            created_at TEXT
+        );",
+    )?;
+
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS tap_knowledge_base (
+            id INTEGER PRIMARY KEY,
+            category TEXT,
+            keywords TEXT,
+            title TEXT,
+            content TEXT,
+            language TEXT
+        );",
+    )?;
+
+    // 2. Insert verified knowledge records
+    db.execute(
+        "INSERT INTO tap_knowledge_base (id, category, keywords, title, content, language) \
+         VALUES (1, 'billing_and_enterprise_plans', 'pelan enterprise harga lesen', 'Pelan Enterprise TapirusDB', 'Sokongan 24/7 SLA dan replikasi multi-node', 'ms');",
+    )?;
+
+    // 3. Cognitive intent classification on Malay inquiry
+    let message = "Saya nak tahu mengenai pelan enterprise TapirusDB";
+    let candidate_intents = [
+        "database_architecture",
+        "tap_cognitive_engine",
+        "billing_and_enterprise_plans",
+        "general_greeting",
+    ];
+
+    let classify_res = db.tap().classify(message, &candidate_intents)?;
+    assert_eq!(classify_res.top_choice, "billing_and_enterprise_plans");
+    assert!(classify_res.confidence > 0.30);
+
+    // 4. Verification check
+    let verify_res = db.tap().verify("Pengguna ingin maklumat tentang pelan enterprise TapirusDB.", message)?;
+    assert!(verify_res.is_verified);
+
+    // 5. Query knowledge base
+    let rows = db.query("SELECT title, content FROM tap_knowledge_base WHERE category = 'billing_and_enterprise_plans' AND language = 'ms';")?;
+    assert_eq!(rows.len(), 1);
+    let title = rows[0].get::<String>("title")?;
+    let content = rows[0].get::<String>("content")?;
+    assert_eq!(title, "Pelan Enterprise TapirusDB");
+
+    // 6. Persist dialogue to relational SQL
+    let reply = format!("**{}**\n{}", title, content);
+    let insert_sql = format!(
+        "INSERT INTO tap_chat_logs (id, session_id, user_message, bot_reply, intent, confidence, is_safe, latency_us, created_at) \
+         VALUES (1, 'sess-test', '{}', '{}', '{}', {:.4}, 1, 850, '1760000000');",
+        message, reply, classify_res.top_choice, classify_res.confidence
+    );
+    db.execute(&insert_sql)?;
+
+    // 7. Verify audit log retrieval from SQL
+    let logs = db.query("SELECT id, session_id, intent, is_safe FROM tap_chat_logs WHERE id = 1;")?;
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].get::<i64>("id")?, 1);
+    assert_eq!(logs[0].get::<String>("session_id")?, "sess-test");
+    assert_eq!(logs[0].get::<String>("intent")?, "billing_and_enterprise_plans");
+    assert_eq!(logs[0].get::<i64>("is_safe")?, 1);
+
+    Ok(())
+}
+

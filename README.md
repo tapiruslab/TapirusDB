@@ -111,7 +111,7 @@ Traditionally, when autonomous AI agents make structured decisions (categorizing
   <img src=".github/assets/tap-decision-core.svg" alt="TapirusDB Tap Decision Core vs External LLM Stack" width="100%" />
 </p>
 
-### The 4 Native Decision Primitives
+### The Native Decision Primitives & Grounded Instincts
 
 | Primitive | Purpose | Rust API | SQL Syntax |
 | :--- | :--- | :--- | :--- |
@@ -119,6 +119,8 @@ Traditionally, when autonomous AI agents make structured decisions (categorizing
 | **`score`** | Continuous rubric evaluation in $[0.0, 1.0]$ | `conn.tap().score(text, criteria)` | `SELECT TAP_SCORE(incident, 'emergency_severity')` |
 | **`verify`** | Calibrated boolean truth validation with strict margin | `conn.tap().verify(premise, hypothesis)` | `SELECT id FROM claims WHERE TAP_VERIFY(claim, 'active_policy') = 1` |
 | **`route`** | Autonomous graph & workflow branch selection | `conn.tap().route(state, routes)` | `SELECT TAP_ROUTE(task_state, 'retry, escalate, resolve')` |
+| **`verify_grounded`** | **Option B**: Truth verification cross-referenced against HNSW vectors | `conn.tap().verify_grounded(premise, hyp, index, top_k)` | `SELECT TAP_VERIFY_GROUNDED(claim, 'active_policy', 'kb_index', 3)` |
+| **`classify_grounded`** | **Option B**: Categorical decision grounded in HNSW neighbor clusters | `conn.tap().classify_grounded(text, cands, index, top_k)` | `SELECT TAP_CLASSIFY_GROUNDED(body, '["fraud", "legit"]', 'kb_index', 3)` |
 
 ### 1. In-Database SQL Integration
 
@@ -132,6 +134,12 @@ SELECT
     TAP_CLASSIFY(message, '["billing", "technical", "sales"]') AS category,
     TAP_SCORE(message, 'critical system outage emergency') AS urgency_score
 FROM support_inbox;
+
+-- Cross-reference heavy compliance claims against HNSW vector knowledge index
+SELECT 
+    claim_id, 
+    TAP_VERIFY_GROUNDED(claim_text, 'valid warranty return policy', 'policy_hnsw_idx', 3) AS is_approved
+FROM insurance_claims;
 
 -- Filter fraud or compliance violations directly in SQL WHERE clause
 SELECT id, transaction_amount, merchant
@@ -719,9 +727,10 @@ tapirus serve --port 3005 --api-key "your_secret_api_key" --passphrase "vault_se
 ```
 
 * **Constant-Time Verification**: Prevents timing side-channel attacks via `subtle::ConstantTimeEq`.
-* **Flexible Authentication**: Provide the key via `Authorization: Bearer <KEY>`, `X-API-Key: <KEY>`, or query `?api_key=<KEY>`.
-* **Healthcheck Probe**: `GET /health` or `GET /api/health` returns operational status without authentication.
 * **Query Execution**: `POST /api/sql` or `POST /sql` accepts SQL queries, graph traversals, and document queries.
+* **AI Cognitive Chatbot Web UI**: `GET /chat` provides a zero-placebo web chat interface with live telemetry pills, intent triage, and knowledge grounding.
+* **In-Database Chatbot API**: `POST /api/chat` runs TAP cognitive triage (< 2ms) and persists all dialogue rows into `tap_chat_logs`.
+* **Chatbot SQL Logs**: `GET /api/chat/logs` provides live inspection of persisted chat dialogues straight from the database.
 
 ### 4. Autonomous AI Agent MCP Server (`tapirus mcp`)
 Connect Claude Desktop, Cursor, or Gemini to TapirusDB over stdio:

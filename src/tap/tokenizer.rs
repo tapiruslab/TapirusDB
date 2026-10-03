@@ -54,8 +54,9 @@ impl TapTokenizer {
             self.add_token(&s);
         }
 
-        // Common decision markers, modal tokens, and semantic stems
+        // Common decision markers, modal tokens, and semantic stems across international languages
         let common_stems = [
+            // English core stems
             "true", "false", "yes", "no", "valid", "invalid", "high", "low", "medium",
             "urgent", "normal", "critical", "fraud", "legit", "approve", "reject",
             "pending", "escalate", "resolve", "triage", "error", "success", "fail",
@@ -72,6 +73,19 @@ impl TapTokenizer {
             "think", "also", "back", "after", "use", "two", "how", "our", "work", "first",
             "well", "way", "even", "new", "want", "because", "any", "these", "give", "day",
             "most", "us", "is", "are", "was", "were", "has", "had", "should", "must", "claim",
+            // Bahasa Melayu & Indonesian stems
+            "sah", "batal", "palsu", "rosak", "pulang", "duit", "bayar", "kecemasan", "bahaya",
+            "lulus", "tolak", "tuntut", "aduan", "betul", "salah", "penting", "akaun", "henti",
+            "bantuan", "maklum", "hantar", "terima", "layak", "rugi", "untung", "daftar", "selesai",
+            // Spanish stems
+            "reembolso", "cancelar", "valido", "invalido", "fraude", "urgente", "aprobado",
+            "rechazado", "peligro", "correcto", "falso", "soporte", "cuenta", "pagar", "seguro",
+            // French stems
+            "remboursement", "annuler", "valide", "urgent", "approuver", "rejeter", "danger",
+            "erreur", "succes", "compte", "payer", "securite",
+            // German stems
+            "erstattung", "abbrechen", "gultig", "ungultig", "betrug", "dringend", "ablehnen",
+            "fehler", "erfolg", "konto", "zahlen", "sicher",
         ];
 
         for stem in common_stems {
@@ -96,6 +110,12 @@ impl TapTokenizer {
                 let mut end = (start + self.max_token_len).min(len);
                 let mut matched = false;
                 while end > start {
+                    while end > start && !word.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    if end <= start {
+                        break;
+                    }
                     let sub = &word[start..end];
                     let candidate = if start == 0 {
                         sub.to_string()
@@ -109,15 +129,21 @@ impl TapTokenizer {
                         start = end;
                         break;
                     }
-                    end -= 1;
+                    end = end.saturating_sub(1);
                 }
 
                 if !matched {
-                    // Fallback to character token or UNK
-                    let char_str = &word[start..start + 1];
-                    let id = self.vocab.get(char_str).copied().unwrap_or(1); // 1 = [UNK]
-                    tokens.push(id);
-                    start += 1;
+                    // Fallback to UTF-8 character token or UNK
+                    let mut char_iter = word[start..].chars();
+                    if let Some(ch) = char_iter.next() {
+                        let ch_len = ch.len_utf8();
+                        let char_str = &word[start..start + ch_len];
+                        let id = self.vocab.get(char_str).copied().unwrap_or(1); // 1 = [UNK]
+                        tokens.push(id);
+                        start += ch_len;
+                    } else {
+                        break;
+                    }
                 }
             }
         }

@@ -3347,7 +3347,11 @@ fn try_eval_tap_function(row: &Row, expr: &str) -> Result<Option<Value>> {
     let trimmed = expr.trim();
     let upper = trimmed.to_ascii_uppercase();
 
-    let (func_type, rest) = if upper.starts_with("TAP_CLASSIFY(") {
+    let (func_type, rest) = if upper.starts_with("TAP_CLASSIFY_GROUNDED(") {
+        ("CLASSIFY_GROUNDED", &trimmed[22..])
+    } else if upper.starts_with("TAP_VERIFY_GROUNDED(") {
+        ("VERIFY_GROUNDED", &trimmed[20..])
+    } else if upper.starts_with("TAP_CLASSIFY(") {
         ("CLASSIFY", &trimmed[13..])
     } else if upper.starts_with("TAP_SCORE(") {
         ("SCORE", &trimmed[10..])
@@ -3364,8 +3368,9 @@ fn try_eval_tap_function(row: &Row, expr: &str) -> Result<Option<Value>> {
     }
     let inner = rest[..rest.len() - 1].trim();
 
-    // Split by the first comma that is not inside quotes or brackets
-    let mut split_pos = None;
+    // Split by commas not inside quotes or brackets
+    let mut args = Vec::new();
+    let mut cur_start = 0;
     let mut in_single_quote = false;
     let mut in_double_quote = false;
     let mut bracket_depth: u32 = 0;
@@ -3377,17 +3382,16 @@ fn try_eval_tap_function(row: &Row, expr: &str) -> Result<Option<Value>> {
             '[' if !in_single_quote && !in_double_quote => bracket_depth += 1,
             ']' if !in_single_quote && !in_double_quote => bracket_depth = bracket_depth.saturating_sub(1),
             ',' if !in_single_quote && !in_double_quote && bracket_depth == 0 => {
-                split_pos = Some(idx);
-                break;
+                args.push(inner[cur_start..idx].trim());
+                cur_start = idx + 1;
             }
             _ => {}
         }
     }
+    args.push(inner[cur_start..].trim());
 
-    let (raw_arg1, raw_arg2) = match split_pos {
-        Some(pos) => (inner[..pos].trim(), inner[pos + 1..].trim()),
-        None => (inner, ""),
-    };
+    let raw_arg1 = args.first().copied().unwrap_or("");
+    let raw_arg2 = args.get(1).copied().unwrap_or("");
 
     let arg1_val = if let Some(v) = row.get_field_or_json_path(raw_arg1).or_else(|| row.get_value(raw_arg1).cloned()) {
         match v {
@@ -3401,6 +3405,18 @@ fn try_eval_tap_function(row: &Row, expr: &str) -> Result<Option<Value>> {
     let arg2_val = strip_quotes(raw_arg2);
 
     match func_type {
+        "CLASSIFY_GROUNDED" => {
+            let index_name = args.get(2).map(|s| strip_quotes(s)).unwrap_or("default");
+            let top_k = args.get(3).and_then(|s| s.parse::<usize>().ok()).unwrap_or(3);
+            let label = crate::tap::sql_bridge::eval_tap_classify_grounded(&arg1_val, arg2_val, index_name, top_k)?;
+            Ok(Some(Value::Text(label)))
+        }
+        "VERIFY_GROUNDED" => {
+            let index_name = args.get(2).map(|s| strip_quotes(s)).unwrap_or("default");
+            let top_k = args.get(3).and_then(|s| s.parse::<usize>().ok()).unwrap_or(3);
+            let verified = crate::tap::sql_bridge::eval_tap_verify_grounded(&arg1_val, arg2_val, index_name, top_k)?;
+            Ok(Some(Value::Integer(if verified { 1 } else { 0 })))
+        }
         "CLASSIFY" => {
             let label = crate::tap::sql_bridge::eval_tap_classify(&arg1_val, arg2_val)?;
             Ok(Some(Value::Text(label)))

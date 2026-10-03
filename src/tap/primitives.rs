@@ -64,3 +64,41 @@ pub struct RouteResult {
     /// Latency of the evaluation in microseconds
     pub latency_us: u64,
 }
+
+/// Result of an HNSW-grounded truth verification cross-referenced against vector document records
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroundedVerifyResult {
+    /// Definitive boolean conclusion
+    pub is_verified: bool,
+    /// Calibrated confidence probability in $[0.0, 1.0]$
+    pub confidence: f32,
+    /// Decision threshold used for verification (e.g. 0.50)
+    pub threshold: f32,
+    /// Signed margin of confidence relative to the decision threshold
+    pub margin: f32,
+    /// Nearest evidence retrieved from HNSW index: (node_id, similarity)
+    pub retrieved_evidence: Vec<(u64, f32)>,
+    /// Average grounding evidence similarity score
+    pub grounding_score: f32,
+    /// Latency of the evaluation in microseconds (including HNSW ANN traversal)
+    pub latency_us: u64,
+}
+
+/// Result of an HNSW-grounded categorical classification cross-referenced against vector clusters
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroundedClassificationResult {
+    /// The winning categorical label
+    pub top_choice: String,
+    /// Calibrated confidence score in $[0.0, 1.0]$
+    pub confidence: f32,
+    /// Ranked candidate choices with individual softmax probabilities
+    pub probabilities: Vec<(String, f32)>,
+    /// Nearest evidence retrieved from HNSW index: (node_id, similarity)
+    pub retrieved_evidence: Vec<(u64, f32)>,
+    /// Average grounding evidence similarity score
+    pub grounding_score: f32,
+    /// Shannon entropy measuring decision uncertainty (lower = more confident)
+    pub entropy: f32,
+    /// Latency of the evaluation in microseconds (including HNSW ANN traversal)
+    pub latency_us: u64,
+}

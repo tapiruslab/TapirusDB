@@ -73,6 +73,7 @@ tempfile = "3.14"
 default = ["std"]
 std = []
 simd = ["dep:wide"]
+tap-deep = []
 
 [profile.release]
 opt-level = 3
