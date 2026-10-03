@@ -44,8 +44,9 @@ pub use pager::{
 pub use realtime::{ChangeEvent, ChangeOp, RealtimeBus};
 pub use sql::{bind_parameters, parse_sql, parse_tokens, SQLExecutor, Statement};
 pub use tap::{
-    ClassificationResult, RouteResult, ScoreResult, TapConfig, TapEngine, TapInferenceEngine,
-    TapRuntime, TapTokenizer, TapWeights, VerifyResult,
+    BitNetBlock, BitNetLinear, BitNetRmsNorm, ClassificationResult, RouteResult, ScoreResult,
+    TapConfig, TapDeepEngine, TapEngine, TapInferenceEngine, TapRuntime, TapTokenizer, TapWeights,
+    TernaryVal, VerifyResult,
 };
 pub use traits::{DatabaseConnection, FromValue, Row, Value, VectorIndexEngine};
 pub use vector::{DistanceMetric, HnswIndex, ProductQuantizer, QuantizedVector8, QuantizedVectorPQ, Vector};

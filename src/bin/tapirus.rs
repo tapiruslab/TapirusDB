@@ -74,6 +74,12 @@ fn main() {
         return;
     }
 
+    // Check if sub-command is "bitnet" or "tap-deep"
+    if args.len() > 1 && (args[1] == "bitnet" || args[1] == "tap-deep") {
+        run_bitnet_command(&args[2..]);
+        return;
+    }
+
     // Parse global flags
     if args.len() > 1 {
         match args[1].as_str() {
@@ -170,6 +176,7 @@ fn print_help() {
     println!("  tapirus serve [OPTIONS] [DATABASE_FILE]              Launch high-performance HTTP REST server");
     println!("  tapirus mcp [OPTIONS] [DATABASE_FILE]                Launch Model Context Protocol (MCP) server");
     println!("  tapirus grep [OPTIONS] <PATTERN> [PATH]              Accelerated hybrid workspace search (tg)");
+    println!("  tapirus bitnet [OPTIONS] <INPUT> [CANDIDATES...]     Safe-Rust BitNet b1.58 ternary tensor neural engine");
     println!();
     println!("Options:");
     println!("  -h, --help                               Print this help message");
@@ -4407,4 +4414,101 @@ fn run_grep_command(args: &[String]) {
         elapsed
     );
 }
+
+fn run_bitnet_command(args: &[String]) {
+    if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
+        println!("TapirusDB BitNet b1.58 Ternary Tensor Engine (100% Safe Rust)");
+        println!();
+        println!("Commands:");
+        println!("  tapirus bitnet <input> <cand1> <cand2> ...   Categorical classification via BitNet ternary layers");
+        println!("  tapirus bitnet verify <premise> <hypothesis> Truth verification via ternary projection");
+        println!("  tapirus bitnet benchmark                      Benchmark ternary matrix addition throughput");
+        return;
+    }
+
+    let engine = tapirus::TapDeepEngine::new();
+
+    if args[0] == "verify" {
+        if args.len() < 3 {
+            eprintln!("Usage: tapirus bitnet verify <premise> <hypothesis>");
+            return;
+        }
+        let premise = &args[1];
+        let hypothesis = &args[2];
+        let start = std::time::Instant::now();
+        match engine.verify_deep(premise, hypothesis) {
+            Ok((verified, score)) => {
+                let us = start.elapsed().as_micros();
+                println!("┌─────────────────────────────────────────────────────────────┐");
+                println!("│ BitNet b1.58 Ternary Truth Verification                     │");
+                println!("├─────────────────────────────────────────────────────────────┤");
+                println!("│ Premise:    {}", premise);
+                println!("│ Hypothesis: {}", hypothesis);
+                println!(
+                    "│ Verified:   {} (Score: {:.4})",
+                    if verified { "\x1b[1;32mYES (TRUE)\x1b[0m" } else { "\x1b[1;31mNO (FALSE)\x1b[0m" },
+                    score
+                );
+                println!("│ Latency:    {} µs (Multiplication-free ternary addition)    │", us);
+                println!("└─────────────────────────────────────────────────────────────┘");
+            }
+            Err(e) => eprintln!("Error: {e}"),
+        }
+        return;
+    }
+
+    if args[0] == "benchmark" {
+        println!("Benchmarking BitNet b1.58 ternary linear contraction (100% Safe Rust)...");
+        let block = match tapirus::BitNetBlock::new(256, 512) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Failed to initialize BitNet block: {e}");
+                return;
+            }
+        };
+        let input = vec![0.5f32; 256];
+        let _ = block.forward(&input);
+
+        let iterations = 10_000;
+        let start = std::time::Instant::now();
+        for _ in 0..iterations {
+            let _ = block.forward(&input);
+        }
+        let total_us = start.elapsed().as_micros();
+        let per_op_ns = (total_us as f64 * 1000.0) / iterations as f64;
+        let ops_per_sec = (iterations as f64 / (total_us.max(1) as f64 / 1_000_000.0)) as u64;
+
+        println!("BitNet b1.58 [256 -> 512 SwiGLU -> 256] Results:");
+        println!("  Total Contractions: {}", iterations);
+        println!("  Latency per block:  {:.2} ns ({:.3} µs)", per_op_ns, per_op_ns / 1000.0);
+        println!("  Throughput:         {} ternary blocks/sec", ops_per_sec);
+        println!("  Multiply Ops:       0 (Zero floating-point weight multiplications)");
+        return;
+    }
+
+    // Default: classify input against candidate labels
+    let input = &args[0];
+    let candidates: Vec<&str> = args[1..].iter().map(|s| s.as_str()).collect();
+    if candidates.is_empty() {
+        eprintln!("Please provide at least one candidate label to classify against.");
+        return;
+    }
+
+    let start = std::time::Instant::now();
+    match engine.classify_deep(input, &candidates) {
+        Ok((winner, score)) => {
+            let us = start.elapsed().as_micros();
+            println!("┌─────────────────────────────────────────────────────────────┐");
+            println!("│ BitNet b1.58 Ternary Categorical Classification             │");
+            println!("├─────────────────────────────────────────────────────────────┤");
+            println!("│ Input:      {}", input);
+            println!("│ Top Choice: \x1b[1;32m{}\x1b[0m (Score: {:.4})", winner, score);
+            println!("│ Candidates: {:?}", candidates);
+            println!("│ Latency:    {} µs (Safe Rust Ternary Neural Engine)         │", us);
+            println!("└─────────────────────────────────────────────────────────────┘");
+        }
+        Err(e) => eprintln!("Error: {e}"),
+    }
+}
+
 

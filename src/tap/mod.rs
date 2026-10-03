@@ -8,12 +8,14 @@
 //! (300ms–800ms) and unpredictable hallucinations, Tap executes single-pass tensor projections
 //! directly over database memory records in **sub-millisecond Safe Rust (< 2ms)**.
 
+pub mod bitnet;
 pub mod deep;
 pub mod primitives;
 pub mod runtime;
 pub mod sql_bridge;
 pub mod tokenizer;
 
+pub use bitnet::{BitNetBlock, BitNetLinear, BitNetRmsNorm, TernaryVal};
 pub use deep::TapDeepEngine;
 pub use primitives::{
     ClassificationResult, GroundedClassificationResult, GroundedVerifyResult, RouteResult,
@@ -412,7 +414,7 @@ impl TapEngine {
     }
 }
 
-fn extract_word_set(text: &str) -> HashSet<String> {
+pub(crate) fn extract_word_set(text: &str) -> HashSet<String> {
     text.to_lowercase()
         .split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
         .filter(|s| !s.is_empty())
@@ -420,7 +422,7 @@ fn extract_word_set(text: &str) -> HashSet<String> {
         .collect()
 }
 
-fn compute_jaccard_overlap(a: &HashSet<String>, b: &HashSet<String>) -> f32 {
+pub(crate) fn compute_jaccard_overlap(a: &HashSet<String>, b: &HashSet<String>) -> f32 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }

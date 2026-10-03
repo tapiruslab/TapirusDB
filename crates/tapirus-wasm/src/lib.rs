@@ -100,5 +100,24 @@ impl TapirusWasm {
         // Fallback to high-speed in-memory WASM engine for browser runtimes
         Self::new()
     }
+
+    /// Classify text using TAP Sub-millisecond Cognitive Perception Engine in WASM
+    #[wasm_bindgen]
+    pub fn tap_classify(&self, text: &str, candidates_csv: &str) -> Result<String, JsValue> {
+        let candidates: Vec<&str> = candidates_csv.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let res = self.conn.tap().classify(text, &candidates)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&res)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Verify hypothesis against premise using TAP NLI in WASM
+    #[wasm_bindgen]
+    pub fn tap_verify(&self, premise: &str, hypothesis: &str) -> Result<String, JsValue> {
+        let res = self.conn.tap().verify(premise, hypothesis)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&res)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
 }
 
