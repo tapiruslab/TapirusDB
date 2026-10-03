@@ -8,9 +8,29 @@
 
 use crate::error::Result;
 use crate::tap::TapEngine;
-use std::sync::OnceLock;
+use crate::vector::HnswIndex;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
+use parking_lot::RwLock;
 
 static GLOBAL_TAP_ENGINE: OnceLock<TapEngine> = OnceLock::new();
+static GROUNDING_REGISTRY: OnceLock<RwLock<HashMap<String, Arc<HnswIndex>>>> = OnceLock::new();
+
+fn get_grounding_registry() -> &'static RwLock<HashMap<String, Arc<HnswIndex>>> {
+    GROUNDING_REGISTRY.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Register a named HNSW vector index for SQL grounded decision queries
+pub fn register_grounding_index(name: &str, index: Arc<HnswIndex>) {
+    let mut reg = get_grounding_registry().write();
+    reg.insert(name.to_lowercase(), index);
+}
+
+/// Retrieve a registered HNSW index by name
+pub fn get_grounding_index(name: &str) -> Option<Arc<HnswIndex>> {
+    let reg = get_grounding_registry().read();
+    reg.get(&name.to_lowercase()).cloned()
+}
 
 /// Returns a shared reference to the global TapEngine instance
 pub fn get_global_tap_engine() -> &'static TapEngine {
@@ -29,6 +49,28 @@ pub fn eval_tap_classify(input: &str, candidates_raw: &str) -> Result<String> {
     Ok(res.top_choice)
 }
 
+/// Evaluates `TAP_CLASSIFY_GROUNDED(input, candidates, index_name, top_k)`
+pub fn eval_tap_classify_grounded(
+    input: &str,
+    candidates_raw: &str,
+    index_name: &str,
+    top_k: usize,
+) -> Result<String> {
+    let candidates = parse_candidates(candidates_raw);
+    if candidates.is_empty() {
+        return Ok("unknown".to_string());
+    }
+    let cand_slices: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
+    let engine = get_global_tap_engine();
+    if let Some(index) = get_grounding_index(index_name) {
+        let res = engine.classify_grounded(input, &cand_slices, &index, top_k)?;
+        Ok(res.top_choice)
+    } else {
+        let res = engine.classify(input, &cand_slices)?;
+        Ok(res.top_choice)
+    }
+}
+
 /// Evaluates `TAP_SCORE(input, criteria)`
 pub fn eval_tap_score(input: &str, criteria: &str) -> Result<f32> {
     let engine = get_global_tap_engine();
@@ -41,6 +83,23 @@ pub fn eval_tap_verify(premise: &str, hypothesis: &str) -> Result<bool> {
     let engine = get_global_tap_engine();
     let res = engine.verify(premise, hypothesis)?;
     Ok(res.is_verified)
+}
+
+/// Evaluates `TAP_VERIFY_GROUNDED(premise, hypothesis, index_name, top_k)`
+pub fn eval_tap_verify_grounded(
+    premise: &str,
+    hypothesis: &str,
+    index_name: &str,
+    top_k: usize,
+) -> Result<bool> {
+    let engine = get_global_tap_engine();
+    if let Some(index) = get_grounding_index(index_name) {
+        let res = engine.verify_grounded(premise, hypothesis, &index, top_k)?;
+        Ok(res.is_verified)
+    } else {
+        let res = engine.verify(premise, hypothesis)?;
+        Ok(res.is_verified)
+    }
 }
 
 /// Evaluates `TAP_ROUTE(state, routes)`
@@ -88,5 +147,29 @@ mod tests {
 
         let route = eval_tap_route("Fraud risk score exceeded limit: block transaction", "block, allow, review").unwrap();
         assert_eq!(route, "block");
+
+        // Test grounded SQL functions with a registered index
+        use crate::traits::VectorIndexEngine;
+        use crate::vector::{DistanceMetric, HnswIndex};
+        let mut idx = HnswIndex::new(64, DistanceMetric::Cosine);
+        let sample_vec = vec![0.1; 64];
+        idx.insert_vector(1, &sample_vec).unwrap();
+        register_grounding_index("policy_idx", Arc::new(idx));
+
+        let g_verified = eval_tap_verify_grounded(
+            "Customer claims refund for damaged goods",
+            "refund for damaged goods",
+            "policy_idx",
+            1,
+        ).unwrap();
+        assert!(g_verified);
+
+        let g_label = eval_tap_classify_grounded(
+            "Customer requests immediate refund",
+            "refund, sales, support",
+            "policy_idx",
+            1,
+        ).unwrap();
+        assert_eq!(g_label, "refund");
     }
 }

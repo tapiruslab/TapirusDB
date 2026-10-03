@@ -92,12 +92,26 @@ fn tap_route(state: &str, routes: Vec<String>) -> PyResult<String> {
     Ok(res.selected_route)
 }
 
+#[pyfunction]
+fn tap_verify_grounded(premise: &str, hypothesis: &str, index_name: &str, top_k: Option<usize>) -> PyResult<bool> {
+    ::tapirus::tap::eval_tap_verify_grounded(premise, hypothesis, index_name, top_k.unwrap_or(3))
+        .map_err(|e| TapirusError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn tap_classify_grounded(text: &str, candidates_raw: &str, index_name: &str, top_k: Option<usize>) -> PyResult<String> {
+    ::tapirus::tap::eval_tap_classify_grounded(text, candidates_raw, index_name, top_k.unwrap_or(3))
+        .map_err(|e| TapirusError::new_err(e.to_string()))
+}
+
 #[pymodule]
 fn tapirus(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Connection>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(tap_classify, m)?)?;
+    m.add_function(wrap_pyfunction!(tap_classify_grounded, m)?)?;
     m.add_function(wrap_pyfunction!(tap_verify, m)?)?;
+    m.add_function(wrap_pyfunction!(tap_verify_grounded, m)?)?;
     m.add_function(wrap_pyfunction!(tap_score, m)?)?;
     m.add_function(wrap_pyfunction!(tap_route, m)?)?;
     m.add("TapirusError", py.get_type::<TapirusError>())?;
