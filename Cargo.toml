@@ -39,6 +39,10 @@ path = "src/bin/tapirus.rs"
 name = "tapirus_bench"
 harness = false
 
+[[bench]]
+name = "head_to_head"
+harness = false
+
 [dependencies]
 # Concurrency & Locks
 parking_lot = "0.12"
@@ -68,6 +72,7 @@ getrandom-02 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 
 [dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3.14"
 
 [features]
