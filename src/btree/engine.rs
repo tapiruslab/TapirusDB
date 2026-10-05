@@ -176,14 +176,32 @@ pub fn insert_leaf_cell_into_page(
     page_id: PageId,
     cell: &TableLeafCell,
 ) -> Result<bool> {
+    insert_leaf_cell_raw(
+        page_buf,
+        page_id,
+        cell.row_id,
+        &cell.payload,
+        cell.overflow_page,
+    )
+}
+
+/// Try to insert a leaf cell with raw borrowed payload slice into a leaf page.
+/// Avoids allocating a TableLeafCell and its Vec<u8> payload on the heap.
+pub fn insert_leaf_cell_raw(
+    page_buf: &mut [u8],
+    page_id: PageId,
+    row_id: u64,
+    payload: &[u8],
+    overflow_page: Option<PageId>,
+) -> Result<bool> {
     let page_size = page_buf.len();
     let mut header = read_page_header(page_buf, page_id)?;
 
     let mut varint_buf1 = [0u8; 9];
     let mut varint_buf2 = [0u8; 9];
-    let n1 = encode_varint(cell.payload.len() as u64, &mut varint_buf1);
-    let n2 = encode_varint(cell.row_id, &mut varint_buf2);
-    let cell_size = n1 + n2 + cell.payload.len() + 4;
+    let n1 = encode_varint(payload.len() as u64, &mut varint_buf1);
+    let n2 = encode_varint(row_id, &mut varint_buf2);
+    let cell_size = n1 + n2 + payload.len() + 4;
     let needed_space = cell_size + 2; // Cell payload + 2-byte pointer
 
     let offset = page_header_offset(page_id);
@@ -192,7 +210,7 @@ pub fn insert_leaf_cell_into_page(
     }
 
     // Check if key already exists (update in place or replace)
-    let search_res = find_leaf_cell_index_by_key(page_buf, page_id, cell.row_id)?;
+    let search_res = find_leaf_cell_index_by_key(page_buf, page_id, row_id)?;
     let insert_idx = match search_res {
         Ok(existing_idx) => {
             let ptr_array_start = offset + header.header_size();
@@ -223,9 +241,9 @@ pub fn insert_leaf_cell_into_page(
     page_buf[content_start..content_start + n1].copy_from_slice(&varint_buf1[..n1]);
     page_buf[content_start + n1..content_start + n1 + n2].copy_from_slice(&varint_buf2[..n2]);
     let payload_start = content_start + n1 + n2;
-    page_buf[payload_start..payload_start + cell.payload.len()].copy_from_slice(&cell.payload);
-    let overflow_start = payload_start + cell.payload.len();
-    let overflow = cell.overflow_page.unwrap_or(0);
+    page_buf[payload_start..payload_start + payload.len()].copy_from_slice(payload);
+    let overflow_start = payload_start + payload.len();
+    let overflow = overflow_page.unwrap_or(0);
     page_buf[overflow_start..overflow_start + 4].copy_from_slice(&overflow.to_le_bytes());
 
     // Shift cell pointer array to open slot at insert_idx (only if not appending at end)
@@ -568,19 +586,13 @@ impl BTreeStorage {
         let (inline_payload, overflow_page) = if payload.len() > MAX_INLINE_PAYLOAD {
             let inline = payload[..MAX_INLINE_PAYLOAD].to_vec();
             let overflow_id = write_overflow_chain(pager, &payload[MAX_INLINE_PAYLOAD..])?;
-            (inline, Some(overflow_id))
+            (std::borrow::Cow::Owned(inline), Some(overflow_id))
         } else {
-            (payload.to_vec(), None)
+            (std::borrow::Cow::Borrowed(payload), None)
         };
 
-        let new_cell = TableLeafCell {
-            row_id: key,
-            payload: inline_payload,
-            overflow_page,
-        };
-
-        // Recursive insert down tree
-        let split_result = self.insert_into_subtree(pager, root_page, new_cell)?;
+        // Recursive insert down tree without heap allocation for normal inline cells
+        let split_result = self.insert_into_subtree_cow(pager, root_page, key, inline_payload, overflow_page)?;
 
         if let Some((right_child_id, split_key)) = split_result {
             // The root page itself split!
@@ -632,11 +644,13 @@ impl BTreeStorage {
         Ok(())
     }
 
-    fn insert_into_subtree(
+    fn insert_into_subtree_cow<'a>(
         &mut self,
         pager: &mut Pager,
         curr_page_id: PageId,
-        cell: TableLeafCell,
+        key: u64,
+        payload: std::borrow::Cow<'a, [u8]>,
+        overflow_page: Option<PageId>,
     ) -> Result<Option<(PageId, u64)>> {
         let page_type = pager.with_page(curr_page_id, |page_buf| {
             let header = read_page_header(page_buf, curr_page_id)?;
@@ -646,13 +660,18 @@ impl BTreeStorage {
         match page_type {
             PageType::TableLeaf => {
                 let inserted = pager.modify_page(curr_page_id, |page_buf| {
-                    insert_leaf_cell_into_page(page_buf, curr_page_id, &cell)
+                    insert_leaf_cell_raw(page_buf, curr_page_id, key, &payload, overflow_page)
                 })?;
                 if inserted {
                     Ok(None)
                 } else {
                     // Leaf page is full! Must split into two pages
                     let page_buf = pager.read_page(curr_page_id)?;
+                    let cell = TableLeafCell {
+                        row_id: key,
+                        payload: payload.into_owned(),
+                        overflow_page,
+                    };
                     let (right_page_id, split_key) =
                         self.split_leaf_page(pager, curr_page_id, &page_buf, cell)?;
                     Ok(Some((right_page_id, split_key)))
@@ -669,7 +688,7 @@ impl BTreeStorage {
 
                     for i in 0..num_cells {
                         let icell = read_interior_cell(page_buf, curr_page_id, i)?;
-                        if cell.row_id <= icell.row_id {
+                        if key <= icell.row_id {
                             tc = icell.left_child;
                             c_idx = Some(i);
                             break;
@@ -678,7 +697,7 @@ impl BTreeStorage {
                     Ok((tc, c_idx))
                 })?;
 
-                let child_split = self.insert_into_subtree(pager, target_child, cell)?;
+                let child_split = self.insert_into_subtree_cow(pager, target_child, key, payload, overflow_page)?;
 
                 if let Some((new_child_id, child_split_key)) = child_split {
                     let new_interior_cell = TableInteriorCell {

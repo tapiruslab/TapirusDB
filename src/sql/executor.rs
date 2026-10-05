@@ -3267,6 +3267,20 @@ impl SQLExecutor {
 
         let final_values: &[Value] = if use_aligned { &aligned_storage } else { values };
 
+        let has_indexes = self.catalog.has_table_indexes(table);
+
+        // Fast-path: When table has no secondary indexes, no temporal versioning, and no vector columns
+        if !is_temporal && vector_col.is_none() && !has_indexes {
+            if let Some(buf) = encode_buf {
+                encode_row_into(final_values, buf);
+                self.btree.insert(pager, root_page, row_id, buf)?;
+            } else {
+                let payload = encode_row(final_values);
+                self.btree.insert(pager, root_page, row_id, &payload)?;
+            }
+            return Ok((1, Vec::new()));
+        }
+
         // Use reusable encode buffer if provided, otherwise allocate
         if let Some(buf) = encode_buf {
             encode_row_into(final_values, buf);
@@ -3299,7 +3313,7 @@ impl SQLExecutor {
             }
         }
 
-        let has_indexes = self.catalog.indexes().iter().any(|idx| idx.table.eq_ignore_ascii_case(table));
+        let has_indexes = self.catalog.has_table_indexes(table);
         if has_indexes {
             let table_def = self.catalog.get_table(table).unwrap();
             let temp_row = Row::new(
