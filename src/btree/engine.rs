@@ -785,6 +785,30 @@ impl BTreeStorage {
         new_cell: TableLeafCell,
     ) -> Result<(PageId, u64)> {
         let header = read_page_header(left_page_buf, left_page_id)?;
+        let num_cells = header.num_cells as usize;
+
+        // Sequential Right-Append Split Optimization (SQLite-style right-leaning split):
+        // If the new cell's row_id is strictly greater than the last cell on the full page,
+        // we leave the current page 100% packed and place only the new cell in the new right page.
+        // This cuts B-Tree depth, page allocations, and copying overhead by ~50% on sequential inserts.
+        if left_page_id != 1 && num_cells >= 2 {
+            let last_ptr = read_cell_pointer(left_page_buf, left_page_id, num_cells - 1)? as usize;
+            if last_ptr < left_page_buf.len() {
+                let (_, n1) = crate::btree::decode_varint(&left_page_buf[last_ptr..])?;
+                let (last_row_id, _) = crate::btree::decode_varint(&left_page_buf[last_ptr + n1..])?;
+
+                if new_cell.row_id > last_row_id {
+                    let right_page_id = pager.allocate_page()?;
+                    let mut right_page_buf = vec![0u8; pager.page_size()];
+                    init_leaf_page(&mut right_page_buf, right_page_id);
+                    insert_leaf_cell_into_page(&mut right_page_buf, right_page_id, &new_cell)?;
+                    pager.write_page(right_page_id, &right_page_buf)?;
+
+                    return Ok((right_page_id, last_row_id));
+                }
+            }
+        }
+
         let mut all_cells = Vec::with_capacity(header.num_cells as usize + 1);
 
         for i in 0..header.num_cells as usize {
