@@ -52,3 +52,18 @@ This roadmap outlines the past achievements, current architecture, and upcoming 
 - [ ] **Multi-Raft Planet-Scale Clustering** (under the Tapisaurus distributed engine):
   - Consensus-driven geo-distributed sharding with wire compatibility for PostgreSQL, MongoDB, and MySQL gateways.
   - Global query routing coordinator with 2-tier hierarchical vector centroids and federated graph edge traversal.
+
+---
+
+## 🏛️ Modular Variations & Architecture Extensions
+
+Detailed technical blueprint: [**docs/MODULAR_ARCHITECTURE_AND_EXTENSIONS.md**](docs/MODULAR_ARCHITECTURE_AND_EXTENSIONS.md)
+
+- [ ] **Wire Protocol Adapters**:
+  - `tapirus-pgwire` (Port 5432): Direct compatibility with PostgreSQL drivers, DBeaver, and Prisma ORM.
+  - `tapirus-mongowire` (Port 27017): Direct compatibility with MongoDB Compass, Mongoose, and BSON collections.
+- [ ] **Micro-Kernel Cargo Workspace**:
+  - Modular workspace division: `tapirus-core`, `tapirus-sql`, `tapirus-vector`, `tapirus-graph`, `tapirus-doc`.
+  - Targeted distribution editions: `Tapirus-Lite` (&lt;500KB IoT), `Tapirus-Doc` (NoSQL), `Tapirus-AI` (Robotics/Agent Memory), `Tapirus-Enterprise`.
+- [ ] **Sandboxed WebAssembly (WASM) Plugin System**:
+  - Safe, isolated dynamic extension execution via WASM sandboxing without C-ABI segmentation fault risks.
