@@ -13,7 +13,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/tapiruslab/TapirusDB/sdks/go.svg)](https://pkg.go.dev/github.com/tapiruslab/TapirusDB/sdks/go)
 [![Go Report Card](https://goreportcard.com/badge/github.com/tapiruslab/TapirusDB/sdks/go)](https://goreportcard.com/report/github.com/tapiruslab/TapirusDB/sdks/go)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
-[![Release: v1.0.0](https://img.shields.io/badge/release-v1.0.0-059669.svg?style=flat-square)](https://github.com/tapiruslab/TapirusDB/releases)
+[![Release: v1.0.1](https://img.shields.io/badge/release-v1.0.1-059669.svg?style=flat-square)](https://github.com/tapiruslab/TapirusDB/releases)
 [![Documentation](https://img.shields.io/badge/docs-tapirusdb.com-2b3a7e.svg?style=flat-square)](https://tapirusdb.com/docs.html)
 
 <br/>

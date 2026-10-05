@@ -8,7 +8,7 @@ Add `tapirus` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tapirus = "1.0.0"
+tapirus = "1.0.1"
 serde_json = "1.0"
 ```
 
