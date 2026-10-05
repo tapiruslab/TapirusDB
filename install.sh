@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-TAPIRUS_VERSION="1.0.0"
+TAPIRUS_VERSION="1.0.1"
 REPO="tapiruslab/TapirusDB"
 INSTALL_DIR="${TAPIRUS_INSTALL_DIR:-$HOME/.tapirus}"
 BIN_DIR="$INSTALL_DIR/bin"

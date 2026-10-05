@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
 PackageIdentifier: TapirusDB.Tapirus
-PackageVersion: 1.0.0
+PackageVersion: 1.0.1
 PackageLocale: en-US
 PackageName: TapirusDB
 Publisher: Tapirus Tech Lab (TapirusDB.com)
@@ -26,11 +26,11 @@ Tags:
   - graphrag
 Commands:
   - tapirus
-ReleaseNotesUrl: https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.0
+ReleaseNotesUrl: https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.1
 Installers:
   - Architecture: x64
     InstallerType: portable
-    InstallerUrl: https://github.com/tapiruslab/TapirusDB/releases/download/v1.0.0/tapirus-windows-x86_64.zip
-    InstallerSha256: 63cb5102d66b3552d889ea0b7805e1fe28384384eee6b7d55016332062745390
+    InstallerUrl: https://github.com/tapiruslab/TapirusDB/releases/download/v1.0.1/tapirus-windows-x86_64.zip
+    InstallerSha256: 450E30906CD733ADEADB973B55A3954A70759BE2AC4D5459A83309C33E6C183E
 ManifestType: singleton
 ManifestVersion: 1.6.0
