@@ -557,6 +557,32 @@ let route = db.graph_query("
 
 ---
 
+## Official Sovereign Editions & Build Profiles
+
+TapirusDB is architected around a unified 100% Safe Rust core with modular **Cargo Feature Profiles**. You can compile tailored editions for ultra-constrained embedded silicon, pure document workloads, or dedicated AI agents without code changes:
+
+| Edition Profile | Cargo Feature Flag | Active Subsystems | Target Use Case & Footprint |
+| :--- | :--- | :--- | :--- |
+| 🪶 **Tapirus Lite** | `--features edition-lite` | Slotted B+Tree + Relational SQL | Microcontrollers, IoT, Bare-Metal ESP32/STM32 (**< 500 KB**) |
+| 📄 **Tapirus Document** | `--features edition-document` | JSON/BSON Collections + Path Indexer | Schemaless NoSQL Document Storage (**~ 1.2 MB**) |
+| 🧠 **Tapirus AI Brain** | `--features edition-ai-brain` | HNSW Vectors + openCypher Graph + Tap | Autonomous AI Agents, Robotics, Cognitive Memory (**~ 2.5 MB**) |
+| 👑 **Tapirus Quad** *(Default)* | `--features quad` | **All 4 Models Unified** (SQL+Vec+Graph+Doc) | Full-Stack Modern AI & Enterprise Applications (**~ 3.8 MB**) |
+| 🏢 **Tapirus Enterprise** | `--features edition-enterprise` | Quad Engine + Daemon Server & Wire Adapters | Cloud VPS, Production Services, ORM Bridges (**~ 6.0 MB**) |
+
+```bash
+# Compile tailored edition profiles with one command:
+cargo build --release --no-default-features --features edition-lite      # Tapirus Lite (< 500 KB)
+cargo build --release --no-default-features --features edition-document  # Tapirus Document (~ 1.2 MB)
+cargo build --release --no-default-features --features edition-ai-brain   # Tapirus AI Brain (~ 2.5 MB)
+cargo build --release --features quad                                   # Tapirus Quad (Default Flagship)
+```
+
+> 💡 **Shared Storage DNA:** All editions produce and consume the exact same atomic `.tapir` file format. A database initialized by *Tapirus Lite* can be opened seamlessly by *Tapirus AI Brain* or *Tapirus Quad* without data migrations.
+>
+> 📖 Detailed architectural specifications: [**docs/MODULAR_ARCHITECTURE_AND_EXTENSIONS.md**](docs/MODULAR_ARCHITECTURE_AND_EXTENSIONS.md)
+
+---
+
 ## Architectural Comparison
 
 | Capability | **TapirusDB v1.0.1** | Traditional Relational (SQLite / DuckDB) | Dedicated Vector DBs | Graph Databases (Neo4j) | Document Stores (MongoDB) |
