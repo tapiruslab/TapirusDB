@@ -268,7 +268,22 @@ impl SQLExecutor {
         self.btree.insert(pager, root_page, node.id, &payload)
     }
 
-    /// Persist a Knowledge Graph Edge to B+Tree disk storage
+    /// Helper to load a node's incident edge adjacency lists from __sys_graph_adj table
+    pub fn load_graph_node_adjacency(
+        &mut self,
+        pager: &mut Pager,
+        adj_root: u32,
+        node_id: u64,
+    ) -> Result<crate::graph::GraphAdjacencyRecord> {
+        if let Some(payload) = self.btree.search(pager, adj_root, node_id)? {
+            serde_json::from_slice::<crate::graph::GraphAdjacencyRecord>(&payload)
+                .map_err(|e| Error::Corrupted(format!("Failed to deserialize adjacency for node #{node_id}: {e}")))
+        } else {
+            Ok(crate::graph::GraphAdjacencyRecord::default())
+        }
+    }
+
+    /// Persist a Knowledge Graph Edge to B+Tree disk storage and update adjacency index
     pub fn persist_graph_edge(&mut self, pager: &mut Pager, edge: &crate::graph::Edge) -> Result<()> {
         let cols = vec![
             ColumnDef::new("id", DataType::Integer).primary_key(),
@@ -277,23 +292,153 @@ impl SQLExecutor {
         let root_page = self.ensure_system_table(pager, "__sys_graph_edges", cols)?;
         let payload = serde_json::to_vec(edge)
             .map_err(|e| Error::Corrupted(format!("Failed to serialize graph edge: {e}")))?;
-        self.btree.insert(pager, root_page, edge.id, &payload)
+        self.btree.insert(pager, root_page, edge.id, &payload)?;
+
+        // Maintain __sys_graph_adj table for scalable on-disk neighbor traversal
+        let adj_cols = vec![
+            ColumnDef::new("id", DataType::Integer).primary_key(),
+            ColumnDef::new("payload", DataType::Text),
+        ];
+        let adj_root = self.ensure_system_table(pager, "__sys_graph_adj", adj_cols)?;
+
+        // Update outgoing adjacency for source node (edge.from_id)
+        let mut from_adj = self.load_graph_node_adjacency(pager, adj_root, edge.from_id)?;
+        if !from_adj.outgoing_edges.contains(&edge.id) {
+            from_adj.outgoing_edges.push(edge.id);
+            let from_bytes = serde_json::to_vec(&from_adj)
+                .map_err(|e| Error::Corrupted(format!("Failed to serialize node #{}: {e}", edge.from_id)))?;
+            self.btree.insert(pager, adj_root, edge.from_id, &from_bytes)?;
+        }
+
+        // Update incoming adjacency for target node (edge.to_id)
+        let mut to_adj = self.load_graph_node_adjacency(pager, adj_root, edge.to_id)?;
+        if !to_adj.incoming_edges.contains(&edge.id) {
+            to_adj.incoming_edges.push(edge.id);
+            let to_bytes = serde_json::to_vec(&to_adj)
+                .map_err(|e| Error::Corrupted(format!("Failed to serialize node #{}: {e}", edge.to_id)))?;
+            self.btree.insert(pager, adj_root, edge.to_id, &to_bytes)?;
+        }
+
+        Ok(())
     }
 
-    /// Delete a Knowledge Graph Node from B+Tree disk storage
+    /// Delete a Knowledge Graph Node from B+Tree disk storage and clean up its adjacency
     pub fn delete_graph_node(&mut self, pager: &mut Pager, id: u64) -> Result<()> {
         if let Some(table) = self.catalog.get_table("__sys_graph_nodes") {
             let _ = self.btree.delete(pager, table.root_page, id);
         }
+        if let Some(adj_table) = self.catalog.get_table("__sys_graph_adj") {
+            let _ = self.btree.delete(pager, adj_table.root_page, id);
+        }
         Ok(())
     }
 
-    /// Delete a Knowledge Graph Edge from B+Tree disk storage
+    /// Delete a Knowledge Graph Edge from B+Tree disk storage and update incident adjacency lists
     pub fn delete_graph_edge(&mut self, pager: &mut Pager, id: u64) -> Result<()> {
-        if let Some(table) = self.catalog.get_table("__sys_graph_edges") {
-            let _ = self.btree.delete(pager, table.root_page, id);
+        let edges_root = match self.catalog.get_table("__sys_graph_edges") {
+            Some(t) => t.root_page,
+            None => return Ok(()),
+        };
+        let edge_opt = if let Some(bytes) = self.btree.search(pager, edges_root, id)? {
+            serde_json::from_slice::<crate::graph::Edge>(&bytes).ok()
+        } else {
+            None
+        };
+
+        if let Some(edge) = edge_opt {
+            let _ = self.btree.delete(pager, edges_root, id);
+
+            if let Some(adj_table) = self.catalog.get_table("__sys_graph_adj") {
+                let adj_root = adj_table.root_page;
+                // Remove from from_id
+                let mut from_adj = self.load_graph_node_adjacency(pager, adj_root, edge.from_id)?;
+                if from_adj.outgoing_edges.contains(&id) {
+                    from_adj.outgoing_edges.retain(|&e| e != id);
+                    let bytes = serde_json::to_vec(&from_adj)
+                        .map_err(|e| Error::Corrupted(format!("Failed to serialize node #{}: {e}", edge.from_id)))?;
+                    self.btree.insert(pager, adj_root, edge.from_id, &bytes)?;
+                }
+                // Remove from to_id
+                let mut to_adj = self.load_graph_node_adjacency(pager, adj_root, edge.to_id)?;
+                if to_adj.incoming_edges.contains(&id) {
+                    to_adj.incoming_edges.retain(|&e| e != id);
+                    let bytes = serde_json::to_vec(&to_adj)
+                        .map_err(|e| Error::Corrupted(format!("Failed to serialize node #{}: {e}", edge.to_id)))?;
+                    self.btree.insert(pager, adj_root, edge.to_id, &bytes)?;
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Retrieve adjacent neighbor (Node, Edge) pairs directly from B+Tree disk storage
+    /// with O(d) page reads without requiring the entire graph topology to be loaded in RAM.
+    pub fn get_disk_graph_neighbors(
+        &mut self,
+        pager: &mut Pager,
+        node_id: u64,
+        direction: crate::graph::Direction,
+        edge_label: Option<&str>,
+    ) -> Result<Vec<(crate::graph::Node, crate::graph::Edge)>> {
+        let adj_root = match self.catalog.get_table("__sys_graph_adj") {
+            Some(t) => t.root_page,
+            None => return Ok(Vec::new()),
+        };
+        let edges_root = match self.catalog.get_table("__sys_graph_edges") {
+            Some(t) => t.root_page,
+            None => return Ok(Vec::new()),
+        };
+        let nodes_root = match self.catalog.get_table("__sys_graph_nodes") {
+            Some(t) => t.root_page,
+            None => return Ok(Vec::new()),
+        };
+
+        let adj = self.load_graph_node_adjacency(pager, adj_root, node_id)?;
+        let mut candidate_edges = Vec::new();
+
+        match direction {
+            crate::graph::Direction::Outgoing => {
+                candidate_edges.extend(adj.outgoing_edges);
+            }
+            crate::graph::Direction::Incoming => {
+                candidate_edges.extend(adj.incoming_edges);
+            }
+            crate::graph::Direction::Both => {
+                candidate_edges.extend(adj.outgoing_edges);
+                for e in adj.incoming_edges {
+                    if !candidate_edges.contains(&e) {
+                        candidate_edges.push(e);
+                    }
+                }
+            }
+        }
+
+        let mut results = Vec::new();
+        for eid in candidate_edges {
+            if let Some(edge_bytes) = self.btree.search(pager, edges_root, eid)? {
+                if let Ok(edge) = serde_json::from_slice::<crate::graph::Edge>(&edge_bytes) {
+                    if let Some(filter_label) = edge_label {
+                        if !edge.label.eq_ignore_ascii_case(filter_label) {
+                            continue;
+                        }
+                    }
+
+                    let neighbor_id = if edge.from_id == node_id {
+                        edge.to_id
+                    } else {
+                        edge.from_id
+                    };
+
+                    if let Some(node_bytes) = self.btree.search(pager, nodes_root, neighbor_id)? {
+                        if let Ok(node) = serde_json::from_slice::<crate::graph::Node>(&node_bytes) {
+                            results.push((node, edge));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     /// Load persisted graph nodes and edges from B+Tree disk storage
@@ -522,6 +667,89 @@ impl SQLExecutor {
             }
         }
         Ok(())
+    }
+
+    /// Persist a disk-backed PagedHnswIndex into dedicated B+Tree system tables
+    pub fn persist_paged_vector_index(
+        &mut self,
+        pager: &mut Pager,
+        table_name: &str,
+        paged_index: &crate::vector::PagedHnswIndex,
+    ) -> Result<()> {
+        let meta_cols = vec![
+            ColumnDef::new("id", DataType::Integer).primary_key(),
+            ColumnDef::new("table_name", DataType::Text),
+            ColumnDef::new("header", DataType::Blob),
+        ];
+        let meta_root = self.ensure_system_table(pager, "__sys_paged_vec_meta", meta_cols)?;
+
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            table_name.to_lowercase().hash(&mut hasher);
+            let h = hasher.finish();
+            if h == 0 { 1 } else { h }
+        };
+
+        let header = paged_index.export_header();
+        let header_bytes = serde_json::to_vec(&header)
+            .map_err(|e| Error::Corrupted(format!("Failed to serialize PagedHnswHeader: {e}")))?;
+        self.btree.insert(pager, meta_root, key, &header_bytes)?;
+
+        // Store each page in dedicated table __sys_paged_vec_<table_name>
+        let vec_table_name = format!("__sys_paged_vec_{}", table_name.to_lowercase());
+        let page_cols = vec![
+            ColumnDef::new("id", DataType::Integer).primary_key(),
+            ColumnDef::new("payload", DataType::Blob),
+        ];
+        let page_root = self.ensure_system_table(pager, &vec_table_name, page_cols)?;
+
+        for (node_id, page_bytes) in paged_index.store.dump_pages() {
+            self.btree.insert(pager, page_root, node_id, &page_bytes)?;
+        }
+
+        Ok(())
+    }
+
+    /// Load a disk-backed PagedHnswIndex from dedicated B+Tree system tables with LRU cache
+    pub fn load_paged_vector_index(
+        &mut self,
+        pager: &mut Pager,
+        table_name: &str,
+        cache_capacity: usize,
+    ) -> Result<Option<crate::vector::PagedHnswIndex>> {
+        let meta_root = match self.catalog.get_table("__sys_paged_vec_meta") {
+            Some(t) => t.root_page,
+            None => return Ok(None),
+        };
+
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            table_name.to_lowercase().hash(&mut hasher);
+            let h = hasher.finish();
+            if h == 0 { 1 } else { h }
+        };
+
+        let header_opt = self.btree.search(pager, meta_root, key)?;
+        let header_bytes = match header_opt {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+
+        let header = serde_json::from_slice::<crate::vector::PagedHnswHeader>(&header_bytes)
+            .map_err(|e| Error::Corrupted(format!("Failed to deserialize PagedHnswHeader: {e}")))?;
+
+        let store = crate::vector::PagedVectorStore::new(cache_capacity);
+        let vec_table_name = format!("__sys_paged_vec_{}", table_name.to_lowercase());
+        if let Some(t) = self.catalog.get_table(&vec_table_name) {
+            let cells = self.btree.scan(pager, t.root_page)?;
+            for cell in cells {
+                store.load_page(cell.row_id, cell.payload);
+            }
+        }
+
+        Ok(Some(crate::vector::PagedHnswIndex::import_header(header, store)))
     }
 
     /// Recursively resolve a WhereExpr into a ResolvedWhereExpr, executing subqueries

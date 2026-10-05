@@ -16,6 +16,8 @@ use std::sync::Arc;
 
 pub use compression::{compress_page_frame, decompress_page_frame, COMPRESSED_PAGE_MAGIC};
 pub use remote::{MockRemoteRangeStorage, RemotePager, RemoteRangeReader, RemoteStorageAdapter, S3StorageConfig};
+#[cfg(feature = "cloud-s3")]
+pub use remote::CloudS3RemoteStorage;
 pub use wal::{Wal, WalFrameHeader, WalHeader, DEFAULT_CHECKPOINT_THRESHOLD};
 
 /// Default page size in bytes (4KB)

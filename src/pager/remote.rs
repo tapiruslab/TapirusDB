@@ -272,3 +272,282 @@ impl RemotePager {
         Ok(plaintext)
     }
 }
+
+/// Real HTTP/HTTPS Cloud Object Storage Adapter for AWS S3, Cloudflare R2, MinIO, and GCP.
+///
+/// Executes genuine HTTP Range requests (`Range: bytes=offset-end`) to stream 4KB pages
+/// on-demand into memory over TLS/TCP with zero local file footprint.
+#[cfg(feature = "cloud-s3")]
+pub struct CloudS3RemoteStorage {
+    config: S3StorageConfig,
+    agent: ureq::Agent,
+}
+
+#[cfg(feature = "cloud-s3")]
+impl CloudS3RemoteStorage {
+    /// Construct a new Cloud S3 / R2 storage adapter from configuration
+    pub fn new(config: S3StorageConfig) -> Self {
+        let agent = ureq::AgentBuilder::new()
+            .timeout_read(std::time::Duration::from_secs(30))
+            .timeout_write(std::time::Duration::from_secs(30))
+            .build();
+        Self { config, agent }
+    }
+
+    /// Construct object URL from endpoint, bucket, and key
+    pub fn object_url(&self) -> String {
+        let base = self.config.endpoint.trim_end_matches('/');
+        let bucket = self.config.bucket.trim_matches('/');
+        let key = self.config.key.trim_start_matches('/');
+        if bucket.is_empty() {
+            format!("{base}/{key}")
+        } else {
+            format!("{base}/{bucket}/{key}")
+        }
+    }
+}
+
+#[cfg(feature = "cloud-s3")]
+impl RemoteRangeReader for CloudS3RemoteStorage {
+    fn fetch_range(&self, offset: u64, length: usize) -> Result<Vec<u8>> {
+        let url = self.object_url();
+        let range_header = self.config.make_range_header(offset, length);
+        let mut req = self.agent.get(&url).set("Range", &range_header);
+
+        if let Some(ref token) = self.config.auth_token {
+            if token.starts_with("Bearer ") || token.starts_with("AWS ") {
+                req = req.set("Authorization", token);
+            } else {
+                req = req.set("Authorization", &format!("Bearer {token}"));
+            }
+        }
+
+        let resp = req.call().map_err(|e| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Cloud S3 range request failed for {url} [Range: {range_header}]: {e}"),
+            ))
+        })?;
+
+        let mut reader = resp.into_reader();
+        let mut buf = Vec::with_capacity(length);
+        std::io::Read::read_to_end(&mut reader, &mut buf)?;
+        Ok(buf)
+    }
+
+    fn total_size(&self) -> Result<u64> {
+        let url = self.object_url();
+        let mut req = self.agent.head(&url);
+
+        if let Some(ref token) = self.config.auth_token {
+            if token.starts_with("Bearer ") || token.starts_with("AWS ") {
+                req = req.set("Authorization", token);
+            } else {
+                req = req.set("Authorization", &format!("Bearer {token}"));
+            }
+        }
+
+        if let Ok(resp) = req.call() {
+            if let Some(cl) = resp.header("content-length") {
+                if let Ok(size) = cl.parse::<u64>() {
+                    return Ok(size);
+                }
+            }
+        }
+
+        // Fallback: request 1-byte range to inspect Content-Range header
+        let mut req_range = self.agent.get(&url).set("Range", "bytes=0-0");
+        if let Some(ref token) = self.config.auth_token {
+            if token.starts_with("Bearer ") || token.starts_with("AWS ") {
+                req_range = req_range.set("Authorization", token);
+            } else {
+                req_range = req_range.set("Authorization", &format!("Bearer {token}"));
+            }
+        }
+
+        let resp = req_range.call().map_err(|e| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to determine S3 object size for {url}: {e}"),
+            ))
+        })?;
+
+        if let Some(cr) = resp.header("content-range") {
+            if let Some(slash_idx) = cr.rfind('/') {
+                let total_str = &cr[slash_idx + 1..];
+                if let Ok(size) = total_str.trim().parse::<u64>() {
+                    return Ok(size);
+                }
+            }
+        }
+
+        if let Some(cl) = resp.header("content-length") {
+            if let Ok(size) = cl.parse::<u64>() {
+                return Ok(size);
+            }
+        }
+
+        Err(Error::Corrupted(format!(
+            "Cloud S3 response missing Content-Length or Content-Range headers for {url}"
+        )))
+    }
+}
+
+#[cfg(feature = "cloud-s3")]
+impl RemoteStorageAdapter for CloudS3RemoteStorage {
+    fn put_object(&self, data: &[u8]) -> Result<()> {
+        let url = self.object_url();
+        let mut req = self.agent.put(&url).set("Content-Type", "application/octet-stream");
+
+        if let Some(ref token) = self.config.auth_token {
+            if token.starts_with("Bearer ") || token.starts_with("AWS ") {
+                req = req.set("Authorization", token);
+            } else {
+                req = req.set("Authorization", &format!("Bearer {token}"));
+            }
+        }
+
+        req.send_bytes(data).map_err(|e| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Cloud S3 PUT request failed for {url}: {e}"),
+            ))
+        })?;
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "cloud-s3"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "cloud-s3")]
+    fn test_cloud_s3_http_range_streaming_live() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind test HTTP server");
+        let port = listener.local_addr().unwrap().port();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let running_clone = running.clone();
+
+        let payload_data: Arc<parking_lot::RwLock<Vec<u8>>> = Arc::new(parking_lot::RwLock::new(
+            (0..8192).map(|i| (i % 256) as u8).collect(),
+        ));
+        let server_payload = payload_data.clone();
+
+        let server_thread = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            while running_clone.load(Ordering::Relaxed) {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut req_buf = [0u8; 2048];
+                    let n = stream.read(&mut req_buf).unwrap_or(0);
+                    let req_str = String::from_utf8_lossy(&req_buf[..n]);
+
+                    if req_str.starts_with("HEAD ") {
+                        let len = server_payload.read().len();
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    } else if req_str.starts_with("GET ") {
+                        let range_header = req_str
+                            .lines()
+                            .find(|l| l.to_lowercase().starts_with("range:"))
+                            .unwrap_or("");
+                        let data = server_payload.read().clone();
+                        let total = data.len();
+
+                        if let Some(range_val) = range_header.split(':').nth(1) {
+                            let range_val = range_val.trim();
+                            if let Some(bytes_part) = range_val.strip_prefix("bytes=") {
+                                let parts: Vec<&str> = bytes_part.split('-').collect();
+                                let start: usize = parts[0].parse().unwrap_or(0);
+                                let end: usize = parts[1].parse().unwrap_or(total - 1);
+                                let end = end.min(total - 1);
+                                let slice = &data[start..=end];
+
+                                let resp = format!(
+                                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\nConnection: close\r\n\r\n",
+                                    slice.len()
+                                );
+                                let _ = stream.write_all(resp.as_bytes());
+                                let _ = stream.write_all(slice);
+                            }
+                        }
+                    } else if req_str.starts_with("PUT ") {
+                        // Read headers to find Content-Length
+                        let cl_line = req_str
+                            .lines()
+                            .find(|l| l.to_lowercase().starts_with("content-length:"))
+                            .unwrap_or("");
+                        let body_len: usize = cl_line
+                            .split(':')
+                            .nth(1)
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+
+                        let double_crlf = req_str.find("\r\n\r\n").unwrap_or(0);
+                        let body_start = if double_crlf > 0 { double_crlf + 4 } else { 0 };
+                        let mut body_bytes = req_buf[body_start..n].to_vec();
+
+                        while body_bytes.len() < body_len {
+                            let mut extra = [0u8; 1024];
+                            let extra_n = stream.read(&mut extra).unwrap_or(0);
+                            if extra_n == 0 {
+                                break;
+                            }
+                            body_bytes.extend_from_slice(&extra[..extra_n]);
+                        }
+
+                        *server_payload.write() = body_bytes;
+                        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        let _ = stream.write_all(resp.as_bytes());
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+
+        let config = S3StorageConfig {
+            bucket: "test-bucket".into(),
+            key: "db.tapir".into(),
+            endpoint: format!("http://127.0.0.1:{port}"),
+            region: "us-east-1".into(),
+            auth_token: Some("secret-token-xyz".into()),
+        };
+
+        let storage = CloudS3RemoteStorage::new(config);
+
+        // 1. Test total_size
+        let size = storage.total_size().expect("Failed to get total size");
+        assert_eq!(size, 8192);
+
+        // 2. Test fetch_range [0..4096]
+        let page1 = storage.fetch_range(0, 4096).expect("Failed to fetch page 1");
+        assert_eq!(page1.len(), 4096);
+        assert_eq!(page1[0], 0);
+        assert_eq!(page1[1], 1);
+
+        // 3. Test fetch_range [4096..8192]
+        let page2 = storage.fetch_range(4096, 4096).expect("Failed to fetch page 2");
+        assert_eq!(page2.len(), 4096);
+
+        // 4. Test put_object
+        let new_data = vec![42u8; 1024];
+        storage.put_object(&new_data).expect("Failed to put object");
+        let new_size = storage.total_size().expect("Failed to get updated size");
+        assert_eq!(new_size, 1024);
+
+        let fetched_new = storage.fetch_range(0, 1024).expect("Failed to fetch updated data");
+        assert_eq!(fetched_new, new_data);
+
+        running.store(false, Ordering::Relaxed);
+        let _ = server_thread.join();
+    }
+}
+

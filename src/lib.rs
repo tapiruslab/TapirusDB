@@ -30,7 +30,7 @@ pub use embedded::{
 };
 pub use error::{Error, Result};
 pub use graph::{
-    ChainMatch, Direction, Edge, GraphChain, GraphEngine, GraphRagConfig, GraphRagContext,
+    ChainMatch, Direction, Edge, GraphAdjacencyRecord, GraphChain, GraphEngine, GraphRagConfig, GraphRagContext,
     GraphRagEngine, GraphRagResult, Node, NodeFilter, TraversalStep,
 };
 pub use memory::{
@@ -41,6 +41,8 @@ pub use pager::{
     DatabaseHeader, MockRemoteRangeStorage, PageId, Pager, RemotePager, RemoteRangeReader,
     RemoteStorageAdapter, S3StorageConfig, DEFAULT_PAGE_SIZE,
 };
+#[cfg(feature = "cloud-s3")]
+pub use pager::CloudS3RemoteStorage;
 pub use realtime::{ChangeEvent, ChangeOp, RealtimeBus};
 pub use sql::{bind_parameters, parse_sql, parse_tokens, SQLExecutor, Statement};
 pub use tap::{
@@ -49,7 +51,10 @@ pub use tap::{
     TernaryVal, VerifyResult,
 };
 pub use traits::{DatabaseConnection, FromValue, HashableValue, Row, Value, VectorIndexEngine};
-pub use vector::{DistanceMetric, HnswIndex, ProductQuantizer, QuantizedVector8, QuantizedVectorPQ, Vector};
+pub use vector::{
+    DistanceMetric, HnswIndex, PagedHnswHeader, PagedHnswIndex, PagedVectorStore, ProductQuantizer,
+    QuantizedVector8, QuantizedVectorPQ, Vector,
+};
 
 /// Comprehensive diagnostic report of database page, cryptographic, and structural integrity
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -59,6 +59,15 @@ pub struct Edge {
     pub properties: String,
 }
 
+/// Compact incident edge adjacency lists for a single graph node on disk
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GraphAdjacencyRecord {
+    /// Outgoing edge IDs from this node
+    pub outgoing_edges: Vec<u64>,
+    /// Incoming edge IDs to this node
+    pub incoming_edges: Vec<u64>,
+}
+
 /// Embedded Property Graph Engine with bi-directional adjacency indexing
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct GraphEngine {

@@ -14,7 +14,7 @@ use tapirus::sql::vectorized::VectorizedAccumulator;
 use tapirus::vector::paged_hnsw::PagedHnswIndex;
 use tapirus::vector::DistanceMetric;
 use tapirus::traits::Value;
-use tapirus::Connection;
+use tapirus::{Connection, Direction, Edge, Node};
 
 #[test]
 fn test_pillar1_subqueries_and_ctes() {
@@ -198,3 +198,105 @@ fn test_pillar7_tauri_desktop_configuration() {
         assert!(json["app"]["windows"][0]["title"].as_str().unwrap().contains("Tapirus Studio"));
     }
 }
+
+#[test]
+fn test_paged_hnsw_disk_persistence_and_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("paged_vec.tapir");
+
+    {
+        let conn = Connection::open(&db_path).expect("Create db");
+        let mut paged_index = PagedHnswIndex::new(3, DistanceMetric::Cosine, 4);
+
+        for i in 1..=20 {
+            let f = i as f32;
+            paged_index.insert(i, vec![f, f * 0.5, 1.0]).unwrap();
+        }
+
+        // Persist to B+Tree disk tables
+        let mut executor = conn.executor().write();
+        let mut pager = conn.pager().write();
+        executor
+            .persist_paged_vector_index(&mut pager, "embeddings", &paged_index)
+            .expect("Persist paged vector index");
+        conn.checkpoint().unwrap();
+    }
+
+    // Reopen and reload into a fresh PagedHnswIndex with small LRU cache
+    {
+        let conn = Connection::open(&db_path).expect("Reopen db");
+        let mut executor = conn.executor().write();
+        let mut pager = conn.pager().write();
+
+        let reloaded = executor
+            .load_paged_vector_index(&mut pager, "embeddings", 4)
+            .expect("Load paged vector index")
+            .expect("Index should exist in metadata table");
+
+        assert_eq!(reloaded.len(), 20);
+        let results = reloaded.search(&[1.0, 0.5, 1.0], 3).unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].0, 1, "Vector 1 should remain nearest neighbor after reload");
+    }
+}
+
+#[test]
+fn test_disk_graph_adjacency_and_neighbor_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("disk_graph.tapir");
+
+    {
+        let conn = Connection::open(&db_path).expect("Create db");
+        let mut executor = conn.executor().write();
+        let mut pager = conn.pager().write();
+
+        // 1. Create nodes
+        let n1 = Node { id: 101, label: "Server".into(), properties: "{\"role\": \"primary\"}".into(), vector: None };
+        let n2 = Node { id: 102, label: "Database".into(), properties: "{\"role\": \"replica\"}".into(), vector: None };
+        let n3 = Node { id: 103, label: "Cache".into(), properties: "{\"role\": \"redis\"}".into(), vector: None };
+
+        executor.persist_graph_node(&mut pager, &n1).unwrap();
+        executor.persist_graph_node(&mut pager, &n2).unwrap();
+        executor.persist_graph_node(&mut pager, &n3).unwrap();
+
+        // 2. Create edges: 101 -> 102, 101 -> 103
+        let e1 = Edge { id: 501, from_id: 101, to_id: 102, label: "REPLICATES_TO".into(), weight: 1.0, properties: "{}".into() };
+        let e2 = Edge { id: 502, from_id: 101, to_id: 103, label: "CACHES_IN".into(), weight: 0.8, properties: "{}".into() };
+
+        executor.persist_graph_edge(&mut pager, &e1).unwrap();
+        executor.persist_graph_edge(&mut pager, &e2).unwrap();
+    }
+
+    // Reopen and traverse directly from disk with O(d) B+Tree reads without loading graph into RAM
+    {
+        let conn = Connection::open(&db_path).expect("Reopen db");
+        let mut executor = conn.executor().write();
+        let mut pager = conn.pager().write();
+
+        let neighbors = executor
+            .get_disk_graph_neighbors(&mut pager, 101, Direction::Outgoing, None)
+            .expect("Get disk neighbors");
+
+        assert_eq!(neighbors.len(), 2);
+        let target_ids: Vec<u64> = neighbors.iter().map(|(n, _)| n.id).collect();
+        assert!(target_ids.contains(&102));
+        assert!(target_ids.contains(&103));
+
+        // Filter by label
+        let cache_neighbors = executor
+            .get_disk_graph_neighbors(&mut pager, 101, Direction::Outgoing, Some("CACHES_IN"))
+            .expect("Filter disk neighbors");
+        assert_eq!(cache_neighbors.len(), 1);
+        assert_eq!(cache_neighbors[0].0.id, 103);
+        assert_eq!(cache_neighbors[0].1.id, 502);
+
+        // Delete edge 501 and check that adjacency updates on disk
+        executor.delete_graph_edge(&mut pager, 501).unwrap();
+        let remaining = executor
+            .get_disk_graph_neighbors(&mut pager, 101, Direction::Outgoing, None)
+            .expect("Remaining neighbors");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].0.id, 103);
+    }
+}
+
