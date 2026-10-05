@@ -82,14 +82,23 @@ TapirusDB/
   │     └── tapirus-wasm-ext/    <-- Enjin Pelaksana Sandbox Plugin WebAssembly
 ```
 
-### Variasi Edisi yang Boleh Dihasilkan:
+### Variasi Edisi Berdaulat (*Sovereign Edition Profiles*):
 
-| Edisi Terbitan | Crates Digunakan | Sasaran Penggunaan | Jejak Saiz |
+| Edisi Rasmi | Ciri Cargo (*Feature Flags*) | Sasaran Penggunaan | Jejak Saiz |
 | :--- | :--- | :--- | :--- |
-| **Tapirus-Lite** | `core` + `sql` | Mikropemproses, IoT, Bare-metal ESP32/STM32 | **< 500 KB** |
-| **Tapirus-Doc (NoSQL)** | `core` + `doc` | Alternatif terus kepada MongoDB / SQLite JSON | **~ 1.2 MB** |
-| **Tapirus-AI (Cognitive)** | `core` + `vector` + `graph` | Robotik, Dron ADAS, Agen LLM Peribadi | **~ 2.5 MB** |
-| **Tapirus-Enterprise** | Semua Crates + `pgwire` + `mongowire` | Pelayan VPS, Awan, Integrasi Prisma/ORM | **~ 6.0 MB** |
+| 🪶 **Tapirus Lite** | `--features edition-lite` (`sql`) | Mikropemproses, IoT, Bare-metal ESP32/STM32 | **< 500 KB** |
+| 📄 **Tapirus Document** | `--features edition-document` (`documents`, `sql`) | Pengganti storan dokumen NoSQL JSON/BSON | **~ 1.2 MB** |
+| 🧠 **Tapirus AI Brain** | `--features edition-ai-brain` (`vectors`, `graphs`, `tap`) | Robotik, Dron ADAS, Memori Ejen AI Kognitif | **~ 2.5 MB** |
+| 👑 **Tapirus Quad** *(Default)* | `--features quad` (*Semua 4 Model Bersatu*) | Pembangun AI & Aplikasi Moden Serbaguna | **~ 3.8 MB** |
+| 🏢 **Tapirus Enterprise** | `--features edition-enterprise` (`quad`, `server`) | Pelayan VPS, Awan, Integrasi Prisma/ORM | **~ 6.0 MB** |
+
+```bash
+# Contoh kompilasi mengikut profil edisi:
+cargo build --release --no-default-features --features edition-lite
+cargo build --release --no-default-features --features edition-document
+cargo build --release --no-default-features --features edition-ai-brain
+cargo build --release --features quad # (Lalai / Flagship)
+```
 
 ---
 

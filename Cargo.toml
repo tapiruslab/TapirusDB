@@ -76,7 +76,40 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3.14"
 
 [features]
-default = ["std"]
+# Flagship Default: Complete Quad-Model Engine
+default = ["quad"]
+
+# Core Data Model Building Blocks
+sql = []
+vectors = []
+graphs = []
+documents = []
+realtime = []
+tap = []
+server = []
+
+# =========================================================================
+# Official Brand-Sovereign Edition Profiles
+# =========================================================================
+# 1. Tapirus Lite — Ultra-compact embedded relational engine (< 500 KB)
+edition-lite = ["sql", "std"]
+lite = ["edition-lite"]
+
+# 2. Tapirus Document — Pure schemaless JSON/BSON document collections
+edition-document = ["documents", "sql", "std"]
+document = ["edition-document"]
+
+# 3. Tapirus AI Brain — Cognitive Agent Memory (Vectors + GraphRAG + Tap Instinct)
+edition-ai-brain = ["vectors", "graphs", "tap", "std"]
+ai-brain = ["edition-ai-brain"]
+
+# 4. Tapirus Quad (Default Flagship) — Complete Quad-Model Consolidation
+quad = ["sql", "vectors", "graphs", "documents", "realtime", "tap", "std"]
+
+# 5. Tapirus Enterprise — Full Quad-Model + Daemon Server & Protocol Bridges
+edition-enterprise = ["quad", "server"]
+enterprise = ["edition-enterprise"]
+
 std = []
 simd = ["dep:wide"]
 tap-deep = []
