@@ -1674,6 +1674,131 @@ impl SQLExecutor {
                     (None, None)
                 };
 
+                // ── Indexed Seek Join (O(M log N) B-Tree Primary Key Point Lookup) ──
+                // When an INNER JOIN has a Primary Key on either the left or right table,
+                // we bypass the full table scan and hash table construction entirely,
+                // streaming the driving table and performing O(log N) point lookups into the PK B-Tree.
+                if let (Some(jc), Some(sources)) = (join.as_ref(), direct_join_sources.as_ref()) {
+                    if as_of_timestamp.is_none() && where_clause.is_none() && jc.join_type == JoinType::Inner {
+                        if let Some(right_table_def) = self.catalog.get_table(&jc.table) {
+                            let l_col_idx = resolve_table_col_index(&table_def, &jc.left_col);
+                            let r_col_idx = resolve_table_col_index(&right_table_def, &jc.right_col);
+
+                            if let (Some(l_idx), Some(r_idx)) = (l_col_idx, r_col_idx) {
+                                let output_col_shared = Arc::new(columns.clone());
+                                let left_col_shared = Arc::new(all_col_names.clone());
+                                let right_col_names = right_table_def.column_names();
+                                let right_col_shared = Arc::new(right_col_names.clone());
+                                let skip_count = offset.unwrap_or(0);
+
+                                // Case A: Left table join key is its PRIMARY KEY
+                                // Driving table: right table (e.g. orders). Seek target: left table (users).
+                                if table_def.primary_key_index() == Some(l_idx) {
+                                    let mut right_mask = vec![false; right_col_names.len()];
+                                    right_mask[r_idx] = true;
+                                    for src in sources {
+                                        if let JoinOutputCol::Right(idx) = src {
+                                            if *idx < right_mask.len() {
+                                                right_mask[*idx] = true;
+                                            }
+                                        }
+                                    }
+
+                                    let mut driving_tuples: Vec<(i64, Row)> = Vec::new();
+                                    self.btree.scan_with(pager, right_table_def.root_page, |r_cell| {
+                                        let r_row = decode_row_shared_projected(&r_cell.payload, &right_col_shared, &right_mask)?;
+                                        if let Some(Value::Integer(k)) = r_row.values().get(r_idx) {
+                                            driving_tuples.push((*k, r_row));
+                                        }
+                                        Ok(true)
+                                    })?;
+
+                                    let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
+                                    let mut final_rows = Vec::with_capacity(driving_tuples.len().min(limit.unwrap_or(usize::MAX)));
+                                    let mut skipped = 0;
+
+                                    for (k, r_row) in driving_tuples {
+                                        if let Some(l_payload) = self.btree.search(pager, root_page, k as u64)? {
+                                            if skipped < skip_count {
+                                                skipped += 1;
+                                                continue;
+                                            }
+                                            let l_row = decode_row_shared_projected(&l_payload, &left_col_shared, left_mask)?;
+                                            let mut vals = Vec::with_capacity(sources.len());
+                                            for src in sources {
+                                                match src {
+                                                    JoinOutputCol::Left(idx) => vals.push(l_row.values().get(*idx).cloned().unwrap_or(Value::Null)),
+                                                    JoinOutputCol::Right(idx) => vals.push(r_row.values().get(*idx).cloned().unwrap_or(Value::Null)),
+                                                }
+                                            }
+                                            final_rows.push(Row::with_shared_columns(output_col_shared.clone(), vals));
+                                            if let Some(lim) = limit {
+                                                if final_rows.len() >= lim {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    return Ok(final_rows);
+                                }
+
+                                // Case B: Right table join key is its PRIMARY KEY
+                                // Driving table: left table. Seek target: right table.
+                                if right_table_def.primary_key_index() == Some(r_idx) {
+                                    let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
+                                    let mut driving_tuples: Vec<(i64, Row)> = Vec::new();
+                                    self.btree.scan_with(pager, root_page, |l_cell| {
+                                        let l_row = decode_row_shared_projected(&l_cell.payload, &left_col_shared, left_mask)?;
+                                        if let Some(Value::Integer(k)) = l_row.values().get(l_idx) {
+                                            driving_tuples.push((*k, l_row));
+                                        }
+                                        Ok(true)
+                                    })?;
+
+                                    let mut right_mask = vec![false; right_col_names.len()];
+                                    right_mask[r_idx] = true;
+                                    for src in sources {
+                                        if let JoinOutputCol::Right(idx) = src {
+                                            if *idx < right_mask.len() {
+                                                right_mask[*idx] = true;
+                                            }
+                                        }
+                                    }
+
+                                    let mut final_rows = Vec::with_capacity(driving_tuples.len().min(limit.unwrap_or(usize::MAX)));
+                                    let mut skipped = 0;
+
+                                    for (k, l_row) in driving_tuples {
+                                        if let Some(r_payload) = self.btree.search(pager, right_table_def.root_page, k as u64)? {
+                                            if skipped < skip_count {
+                                                skipped += 1;
+                                                continue;
+                                            }
+                                            let r_row = decode_row_shared_projected(&r_payload, &right_col_shared, &right_mask)?;
+                                            let mut vals = Vec::with_capacity(sources.len());
+                                            for src in sources {
+                                                match src {
+                                                    JoinOutputCol::Left(idx) => vals.push(l_row.values().get(*idx).cloned().unwrap_or(Value::Null)),
+                                                    JoinOutputCol::Right(idx) => vals.push(r_row.values().get(*idx).cloned().unwrap_or(Value::Null)),
+                                                }
+                                            }
+                                            final_rows.push(Row::with_shared_columns(output_col_shared.clone(), vals));
+                                            if let Some(lim) = limit {
+                                                if final_rows.len() >= lim {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    return Ok(final_rows);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if as_of_timestamp.is_none() {
                     let can_early_terminate = join.is_none() && order_by.is_none() && group_by.is_none() && !distinct && !is_aggregate_query(&columns);
                     let needed_rows = if can_early_terminate {
