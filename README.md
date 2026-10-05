@@ -8,9 +8,9 @@
 
 <br/>
 
-### The Embedded Cognitive Memory & Multi-Model Engine for Sovereign AI & Edge Systems
-**Sub-Microsecond Agent Memory • openCypher Knowledge Graphs • Vector Search • Relational SQL • Documents**  
-*Single Encrypted `.tapir` File • 100% Safe Rust • < 4 MB Idle RAM • Zero Cloud Daemons*
+### The Single-File Database for the AI Era
+**Replace Postgres + Pinecone + Neo4j with one local file. Zero cloud bills. Sub-millisecond latency.**  
+*Relational SQL • HNSW Vector Search • openCypher Knowledge Graphs • JSON Documents • < 4 MB Idle RAM*
 
 <br/>
 
@@ -25,8 +25,8 @@
 
 <br/>
 
-> **"Build private AI memory without operating a data stack."**  
-> TapirusDB is the high-performance, embedded cognitive memory engine for local AI agents, robotics, and sovereign edge hardware. It collapses vector similarity, knowledge graphs, relational metadata, and JSON documents into a **single encrypted `.tapir` file** with sub-microsecond in-process retrieval ($0.51\ \mu\text{s}$) and zero memory corruption risk.
+> 💡 **"Build private AI applications without operating a massive database stack."**  
+> TapirusDB is the high-performance, embedded quad-model database engine for local AI agents, desktop applications, and edge hardware. It collapses vector similarity search, knowledge graphs, relational tables, and JSON documents into a **single encrypted `.tapir` file** with sub-microsecond in-process retrieval ($0.51\ \mu\text{s}$) — backed by a 100% Safe Rust core for rock-solid data integrity.
 
 > 🖥️ **Need a Visual Database Manager (like phpMyAdmin or Supabase Studio)?**  
 > Use **[Tapirus Studio](https://tapirusdb.com/studio/index.html)** — our free visual GUI companion for TapirusDB!  
@@ -54,9 +54,11 @@ Modern AI and edge developers are forced into **Fragmented Polyglot Persistence*
 
 ## Highlights
 
-* 🦀 **100% Pure Safe Rust (`#![forbid(unsafe_code)]`)**: Guaranteed memory safety at compile-time. Zero buffer overflows, zero dangling pointers, zero use-after-free vulnerabilities, and zero C/C++ memory corruption CVEs.
-* 📦 **True In-Process Architecture (Zero-IPC)**: Compiles and links directly into your binary (Rust, Python, TypeScript, C/C++, Go). No background database servers (`mysqld`, `postgres`, `mongod`), zero network serialization overhead, and sub-microsecond in-memory query traversal.
-* ⚡ **Quad-Model Data Consolidation**: Seamlessly unifies **Relational SQL-92**, **HNSW & IVF Vector Search**, **openCypher Property Graphs**, and **MongoDB-style JSON Documents** inside a single B+Tree slotted-page file.
+* 📁 **Single-File AI Engine (Kill the "Frankenstack")**: Seamlessly consolidates **Relational SQL-92**, **HNSW & IVF Vector Search**, **openCypher Property Graphs**, and **JSON Documents** inside a single `.tapir` file. No Docker containers, no background servers (`mysqld`, `mongod`), and zero network serialization overhead.
+* ⚡ **True In-Process Speed (Zero-IPC)**: Compiles and links directly into your application process (Python, TypeScript, Go, Rust, C/C++). Retrieves cross-model data via direct memory bus pointers ($0.51\ \mu\text{s}$) — **600x faster** than cloud vector DB network hops.
+* 🧠 **Production GraphRAG & AI Agent Memory**: Built-in hybrid search with Tri-Modal Reciprocal Rank Fusion (RRF fusing lexical BM25, semantic vectors, and graph structural proximity), episodic memory with exponential temporal decay, and isolated agent namespaces.
+* 🔐 **Zero-Config At-Rest Encryption**: XChaCha20-Poly1305 AEAD authenticated page-level encryption built directly into the storage engine. Zero commercial add-on licenses required.
+* 🦀 **Bulletproof 100% Safe Rust Core (`#![forbid(unsafe_code)]`)**: Guaranteed compile-time memory safety with zero buffer overflows, zero memory leaks, and zero segfault crashes during mission-critical batch computation runs. 93/93 passing unit tests.
 * 📈 **Advanced SQL Window Functions & Graph Algorithms**: Built-in ANSI SQL window operations (`ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `NTILE()`, `LAG()`, `LEAD()`) and native graph topology algorithms (`GRAPH ALGORITHM louvain`, `betweenness`, `connected_components`, `pagerank`).
 * 🧠 **Production GraphRAG & AI Memory**: Built-in seed-and-traverse GraphRAG with Tri-Modal Reciprocal Rank Fusion (RRF), episodic memory with exponential temporal decay, and isolated agent namespaces.
 * ⚡ **Tap Sub-Millisecond Cognitive Instinct Engine**: In-database non-autoregressive System-1 decision core (`Tap::classify`, `Tap::score`, `Tap::verify`, `Tap::route`). Run 1,000 deterministic agent decisions per second directly inside SQL queries (`TAP_CLASSIFY()`, `TAP_VERIFY()`) in pure Safe Rust (< 2ms) with zero cloud tokens and zero API costs.
