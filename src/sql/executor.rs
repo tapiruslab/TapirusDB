@@ -5,14 +5,18 @@ use crate::error::{Error, Result};
 use crate::graph::GraphEngine;
 use crate::pager::Pager;
 use crate::sql::catalog::{Catalog, ColumnDef, DataType, IndexDef, TableDef};
-use crate::sql::codec::{decode_row, decode_row_values_into, encode_row};
+use crate::sql::codec::{
+    decode_row, decode_row_shared, decode_row_shared_projected, decode_row_values_into_projected,
+    encode_row, encode_row_into,
+};
 use crate::sql::parser::{
     BinaryOp, JoinType, OnConflict, Statement, WhereCondition, WhereExpr,
 };
-use crate::traits::{HashableValue, Row, Value, VectorIndexEngine};
+use crate::traits::{col_name_matches, HashableValue, Row, Value, VectorIndexEngine};
 use crate::vector::{DistanceMetric, HnswIndex};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Resolved Boolean expression tree with subqueries evaluated
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +53,61 @@ pub struct TemporalRecord {
     pub valid_to: u64,
     /// Encoded row binary payload
     pub payload: Vec<u8>,
+}
+
+/// Ultra-fast 64-bit integer hasher using splitmix64 mixing for internal hash joins
+#[derive(Default, Clone, Copy)]
+pub struct FastIntHasher(u64);
+
+impl std::hash::Hasher for FastIntHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, _bytes: &[u8]) {}
+    #[inline]
+    fn write_i64(&mut self, i: i64) {
+        let mut x = (i as u64) ^ 0x517cc1b727220a95;
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+        self.0 = x ^ (x >> 31);
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.write_i64(i as i64);
+    }
+}
+
+/// BuildHasher for FastIntHasher
+pub type FastIntBuildHasher = std::hash::BuildHasherDefault<FastIntHasher>;
+
+/// Zero-allocation hash table entry for 1-to-1 or 1-to-many joins
+#[derive(Clone, Debug)]
+pub enum IntEntry {
+    /// Single row index match (zero allocation)
+    One(usize),
+    /// Multiple row index matches
+    Many(Vec<usize>),
+}
+
+/// Identifies whether a projected join column originates from the left or right table
+#[derive(Clone, Copy, Debug)]
+pub enum JoinOutputCol {
+    /// Column belongs to left table at given index
+    Left(usize),
+    /// Column belongs to right table at given index
+    Right(usize),
+}
+
+/// Resolves a column name (qualified like 'table.column' or unqualified 'column') to its index in TableDef
+#[inline]
+pub fn resolve_table_col_index(table_def: &TableDef, col: &str) -> Option<usize> {
+    if let Some((_, c)) = col.split_once('.') {
+        table_def.column_index(c)
+    } else {
+        table_def.column_index(col)
+    }
 }
 
 /// Deterministic 64-bit hash of a SQL Value for B+Tree secondary index key
@@ -1450,10 +1509,19 @@ impl SQLExecutor {
                         });
                     }
 
+                    let mut needed_mask = vec![false; all_col_names.len()];
+                    for agg in &aggs {
+                        if let Some(idx) = agg.col_idx {
+                            if idx < needed_mask.len() {
+                                needed_mask[idx] = true;
+                            }
+                        }
+                    }
+
                     let mut row_vals = Vec::with_capacity(all_col_names.len());
-                    self.btree.scan_with(pager, root_page, |cell| {
+                    self.btree.scan_with_ref(pager, root_page, |_row_id, payload| {
                         if let Some(ref r_expr) = resolved_where {
-                            let full_row = decode_row(&cell.payload, &all_col_names)?;
+                            let full_row = decode_row(payload, &all_col_names)?;
                             if !row_matches_resolved(&full_row, r_expr) {
                                 return Ok(true);
                             }
@@ -1468,7 +1536,7 @@ impl SQLExecutor {
                                 }
                             }
                         } else {
-                            decode_row_values_into(&cell.payload, &mut row_vals)?;
+                            decode_row_values_into_projected(payload, &needed_mask, &mut row_vals)?;
                             for agg in &mut aggs {
                                 if agg.is_star {
                                     agg.acc.count_all += 1;
@@ -1527,9 +1595,86 @@ impl SQLExecutor {
                                     left_rows.push(full_row);
                                 }
                             }
+                    }
+                }
+                }
+
+                // ── Direct Join Projection Pre-resolution ──
+                // Check if the query is a simple SELECT over a JOIN without GROUP BY or aggregates.
+                // If so, we pre-resolve output column origins (Left vs Right table) to:
+                // 1. Skip decoding unneeded columns during both table scans (using needed_mask)
+                // 2. Eliminate intermediate merged Row allocations and re-projection overhead
+                let (direct_join_sources, left_needed_mask) = if let Some(ref jc) = join {
+                    if let Some(right_table_def) = self.catalog.get_table(&jc.table) {
+                        let can_direct = order_by.is_none()
+                            && group_by.is_none()
+                            && !distinct
+                            && !is_aggregate_query(&columns)
+                            && !columns.is_empty();
+                        if can_direct {
+                            let mut sources = Vec::with_capacity(columns.len());
+                            let mut ok = true;
+                            for col in &columns {
+                                if col.contains('(') || col.contains(' ') {
+                                    ok = false;
+                                    break;
+                                }
+                                if let Some((tbl, c)) = col.split_once('.') {
+                                    if tbl.eq_ignore_ascii_case(&table) {
+                                        if let Some(idx) = table_def.column_index(c) {
+                                            sources.push(JoinOutputCol::Left(idx));
+                                            continue;
+                                        }
+                                    } else if tbl.eq_ignore_ascii_case(&jc.table) {
+                                        if let Some(idx) = right_table_def.column_index(c) {
+                                            sources.push(JoinOutputCol::Right(idx));
+                                            continue;
+                                        }
+                                    }
+                                    ok = false;
+                                    break;
+                                } else {
+                                    let in_l = table_def.column_index(col);
+                                    let in_r = right_table_def.column_index(col);
+                                    match (in_l, in_r) {
+                                        (Some(idx), None) => sources.push(JoinOutputCol::Left(idx)),
+                                        (None, Some(idx)) => sources.push(JoinOutputCol::Right(idx)),
+                                        _ => {
+                                            ok = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if ok {
+                                let mut mask = vec![false; all_col_names.len()];
+                                if let Some(l_idx) = resolve_table_col_index(&table_def, &jc.left_col) {
+                                    if l_idx < mask.len() {
+                                        mask[l_idx] = true;
+                                    }
+                                }
+                                for src in &sources {
+                                    if let JoinOutputCol::Left(idx) = src {
+                                        if *idx < mask.len() {
+                                            mask[*idx] = true;
+                                        }
+                                    }
+                                }
+                                (Some(sources), Some(mask))
+                            } else {
+                                (None, None)
+                            }
+                        } else {
+                            (None, None)
                         }
+                    } else {
+                        (None, None)
                     }
                 } else {
+                    (None, None)
+                };
+
+                if as_of_timestamp.is_none() {
                     let can_early_terminate = join.is_none() && order_by.is_none() && group_by.is_none() && !distinct && !is_aggregate_query(&columns);
                     let needed_rows = if can_early_terminate {
                         limit.map(|lim| offset.unwrap_or(0).saturating_add(lim))
@@ -1537,8 +1682,13 @@ impl SQLExecutor {
                         None
                     };
 
+                    let left_col_shared = Arc::new(all_col_names.clone());
                     self.btree.scan_with(pager, root_page, |cell| {
-                        let full_row = decode_row(&cell.payload, &all_col_names)?;
+                        let full_row = if let Some(ref mask) = left_needed_mask {
+                            decode_row_shared_projected(&cell.payload, &left_col_shared, mask)?
+                        } else {
+                            decode_row_shared(&cell.payload, &left_col_shared)?
+                        };
 
                         // Check WHERE filter on left table
                         if let Some(ref r_expr) = resolved_where {
@@ -1557,14 +1707,30 @@ impl SQLExecutor {
                     })?;
                 }
 
-                // Execute JOIN if present (High-Performance O(N + M) Hash Join)
+                // Execute JOIN if present — optimized O(N+M) Hash Join
                 if let Some(join_clause) = join {
                     let right_table_def = self
                         .catalog
                         .get_table(&join_clause.table)
                         .ok_or_else(|| Error::TableNotFound(join_clause.table.clone()))?;
                     let right_col_names = right_table_def.column_names();
+                    let right_col_shared = Arc::new(right_col_names.clone());
 
+                    // Precompute merged column names once
+                    let mut merged_cols_template = Vec::with_capacity(all_col_names.len() + right_col_names.len());
+                    for c in &all_col_names {
+                        merged_cols_template.push(format!("{}.{}", table, c));
+                    }
+                    for c in &right_col_names {
+                        merged_cols_template.push(format!("{}.{}", join_clause.table, c));
+                    }
+                    let merged_cols_shared = Arc::new(merged_cols_template);
+
+                    // Resolve join column indices (supporting qualified names like 'users.id' and 'orders.user_id')
+                    let l_col_idx = resolve_table_col_index(&table_def, &join_clause.left_col);
+                    let r_col_idx = resolve_table_col_index(right_table_def, &join_clause.right_col);
+
+                    // Build hash table on right (smaller) table: O(M)
                     let mut right_rows = Vec::new();
                     if let Some(ts) = as_of_timestamp {
                         if let Some(sys_table) = self.catalog.get_table("__sys_time_travel") {
@@ -1574,7 +1740,7 @@ impl SQLExecutor {
                                         && rec.valid_from <= ts
                                         && rec.valid_to > ts
                                     {
-                                        let r_row = decode_row(&rec.payload, &right_col_names)?;
+                                        let r_row = decode_row_shared(&rec.payload, &right_col_shared)?;
                                         right_rows.push(r_row);
                                     }
                                 }
@@ -1582,96 +1748,222 @@ impl SQLExecutor {
                             })?;
                         }
                     } else {
+                        let right_mask = if let Some(ref sources) = direct_join_sources {
+                            let mut mask = vec![false; right_col_names.len()];
+                            if let Some(r_idx) = r_col_idx {
+                                if r_idx < mask.len() {
+                                    mask[r_idx] = true;
+                                }
+                            }
+                            for src in sources {
+                                if let JoinOutputCol::Right(idx) = src {
+                                    if *idx < mask.len() {
+                                        mask[*idx] = true;
+                                    }
+                                }
+                            }
+                            Some(mask)
+                        } else {
+                            None
+                        };
+
                         self.btree.scan_with(pager, right_table_def.root_page, |r_cell| {
-                            let r_row = decode_row(&r_cell.payload, &right_col_names)?;
+                            let r_row = if let Some(ref mask) = right_mask {
+                                decode_row_shared_projected(&r_cell.payload, &right_col_shared, mask)?
+                            } else {
+                                decode_row_shared(&r_cell.payload, &right_col_shared)?
+                            };
                             right_rows.push(r_row);
                             Ok(true)
                         })?;
                     }
 
-                    // Precompute merged column names once to eliminate per-row string formatting allocations
-                    let mut merged_cols_template = Vec::with_capacity(all_col_names.len() + right_col_names.len());
-                    for c in &all_col_names {
-                        merged_cols_template.push(format!("{}.{}", table, c));
-                    }
-                    for c in &right_col_names {
-                        merged_cols_template.push(format!("{}.{}", join_clause.table, c));
-                    }
+                    // Check whether join key is an integer column for fast u64-keyed HashMap
+                    let all_int_keys = r_col_idx.map_or(false, |idx| {
+                        right_rows.first().and_then(|r| r.values().get(idx)).map_or(false, |v| matches!(v, Value::Integer(_)))
+                    }) && l_col_idx.map_or(false, |idx| {
+                        left_rows.first().and_then(|l| l.values().get(idx)).map_or(false, |v| matches!(v, Value::Integer(_)))
+                    });
 
-                    // Resolve join column indices for O(1) row value access
-                    let l_col_idx = table_def.column_index(&join_clause.left_col);
-                    let r_col_idx = right_table_def.column_index(&join_clause.right_col);
+                    let is_right_or_full = join_clause.join_type == JoinType::Right
+                        || join_clause.join_type == JoinType::Full;
+                    let mut joined_rows = Vec::with_capacity(left_rows.len());
 
-                    // Build hash table for right table: O(M)
-                    let mut right_hash_table: HashMap<HashableValue, Vec<usize>> = HashMap::new();
-                    for (r_idx, r_row) in right_rows.iter().enumerate() {
-                        let r_val = if let Some(idx) = r_col_idx {
-                            r_row.values().get(idx)
-                        } else {
-                            r_row.get_value(&join_clause.right_col)
-                        };
-                        if let Some(r_val) = r_val {
-                            if !r_val.is_null() {
-                                right_hash_table
-                                    .entry(HashableValue::from(r_val))
-                                    .or_default()
-                                    .push(r_idx);
-                            }
-                        }
-                    }
+                    if all_int_keys && !is_right_or_full {
+                        // ── Fast path: FastIntHasher + IntEntry (zero heap allocations for unique keys) ──
+                        let r_idx_col = r_col_idx.unwrap();
+                        let l_idx_col = l_col_idx.unwrap();
+                        let mut int_hash: HashMap<i64, IntEntry, FastIntBuildHasher> =
+                            HashMap::with_capacity_and_hasher(right_rows.len(), FastIntBuildHasher::default());
 
-                    let mut joined_rows = Vec::new();
-                    let mut matched_right_indices = HashSet::new();
-
-                    // Probe hash table from left table: O(N)
-                    for l_row in &left_rows {
-                        let l_val = if let Some(idx) = l_col_idx {
-                            l_row.values().get(idx)
-                        } else {
-                            l_row.get_value(&join_clause.left_col)
-                        };
-                        let mut matched = false;
-
-                        if let Some(lv) = l_val {
-                            if !lv.is_null() {
-                                if let Some(matching_r_indices) = right_hash_table.get(&HashableValue::from(lv)) {
-                                    matched = true;
-                                    for &r_idx in matching_r_indices {
-                                        let r_row = &right_rows[r_idx];
-                                        matched_right_indices.insert(r_idx);
-                                        let mut merged_vals = Vec::with_capacity(l_row.values().len() + r_row.values().len());
-                                        merged_vals.extend_from_slice(l_row.values());
-                                        merged_vals.extend_from_slice(r_row.values());
-                                        joined_rows.push(Row::new(merged_cols_template.clone(), merged_vals));
+                        for (r_idx, r_row) in right_rows.iter().enumerate() {
+                            if let Some(Value::Integer(k)) = r_row.values().get(r_idx_col) {
+                                match int_hash.get_mut(k) {
+                                    Some(IntEntry::One(prev)) => {
+                                        let first = *prev;
+                                        int_hash.insert(*k, IntEntry::Many(vec![first, r_idx]));
+                                    }
+                                    Some(IntEntry::Many(list)) => {
+                                        list.push(r_idx);
+                                    }
+                                    None => {
+                                        int_hash.insert(*k, IntEntry::One(r_idx));
                                     }
                                 }
                             }
                         }
 
-                        if !matched && (join_clause.join_type == JoinType::Left || join_clause.join_type == JoinType::Full) {
-                            let mut merged_vals = Vec::with_capacity(l_row.values().len() + right_col_names.len());
-                            merged_vals.extend_from_slice(l_row.values());
-                            merged_vals.resize(merged_vals.len() + right_col_names.len(), Value::Null);
-                            joined_rows.push(Row::new(merged_cols_template.clone(), merged_vals));
+                        if let Some(ref direct_sources) = direct_join_sources {
+                            // ── Direct Join Projection: Zero intermediate Row allocations ──
+                            let output_col_shared = Arc::new(columns.clone());
+                            let mut final_rows = Vec::with_capacity(left_rows.len().min(right_rows.len() * 2));
+
+                            for l_row in &left_rows {
+                                if let Some(Value::Integer(lk)) = l_row.values().get(l_idx_col) {
+                                    if let Some(entry) = int_hash.get(lk) {
+                                        let r_slice = match entry {
+                                            IntEntry::One(idx) => std::slice::from_ref(idx),
+                                            IntEntry::Many(v) => v.as_slice(),
+                                        };
+                                        for &r_idx in r_slice {
+                                            let r_row = &right_rows[r_idx];
+                                            let mut vals = Vec::with_capacity(direct_sources.len());
+                                            for src in direct_sources {
+                                                match src {
+                                                    JoinOutputCol::Left(idx) => {
+                                                        vals.push(l_row.values().get(*idx).cloned().unwrap_or(Value::Null));
+                                                    }
+                                                    JoinOutputCol::Right(idx) => {
+                                                        vals.push(r_row.values().get(*idx).cloned().unwrap_or(Value::Null));
+                                                    }
+                                                }
+                                            }
+                                            final_rows.push(Row::with_shared_columns(output_col_shared.clone(), vals));
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Apply offset / limit if requested
+                            let skip_count = offset.unwrap_or(0);
+                            if skip_count > 0 || limit.is_some() {
+                                let mut sliced = Vec::new();
+                                let mut skipped = 0;
+                                for r in final_rows {
+                                    if skipped < skip_count {
+                                        skipped += 1;
+                                        continue;
+                                    }
+                                    sliced.push(r);
+                                    if let Some(lim) = limit {
+                                        if sliced.len() >= lim {
+                                            break;
+                                        }
+                                    }
+                                }
+                                return Ok(sliced);
+                            }
+                            return Ok(final_rows);
                         }
-                    }
 
-                    if join_clause.join_type == JoinType::Right || join_clause.join_type == JoinType::Full {
+                        // Fallback within integer path when direct_sources is None (e.g. ORDER BY present)
+                        for l_row in &left_rows {
+                            if let Some(Value::Integer(lk)) = l_row.values().get(l_idx_col) {
+                                if let Some(entry) = int_hash.get(lk) {
+                                    let r_slice = match entry {
+                                        IntEntry::One(idx) => std::slice::from_ref(idx),
+                                        IntEntry::Many(v) => v.as_slice(),
+                                    };
+                                    for &r_idx in r_slice {
+                                        let r_row = &right_rows[r_idx];
+                                        let mut merged_vals = Vec::with_capacity(
+                                            l_row.values().len() + r_row.values().len(),
+                                        );
+                                        merged_vals.extend_from_slice(l_row.values());
+                                        merged_vals.extend_from_slice(r_row.values());
+                                        joined_rows.push(Row::with_shared_columns(
+                                            merged_cols_shared.clone(),
+                                            merged_vals,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // ── General path: HashableValue HashMap ──
+                        let mut right_hash_table: HashMap<HashableValue, Vec<usize>> =
+                            HashMap::with_capacity(right_rows.len());
                         for (r_idx, r_row) in right_rows.iter().enumerate() {
-                            if !matched_right_indices.contains(&r_idx) {
-                                let mut merged_cols = Vec::new();
-                                let mut merged_vals = Vec::new();
-
-                                for c in &all_col_names {
-                                    merged_cols.push(format!("{}.{}", table, c));
-                                    merged_vals.push(Value::Null);
+                            let r_val = if let Some(idx) = r_col_idx {
+                                r_row.values().get(idx)
+                            } else {
+                                r_row.get_value(&join_clause.right_col)
+                            };
+                            if let Some(r_val) = r_val {
+                                if !r_val.is_null() {
+                                    right_hash_table
+                                        .entry(HashableValue::from(r_val))
+                                        .or_default()
+                                        .push(r_idx);
                                 }
-                                for (c, v) in r_row.columns().iter().zip(r_row.values().iter()) {
-                                    merged_cols.push(format!("{}.{}", join_clause.table, c));
-                                    merged_vals.push(v.clone());
-                                }
+                            }
+                        }
 
-                                joined_rows.push(Row::new(merged_cols, merged_vals));
+                        let mut matched_right_indices = if is_right_or_full {
+                            HashSet::with_capacity(right_rows.len())
+                        } else {
+                            HashSet::new()
+                        };
+
+                        for l_row in &left_rows {
+                            let l_val = if let Some(idx) = l_col_idx {
+                                l_row.values().get(idx)
+                            } else {
+                                l_row.get_value(&join_clause.left_col)
+                            };
+                            let mut matched = false;
+
+                            if let Some(lv) = l_val {
+                                if !lv.is_null() {
+                                    if let Some(matching_r_indices) =
+                                        right_hash_table.get(&HashableValue::from(lv))
+                                    {
+                                        matched = true;
+                                        for &r_idx in matching_r_indices {
+                                            let r_row = &right_rows[r_idx];
+                                            if is_right_or_full {
+                                                matched_right_indices.insert(r_idx);
+                                            }
+                                            let mut merged_vals = Vec::with_capacity(
+                                                l_row.values().len() + r_row.values().len(),
+                                            );
+                                            merged_vals.extend_from_slice(l_row.values());
+                                            merged_vals.extend_from_slice(r_row.values());
+                                            joined_rows.push(Row::with_shared_columns(
+                                                merged_cols_shared.clone(),
+                                                merged_vals,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+
+                            if !matched && (join_clause.join_type == JoinType::Left || join_clause.join_type == JoinType::Full) {
+                                let mut merged_vals = Vec::with_capacity(l_row.values().len() + right_col_names.len());
+                                merged_vals.extend_from_slice(l_row.values());
+                                merged_vals.resize(merged_vals.len() + right_col_names.len(), Value::Null);
+                                joined_rows.push(Row::with_shared_columns(merged_cols_shared.clone(), merged_vals));
+                            }
+                        }
+
+                        if is_right_or_full {
+                            for (r_idx, r_row) in right_rows.iter().enumerate() {
+                                if !matched_right_indices.contains(&r_idx) {
+                                    let mut merged_vals = Vec::with_capacity(all_col_names.len() + right_col_names.len());
+                                    merged_vals.resize(all_col_names.len(), Value::Null);
+                                    merged_vals.extend_from_slice(r_row.values());
+                                    joined_rows.push(Row::with_shared_columns(merged_cols_shared.clone(), merged_vals));
+                                }
                             }
                         }
                     }
@@ -1793,11 +2085,44 @@ impl SQLExecutor {
                     columns.clone()
                 };
 
+                let output_col_shared = Arc::new(output_col_names);
+
+                // Fast-path: Pre-resolve column indices for direct O(1) projection if columns are simple
+                let mut direct_indices: Option<Vec<usize>> = None;
+                if let Some(first) = left_rows.first() {
+                    let mut indices = Vec::with_capacity(output_col_shared.len());
+                    let mut all_matched = true;
+                    for col in output_col_shared.iter() {
+                        if col.contains('(') || col.contains(' ') {
+                            all_matched = false;
+                            break;
+                        }
+                        if let Some(pos) = first.columns().iter().position(|c| col_name_matches(c, col)) {
+                            indices.push(pos);
+                        } else {
+                            all_matched = false;
+                            break;
+                        }
+                    }
+                    if all_matched {
+                        direct_indices = Some(indices);
+                    }
+                }
+
                 let mut rows = Vec::new();
                 let skip_count = offset.unwrap_or(0);
                 let mut skipped = 0;
                 for row in left_rows {
-                    let projected = project_row(&row, &output_col_names)?;
+                    let projected = if let Some(ref indices) = direct_indices {
+                        let mut vals = Vec::with_capacity(indices.len());
+                        for &idx in indices {
+                            vals.push(row.values().get(idx).cloned().unwrap_or(Value::Null));
+                        }
+                        Row::with_shared_columns(output_col_shared.clone(), vals)
+                    } else {
+                        project_row(&row, &output_col_shared)?
+                    };
+
                     if distinct && rows.contains(&projected) {
                         continue;
                     }
@@ -2721,6 +3046,164 @@ impl SQLExecutor {
         }
     }
 
+    /// High-performance compiled/prepared statement insert execution path.
+    /// `encode_buf` is an optional reusable buffer for `encode_row_into` to avoid per-row allocations.
+    pub fn execute_insert_fast(
+        &mut self,
+        pager: &mut Pager,
+        table: &str,
+        columns: Option<&[String]>,
+        values: &[Value],
+        encode_buf: Option<&mut Vec<u8>>,
+    ) -> Result<(usize, Vec<Row>)> {
+        let (root_page, row_id, key_may_exist, is_temporal, vector_col);
+        let mut aligned_storage: Vec<Value> = Vec::new();
+        let mut use_aligned = false;
+
+        {
+            let table_def = self
+                .catalog
+                .get_table_mut(table)
+                .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
+
+            root_page = table_def.root_page;
+            vector_col = table_def.vector_column();
+            is_temporal = table_def.system_versioning || self.default_system_versioning;
+
+            if let Some(cols) = columns {
+                if cols.len() != values.len() {
+                    return Err(Error::SqlSyntax(
+                        "Column count does not match value count in INSERT".into(),
+                    ));
+                }
+                aligned_storage = vec![Value::Null; table_def.columns.len()];
+                for (c_name, val) in cols.iter().zip(values.iter().cloned()) {
+                    let idx = table_def
+                        .column_index(c_name)
+                        .ok_or_else(|| Error::Corrupted(format!("Unknown column: {c_name}")))?;
+                    aligned_storage[idx] = val;
+                }
+                use_aligned = true;
+            } else {
+                if values.len() != table_def.columns.len() {
+                    return Err(Error::SqlSyntax(format!(
+                        "INSERT requires {} values, got {}",
+                        table_def.columns.len(),
+                        values.len()
+                    )));
+                }
+            };
+
+            let old_next_row_id = table_def.next_row_id;
+            let pk_idx = table_def.primary_key_index();
+            let source = if use_aligned { &aligned_storage[..] } else { values };
+            let (rid, may_exist) = if let Some(idx) = pk_idx {
+                match &source[idx] {
+                    Value::Integer(i) => {
+                        let id_val = *i as u64;
+                        let may_exist = id_val < old_next_row_id;
+                        if id_val >= table_def.next_row_id {
+                            table_def.next_row_id = id_val + 1;
+                        }
+                        (id_val, may_exist)
+                    }
+                    Value::Null => {
+                        let rid = table_def.next_row_id;
+                        table_def.next_row_id += 1;
+                        if !use_aligned {
+                            aligned_storage = values.to_vec();
+                            use_aligned = true;
+                        }
+                        aligned_storage[idx] = Value::Integer(rid as i64);
+                        (rid, false)
+                    }
+                    _ => {
+                        let rid = table_def.next_row_id;
+                        table_def.next_row_id += 1;
+                        (rid, false)
+                    }
+                }
+            } else {
+                let rid = table_def.next_row_id;
+                table_def.next_row_id += 1;
+                (rid, false)
+            };
+            row_id = rid;
+            key_may_exist = may_exist;
+        }
+
+        if key_may_exist {
+            if self.btree.search(pager, root_page, row_id)?.is_some() {
+                return Err(Error::ConstraintViolation(format!(
+                    "UNIQUE constraint failed: {table} (key {row_id} already exists)"
+                )));
+            }
+        }
+
+        let final_values: &[Value] = if use_aligned { &aligned_storage } else { values };
+
+        // Use reusable encode buffer if provided, otherwise allocate
+        if let Some(buf) = encode_buf {
+            encode_row_into(final_values, buf);
+            self.btree.insert(pager, root_page, row_id, buf)?;
+
+            if is_temporal {
+                let now_ts = self.next_temporal_timestamp();
+                self.record_temporal_version(pager, table, row_id, buf, now_ts, u64::MAX)?;
+            }
+        } else {
+            let payload = encode_row(final_values);
+            self.btree.insert(pager, root_page, row_id, &payload)?;
+
+            if is_temporal {
+                let now_ts = self.next_temporal_timestamp();
+                self.record_temporal_version(pager, table, row_id, &payload, now_ts, u64::MAX)?;
+            }
+        }
+
+        if let Some((v_idx, _)) = vector_col {
+            if let Some(Value::Vector(vec_data)) = final_values.get(v_idx) {
+                let index = self
+                    .vector_indexes
+                    .entry(table.to_lowercase())
+                    .or_insert_with(|| HnswIndex::new(vec_data.len(), DistanceMetric::Cosine));
+                index.insert_vector(row_id, vec_data)?;
+                if !pager.is_in_transaction() {
+                    let _ = self.persist_vector_indexes_to_disk(pager);
+                }
+            }
+        }
+
+        let has_indexes = self.catalog.indexes().iter().any(|idx| idx.table.eq_ignore_ascii_case(table));
+        if has_indexes {
+            let table_def = self.catalog.get_table(table).unwrap();
+            let temp_row = Row::new(
+                table_def.columns.iter().map(|c| c.name.clone()).collect(),
+                final_values.to_vec(),
+            );
+            for index_def in self.catalog.indexes() {
+                if index_def.table.eq_ignore_ascii_case(table) {
+                    if let Some(val) = temp_row.get_field_or_json_path(&index_def.column) {
+                        if !val.is_null() {
+                            let key = value_to_index_key(&val);
+                            let mut bucket = if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
+                                serde_json::from_slice::<IndexBucket>(&payload).unwrap_or_else(|_| IndexBucket::new())
+                            } else {
+                                IndexBucket::new()
+                            };
+                            bucket.add_row_id(val, row_id);
+                            let idx_payload = serde_json::to_vec(&bucket)
+                                .map_err(|e| Error::Corrupted(format!("Failed to serialize index bucket: {e}")))?;
+                            self.btree.insert(pager, index_def.root_page, key, &idx_payload)?;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok((1, Vec::new()))
+    }
+
     fn execute_insert(
         &mut self,
         pager: &mut Pager,
@@ -2977,24 +3460,27 @@ impl SQLExecutor {
         }
 
         // Update secondary indexes with inverted posting lists
-        let temp_row = Row::new(
-            table_cols.iter().map(|c| c.name.clone()).collect(),
-            aligned_values.clone(),
-        );
-        for index_def in self.catalog.indexes() {
-            if index_def.table.eq_ignore_ascii_case(&table) {
-                if let Some(val) = temp_row.get_field_or_json_path(&index_def.column) {
-                    if !val.is_null() {
-                        let key = value_to_index_key(&val);
-                        let mut bucket = if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                            serde_json::from_slice::<IndexBucket>(&payload).unwrap_or_else(|_| IndexBucket::new())
-                        } else {
-                            IndexBucket::new()
-                        };
-                        bucket.add_row_id(val, row_id);
-                        let idx_payload = serde_json::to_vec(&bucket)
-                            .map_err(|e| Error::Corrupted(format!("Failed to serialize index bucket: {e}")))?;
-                        self.btree.insert(pager, index_def.root_page, key, &idx_payload)?;
+        let has_indexes = self.catalog.indexes().iter().any(|idx| idx.table.eq_ignore_ascii_case(&table));
+        if has_indexes {
+            let temp_row = Row::new(
+                table_cols.iter().map(|c| c.name.clone()).collect(),
+                aligned_values.clone(),
+            );
+            for index_def in self.catalog.indexes() {
+                if index_def.table.eq_ignore_ascii_case(&table) {
+                    if let Some(val) = temp_row.get_field_or_json_path(&index_def.column) {
+                        if !val.is_null() {
+                            let key = value_to_index_key(&val);
+                            let mut bucket = if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
+                                serde_json::from_slice::<IndexBucket>(&payload).unwrap_or_else(|_| IndexBucket::new())
+                            } else {
+                                IndexBucket::new()
+                            };
+                            bucket.add_row_id(val, row_id);
+                            let idx_payload = serde_json::to_vec(&bucket)
+                                .map_err(|e| Error::Corrupted(format!("Failed to serialize index bucket: {e}")))?;
+                            self.btree.insert(pager, index_def.root_page, key, &idx_payload)?;
+                        }
                     }
                 }
             }

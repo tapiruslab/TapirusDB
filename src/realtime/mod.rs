@@ -7,7 +7,7 @@
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// Type of database mutation operation
@@ -51,6 +51,7 @@ type Callback = Arc<dyn Fn(&ChangeEvent) + Send + Sync>;
 /// In-memory Realtime Event Bus for Table Subscriptions & Live Queries
 pub struct RealtimeBus {
     next_sub_id: AtomicU64,
+    active_subscribers: AtomicUsize,
     table_subscribers: RwLock<HashMap<String, Vec<(u64, Callback)>>>,
     global_subscribers: RwLock<Vec<(u64, Callback)>>,
 }
@@ -66,9 +67,16 @@ impl RealtimeBus {
     pub fn new() -> Self {
         Self {
             next_sub_id: AtomicU64::new(1),
+            active_subscribers: AtomicUsize::new(0),
             table_subscribers: RwLock::new(HashMap::new()),
             global_subscribers: RwLock::new(Vec::new()),
         }
+    }
+
+    /// Whether any table or global subscribers are currently active
+    #[inline(always)]
+    pub fn has_subscribers(&self) -> bool {
+        self.active_subscribers.load(Ordering::Relaxed) > 0
     }
 
     /// Subscribe to changes on a specific table or all tables ('*')
@@ -77,6 +85,7 @@ impl RealtimeBus {
         F: Fn(&ChangeEvent) + Send + Sync + 'static,
     {
         let id = self.next_sub_id.fetch_add(1, Ordering::SeqCst);
+        self.active_subscribers.fetch_add(1, Ordering::SeqCst);
         let cb: Callback = Arc::new(callback);
 
         if table == "*" {
@@ -92,20 +101,35 @@ impl RealtimeBus {
 
     /// Unsubscribe an active subscription by ID
     pub fn unsubscribe(&self, sub_id: u64) {
+        let mut removed = false;
         {
             let mut global = self.global_subscribers.write();
+            let before = global.len();
             global.retain(|(id, _)| *id != sub_id);
+            if global.len() < before {
+                removed = true;
+            }
         }
         {
             let mut map = self.table_subscribers.write();
             for subscribers in map.values_mut() {
+                let before = subscribers.len();
                 subscribers.retain(|(id, _)| *id != sub_id);
+                if subscribers.len() < before {
+                    removed = true;
+                }
             }
+        }
+        if removed {
+            self.active_subscribers.fetch_sub(1, Ordering::SeqCst);
         }
     }
 
     /// Publish a change event to all relevant table and global subscribers
     pub fn publish(&self, event: &ChangeEvent) {
+        if !self.has_subscribers() {
+            return;
+        }
         // 1. Notify table-specific subscribers
         {
             let map = self.table_subscribers.read();

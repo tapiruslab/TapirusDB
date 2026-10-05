@@ -56,7 +56,7 @@ sha2 = "0.10"
 subtle = "2.6"
 
 # Serialization & Deserialization
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 
 # Error Handling
@@ -81,6 +81,14 @@ std = []
 simd = ["dep:wide"]
 tap-deep = []
 cloud-s3 = ["dep:ureq"]
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
 
 [profile.release]
 opt-level = 3

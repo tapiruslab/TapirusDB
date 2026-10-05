@@ -4,7 +4,8 @@
 //! node splitting, and hierarchical tree traversal.
 
 use crate::btree::{
-    PageHeader, PageType, TableInteriorCell, TableLeafCell, PAGE_RESERVED_TRAILER,
+    decode_varint, encode_varint, PageHeader, PageType, TableInteriorCell, TableLeafCell,
+    PAGE_RESERVED_TRAILER,
 };
 use crate::error::{Error, Result};
 use crate::pager::{PageId, Pager, DATABASE_HEADER_SIZE};
@@ -113,6 +114,22 @@ pub fn read_interior_cell(
     TableInteriorCell::from_bytes(&page_buf[ptr..])
 }
 
+/// Read only the row_id of a leaf cell at `cell_idx` without allocating a payload buffer
+#[inline(always)]
+pub fn read_leaf_cell_row_id(page_buf: &[u8], page_id: PageId, cell_idx: usize) -> Result<u64> {
+    let ptr = read_cell_pointer(page_buf, page_id, cell_idx)? as usize;
+    if ptr >= page_buf.len() {
+        return Err(Error::Corrupted("Cell pointer points past end of page".into()));
+    }
+    let slice = &page_buf[ptr..];
+    let (_payload_size, n1) = decode_varint(slice)?;
+    if slice.len() <= n1 {
+        return Err(Error::Corrupted("Truncated cell row_id".into()));
+    }
+    let (row_id, _n2) = decode_varint(&slice[n1..])?;
+    Ok(row_id)
+}
+
 /// Binary search for a row_id in a leaf page.
 /// Returns Ok(index) if found, Err(insertion_index) if not found.
 pub fn find_leaf_cell_index_by_key(
@@ -122,16 +139,27 @@ pub fn find_leaf_cell_index_by_key(
 ) -> Result<std::result::Result<usize, usize>> {
     let header = read_page_header(page_buf, page_id)?;
     let num_cells = header.num_cells as usize;
+    if num_cells == 0 {
+        return Ok(Err(0));
+    }
+
+    // Fast-path: Check if appending after the last cell (common for auto-increment / bulk insert)
+    let last_row_id = read_leaf_cell_row_id(page_buf, page_id, num_cells - 1)?;
+    if key > last_row_id {
+        return Ok(Err(num_cells));
+    } else if key == last_row_id {
+        return Ok(Ok(num_cells - 1));
+    }
 
     let mut low = 0;
     let mut high = num_cells;
 
     while low < high {
         let mid = low + (high - low) / 2;
-        let cell = read_leaf_cell(page_buf, page_id, mid)?;
-        if cell.row_id == key {
+        let row_id = read_leaf_cell_row_id(page_buf, page_id, mid)?;
+        if row_id == key {
             return Ok(Ok(mid));
-        } else if cell.row_id < key {
+        } else if row_id < key {
             low = mid + 1;
         } else {
             high = mid;
@@ -150,8 +178,12 @@ pub fn insert_leaf_cell_into_page(
 ) -> Result<bool> {
     let page_size = page_buf.len();
     let mut header = read_page_header(page_buf, page_id)?;
-    let cell_bytes = cell.to_bytes();
-    let cell_size = cell_bytes.len();
+
+    let mut varint_buf1 = [0u8; 9];
+    let mut varint_buf2 = [0u8; 9];
+    let n1 = encode_varint(cell.payload.len() as u64, &mut varint_buf1);
+    let n2 = encode_varint(cell.row_id, &mut varint_buf2);
+    let cell_size = n1 + n2 + cell.payload.len() + 4;
     let needed_space = cell_size + 2; // Cell payload + 2-byte pointer
 
     let offset = page_header_offset(page_id);
@@ -186,18 +218,26 @@ pub fn insert_leaf_cell_into_page(
         .checked_sub(cell_size as u16)
         .ok_or_else(|| Error::Corrupted("Cell offset arithmetic underflow".into()))?;
 
-    // Write cell payload at bottom of page
+    // Write cell payload at bottom of page directly without intermediate Vec allocation
     let content_start = cur_content_offset as usize;
-    page_buf[content_start..content_start + cell_size].copy_from_slice(&cell_bytes);
+    page_buf[content_start..content_start + n1].copy_from_slice(&varint_buf1[..n1]);
+    page_buf[content_start + n1..content_start + n1 + n2].copy_from_slice(&varint_buf2[..n2]);
+    let payload_start = content_start + n1 + n2;
+    page_buf[payload_start..payload_start + cell.payload.len()].copy_from_slice(&cell.payload);
+    let overflow_start = payload_start + cell.payload.len();
+    let overflow = cell.overflow_page.unwrap_or(0);
+    page_buf[overflow_start..overflow_start + 4].copy_from_slice(&overflow.to_le_bytes());
 
-    // Shift cell pointer array to open slot at insert_idx
+    // Shift cell pointer array to open slot at insert_idx (only if not appending at end)
     let ptr_array_start = offset + header.header_size();
     let old_num_cells = header.num_cells as usize;
-    for i in (insert_idx..old_num_cells).rev() {
-        let p_curr = ptr_array_start + (i + 1) * 2;
-        let p_prev = ptr_array_start + i * 2;
-        page_buf[p_curr] = page_buf[p_prev];
-        page_buf[p_curr + 1] = page_buf[p_prev + 1];
+    if insert_idx < old_num_cells {
+        for i in (insert_idx..old_num_cells).rev() {
+            let p_curr = ptr_array_start + (i + 1) * 2;
+            let p_prev = ptr_array_start + i * 2;
+            page_buf[p_curr] = page_buf[p_prev];
+            page_buf[p_curr + 1] = page_buf[p_prev + 1];
+        }
     }
 
     // Write new pointer
@@ -463,47 +503,55 @@ impl BTreeStorage {
         let mut curr_page_id = root_page;
 
         loop {
-            let page_buf = pager.read_page(curr_page_id)?;
-            let header = read_page_header(&page_buf, curr_page_id)?;
+            enum Step {
+                Leaf(Option<(Vec<u8>, Option<u32>)>),
+                Interior(PageId),
+            }
 
-            match header.page_type {
-                PageType::TableLeaf => {
-                    let search_res = find_leaf_cell_index_by_key(&page_buf, curr_page_id, key)?;
-                    return match search_res {
-                        Ok(cell_idx) => {
-                            let cell = read_leaf_cell(&page_buf, curr_page_id, cell_idx)?;
-                            let full_payload = if let Some(overflow_id) = cell.overflow_page {
-                                let mut p = cell.payload;
-                                let overflow_data = read_overflow_chain(pager, overflow_id)?;
-                                p.extend_from_slice(&overflow_data);
-                                p
-                            } else {
-                                cell.payload
-                            };
-                            Ok(Some(full_payload))
-                        }
-                        Err(_) => Ok(None),
-                    };
-                }
-                PageType::TableInterior => {
-                    let mut next_page = header
-                        .right_child
-                        .ok_or_else(|| Error::Corrupted("Interior node missing right_child".into()))?;
-
-                    for i in 0..header.num_cells as usize {
-                        let cell = read_interior_cell(&page_buf, curr_page_id, i)?;
-                        if key <= cell.row_id {
-                            next_page = cell.left_child;
-                            break;
+            let step = pager.with_page(curr_page_id, |page_buf| {
+                let header = read_page_header(page_buf, curr_page_id)?;
+                match header.page_type {
+                    PageType::TableLeaf => {
+                        let search_res = find_leaf_cell_index_by_key(page_buf, curr_page_id, key)?;
+                        match search_res {
+                            Ok(cell_idx) => {
+                                let cell = read_leaf_cell(page_buf, curr_page_id, cell_idx)?;
+                                Ok(Step::Leaf(Some((cell.payload, cell.overflow_page))))
+                            }
+                            Err(_) => Ok(Step::Leaf(None)),
                         }
                     }
+                    PageType::TableInterior => {
+                        let mut next_page = header
+                            .right_child
+                            .ok_or_else(|| Error::Corrupted("Interior node missing right_child".into()))?;
 
-                    curr_page_id = next_page;
-                }
-                other => {
-                    return Err(Error::Corrupted(format!(
+                        for i in 0..header.num_cells as usize {
+                            let cell = read_interior_cell(page_buf, curr_page_id, i)?;
+                            if key <= cell.row_id {
+                                next_page = cell.left_child;
+                                break;
+                            }
+                        }
+                        Ok(Step::Interior(next_page))
+                    }
+                    other => Err(Error::Corrupted(format!(
                         "Unexpected page type {other:?} encountered during BTree search"
-                    )))
+                    ))),
+                }
+            })?;
+
+            match step {
+                Step::Leaf(Some((mut payload, overflow_page))) => {
+                    if let Some(overflow_id) = overflow_page {
+                        let overflow_data = read_overflow_chain(pager, overflow_id)?;
+                        payload.extend_from_slice(&overflow_data);
+                    }
+                    return Ok(Some(payload));
+                }
+                Step::Leaf(None) => return Ok(None),
+                Step::Interior(next_id) => {
+                    curr_page_id = next_id;
                 }
             }
         }
@@ -590,37 +638,45 @@ impl BTreeStorage {
         curr_page_id: PageId,
         cell: TableLeafCell,
     ) -> Result<Option<(PageId, u64)>> {
-        let mut page_buf = pager.read_page(curr_page_id)?;
-        let header = read_page_header(&page_buf, curr_page_id)?;
+        let page_type = pager.with_page(curr_page_id, |page_buf| {
+            let header = read_page_header(page_buf, curr_page_id)?;
+            Ok(header.page_type)
+        })?;
 
-        match header.page_type {
+        match page_type {
             PageType::TableLeaf => {
-                let inserted = insert_leaf_cell_into_page(&mut page_buf, curr_page_id, &cell)?;
+                let inserted = pager.modify_page(curr_page_id, |page_buf| {
+                    insert_leaf_cell_into_page(page_buf, curr_page_id, &cell)
+                })?;
                 if inserted {
-                    pager.write_page(curr_page_id, &page_buf)?;
                     Ok(None)
                 } else {
                     // Leaf page is full! Must split into two pages
+                    let page_buf = pager.read_page(curr_page_id)?;
                     let (right_page_id, split_key) =
                         self.split_leaf_page(pager, curr_page_id, &page_buf, cell)?;
                     Ok(Some((right_page_id, split_key)))
                 }
             }
             PageType::TableInterior => {
-                let num_cells = header.num_cells as usize;
-                let mut target_child = header
-                    .right_child
-                    .ok_or_else(|| Error::Corrupted("Interior node missing right_child".into()))?;
-                let mut child_idx: Option<usize> = None;
+                let (target_child, child_idx) = pager.with_page(curr_page_id, |page_buf| {
+                    let header = read_page_header(page_buf, curr_page_id)?;
+                    let num_cells = header.num_cells as usize;
+                    let mut tc = header
+                        .right_child
+                        .ok_or_else(|| Error::Corrupted("Interior node missing right_child".into()))?;
+                    let mut c_idx = None;
 
-                for i in 0..num_cells {
-                    let icell = read_interior_cell(&page_buf, curr_page_id, i)?;
-                    if cell.row_id <= icell.row_id {
-                        target_child = icell.left_child;
-                        child_idx = Some(i);
-                        break;
+                    for i in 0..num_cells {
+                        let icell = read_interior_cell(page_buf, curr_page_id, i)?;
+                        if cell.row_id <= icell.row_id {
+                            tc = icell.left_child;
+                            c_idx = Some(i);
+                            break;
+                        }
                     }
-                }
+                    Ok((tc, c_idx))
+                })?;
 
                 let child_split = self.insert_into_subtree(pager, target_child, cell)?;
 
@@ -630,22 +686,24 @@ impl BTreeStorage {
                         row_id: child_split_key,
                     };
 
-                    let mut curr_buf = pager.read_page(curr_page_id)?;
-                    let can_fit = insert_interior_cell_into_page(
-                        &mut curr_buf,
-                        curr_page_id,
-                        &new_interior_cell,
-                    )?;
+                    let can_fit = pager.modify_page(curr_page_id, |curr_buf| {
+                        let ok = insert_interior_cell_into_page(
+                            curr_buf,
+                            curr_page_id,
+                            &new_interior_cell,
+                        )?;
+                        if ok && child_idx.is_none() {
+                            let mut h = read_page_header(curr_buf, curr_page_id)?;
+                            h.right_child = Some(new_child_id);
+                            write_page_header(curr_buf, curr_page_id, &h)?;
+                        }
+                        Ok(ok)
+                    })?;
 
                     if can_fit {
-                        if child_idx.is_none() {
-                            let mut h = read_page_header(&curr_buf, curr_page_id)?;
-                            h.right_child = Some(new_child_id);
-                            write_page_header(&mut curr_buf, curr_page_id, &h)?;
-                        }
-                        pager.write_page(curr_page_id, &curr_buf)?;
                         Ok(None)
                     } else {
+                        let curr_buf = pager.read_page(curr_page_id)?;
                         let new_rc = if child_idx.is_none() { Some(new_child_id) } else { None };
                         let (new_interior_page_id, split_key) = self.split_interior_page(
                             pager,
@@ -781,6 +839,83 @@ impl BTreeStorage {
     {
         self.scan_subtree_with(pager, root_page, &mut callback)?;
         Ok(())
+    }
+
+    /// Perform a zero-copy streaming scan passing borrowed payload slices `(row_id: u64, payload: &[u8])`
+    /// without allocating heap `Vec<u8>` per cell.
+    pub fn scan_with_ref<F>(&self, pager: &mut Pager, root_page: PageId, mut callback: F) -> Result<()>
+    where
+        F: FnMut(u64, &[u8]) -> Result<bool>,
+    {
+        self.scan_subtree_with_ref(pager, root_page, &mut callback)?;
+        Ok(())
+    }
+
+    fn scan_subtree_with_ref<F>(
+        &self,
+        pager: &mut Pager,
+        curr_page_id: PageId,
+        callback: &mut F,
+    ) -> Result<bool>
+    where
+        F: FnMut(u64, &[u8]) -> Result<bool>,
+    {
+        let page_buf = pager.read_page(curr_page_id)?;
+        let header = read_page_header(&page_buf, curr_page_id)?;
+
+        match header.page_type {
+            PageType::TableLeaf => {
+                for i in 0..header.num_cells as usize {
+                    let ptr = read_cell_pointer(&page_buf, curr_page_id, i)? as usize;
+                    if ptr >= page_buf.len() {
+                        return Err(Error::Corrupted("Cell pointer points past end of page".into()));
+                    }
+                    let (payload_size, n1) = crate::btree::decode_varint(&page_buf[ptr..])?;
+                    let (row_id, n2) = crate::btree::decode_varint(&page_buf[ptr + n1..])?;
+                    let offset = ptr + n1 + n2;
+                    let payload_len = payload_size as usize;
+                    if page_buf.len() < offset + payload_len + 4 {
+                        return Err(Error::Corrupted("Truncated cell payload or overflow pointer".into()));
+                    }
+                    let overflow = u32::from_le_bytes([
+                        page_buf[offset + payload_len],
+                        page_buf[offset + payload_len + 1],
+                        page_buf[offset + payload_len + 2],
+                        page_buf[offset + payload_len + 3],
+                    ]);
+
+                    if overflow == 0 {
+                        let payload_slice = &page_buf[offset..offset + payload_len];
+                        if !callback(row_id, payload_slice)? {
+                            return Ok(false);
+                        }
+                    } else {
+                        let mut full_payload = page_buf[offset..offset + payload_len].to_vec();
+                        let overflow_data = read_overflow_chain(pager, overflow)?;
+                        full_payload.extend_from_slice(&overflow_data);
+                        if !callback(row_id, &full_payload)? {
+                            return Ok(false);
+                        }
+                    }
+                }
+                Ok(true)
+            }
+            PageType::TableInterior => {
+                for i in 0..header.num_cells as usize {
+                    let icell = read_interior_cell(&page_buf, curr_page_id, i)?;
+                    if !self.scan_subtree_with_ref(pager, icell.left_child, callback)? {
+                        return Ok(false);
+                    }
+                }
+                if let Some(rc) = header.right_child {
+                    if !self.scan_subtree_with_ref(pager, rc, callback)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            other => Err(Error::Corrupted(format!("Invalid page type during scan: {other:?}"))),
+        }
     }
 
     fn scan_subtree_with<F>(
