@@ -1,6 +1,6 @@
 {
   "name": "@tapirus/db",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Official TypeScript & JavaScript SDK for TapirusDB — The Safe-Rust Embedded Multi-Model AI Database Engine",
   "main": "index.js",
   "types": "index.d.ts",
