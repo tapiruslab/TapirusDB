@@ -8,7 +8,7 @@ pub mod remote;
 pub mod wal;
 
 use crate::error::{Error, Result};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -220,6 +220,7 @@ impl DatabaseHeader {
 #[derive(Debug, Clone)]
 struct TransactionSavepoint {
     undo_pages: HashMap<PageId, Option<Vec<u8>>>,
+    dirty_pages: HashSet<PageId>,
     total_pages: u32,
     wal_frame_count: usize,
 }
@@ -707,7 +708,7 @@ impl Pager {
                     continue; // Preserve page 1 header / schema root
                 }
                 if let Some(sp) = &self.transaction_savepoint {
-                    if sp.undo_pages.contains_key(&pid) {
+                    if sp.undo_pages.contains_key(&pid) || sp.dirty_pages.contains(&pid) {
                         continue; // Preserve active uncommitted transactional pages
                     }
                 }
@@ -823,6 +824,73 @@ impl Pager {
         Err(Error::PageNotFound(page_id))
     }
 
+    /// Inspect an in-memory page frame by reference without allocating or cloning 4KB buffers.
+    pub fn with_page<R, F: FnOnce(&[u8]) -> Result<R>>(&mut self, page_id: PageId, f: F) -> Result<R> {
+        if page_id == 0 || page_id > self.header.total_pages {
+            return Err(Error::PageNotFound(page_id));
+        }
+
+        if !self.in_memory_pages.contains_key(&page_id) {
+            let loaded = self.read_page(page_id)?;
+            self.in_memory_pages.insert(page_id, loaded);
+        }
+
+        let buf = self.in_memory_pages.get(&page_id).unwrap();
+        f(buf)
+    }
+
+    /// Mutate an in-memory page frame in place without allocating or cloning 4KB buffers.
+    /// If in an active transaction, the original page is preserved for rollback if not yet saved.
+    pub fn modify_page<R, F: FnOnce(&mut [u8]) -> Result<R>>(&mut self, page_id: PageId, f: F) -> Result<R> {
+        if page_id == 0 || page_id > self.header.total_pages {
+            return Err(Error::PageNotFound(page_id));
+        }
+
+        // Ensure page is loaded in in_memory_pages
+        if !self.in_memory_pages.contains_key(&page_id) {
+            let loaded = self.read_page(page_id)?;
+            self.in_memory_pages.insert(page_id, loaded);
+        }
+
+        // If in an active transaction, record original page data for undo rollback if not yet recorded
+        let needs_undo = self.transaction_savepoint.as_ref().map(|sp| (!sp.undo_pages.contains_key(&page_id), sp.total_pages));
+        if let Some((true, total_pages)) = needs_undo {
+            let prev_data = if let Some(cached) = self.in_memory_pages.get(&page_id) {
+                Some(cached.clone())
+            } else if page_id <= total_pages {
+                Some(self.read_page(page_id)?)
+            } else {
+                None
+            };
+            if let Some(sp) = &mut self.transaction_savepoint {
+                sp.undo_pages.insert(page_id, prev_data);
+            }
+        }
+
+        let is_in_tx = self.is_in_transaction();
+        if is_in_tx {
+            if let Some(sp) = &mut self.transaction_savepoint {
+                sp.dirty_pages.insert(page_id);
+            }
+        }
+
+        let buf = self.in_memory_pages.get_mut(&page_id).unwrap();
+        let res = f(buf)?;
+
+        if page_id == 1 {
+            let header_bytes = self.header.to_bytes();
+            let len = header_bytes.len().min(buf.len());
+            buf[..len].copy_from_slice(&header_bytes[..len]);
+        }
+
+        if !is_in_tx {
+            let clone_for_write = buf.clone();
+            self.write_page(page_id, &clone_for_write)?;
+        }
+
+        Ok(res)
+    }
+
     /// Write data to a page by its ID via the Write-Ahead Log
     pub fn write_page(&mut self, page_id: PageId, data: &[u8]) -> Result<()> {
         if self.remote_reader.is_some() && self.file.is_none() && self.remote_writer.is_none() {
@@ -886,6 +954,17 @@ impl Pager {
 
         // Cache plaintext in memory for O(1) reads
         self.in_memory_pages.insert(page_id, data.to_vec());
+
+        // If in an active transaction, defer WAL writing and encryption/compression:
+        // simply mark page as dirty in buffer pool and return immediately.
+        let is_in_tx = self.is_in_transaction();
+        if is_in_tx {
+            if let Some(sp) = &mut self.transaction_savepoint {
+                sp.dirty_pages.insert(page_id);
+            }
+            return Ok(());
+        }
+
         self.touch_lru(page_id);
         self.evict_if_needed();
 
@@ -907,16 +986,11 @@ impl Pager {
             payload
         };
 
-        // 1. Write frame to WAL or fallback to disk file
-        let is_in_tx = self.is_in_transaction();
+        // Direct write or non-transactional WAL append
         let should_checkpoint = if let Some(wal) = &mut self.wal {
-            let is_commit = !is_in_tx;
-            wal.write_frame(page_id, &disk_bytes, is_commit, self.header.total_pages)?;
-
-            // Auto-checkpoint only outside active transactions if WAL exceeds configured threshold
-            !is_in_tx && wal.frame_count() >= self.checkpoint_threshold
+            wal.write_frame(page_id, &disk_bytes, true, self.header.total_pages)?;
+            wal.frame_count() >= self.checkpoint_threshold
         } else {
-            // Fallback direct write if WAL is disabled
             if let Some(file) = &mut self.file {
                 let offset = (page_id as u64 - 1) * page_size as u64;
                 file.seek(SeekFrom::Start(offset))?;
@@ -989,18 +1063,21 @@ impl Pager {
         }
 
         let empty_page = vec![0u8; page_size];
+        let is_in_tx = self.is_in_transaction();
         if !reused_from_freelist {
             if self.file.is_none() && self.remote_writer.is_some() {
                 self.in_memory_pages.insert(allocated_id, empty_page);
                 self.sync_header_into_page1_cache();
                 return Ok(allocated_id);
             }
-            if let Some(file) = &mut self.file {
-                // Write the new empty page to extend the physical file
-                let offset = (allocated_id as u64 - 1) * page_size as u64;
-                file.seek(SeekFrom::Start(offset))?;
-                file.write_all(&empty_page)?;
-                file.sync_data()?;
+            if !is_in_tx && self.wal.is_none() {
+                if let Some(file) = &mut self.file {
+                    // Write the new empty page to extend the physical file
+                    let offset = (allocated_id as u64 - 1) * page_size as u64;
+                    file.seek(SeekFrom::Start(offset))?;
+                    file.write_all(&empty_page)?;
+                    file.sync_data()?;
+                }
             }
         }
 
@@ -1013,19 +1090,25 @@ impl Pager {
 
         if let Some(page1_data) = self.in_memory_pages.get(&1).cloned() {
             let is_in_tx = self.transaction_savepoint.is_some();
-            let is_commit = !is_in_tx;
-            let payload = if let Some(cipher) = &self.cipher {
-                cipher.encrypt_page(1, &page1_data)?
+            if is_in_tx {
+                if let Some(sp) = &mut self.transaction_savepoint {
+                    sp.dirty_pages.insert(1);
+                    sp.dirty_pages.insert(allocated_id);
+                }
             } else {
-                page1_data.clone()
-            };
-            if let Some(wal) = &mut self.wal {
-                wal.write_frame(1, &payload, is_commit, self.header.total_pages)?;
-            } else if let Some(file) = &mut self.file {
-                let header_bytes = self.header.to_bytes();
-                file.seek(SeekFrom::Start(0))?;
-                file.write_all(&header_bytes)?;
-                file.sync_data()?;
+                let payload = if let Some(cipher) = &self.cipher {
+                    cipher.encrypt_page(1, &page1_data)?
+                } else {
+                    page1_data.clone()
+                };
+                if let Some(wal) = &mut self.wal {
+                    wal.write_frame(1, &payload, true, self.header.total_pages)?;
+                } else if let Some(file) = &mut self.file {
+                    let header_bytes = self.header.to_bytes();
+                    file.seek(SeekFrom::Start(0))?;
+                    file.write_all(&header_bytes)?;
+                    file.sync_data()?;
+                }
             }
         }
 
@@ -1123,6 +1206,7 @@ impl Pager {
         let frame_count = self.wal.as_ref().map(|w| w.frame_count()).unwrap_or(0);
         self.transaction_savepoint = Some(TransactionSavepoint {
             undo_pages: HashMap::new(),
+            dirty_pages: HashSet::new(),
             total_pages: self.header.total_pages,
             wal_frame_count: frame_count,
         });
@@ -1131,9 +1215,51 @@ impl Pager {
 
     /// Commit the current transaction
     pub fn commit_transaction(&mut self) -> Result<()> {
-        if self.transaction_savepoint.take().is_none() {
-            return Err(Error::TransactionError("No active transaction to commit".into()));
+        let savepoint = self.transaction_savepoint.take()
+            .ok_or_else(|| Error::TransactionError("No active transaction to commit".into()))?;
+
+        let page_size = self.page_size();
+        let total_pages = self.header.total_pages;
+
+        // Flush buffered transactional dirty pages to WAL in sorted/sequential order
+        if !savepoint.dirty_pages.is_empty() {
+            let mut sorted_dirty: Vec<PageId> = savepoint.dirty_pages.into_iter().collect();
+            sorted_dirty.sort_unstable();
+
+            let num_dirty = sorted_dirty.len();
+            for (idx, pid) in sorted_dirty.into_iter().enumerate() {
+                let is_final_commit = idx == num_dirty - 1;
+                if let Some(page_data) = self.in_memory_pages.get(&pid).cloned() {
+                    let payload = if self.is_compressed() && pid > 1 {
+                        let mut comp = compression::compress_page_frame(&page_data);
+                        if comp.len() < page_size {
+                            comp.resize(page_size, 0);
+                        }
+                        comp
+                    } else {
+                        page_data
+                    };
+
+                    let disk_bytes = if let Some(cipher) = &self.cipher {
+                        cipher.encrypt_page(pid, &payload)?
+                    } else {
+                        payload
+                    };
+
+                    if let Some(wal) = &mut self.wal {
+                        wal.write_frame(pid, &disk_bytes, is_final_commit, total_pages)?;
+                    } else if let Some(file) = &mut self.file {
+                        let offset = (pid as u64 - 1) * page_size as u64;
+                        file.seek(SeekFrom::Start(offset))?;
+                        file.write_all(&disk_bytes)?;
+                        if is_final_commit {
+                            file.sync_data()?;
+                        }
+                    }
+                }
+            }
         }
+
         if let Some(wal) = &mut self.wal {
             wal.sync()?;
             if wal.frame_count() >= self.checkpoint_threshold {

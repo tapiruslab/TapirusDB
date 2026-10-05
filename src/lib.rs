@@ -1022,7 +1022,107 @@ impl Connection {
     /// Prepare a SQL statement for safe parameterized execution
     pub fn prepare<'a>(&'a self, sql: &str) -> Result<PreparedStatement<'a>> {
         let tokens = crate::sql::lexer::tokenize(sql)?;
-        Ok(PreparedStatement { conn: self, tokens })
+        let plan = Self::try_compile_insert_plan(&tokens);
+        let preparsed = if plan.is_none() && !tokens.iter().any(|t| matches!(t, crate::sql::lexer::Token::QuestionMark)) {
+            crate::sql::parser::parse_tokens(&tokens).ok()
+        } else {
+            None
+        };
+        Ok(PreparedStatement { conn: self, tokens, plan, preparsed, encode_buf: std::cell::RefCell::new(Vec::with_capacity(256)) })
+    }
+
+    fn try_compile_insert_plan(tokens: &[crate::sql::lexer::Token]) -> Option<PreparedPlan> {
+        use crate::sql::lexer::Token;
+        let mut i = 0;
+        if i < tokens.len() && tokens[i] == Token::Insert {
+            i += 1;
+        } else {
+            return None;
+        }
+        if i < tokens.len() && tokens[i] == Token::Into {
+            i += 1;
+        } else {
+            return None;
+        }
+        let table = match tokens.get(i) {
+            Some(Token::Ident(name)) => {
+                i += 1;
+                name.clone()
+            }
+            _ => return None,
+        };
+
+        let mut columns = None;
+        if i < tokens.len() && tokens[i] == Token::OpenParen {
+            i += 1;
+            let mut cols = Vec::new();
+            while i < tokens.len() {
+                match &tokens[i] {
+                    Token::Ident(c) => cols.push(c.clone()),
+                    _ => return None,
+                }
+                i += 1;
+                if i < tokens.len() && tokens[i] == Token::Comma {
+                    i += 1;
+                    continue;
+                } else if i < tokens.len() && tokens[i] == Token::CloseParen {
+                    i += 1;
+                    break;
+                } else {
+                    return None;
+                }
+            }
+            columns = Some(cols);
+        }
+
+        if i < tokens.len() && tokens[i] == Token::Values {
+            i += 1;
+        } else {
+            return None;
+        }
+
+        if i < tokens.len() && tokens[i] == Token::OpenParen {
+            i += 1;
+        } else {
+            return None;
+        }
+
+        let mut param_count = 0;
+        while i < tokens.len() {
+            if tokens[i] == Token::QuestionMark {
+                param_count += 1;
+                i += 1;
+                // handle optional ?1, ?2, etc.
+                if i < tokens.len() && matches!(tokens[i], Token::IntLit(_)) {
+                    i += 1;
+                }
+                if i < tokens.len() && tokens[i] == Token::Comma {
+                    i += 1;
+                    continue;
+                } else if i < tokens.len() && tokens[i] == Token::CloseParen {
+                    i += 1;
+                    break;
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+
+        if i < tokens.len() && tokens[i] == Token::Semicolon {
+            i += 1;
+        }
+
+        if i == tokens.len() {
+            Some(PreparedPlan::Insert {
+                table,
+                columns,
+                param_count,
+            })
+        } else {
+            None
+        }
     }
 
     /// Execute a parameterized non-query SQL command safely
@@ -1045,20 +1145,67 @@ impl Connection {
     }
 }
 
+#[derive(Debug, Clone)]
+enum PreparedPlan {
+    Insert {
+        table: String,
+        columns: Option<Vec<String>>,
+        param_count: usize,
+    },
+}
+
 /// A prepared SQL statement with pre-tokenized query and cached token stream for parameterized execution
 pub struct PreparedStatement<'a> {
     conn: &'a Connection,
     tokens: Vec<crate::sql::lexer::Token>,
+    plan: Option<PreparedPlan>,
+    preparsed: Option<Statement>,
+    /// Reusable encode buffer for insert fast-path — avoids per-row Vec allocations
+    encode_buf: std::cell::RefCell<Vec<u8>>,
 }
 
 impl<'a> PreparedStatement<'a> {
     /// Execute prepared non-query SQL command with parameter binding
     pub fn execute(&self, params: &[Value]) -> Result<usize> {
-        if self.tokens.is_empty() {
-            return Ok(0);
+        if let Some(PreparedPlan::Insert { table, columns, param_count }) = &self.plan {
+            if params.len() != *param_count {
+                return Err(Error::SqlSyntax(format!(
+                    "Parameter count mismatch: expected {}, got {}",
+                    param_count,
+                    params.len()
+                )));
+            }
+            let mut pager = self.conn.pager.write();
+            let mut executor = self.conn.executor.write();
+            let mut buf = self.encode_buf.borrow_mut();
+            let (affected, _) = executor.execute_insert_fast(&mut pager, table, columns.as_deref(), params, Some(&mut buf))?;
+
+            if self.conn.realtime.has_subscribers() {
+                let now_ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                self.conn.realtime.publish(&ChangeEvent {
+                    op: ChangeOp::Insert,
+                    table: table.clone(),
+                    row_id: affected as u64,
+                    timestamp: now_ts,
+                    data: serde_json::json!({"affected_rows": affected}),
+                });
+            }
+
+            return Ok(affected);
         }
-        let bound = crate::sql::parser::bind_parameters(&self.tokens, params)?;
-        let stmt = crate::sql::parser::parse_tokens(&bound)?;
+
+        let stmt = if let Some(p) = &self.preparsed {
+            p.clone()
+        } else {
+            if self.tokens.is_empty() {
+                return Ok(0);
+            }
+            let bound = crate::sql::parser::bind_parameters(&self.tokens, params)?;
+            crate::sql::parser::parse_tokens(&bound)?
+        };
 
         // Capture mutation metadata for CDC broadcast
         let cdc_info = match &stmt {
@@ -1073,17 +1220,19 @@ impl<'a> PreparedStatement<'a> {
         let affected = executor.execute(&mut pager, stmt)?;
 
         if let Some((op, table)) = cdc_info {
-            let now_ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            self.conn.realtime.publish(&ChangeEvent {
-                op,
-                table,
-                row_id: affected as u64,
-                timestamp: now_ts,
-                data: serde_json::json!({"affected_rows": affected}),
-            });
+            if self.conn.realtime.has_subscribers() {
+                let now_ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                self.conn.realtime.publish(&ChangeEvent {
+                    op,
+                    table,
+                    row_id: affected as u64,
+                    timestamp: now_ts,
+                    data: serde_json::json!({"affected_rows": affected}),
+                });
+            }
         }
 
         Ok(affected)
@@ -1091,11 +1240,15 @@ impl<'a> PreparedStatement<'a> {
 
     /// Execute prepared SQL query returning rows with parameter binding
     pub fn query(&self, params: &[Value]) -> Result<Vec<Row>> {
-        if self.tokens.is_empty() {
-            return Ok(Vec::new());
-        }
-        let bound = crate::sql::parser::bind_parameters(&self.tokens, params)?;
-        let stmt = crate::sql::parser::parse_tokens(&bound)?;
+        let stmt = if let Some(p) = &self.preparsed {
+            p.clone()
+        } else {
+            if self.tokens.is_empty() {
+                return Ok(Vec::new());
+            }
+            let bound = crate::sql::parser::bind_parameters(&self.tokens, params)?;
+            crate::sql::parser::parse_tokens(&bound)?
+        };
 
         // Capture mutation metadata for CDC broadcast if RETURNING was used
         let cdc_info = match &stmt {

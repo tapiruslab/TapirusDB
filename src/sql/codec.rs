@@ -20,73 +20,81 @@ const TAG_VECTOR: u8 = 0x0A;
 
 /// Encodes a slice of `Value`s into a compact binary tuple payload.
 pub fn encode_row(values: &[Value]) -> Vec<u8> {
-    let mut header = Vec::new();
-    let mut body = Vec::new();
+    let mut buf = Vec::with_capacity(values.len() * 10);
+    encode_row_into(values, &mut buf);
+    buf
+}
 
-    // 1. Column count as varint
+/// Encodes a slice of `Value`s into an existing buffer, clearing it first. Reuses the buffer's
+/// heap allocation across multiple calls to avoid per-row `Vec` allocations in hot insert loops.
+pub fn encode_row_into(values: &[Value], out: &mut Vec<u8>) {
+    out.clear();
+
+    // Reserve space for header (col_count varint + one tag byte per column)
     let mut varint_buf = [0u8; 9];
     let n = encode_varint(values.len() as u64, &mut varint_buf);
-    header.extend_from_slice(&varint_buf[..n]);
 
-    for val in values {
+    // We'll write header inline, then body. Collect tags first.
+
+    out.extend_from_slice(&varint_buf[..n]);
+    let tags_start = out.len();
+    // Reserve tag bytes (one per column), will fill in below
+    out.resize(tags_start + values.len(), 0);
+
+
+    for (col_idx, val) in values.iter().enumerate() {
         match val {
             Value::Null => {
-                header.push(TAG_NULL);
+                out[tags_start + col_idx] = TAG_NULL;
             }
             Value::Integer(0) => {
-                header.push(TAG_INT_0);
+                out[tags_start + col_idx] = TAG_INT_0;
             }
             Value::Integer(1) => {
-                header.push(TAG_INT_1);
+                out[tags_start + col_idx] = TAG_INT_1;
             }
             Value::Integer(i) => {
                 if let Ok(v) = i8::try_from(*i) {
-                    header.push(TAG_INT_I8);
-                    body.push(v as u8);
+                    out[tags_start + col_idx] = TAG_INT_I8;
+                    out.push(v as u8);
                 } else if let Ok(v) = i16::try_from(*i) {
-                    header.push(TAG_INT_I16);
-                    body.extend_from_slice(&v.to_le_bytes());
+                    out[tags_start + col_idx] = TAG_INT_I16;
+                    out.extend_from_slice(&v.to_le_bytes());
                 } else if let Ok(v) = i32::try_from(*i) {
-                    header.push(TAG_INT_I32);
-                    body.extend_from_slice(&v.to_le_bytes());
+                    out[tags_start + col_idx] = TAG_INT_I32;
+                    out.extend_from_slice(&v.to_le_bytes());
                 } else {
-                    header.push(TAG_INT_I64);
-                    body.extend_from_slice(&i.to_le_bytes());
+                    out[tags_start + col_idx] = TAG_INT_I64;
+                    out.extend_from_slice(&i.to_le_bytes());
                 }
             }
             Value::Real(r) => {
-                header.push(TAG_REAL);
-                body.extend_from_slice(&r.to_le_bytes());
+                out[tags_start + col_idx] = TAG_REAL;
+                out.extend_from_slice(&r.to_le_bytes());
             }
             Value::Text(s) => {
-                header.push(TAG_TEXT);
+                out[tags_start + col_idx] = TAG_TEXT;
                 let bytes = s.as_bytes();
                 let n = encode_varint(bytes.len() as u64, &mut varint_buf);
-                body.extend_from_slice(&varint_buf[..n]);
-                body.extend_from_slice(bytes);
+                out.extend_from_slice(&varint_buf[..n]);
+                out.extend_from_slice(bytes);
             }
             Value::Blob(b) => {
-                header.push(TAG_BLOB);
+                out[tags_start + col_idx] = TAG_BLOB;
                 let n = encode_varint(b.len() as u64, &mut varint_buf);
-                body.extend_from_slice(&varint_buf[..n]);
-                body.extend_from_slice(b);
+                out.extend_from_slice(&varint_buf[..n]);
+                out.extend_from_slice(b);
             }
             Value::Vector(v) => {
-                header.push(TAG_VECTOR);
+                out[tags_start + col_idx] = TAG_VECTOR;
                 let dims = v.len() as u16;
-                body.extend_from_slice(&dims.to_le_bytes());
+                out.extend_from_slice(&dims.to_le_bytes());
                 for f in v {
-                    body.extend_from_slice(&f.to_le_bytes());
+                    out.extend_from_slice(&f.to_le_bytes());
                 }
             }
         }
     }
-
-    // Combine header and body
-    let mut result = Vec::with_capacity(header.len() + body.len());
-    result.extend_from_slice(&header);
-    result.extend_from_slice(&body);
-    result
 }
 
 /// Decodes a binary payload into a list of `Value`s.
@@ -97,8 +105,14 @@ pub fn decode_row_values(bytes: &[u8]) -> Result<Vec<Value>> {
     Ok(values)
 }
 
-/// Decodes a binary payload directly into an existing `Vec<Value>` buffer, reusing memory allocations
-pub fn decode_row_values_into(bytes: &[u8], values: &mut Vec<Value>) -> Result<()> {
+/// Decodes a binary payload directly into an existing `Vec<Value>` buffer, reusing memory allocations.
+/// If `needed_mask` is provided, columns where `needed_mask[idx] == false` skip heap allocation
+/// (e.g. text/blob/vector payloads) and insert `Value::Null` instead.
+pub fn decode_row_values_into_projected(
+    bytes: &[u8],
+    needed_mask: &[bool],
+    values: &mut Vec<Value>,
+) -> Result<()> {
     values.clear();
     if bytes.is_empty() {
         return Ok(());
@@ -118,7 +132,47 @@ pub fn decode_row_values_into(bytes: &[u8], values: &mut Vec<Value>) -> Result<(
         values.reserve(col_count - values.capacity());
     }
 
-    for &tag in tags {
+    for (col_idx, &tag) in tags.iter().enumerate() {
+        let is_needed = needed_mask.get(col_idx).copied().unwrap_or(true);
+
+        if !is_needed {
+            // Fast skip without allocating heap buffers
+            match tag {
+                TAG_NULL | TAG_INT_0 | TAG_INT_1 => values.push(Value::Null),
+                TAG_INT_I8 => {
+                    cursor += 1;
+                    values.push(Value::Null);
+                }
+                TAG_INT_I16 => {
+                    cursor += 2;
+                    values.push(Value::Null);
+                }
+                TAG_INT_I32 => {
+                    cursor += 4;
+                    values.push(Value::Null);
+                }
+                TAG_INT_I64 | TAG_REAL => {
+                    cursor += 8;
+                    values.push(Value::Null);
+                }
+                TAG_TEXT | TAG_BLOB => {
+                    let (len, n) = decode_varint(&bytes[cursor..])?;
+                    cursor += n + len as usize;
+                    values.push(Value::Null);
+                }
+                TAG_VECTOR => {
+                    if cursor + 2 > bytes.len() {
+                        return Err(Error::Corrupted("Truncated Vector dimensions".into()));
+                    }
+                    let dims = u16::from_le_bytes([bytes[cursor], bytes[cursor + 1]]) as usize;
+                    cursor += 2 + dims * 4;
+                    values.push(Value::Null);
+                }
+                _ => values.push(Value::Null),
+            }
+            continue;
+        }
+
         match tag {
             TAG_NULL => values.push(Value::Null),
             TAG_INT_0 => values.push(Value::Integer(0)),
@@ -227,6 +281,34 @@ pub fn decode_row_values_into(bytes: &[u8], values: &mut Vec<Value>) -> Result<(
     }
 
     Ok(())
+}
+
+/// Decodes a binary payload directly into an existing `Vec<Value>` buffer, reusing memory allocations
+pub fn decode_row_values_into(bytes: &[u8], values: &mut Vec<Value>) -> Result<()> {
+    decode_row_values_into_projected(bytes, &[], values)
+}
+
+/// Decodes binary bytes into a full `Row` with shared column names Arc
+pub fn decode_row_shared(bytes: &[u8], column_names: &std::sync::Arc<Vec<String>>) -> Result<Row> {
+    let mut values = decode_row_values(bytes)?;
+    while values.len() < column_names.len() {
+        values.push(Value::Null);
+    }
+    Ok(Row::with_shared_columns(column_names.clone(), values))
+}
+
+/// Decodes binary bytes into a full `Row` with shared column names Arc, skipping unneeded columns via `needed_mask`
+pub fn decode_row_shared_projected(
+    bytes: &[u8],
+    column_names: &std::sync::Arc<Vec<String>>,
+    needed_mask: &[bool],
+) -> Result<Row> {
+    let mut values = Vec::with_capacity(column_names.len());
+    decode_row_values_into_projected(bytes, needed_mask, &mut values)?;
+    while values.len() < column_names.len() {
+        values.push(Value::Null);
+    }
+    Ok(Row::with_shared_columns(column_names.clone(), values))
 }
 
 /// Decodes binary bytes into a full `Row` with column names.

@@ -12,7 +12,7 @@
 #![forbid(unsafe_code)]
 
 use std::time::Instant;
-use tapirus::Connection as TapirusConn;
+use tapirus::{Connection as TapirusConn, Value};
 use tempfile::NamedTempFile;
 
 fn format_ops(count: usize, duration_secs: f64) -> String {
@@ -60,9 +60,20 @@ fn main() {
 
     let start_tapir_insert = Instant::now();
     tapir_conn.execute("BEGIN TRANSACTION;").expect("Begin");
-    for i in 1..=ROW_COUNT {
-        let sql = format!("INSERT INTO users VALUES ({i}, 'User_{i}', {});", (i * 7) as f64 * 0.1);
-        tapir_conn.execute(&sql).expect("Insert");
+    {
+        let stmt = tapir_conn
+            .prepare("INSERT INTO users VALUES (?, ?, ?);")
+            .expect("Prepare");
+        for i in 1..=ROW_COUNT {
+            let name = format!("User_{i}");
+            let score = (i * 7) as f64 * 0.1;
+            stmt.execute(&[
+                Value::Integer(i as i64),
+                Value::Text(name),
+                Value::Real(score),
+            ])
+            .expect("Insert");
+        }
     }
     tapir_conn.execute("COMMIT;").expect("Commit");
     let dur_tapir_insert = start_tapir_insert.elapsed();
@@ -97,11 +108,15 @@ fn main() {
 
     // TapirusDB
     let start_tapir_pk = Instant::now();
-    for i in 1..=POINT_QUERIES {
-        let id = (i * 17) % ROW_COUNT + 1;
-        let sql = format!("SELECT id, name, score FROM users WHERE id = {id};");
-        let rows = tapir_conn.query(&sql).expect("Query");
-        assert_eq!(rows.len(), 1);
+    {
+        let stmt = tapir_conn
+            .prepare("SELECT id, name, score FROM users WHERE id = ?;")
+            .expect("Prepare");
+        for i in 1..=POINT_QUERIES {
+            let id = ((i * 17) % ROW_COUNT + 1) as i64;
+            let rows = stmt.query(&[Value::Integer(id)]).expect("Query");
+            assert_eq!(rows.len(), 1);
+        }
     }
     let dur_tapir_pk = start_tapir_pk.elapsed();
 
@@ -127,11 +142,14 @@ fn main() {
     const AGG_ITERATIONS: usize = 100;
 
     let start_tapir_agg = Instant::now();
-    for _ in 0..AGG_ITERATIONS {
-        let rows = tapir_conn
-            .query("SELECT COUNT(id), SUM(score), AVG(score) FROM users;")
-            .expect("Agg query");
-        assert_eq!(rows.len(), 1);
+    {
+        let stmt = tapir_conn
+            .prepare("SELECT COUNT(id), SUM(score), AVG(score) FROM users;")
+            .expect("Prepare");
+        for _ in 0..AGG_ITERATIONS {
+            let rows = stmt.query(&[]).expect("Agg query");
+            assert_eq!(rows.len(), 1);
+        }
     }
     let dur_tapir_agg = start_tapir_agg.elapsed();
 
@@ -158,9 +176,18 @@ fn main() {
         .execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL);")
         .expect("Create orders");
     tapir_conn.execute("BEGIN TRANSACTION;").expect("Begin");
-    for i in 1..=JOIN_ROWS {
-        let sql = format!("INSERT INTO orders VALUES ({i}, {i}, {});", i as f64 * 10.5);
-        tapir_conn.execute(&sql).expect("Insert");
+    {
+        let stmt = tapir_conn
+            .prepare("INSERT INTO orders VALUES (?, ?, ?);")
+            .expect("Prepare");
+        for i in 1..=JOIN_ROWS {
+            stmt.execute(&[
+                Value::Integer(i as i64),
+                Value::Integer(i as i64),
+                Value::Real(i as f64 * 10.5),
+            ])
+            .expect("Insert");
+        }
     }
     tapir_conn.execute("COMMIT;").expect("Commit");
 
@@ -181,11 +208,14 @@ fn main() {
     const JOIN_ITERATIONS: usize = 20;
 
     let start_tapir_join = Instant::now();
-    for _ in 0..JOIN_ITERATIONS {
-        let rows = tapir_conn
-            .query("SELECT users.name, orders.amount FROM users INNER JOIN orders ON users.id = orders.user_id;")
-            .expect("Join query");
-        assert_eq!(rows.len(), JOIN_ROWS);
+    {
+        let stmt = tapir_conn
+            .prepare("SELECT users.name, orders.amount FROM users INNER JOIN orders ON users.id = orders.user_id;")
+            .expect("Prepare");
+        for _ in 0..JOIN_ITERATIONS {
+            let rows = stmt.query(&[]).expect("Join query");
+            assert_eq!(rows.len(), JOIN_ROWS);
+        }
     }
     let dur_tapir_join = start_tapir_join.elapsed();
 

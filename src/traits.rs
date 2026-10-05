@@ -6,6 +6,7 @@
 use crate::error::{Error, Result};
 use crate::vector::DistanceMetric;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// A dynamic SQL/Document value in TapirusDB
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -129,11 +130,12 @@ impl From<&Value> for HashableValue {
 /// A relational row returned from a query
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Row {
-    columns: Vec<String>,
+    columns: Arc<Vec<String>>,
     values: Vec<Value>,
 }
 
-fn col_name_matches(stored: &str, target: &str) -> bool {
+/// Check if a stored column name matches the requested column target (handling optional table qualifiers)
+pub fn col_name_matches(stored: &str, target: &str) -> bool {
     if stored.eq_ignore_ascii_case(target) {
         return true;
     }
@@ -204,15 +206,29 @@ fn json_value_to_db_value(val: &serde_json::Value) -> Value {
 impl Row {
     /// Create a new Row from column names and values
     pub fn new(columns: Vec<String>, values: Vec<Value>) -> Self {
+        Self {
+            columns: Arc::new(columns),
+            values,
+        }
+    }
+
+    /// Create a new Row with shared column names Arc (zero-allocation schema sharing)
+    pub fn with_shared_columns(columns: Arc<Vec<String>>, values: Vec<Value>) -> Self {
         Self { columns, values }
+    }
+
+    /// Return reference to shared column names Arc
+    pub fn shared_columns(&self) -> &Arc<Vec<String>> {
+        &self.columns
     }
 
     /// Push or overwrite a column value in the row
     pub fn push_column(&mut self, col_name: String, val: Value) {
-        if let Some(pos) = self.columns.iter().position(|c| col_name_matches(c, &col_name)) {
+        let cols = Arc::make_mut(&mut self.columns);
+        if let Some(pos) = cols.iter().position(|c| col_name_matches(c, &col_name)) {
             self.values[pos] = val;
         } else {
-            self.columns.push(col_name);
+            cols.push(col_name);
             self.values.push(val);
         }
     }
