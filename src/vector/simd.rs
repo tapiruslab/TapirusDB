@@ -4,6 +4,58 @@
 //! aligned with modern CPU instruction-level parallelism (AVX2, AVX-512, and ARM NEON)
 //! under 100% Safe Rust (`#![forbid(unsafe_code)]`).
 
+#[cfg(feature = "simd")]
+/// Calculate Cosine Distance between two floating point slices using explicit AVX2/NEON SIMD registers.
+#[inline]
+pub fn simd_cosine_distance(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 1.0;
+    }
+
+    let chunks_a = a.chunks_exact(8);
+    let chunks_b = b.chunks_exact(8);
+    let rem_a = chunks_a.remainder();
+    let rem_b = chunks_b.remainder();
+
+    let mut dot_acc = wide::f32x8::ZERO;
+    let mut norm_a_acc = wide::f32x8::ZERO;
+    let mut norm_b_acc = wide::f32x8::ZERO;
+
+    for (ca, cb) in chunks_a.zip(chunks_b) {
+        let va = wide::f32x8::from(<[f32; 8]>::try_from(ca).unwrap());
+        let vb = wide::f32x8::from(<[f32; 8]>::try_from(cb).unwrap());
+        dot_acc += va * vb;
+        norm_a_acc += va * va;
+        norm_b_acc += vb * vb;
+    }
+
+    let mut dot = dot_acc.reduce_add();
+    let mut norm_a = norm_a_acc.reduce_add();
+    let mut norm_b = norm_b_acc.reduce_add();
+
+    for (x, y) in rem_a.iter().zip(rem_b.iter()) {
+        dot += x * y;
+        norm_a += x * x;
+        norm_b += y * y;
+    }
+
+    if norm_a <= 0.0 || norm_b <= 0.0 || !norm_a.is_finite() || !norm_b.is_finite() || !dot.is_finite() {
+        return 1.0;
+    }
+
+    let denom = norm_a.sqrt() * norm_b.sqrt();
+    if denom <= 0.0 || !denom.is_finite() {
+        return 1.0;
+    }
+
+    let sim = (dot / denom).clamp(-1.0, 1.0);
+    if !sim.is_finite() {
+        return 1.0;
+    }
+    1.0 - sim
+}
+
+#[cfg(not(feature = "simd"))]
 /// Calculate Cosine Distance between two floating point slices using a cascading 16-8-4-1 SIMD pipeline.
 ///
 /// Returns `1.0 - CosineSimilarity`. If dimensions mismatch or are empty, returns `1.0`.
@@ -107,6 +159,36 @@ pub fn simd_cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     1.0 - sim
 }
 
+#[cfg(feature = "simd")]
+/// Calculate Squared Euclidean Distance (L2) using explicit AVX2/NEON SIMD registers.
+#[inline]
+pub fn simd_euclidean_distance_squared(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return f32::MAX;
+    }
+
+    let chunks_a = a.chunks_exact(8);
+    let chunks_b = b.chunks_exact(8);
+    let rem_a = chunks_a.remainder();
+    let rem_b = chunks_b.remainder();
+
+    let mut acc = wide::f32x8::ZERO;
+    for (ca, cb) in chunks_a.zip(chunks_b) {
+        let va = wide::f32x8::from(<[f32; 8]>::try_from(ca).unwrap());
+        let vb = wide::f32x8::from(<[f32; 8]>::try_from(cb).unwrap());
+        let diff = va - vb;
+        acc += diff * diff;
+    }
+
+    let mut total = acc.reduce_add();
+    for (x, y) in rem_a.iter().zip(rem_b.iter()) {
+        let diff = x - y;
+        total += diff * diff;
+    }
+    total
+}
+
+#[cfg(not(feature = "simd"))]
 /// Calculate Squared Euclidean Distance (L2) between two floating point slices using a cascading 16-8-4-1 SIMD pipeline.
 #[inline]
 pub fn simd_euclidean_distance_squared(a: &[f32], b: &[f32]) -> f32 {
@@ -206,6 +288,34 @@ pub fn simd_euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+#[cfg(feature = "simd")]
+/// Calculate Dot Product using explicit AVX2/NEON SIMD registers.
+#[inline]
+pub fn simd_dot_product(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+
+    let chunks_a = a.chunks_exact(8);
+    let chunks_b = b.chunks_exact(8);
+    let rem_a = chunks_a.remainder();
+    let rem_b = chunks_b.remainder();
+
+    let mut acc = wide::f32x8::ZERO;
+    for (ca, cb) in chunks_a.zip(chunks_b) {
+        let va = wide::f32x8::from(<[f32; 8]>::try_from(ca).unwrap());
+        let vb = wide::f32x8::from(<[f32; 8]>::try_from(cb).unwrap());
+        acc += va * vb;
+    }
+
+    let mut dot = acc.reduce_add();
+    for (x, y) in rem_a.iter().zip(rem_b.iter()) {
+        dot += x * y;
+    }
+    dot
+}
+
+#[cfg(not(feature = "simd"))]
 /// Calculate Dot Product between two floating point slices using a cascading 16-8-4-1 SIMD pipeline.
 #[inline]
 pub fn simd_dot_product(a: &[f32], b: &[f32]) -> f32 {

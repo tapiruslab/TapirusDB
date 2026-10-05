@@ -66,7 +66,7 @@ Modern AI and edge developers are forced into **Fragmented Polyglot Persistence*
 * 🔐 **Multi-Tenant & Role-Scoped GraphRAG**: Native tenant isolation (`tenant_id`) and role-based ACL filtering (`allowed_roles`) across knowledge graph traversal and vector scoring.
 * 🛡️ **Physical Integrity Audit & Safe Hot Backups**: Zero-downtime atomic backup snapshots, KCV key validation, and slotted-page CRC32 consistency verification (`tapirus backup`, `tapirus restore`, `tapirus verify`).
 * 🚀 **Streaming Data Importer & Protected REST Daemon**: High-throughput streaming ingest for CSV (auto-inferred schema), JSONL, and Markdown straight into tables and AI memory; secure embedded REST server (`tapirus serve`) with constant-time Bearer/API-key verification.
-* 🌐 **S3/R2 Remote Range Streaming**: On-demand 4KB page streaming directly from cloud object stores via HTTP Range requests with zero local disk footprint.
+* 🌐 **Pluggable Remote Range Streaming**: Zero-local-disk 4KB page streaming interface (`RemoteRangeReader`) over cloud object stores (S3, Cloudflare R2, MinIO, GCP) via HTTP Range requests with in-memory LRU caching.
 * 🤖 **Native Model Context Protocol (MCP)**: Out-of-the-box stdio JSON-RPC 2.0 server (`tapirus mcp`) for Claude Desktop, Cursor, and Gemini autonomous agents.
 
 ---
@@ -83,7 +83,7 @@ Modern AI and edge developers are forced into **Fragmented Polyglot Persistence*
 * [Beyond AI: Classic Applications (SQLite & Mongo Alternative)](#beyond-ai-an-ultra-fast-embedded-database-for-classic-applications)
 * [High-Impact Domains (Research, Analytics, IoT)](#-high-impact-real-world-domains-research-analytics--smart-home)
 * [Architectural Comparison vs Polyglot Frankenstack](#architectural-comparison)
-* [Core Technical Pillars (SIMD, CSR, RaBitQ, ChaCha20)](#core-technical-pillars)
+* [Core Technical Pillars (SIMD, CSR, RaBitQ, XChaCha20)](#core-technical-pillars)
 * [Industrial Edge & Autonomous Systems](#-industrial-applications-ai--beyond)
 * [Developer Tooling & MCP Server](#developer-tooling--cli)
 * [Verified Benchmarks & Latency Comparison](#verified-benchmarks)
@@ -470,7 +470,7 @@ let rows = db.query("
 ")?;
 ```
 * **Advanced Query Engine**: Built-in subqueries, CTEs (`WITH ... AS`), `INNER/LEFT JOIN`, and Cost-Based Optimizer (CBO).
-* **Transparent Encryption Included**: SIMD-accelerated ChaCha20-Poly1305 AEAD encryption at rest (RFC 8439) without paying for proprietary SQLite commercial extensions.
+* **Transparent Encryption Included**: Hardware-accelerated XChaCha20-Poly1305 AEAD encryption at rest with 24-byte CSPRNG nonces per page (eliminating nonce-reuse vulnerabilities) without paying for proprietary SQLite commercial extensions.
 
 ### 2. Embedded MongoDB Alternative (Schema-less JSON Documents)
 Need to store dynamic payloads, user settings, or sensor telemetry with flexible schemas?
@@ -565,7 +565,7 @@ let route = db.graph_query("
 | **AI Vector Search** | **Native HNSW, IVF & RaBitQ** | None (or slow extension) | Native ANN | Basic / Extension | Add-on Atlas Vector |
 | **Vector Quantization** | **RaBitQ 32x (1-Bit/2-Bit) + SQ8** | None | PQ / SQ | None | None |
 | **Graph Query Engine** | **openCypher + CSR + GraphRAG** | Recursive CTE only | None | Native Cypher | `$graphLookup` |
-| **Encrypted At-Rest** | **ChaCha20-Poly1305 (Zero-Cost)** | Commercial Add-on ($$$) | Cloud KMS only | Enterprise Tier ($$$) | Enterprise KMS |
+| **Encrypted At-Rest** | **XChaCha20-Poly1305 (Zero-Cost)** | Commercial Add-on ($$$) | Cloud KMS only | Enterprise Tier ($$$) | Enterprise KMS |
 | **Cold Start / Idle RAM** | **< 4 MB RAM** | ~4 MB (SQLite) / ~35 MB | > 500 MB | > 1,200 MB | > 350 MB |
 | **Binary Size** | **~3.8 MB** | ~1.5 MB – 42 MB | > 150 MB | > 300 MB | > 200 MB |
 | **Multi-Service Sync Drift**| **Zero (Single Container)** | High (manual ETL) | High (CDC pipelines) | High (sync lag) | High (glue code) |
@@ -681,7 +681,7 @@ TapirusDB's quad-model engine (Relational SQL + Vector Search + openCypher Graph
 | **Scientific Research & Academic Labs** | **Single-file `.tapir` dataset container** guarantees 100% reproducible paper workflows; **Graph + Vector + SQL** models molecular pathways and tabular metrics in Python/Jupyter with zero Docker dependencies. |
 | **In-Process Telemetry & Edge BI** | **SIMD vectorized accumulators** compute `AVG`/`SUM`/`COUNT` across millions of sensor readings in microseconds; **Transparent LZ4** cuts disk usage by 70% with zero cloud egress cost. |
 | **Privacy-First Smart Home & Home Assistant** | **Graph** maps Zigbee/Matter/Thread device meshes; **Vector** performs local voice intent matching offline; **WAL** guarantees crash durability across home power outages on Raspberry Pi (<4MB RAM). |
-| **Air-Gapped Sovereign Hardware & Edge IoT** | Operates on Raspberry Pi, avionics, drones, and naval vessels with **zero server daemons**, **< 4 MB idle RAM**, and **SIMD-accelerated ChaCha20-Poly1305 AEAD encryption** at rest. |
+| **Air-Gapped Sovereign Hardware & Edge IoT** | Operates on Raspberry Pi, avionics, drones, and naval vessels with **zero server daemons**, **< 4 MB idle RAM**, and **SIMD-accelerated XChaCha20-Poly1305 AEAD encryption** at rest. |
 
 ---
 

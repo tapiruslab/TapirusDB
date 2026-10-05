@@ -65,6 +65,65 @@ impl Value {
             _ => std::cmp::Ordering::Equal,
         }
     }
+
+    /// Convert this `Value` into a normalized hashable key
+    pub fn to_hashable(&self) -> HashableValue {
+        HashableValue::from(self)
+    }
+}
+
+/// A normalized hashable representation of a SQL `Value` for O(1) hash joins,
+/// O(1) hash aggregation (GROUP BY), and hash set deduplication (DISTINCT).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum HashableValue {
+    /// NULL representation
+    Null,
+    /// 64-bit integer
+    Integer(i64),
+    /// Canonical IEEE-754 bit pattern for float (normalizing -0.0 and NaNs)
+    Real(u64),
+    /// String key
+    Text(String),
+    /// Raw byte sequence
+    Blob(Vec<u8>),
+    /// Vector of canonicalized float bit patterns
+    Vector(Vec<u32>),
+}
+
+impl From<&Value> for HashableValue {
+    fn from(v: &Value) -> Self {
+        match v {
+            Value::Null => HashableValue::Null,
+            Value::Integer(i) => HashableValue::Integer(*i),
+            Value::Real(r) => {
+                let bits = if r.is_nan() {
+                    0x7ff8_0000_0000_0000u64
+                } else if *r == 0.0 {
+                    0u64
+                } else {
+                    r.to_bits()
+                };
+                HashableValue::Real(bits)
+            }
+            Value::Text(s) => HashableValue::Text(s.clone()),
+            Value::Blob(b) => HashableValue::Blob(b.clone()),
+            Value::Vector(vec) => {
+                let bits = vec
+                    .iter()
+                    .map(|f| {
+                        if f.is_nan() {
+                            0x7fc0_0000u32
+                        } else if *f == 0.0 {
+                            0u32
+                        } else {
+                            f.to_bits()
+                        }
+                    })
+                    .collect();
+                HashableValue::Vector(bits)
+            }
+        }
+    }
 }
 
 /// A relational row returned from a query

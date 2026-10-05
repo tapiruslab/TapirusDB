@@ -7,12 +7,18 @@
 use crate::error::{Error, Result};
 use crate::pager::PageId;
 use chacha20poly1305::aead::{Aead, Payload};
-use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
+use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce, XChaCha20Poly1305, XNonce};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 /// Poly1305 MAC authentication tag size in bytes
 pub const TAG_SIZE: usize = 16;
+
+/// XChaCha20 extended nonce size in bytes (192-bit)
+pub const XNONCE_SIZE: usize = 24;
+
+/// Total reserved trailer size in bytes at the end of each page (24-byte Nonce + 16-byte Tag)
+pub const CRYPTO_TRAILER_SIZE: usize = XNONCE_SIZE + TAG_SIZE; // 40 bytes
 
 /// 256-bit AES / ChaCha20 encryption key size in bytes
 pub const KEY_SIZE: usize = 32;
@@ -24,7 +30,7 @@ pub const SALT_SIZE: usize = 16;
 pub const KCV_MAGIC: &[u8] = b"TAPIRUS_CIPHER_KCV_V1";
 
 /// Usable unencrypted slotted page content size when encryption is enabled
-pub const ENCRYPTED_PAGE_USABLE_SIZE: usize = 4096 - TAG_SIZE; // 4080 bytes
+pub const ENCRYPTED_PAGE_USABLE_SIZE: usize = 4096 - CRYPTO_TRAILER_SIZE; // 4056 bytes
 
 /// Standard iterations for PBKDF2-HMAC-SHA256 password key derivation in production.
 /// Compliant with OWASP 2023 Password Storage Guidelines (minimum 600,000 iterations).
@@ -200,13 +206,19 @@ impl DatabaseCipher {
         expected.ct_eq(stored_kcv).into()
     }
 
-    /// Encrypt a 4,096-byte in-memory page into a 4,096-byte disk page
+    /// Encrypt a 4,096-byte in-memory page into a 4,096-byte disk page using XChaCha20-Poly1305
+    /// with a cryptographically secure 24-byte (192-bit) random nonce from the OS CSPRNG.
+    ///
+    /// Every write produces a completely distinct ciphertext even if page contents are identical,
+    /// guaranteeing absolute immunity against nonce reuse attacks per RFC 8439.
     pub fn encrypt_page(&self, page_id: PageId, plaintext: &[u8]) -> Result<Vec<u8>> {
-        self.encrypt_page_with_seq(page_id, 0, self.epoch, plaintext)
+        let mut nonce_bytes = [0u8; XNONCE_SIZE];
+        getrandom::fill(&mut nonce_bytes).expect("OS CSPRNG unavailable — cannot generate secure nonce");
+        self.encrypt_page_with_nonce(page_id, &nonce_bytes, plaintext)
     }
 
-    /// Encrypt a 4,096-byte in-memory page with a strictly unique monotonic sequence and epoch
-    pub fn encrypt_page_with_seq(&self, page_id: PageId, sequence: u32, epoch: u32, plaintext: &[u8]) -> Result<Vec<u8>> {
+    /// Encrypt a 4,096-byte in-memory page with an explicitly provided 24-byte nonce (useful for deterministic tests)
+    pub fn encrypt_page_with_nonce(&self, page_id: PageId, nonce_bytes: &[u8; XNONCE_SIZE], plaintext: &[u8]) -> Result<Vec<u8>> {
         if plaintext.len() != 4096 {
             return Err(Error::Corrupted(format!(
                 "Expected 4096 byte page, got {}",
@@ -214,9 +226,8 @@ impl DatabaseCipher {
             )));
         }
 
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&self.key));
-        let nonce_bytes = self.derive_nonce_with_seq(page_id, sequence, epoch);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let cipher = XChaCha20Poly1305::new(Key::from_slice(&self.key));
+        let nonce = XNonce::from_slice(nonce_bytes);
 
         let (pt_start, pt_end) = if page_id == 1 {
             (100, ENCRYPTED_PAGE_USABLE_SIZE)
@@ -235,26 +246,37 @@ impl DatabaseCipher {
             .map_err(|e| Error::Corrupted(format!("Encryption error: {e}")))?;
 
         let tag_offset = ct.len() - TAG_SIZE;
-        let actual_ct = &ct[0..tag_offset];
+        let actual_ct = &ct[..tag_offset];
         let tag = &ct[tag_offset..];
 
         let mut out_page = vec![0u8; 4096];
         if page_id == 1 {
             out_page[0..100].copy_from_slice(&plaintext[0..100]);
         }
+        // Copy encrypted ciphertext
         out_page[pt_start..pt_end].copy_from_slice(actual_ct);
-        out_page[4080..4096].copy_from_slice(tag);
+        // Store 24-byte random XNonce in trailer [4056..4080]
+        out_page[ENCRYPTED_PAGE_USABLE_SIZE..ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE].copy_from_slice(nonce_bytes);
+        // Store 16-byte Poly1305 authentication tag in trailer [4080..4096]
+        out_page[ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE..4096].copy_from_slice(tag);
 
         Ok(out_page)
     }
 
-    /// Decrypt a 4,096-byte disk page back into an in-memory page
-    pub fn decrypt_page(&self, page_id: PageId, disk_page: &[u8]) -> Result<Vec<u8>> {
-        self.decrypt_page_with_seq(page_id, 0, self.epoch, disk_page)
+    /// Legacy compatibility wrapper: forwards to `encrypt_page_with_nonce` using a 24-byte padded nonce
+    pub fn encrypt_page_with_seq(&self, page_id: PageId, sequence: u32, epoch: u32, plaintext: &[u8]) -> Result<Vec<u8>> {
+        let mut nonce = [0u8; XNONCE_SIZE];
+        nonce[0..4].copy_from_slice(&epoch.to_le_bytes());
+        nonce[4..8].copy_from_slice(&page_id.to_le_bytes());
+        nonce[8..12].copy_from_slice(&sequence.to_le_bytes());
+        self.encrypt_page_with_nonce(page_id, &nonce, plaintext)
     }
 
-    /// Decrypt a 4,096-byte disk page with a specified sequence and epoch
-    pub fn decrypt_page_with_seq(&self, page_id: PageId, sequence: u32, epoch: u32, disk_page: &[u8]) -> Result<Vec<u8>> {
+    /// Decrypt a 4,096-byte disk page back into an in-memory page using XChaCha20-Poly1305.
+    ///
+    /// Reads the 24-byte random XNonce from bytes [4056..4080] and the 16-byte Poly1305 tag
+    /// from bytes [4080..4096]. Authenticates Associated Data against `page_id`.
+    pub fn decrypt_page(&self, page_id: PageId, disk_page: &[u8]) -> Result<Vec<u8>> {
         if disk_page.len() != 4096 {
             return Err(Error::Corrupted(format!(
                 "Expected 4096 byte page, got {}",
@@ -262,10 +284,7 @@ impl DatabaseCipher {
             )));
         }
 
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&self.key));
-        let nonce_bytes = self.derive_nonce_with_seq(page_id, sequence, epoch);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-
+        let cipher = XChaCha20Poly1305::new(Key::from_slice(&self.key));
 
         let (pt_start, pt_end) = if page_id == 1 {
             (100, ENCRYPTED_PAGE_USABLE_SIZE)
@@ -274,7 +293,10 @@ impl DatabaseCipher {
         };
 
         let ct_slice = &disk_page[pt_start..pt_end];
-        let tag_slice = &disk_page[4080..4096];
+        let nonce_slice = &disk_page[ENCRYPTED_PAGE_USABLE_SIZE..ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE];
+        let tag_slice = &disk_page[ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE..4096];
+
+        let nonce = XNonce::from_slice(nonce_slice);
 
         let mut combined = Vec::with_capacity(ct_slice.len() + tag_slice.len());
         combined.extend_from_slice(ct_slice);
@@ -296,6 +318,11 @@ impl DatabaseCipher {
         out_page[pt_start..pt_end].copy_from_slice(&pt);
 
         Ok(out_page)
+    }
+
+    /// Legacy compatibility wrapper: forwards directly to self-contained `decrypt_page`
+    pub fn decrypt_page_with_seq(&self, page_id: PageId, _sequence: u32, _epoch: u32, disk_page: &[u8]) -> Result<Vec<u8>> {
+        self.decrypt_page(page_id, disk_page)
     }
 }
 
@@ -380,26 +407,48 @@ mod tests {
     }
 
     #[test]
-    fn test_monotonic_nonce_uniqueness() {
+    fn test_random_nonce_uniqueness() {
         let salt = [11u8; 16];
         let cipher = DatabaseCipher::from_passphrase_with_iterations("quantum_encryption_2026", salt, PBKDF2_FAST_ITERATIONS);
 
         let page_data = vec![0xaau8; 4096];
 
-        // Encrypt page 4 at sequence 1 vs sequence 2
-        let ct_seq1 = cipher.encrypt_page_with_seq(4, 1, 1, &page_data).unwrap();
-        let ct_seq2 = cipher.encrypt_page_with_seq(4, 2, 1, &page_data).unwrap();
+        // Encrypt the identical page twice with standard encrypt_page
+        let ct1 = cipher.encrypt_page(4, &page_data).unwrap();
+        let ct2 = cipher.encrypt_page(4, &page_data).unwrap();
 
-        // Distinct nonces guarantee completely different ciphertexts and auth tags
-        assert_ne!(ct_seq1, ct_seq2);
+        // Distinct random nonces guarantee completely different ciphertexts, nonces, and auth tags
+        assert_ne!(ct1, ct2);
+        // Nonce slices must be completely different
+        assert_ne!(
+            &ct1[ENCRYPTED_PAGE_USABLE_SIZE..ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE],
+            &ct2[ENCRYPTED_PAGE_USABLE_SIZE..ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE]
+        );
 
-        // Decrypt with correct sequence succeeds
-        let pt1 = cipher.decrypt_page_with_seq(4, 1, 1, &ct_seq1).unwrap();
+        // Both decrypt back to the exact identical plaintext without needing external sequence numbers!
+        let pt1 = cipher.decrypt_page(4, &ct1).unwrap();
+        let pt2 = cipher.decrypt_page(4, &ct2).unwrap();
         assert_eq!(&pt1[0..ENCRYPTED_PAGE_USABLE_SIZE], &page_data[0..ENCRYPTED_PAGE_USABLE_SIZE]);
+        assert_eq!(&pt2[0..ENCRYPTED_PAGE_USABLE_SIZE], &page_data[0..ENCRYPTED_PAGE_USABLE_SIZE]);
 
-        // Decrypt with mismatched sequence fails authentication (RFC 8439)
-        let fail = cipher.decrypt_page_with_seq(4, 2, 1, &ct_seq1);
-        assert!(fail.is_err());
+        // Decrypt with mismatched PageId fails authentication (AAD protection against page-swapping attacks)
+        let swap_fail = cipher.decrypt_page(5, &ct1);
+        assert!(swap_fail.is_err());
+
+        // Single-bit tampering in ciphertext fails authentication
+        let mut tampered_ct = ct1.clone();
+        tampered_ct[50] ^= 0x01;
+        assert!(cipher.decrypt_page(4, &tampered_ct).is_err());
+
+        // Single-bit tampering in nonce fails authentication
+        let mut tampered_nonce = ct1.clone();
+        tampered_nonce[ENCRYPTED_PAGE_USABLE_SIZE + 2] ^= 0x01;
+        assert!(cipher.decrypt_page(4, &tampered_nonce).is_err());
+
+        // Single-bit tampering in Poly1305 tag fails authentication
+        let mut tampered_tag = ct1.clone();
+        tampered_tag[4090] ^= 0x01;
+        assert!(cipher.decrypt_page(4, &tampered_tag).is_err());
     }
 }
 
