@@ -8,7 +8,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$TapirusVersion = "1.0.0"
+$TapirusVersion = "1.0.1"
 $Repo = "tapiruslab/TapirusDB"
 $InstallDir = if ($env:TAPIRUS_INSTALL_DIR) { $env:TAPIRUS_INSTALL_DIR } else { "$env:USERPROFILE\.tapirus" }
 $BinDir = "$InstallDir\bin"
