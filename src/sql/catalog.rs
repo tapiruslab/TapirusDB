@@ -351,11 +351,17 @@ impl Catalog {
 
     /// Get table definition
     pub fn get_table(&self, name: &str) -> Option<&TableDef> {
+        if let Some(t) = self.tables.get(name) {
+            return Some(t);
+        }
         self.tables.get(&name.to_lowercase())
     }
 
     /// Get mutable table definition
     pub fn get_table_mut(&mut self, name: &str) -> Option<&mut TableDef> {
+        if self.tables.contains_key(name) {
+            return self.tables.get_mut(name);
+        }
         self.tables.get_mut(&name.to_lowercase())
     }
 
@@ -548,6 +554,11 @@ impl Catalog {
         self.indexes.values().find(|idx| {
             idx.table.eq_ignore_ascii_case(table) && idx.column.eq_ignore_ascii_case(column)
         })
+    }
+
+    /// Check whether a table has any secondary indexes without allocating
+    pub fn has_table_indexes(&self, table: &str) -> bool {
+        self.indexes.values().any(|idx| idx.table.eq_ignore_ascii_case(table))
     }
 
     /// Get all index definitions
