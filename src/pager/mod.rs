@@ -931,7 +931,7 @@ impl Pager {
         Ok(())
     }
 
-    /// Allocate a new page at the end of the database file
+    /// Allocate a page, reusing pages from the freelist trunk if available, or extending the database file
     pub fn allocate_page(&mut self) -> Result<PageId> {
         if self.remote_reader.is_some() && self.file.is_none() && self.remote_writer.is_none() {
             return Err(Error::Corrupted(
@@ -940,44 +940,75 @@ impl Pager {
         }
 
         let page_size = self.page_size();
-        let new_id = self.header.total_pages + 1;
-        self.header.total_pages = new_id;
+        let mut reused_from_freelist = false;
 
-        // If in an active transaction, record that new_id was newly allocated (undo removes it)
+        // 1. Try to pop a free page from the freelist trunk
+        let allocated_id = if self.header.freelist_count > 0 && self.header.freelist_trunk > 0 {
+            let trunk_id = self.header.freelist_trunk;
+            let mut trunk_page = self.read_page(trunk_id)?;
+            let count = u32::from_le_bytes([
+                trunk_page[4], trunk_page[5], trunk_page[6], trunk_page[7],
+            ]) as usize;
+
+            if count > 0 {
+                let offset = 8 + (count - 1) * 4;
+                let reused_id = u32::from_le_bytes([
+                    trunk_page[offset],
+                    trunk_page[offset + 1],
+                    trunk_page[offset + 2],
+                    trunk_page[offset + 3],
+                ]);
+                let new_count = (count - 1) as u32;
+                trunk_page[4..8].copy_from_slice(&new_count.to_le_bytes());
+                self.write_page(trunk_id, &trunk_page)?;
+                self.header.freelist_count = self.header.freelist_count.saturating_sub(1);
+                reused_from_freelist = true;
+                reused_id
+            } else {
+                let next_trunk = u32::from_le_bytes([
+                    trunk_page[0], trunk_page[1], trunk_page[2], trunk_page[3],
+                ]);
+                self.header.freelist_trunk = next_trunk;
+                self.header.freelist_count = self.header.freelist_count.saturating_sub(1);
+                reused_from_freelist = true;
+                trunk_id
+            }
+        } else {
+            let new_id = self.header.total_pages + 1;
+            self.header.total_pages = new_id;
+            new_id
+        };
+
+        // If in an active transaction, record allocation for undo
         if let Some(sp) = &mut self.transaction_savepoint {
-            if !sp.undo_pages.contains_key(&new_id) {
-                sp.undo_pages.insert(new_id, None);
+            if !sp.undo_pages.contains_key(&allocated_id) {
+                sp.undo_pages.insert(allocated_id, None);
             }
         }
 
         let empty_page = vec![0u8; page_size];
-        if self.file.is_none() && self.remote_writer.is_some() {
-            self.in_memory_pages.insert(new_id, empty_page);
-            // Keep in-memory page 1 consistent with updated total_pages
-            self.sync_header_into_page1_cache();
-            return Ok(new_id);
-        }
-        if let Some(file) = &mut self.file {
-            // Write the new empty page to extend the physical file
-            let offset = (new_id as u64 - 1) * page_size as u64;
-            file.seek(SeekFrom::Start(offset))?;
-            file.write_all(&empty_page)?;
-            file.sync_data()?;
+        if !reused_from_freelist {
+            if self.file.is_none() && self.remote_writer.is_some() {
+                self.in_memory_pages.insert(allocated_id, empty_page);
+                self.sync_header_into_page1_cache();
+                return Ok(allocated_id);
+            }
+            if let Some(file) = &mut self.file {
+                // Write the new empty page to extend the physical file
+                let offset = (allocated_id as u64 - 1) * page_size as u64;
+                file.seek(SeekFrom::Start(offset))?;
+                file.write_all(&empty_page)?;
+                file.sync_data()?;
+            }
         }
 
-        self.in_memory_pages.insert(new_id, empty_page);
-        self.touch_lru(new_id);
+        self.in_memory_pages.insert(allocated_id, empty_page);
+        self.touch_lru(allocated_id);
         self.evict_if_needed();
 
-        // CRITICAL: Keep in-memory page 1 consistent with updated total_pages FIRST,
-        // then write a fresh WAL frame for page 1. Without the WAL frame, a pre-existing
-        // stale page 1 frame in the WAL would be checkpointed to disk AFTER allocate_page's
-        // direct header write, overwriting the correct total_pages and causing PageNotFound.
+        // CRITICAL: Keep in-memory page 1 consistent with updated total_pages & freelist
         self.sync_header_into_page1_cache();
 
-        // Push the updated page 1 (with new total_pages in the header region) into the WAL
-        // so that any checkpoint — explicit or auto — will write the authoritative header
-        // rather than a stale older frame.
         if let Some(page1_data) = self.in_memory_pages.get(&1).cloned() {
             let is_in_tx = self.transaction_savepoint.is_some();
             let is_commit = !is_in_tx;
@@ -989,7 +1020,6 @@ impl Pager {
             if let Some(wal) = &mut self.wal {
                 wal.write_frame(1, &payload, is_commit, self.header.total_pages)?;
             } else if let Some(file) = &mut self.file {
-                // WAL disabled: write the updated header directly to disk
                 let header_bytes = self.header.to_bytes();
                 file.seek(SeekFrom::Start(0))?;
                 file.write_all(&header_bytes)?;
@@ -997,7 +1027,51 @@ impl Pager {
             }
         }
 
-        Ok(new_id)
+        Ok(allocated_id)
+    }
+
+    /// Return a page to the freelist trunk for space reclamation and reuse
+    pub fn free_page(&mut self, page_id: PageId) -> Result<()> {
+        if page_id == 0 || page_id > self.header.total_pages || page_id == 1 {
+            return Err(Error::Corrupted(format!("Invalid page {page_id} to free")));
+        }
+
+        let page_size = self.page_size();
+        let max_leaf_slots = page_size.saturating_sub(8) / 4;
+
+        if self.header.freelist_trunk == 0 {
+            let mut trunk_page = vec![0u8; page_size];
+            trunk_page[0..4].copy_from_slice(&0u32.to_le_bytes()); // next trunk = 0
+            trunk_page[4..8].copy_from_slice(&0u32.to_le_bytes()); // count = 0
+            self.write_page(page_id, &trunk_page)?;
+            self.header.freelist_trunk = page_id;
+            self.header.freelist_count = 1;
+        } else {
+            let trunk_id = self.header.freelist_trunk;
+            let mut trunk_page = self.read_page(trunk_id)?;
+            let count = u32::from_le_bytes([
+                trunk_page[4], trunk_page[5], trunk_page[6], trunk_page[7],
+            ]) as usize;
+
+            if count < max_leaf_slots {
+                let offset = 8 + count * 4;
+                trunk_page[offset..offset + 4].copy_from_slice(&page_id.to_le_bytes());
+                let new_count = (count + 1) as u32;
+                trunk_page[4..8].copy_from_slice(&new_count.to_le_bytes());
+                self.write_page(trunk_id, &trunk_page)?;
+                self.header.freelist_count += 1;
+            } else {
+                let mut new_trunk = vec![0u8; page_size];
+                new_trunk[0..4].copy_from_slice(&trunk_id.to_le_bytes());
+                new_trunk[4..8].copy_from_slice(&0u32.to_le_bytes());
+                self.write_page(page_id, &new_trunk)?;
+                self.header.freelist_trunk = page_id;
+                self.header.freelist_count += 1;
+            }
+        }
+
+        self.sync_header_into_page1_cache();
+        Ok(())
     }
 
     /// Patch the current `self.header` bytes into the in-memory cache of page 1
@@ -1267,5 +1341,38 @@ mod tests {
         // Cleanup test file
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_file(db_path.with_extension("tapir-wal"));
+    }
+
+    #[test]
+    fn test_freelist_page_allocation_and_reuse() {
+        let mut pager = Pager::open_in_memory(4096, 128).expect("Open in-memory pager");
+        assert_eq!(pager.total_pages(), 1);
+
+        // Allocate pages 2, 3, 4
+        let p2 = pager.allocate_page().unwrap();
+        let p3 = pager.allocate_page().unwrap();
+        let p4 = pager.allocate_page().unwrap();
+        assert_eq!(p2, 2);
+        assert_eq!(p3, 3);
+        assert_eq!(p4, 4);
+        assert_eq!(pager.total_pages(), 4);
+        assert_eq!(pager.header().freelist_count, 0);
+
+        // Free page 3
+        pager.free_page(p3).expect("Free page 3");
+        assert_eq!(pager.header().freelist_count, 1);
+        assert_eq!(pager.header().freelist_trunk, 3);
+
+        // Now allocate a new page: must reuse freed page 3 rather than allocating page 5!
+        let reused_page = pager.allocate_page().expect("Allocate reused page");
+        assert_eq!(reused_page, 3);
+        // Total pages must NOT have grown to 5!
+        assert_eq!(pager.total_pages(), 4);
+        assert_eq!(pager.header().freelist_count, 0);
+
+        // Allocate another page: since freelist is empty, now it allocates page 5
+        let p5 = pager.allocate_page().expect("Allocate page 5");
+        assert_eq!(p5, 5);
+        assert_eq!(pager.total_pages(), 5);
     }
 }

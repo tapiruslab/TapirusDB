@@ -21,8 +21,11 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i8)]
 pub enum TernaryVal {
+    /// Negative one: -1
     NegOne = -1,
+    /// Zero: 0
     Zero = 0,
+    /// Positive one: +1
     PosOne = 1,
 }
 
@@ -39,11 +42,13 @@ impl TernaryVal {
         }
     }
 
+    /// Return ternary value as signed 8-bit integer
     #[inline]
     pub fn as_i8(self) -> i8 {
         self as i8
     }
 
+    /// Return ternary value as 32-bit floating point number
     #[inline]
     pub fn as_f32(self) -> f32 {
         match self {
@@ -57,7 +62,9 @@ impl TernaryVal {
 /// A 1.58-bit Ternary Linear Projection Layer
 #[derive(Debug, Clone)]
 pub struct BitNetLinear {
+    /// Number of input features
     pub in_features: usize,
+    /// Number of output features
     pub out_features: usize,
     /// Ternary weights stored as flat row-major array of size `out_features * in_features`
     pub weights: Vec<TernaryVal>,
@@ -179,12 +186,16 @@ impl BitNetLinear {
 /// RMSNorm normalization for BitNet layers
 #[derive(Debug, Clone)]
 pub struct BitNetRmsNorm {
+    /// Latent vector dimension
     pub dim: usize,
+    /// Epsilon value to prevent division by zero
     pub eps: f32,
+    /// Learned or calibrated scaling weights
     pub weight: Vec<f32>,
 }
 
 impl BitNetRmsNorm {
+    /// Create a new RMSNorm layer with given dimension and epsilon
     pub fn new(dim: usize, eps: f32) -> Self {
         Self {
             dim,
@@ -193,6 +204,7 @@ impl BitNetRmsNorm {
         }
     }
 
+    /// Apply RMS normalization forward pass
     pub fn forward(&self, x: &[f32]) -> Result<Vec<f32>> {
         if x.len() != self.dim {
             return Err(Error::Internal(format!(
@@ -217,13 +229,18 @@ impl BitNetRmsNorm {
 /// BitNet b1.58 Multi-Layer Decision Block (RMSNorm -> BitNet Gate/Up -> SiLU -> BitNet Down)
 #[derive(Debug, Clone)]
 pub struct BitNetBlock {
+    /// Pre-block RMS normalization layer
     pub norm: BitNetRmsNorm,
+    /// Gate projection ternary linear layer
     pub gate_proj: BitNetLinear,
+    /// Up projection ternary linear layer
     pub up_proj: BitNetLinear,
+    /// Down projection ternary linear layer
     pub down_proj: BitNetLinear,
 }
 
 impl BitNetBlock {
+    /// Create a new BitNetBlock with specified hidden and intermediate dimensions
     pub fn new(hidden_dim: usize, intermediate_dim: usize) -> Result<Self> {
         let norm = BitNetRmsNorm::new(hidden_dim, 1e-6);
 

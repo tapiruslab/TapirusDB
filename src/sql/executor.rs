@@ -7,7 +7,7 @@ use crate::pager::Pager;
 use crate::sql::catalog::{Catalog, ColumnDef, DataType, IndexDef, TableDef};
 use crate::sql::codec::{decode_row, encode_row};
 use crate::sql::parser::{BinaryOp, JoinType, OnConflict, Statement, WhereCondition, WhereExpr};
-use crate::traits::{Row, Value, VectorIndexEngine};
+use crate::traits::{HashableValue, Row, Value, VectorIndexEngine};
 use crate::vector::{DistanceMetric, HnswIndex};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -1078,48 +1078,58 @@ impl SQLExecutor {
                     }
                 }
 
-                // Fast Secondary Index Direct B+Tree Search (Zero Scan Inverted Posting List Optimization)
+                // Cost-Based Optimizer (CBO) evaluation for Secondary Index vs Sequential Scan
                 if as_of_timestamp.is_none() && join.is_none() && order_by.is_none() && group_by.is_none() {
                     if let Some(WhereExpr::Condition(cond)) = &where_clause {
                         if cond.op == BinaryOp::Equals {
                             if let Some(index_def) = self.catalog.find_index_for_column(&table, &cond.column).cloned() {
-                                let key = value_to_index_key(&cond.value);
-                                let mut matched_row_ids = Vec::new();
-                                if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                                    if let Ok(bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
-                                        if let Some(rids) = bucket.get_row_ids(&cond.value) {
-                                            matched_row_ids.extend_from_slice(rids);
-                                        }
-                                    }
-                                }
-                                let output_col_names = if columns.is_empty() {
-                                    all_col_names.clone()
-                                } else {
-                                    columns.clone()
-                                };
-                                let mut result_rows = Vec::new();
-                                let skip_count = offset.unwrap_or(0);
-                                let mut skipped = 0;
-                                for rid in matched_row_ids {
-                                    if let Some(payload) = self.btree.search(pager, root_page, rid)? {
-                                        let full_row = decode_row(&payload, &all_col_names)?;
-                                        let projected = project_row(&full_row, &output_col_names)?;
-                                        if distinct && result_rows.contains(&projected) {
-                                            continue;
-                                        }
-                                        if skipped < skip_count {
-                                            skipped += 1;
-                                            continue;
-                                        }
-                                        result_rows.push(projected);
-                                        if let Some(lim) = limit {
-                                            if result_rows.len() >= lim {
-                                                break;
+                                let optimizer = crate::sql::planner::CostOptimizer::new();
+                                let default_stats = crate::sql::planner::TableStats::new(&table, 100, 10);
+                                let stats = self.catalog.get_table_stats(&table).unwrap_or(&default_stats);
+                                let sel = stats.estimate_selectivity(&cond.column, true);
+                                let index_cost = optimizer.estimate_index_scan(stats, &index_def.name, &cond.column, sel);
+                                let seq_cost = optimizer.estimate_seq_scan(stats, sel);
+
+                                // Execute Index Scan if Cost-Based Optimizer determines lower or equal cost
+                                if index_cost.total_cost <= seq_cost.total_cost {
+                                    let key = value_to_index_key(&cond.value);
+                                    let mut matched_row_ids = Vec::new();
+                                    if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
+                                        if let Ok(bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                                            if let Some(rids) = bucket.get_row_ids(&cond.value) {
+                                                matched_row_ids.extend_from_slice(rids);
                                             }
                                         }
                                     }
+                                    let output_col_names = if columns.is_empty() {
+                                        all_col_names.clone()
+                                    } else {
+                                        columns.clone()
+                                    };
+                                    let mut result_rows = Vec::new();
+                                    let skip_count = offset.unwrap_or(0);
+                                    let mut skipped = 0;
+                                    for rid in matched_row_ids {
+                                        if let Some(payload) = self.btree.search(pager, root_page, rid)? {
+                                            let full_row = decode_row(&payload, &all_col_names)?;
+                                            let projected = project_row(&full_row, &output_col_names)?;
+                                            if distinct && result_rows.contains(&projected) {
+                                                continue;
+                                            }
+                                            if skipped < skip_count {
+                                                skipped += 1;
+                                                continue;
+                                            }
+                                            result_rows.push(projected);
+                                            if let Some(lim) = limit {
+                                                if result_rows.len() >= lim {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    return Ok(result_rows);
                                 }
-                                return Ok(result_rows);
                             }
                         }
                     }
@@ -1148,7 +1158,6 @@ impl SQLExecutor {
                         }
                     }
                 } else {
-                    let cells = self.btree.scan(pager, root_page)?;
                     let can_early_terminate = join.is_none() && order_by.is_none() && group_by.is_none() && !distinct && !is_aggregate_query(&columns);
                     let needed_rows = if can_early_terminate {
                         limit.map(|lim| offset.unwrap_or(0).saturating_add(lim))
@@ -1156,26 +1165,27 @@ impl SQLExecutor {
                         None
                     };
 
-                    for cell in cells {
+                    self.btree.scan_with(pager, root_page, |cell| {
                         let full_row = decode_row(&cell.payload, &all_col_names)?;
 
                         // Check WHERE filter on left table
                         if let Some(ref r_expr) = resolved_where {
                             if !row_matches_resolved(&full_row, r_expr) {
-                                continue;
+                                return Ok(true);
                             }
                         }
 
                         left_rows.push(full_row);
                         if let Some(needed) = needed_rows {
                             if left_rows.len() >= needed {
-                                break;
+                                return Ok(false);
                             }
                         }
-                    }
+                        Ok(true)
+                    })?;
                 }
 
-                // Execute JOIN if present
+                // Execute JOIN if present (High-Performance O(N + M) Hash Join)
                 if let Some(join_clause) = join {
                     let right_table_def = self
                         .catalog
@@ -1186,8 +1196,7 @@ impl SQLExecutor {
                     let mut right_rows = Vec::new();
                     if let Some(ts) = as_of_timestamp {
                         if let Some(sys_table) = self.catalog.get_table("__sys_time_travel") {
-                            let cells = self.btree.scan(pager, sys_table.root_page)?;
-                            for cell in cells {
+                            self.btree.scan_with(pager, sys_table.root_page, |cell| {
                                 if let Ok(rec) = serde_json::from_slice::<TemporalRecord>(&cell.payload) {
                                     if rec.table_name.eq_ignore_ascii_case(&join_clause.table)
                                         && rec.valid_from <= ts
@@ -1197,42 +1206,59 @@ impl SQLExecutor {
                                         right_rows.push(r_row);
                                     }
                                 }
-                            }
+                                Ok(true)
+                            })?;
                         }
                     } else {
-                        let right_cells = self.btree.scan(pager, right_table_def.root_page)?;
-                        for r_cell in right_cells {
+                        self.btree.scan_with(pager, right_table_def.root_page, |r_cell| {
                             let r_row = decode_row(&r_cell.payload, &right_col_names)?;
                             right_rows.push(r_row);
+                            Ok(true)
+                        })?;
+                    }
+
+                    // Build hash table for right table: O(M)
+                    let mut right_hash_table: HashMap<HashableValue, Vec<usize>> = HashMap::new();
+                    for (r_idx, r_row) in right_rows.iter().enumerate() {
+                        if let Some(r_val) = r_row.get_value(&join_clause.right_col) {
+                            if !r_val.is_null() {
+                                right_hash_table
+                                    .entry(HashableValue::from(r_val))
+                                    .or_default()
+                                    .push(r_idx);
+                            }
                         }
                     }
 
                     let mut joined_rows = Vec::new();
                     let mut matched_right_indices = HashSet::new();
 
+                    // Probe hash table from left table: O(N)
                     for l_row in &left_rows {
                         let l_val = l_row.get_value(&join_clause.left_col);
                         let mut matched = false;
 
-                        for (r_idx, r_row) in right_rows.iter().enumerate() {
-                            let r_val = r_row.get_value(&join_clause.right_col);
-                            if let (Some(lv), Some(rv)) = (l_val, r_val) {
-                                if lv == rv {
+                        if let Some(lv) = l_val {
+                            if !lv.is_null() {
+                                if let Some(matching_r_indices) = right_hash_table.get(&HashableValue::from(lv)) {
                                     matched = true;
-                                    matched_right_indices.insert(r_idx);
-                                    let mut merged_cols = Vec::new();
-                                    let mut merged_vals = Vec::new();
+                                    for &r_idx in matching_r_indices {
+                                        let r_row = &right_rows[r_idx];
+                                        matched_right_indices.insert(r_idx);
+                                        let mut merged_cols = Vec::new();
+                                        let mut merged_vals = Vec::new();
 
-                                    for (c, v) in l_row.columns().iter().zip(l_row.values().iter()) {
-                                        merged_cols.push(format!("{}.{}", table, c));
-                                        merged_vals.push(v.clone());
-                                    }
-                                    for (c, v) in r_row.columns().iter().zip(r_row.values().iter()) {
-                                        merged_cols.push(format!("{}.{}", join_clause.table, c));
-                                        merged_vals.push(v.clone());
-                                    }
+                                        for (c, v) in l_row.columns().iter().zip(l_row.values().iter()) {
+                                            merged_cols.push(format!("{}.{}", table, c));
+                                            merged_vals.push(v.clone());
+                                        }
+                                        for (c, v) in r_row.columns().iter().zip(r_row.values().iter()) {
+                                            merged_cols.push(format!("{}.{}", join_clause.table, c));
+                                            merged_vals.push(v.clone());
+                                        }
 
-                                    joined_rows.push(Row::new(merged_cols, merged_vals));
+                                        joined_rows.push(Row::new(merged_cols, merged_vals));
+                                    }
                                 }
                             }
                         }
@@ -1277,17 +1303,21 @@ impl SQLExecutor {
                     left_rows = joined_rows;
                 }
 
-                // Check for GROUP BY
+                // Check for GROUP BY (High-Performance O(N) Hash Aggregation)
                 if let Some(ref gb_cols) = group_by {
+                    let mut group_map: HashMap<Vec<HashableValue>, usize> = HashMap::new();
                     let mut groups: Vec<(Vec<Value>, Vec<Row>)> = Vec::new();
                     for row in left_rows {
                         let key: Vec<Value> = gb_cols
                             .iter()
                             .map(|c| row.get_value(c).cloned().unwrap_or(Value::Null))
                             .collect();
-                        if let Some(pos) = groups.iter().position(|(k, _)| k == &key) {
+                        let hash_key: Vec<HashableValue> = key.iter().map(HashableValue::from).collect();
+                        if let Some(&pos) = group_map.get(&hash_key) {
                             groups[pos].1.push(row);
                         } else {
+                            let pos = groups.len();
+                            group_map.insert(hash_key, pos);
                             groups.push((key, vec![row]));
                         }
                     }

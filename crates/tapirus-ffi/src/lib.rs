@@ -4,6 +4,8 @@
 //! allowing external languages (Python, C, C++, Swift, Kotlin, Go, Zig, Node.js)
 //! to embed TapirusDB as a shared (`.so`, `.dll`, `.dylib`) or static library.
 
+#![allow(non_snake_case)]
+
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -294,7 +296,7 @@ pub struct sqlite3_stmt {
 /// Standard C ABI contract.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sqlite3_open(filename: *const c_char, ppDb: *mut *mut sqlite3) -> i32 {
-    sqlite3_open_v2(filename, ppDb, 0, ptr::null())
+    unsafe { sqlite3_open_v2(filename, ppDb, 0, ptr::null()) }
 }
 
 /// Open an SQLite compatible connection with flags.
@@ -366,7 +368,7 @@ pub unsafe extern "C" fn sqlite3_close(db: *mut sqlite3) -> i32 {
 /// Standard C ABI contract.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sqlite3_close_v2(db: *mut sqlite3) -> i32 {
-    sqlite3_close(db)
+    unsafe { sqlite3_close(db) }
 }
 
 /// Prepare a SQL query statement.
@@ -580,7 +582,7 @@ pub unsafe extern "C" fn sqlite3_column_text(pStmt: *mut sqlite3_stmt, N: i32) -
 /// Standard C ABI contract.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sqlite3_column_int(pStmt: *mut sqlite3_stmt, N: i32) -> i32 {
-    sqlite3_column_int64(pStmt, N) as i32
+    unsafe { sqlite3_column_int64(pStmt, N) as i32 }
 }
 
 /// Return 64-bit integer value of column at index N.
@@ -639,7 +641,7 @@ pub unsafe extern "C" fn sqlite3_column_double(pStmt: *mut sqlite3_stmt, N: i32)
 /// Standard C ABI contract.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sqlite3_column_bytes(pStmt: *mut sqlite3_stmt, N: i32) -> i32 {
-    let ptr = sqlite3_column_text(pStmt, N);
+    let ptr = unsafe { sqlite3_column_text(pStmt, N) };
     if ptr.is_null() {
         0
     } else {

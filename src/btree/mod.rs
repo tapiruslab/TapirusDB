@@ -145,8 +145,9 @@ impl PageHeader {
     }
 }
 
-/// Reserved bytes at the end of each page for cryptographic authentication (AEAD Poly1305 tag)
-pub const PAGE_RESERVED_TRAILER: usize = 16;
+/// Reserved bytes at the end of each page for cryptographic authentication and nonce trailer
+/// (24-byte XChaCha20 random nonce + 16-byte Poly1305 AEAD tag = 40 bytes)
+pub const PAGE_RESERVED_TRAILER: usize = 40;
 
 /// A B+Tree Table Leaf Cell containing a relational row
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -367,7 +367,7 @@ pub fn write_overflow_chain(
     mut remaining_bytes: &[u8],
 ) -> Result<PageId> {
     let page_size = pager.page_size();
-    let max_chunk = page_size.saturating_sub(6);
+    let max_chunk = page_size.saturating_sub(6 + PAGE_RESERVED_TRAILER);
     if max_chunk == 0 {
         return Err(Error::Corrupted("Page size too small for overflow chaining".into()));
     }
@@ -416,9 +416,10 @@ pub fn read_overflow_chain(
         let page_buf = pager.read_page(curr)?;
         let next_page = u32::from_le_bytes([page_buf[0], page_buf[1], page_buf[2], page_buf[3]]);
         let chunk_len = u16::from_le_bytes([page_buf[4], page_buf[5]]) as usize;
-        if 6 + chunk_len > page_size {
+        let max_chunk = page_size.saturating_sub(6 + PAGE_RESERVED_TRAILER);
+        if chunk_len > max_chunk {
             return Err(Error::Corrupted(format!(
-                "Overflow page {curr} chunk length {chunk_len} exceeds page capacity"
+                "Overflow page {curr} chunk length {chunk_len} exceeds usable capacity {max_chunk}"
             )));
         }
         out.extend_from_slice(&page_buf[6..6 + chunk_len]);
@@ -766,16 +767,31 @@ impl BTreeStorage {
     /// Perform a full scan across all leaf cells in the B+Tree rooted at `root_page`
     pub fn scan(&self, pager: &mut Pager, root_page: PageId) -> Result<Vec<TableLeafCell>> {
         let mut cells = Vec::new();
-        self.scan_subtree(pager, root_page, &mut cells)?;
+        self.scan_with(pager, root_page, |cell| {
+            cells.push(cell);
+            Ok(true)
+        })?;
         Ok(cells)
     }
 
-    fn scan_subtree(
+    /// Perform a streaming scan across leaf cells with early-termination support
+    pub fn scan_with<F>(&self, pager: &mut Pager, root_page: PageId, mut callback: F) -> Result<()>
+    where
+        F: FnMut(TableLeafCell) -> Result<bool>,
+    {
+        self.scan_subtree_with(pager, root_page, &mut callback)?;
+        Ok(())
+    }
+
+    fn scan_subtree_with<F>(
         &self,
         pager: &mut Pager,
         curr_page_id: PageId,
-        out: &mut Vec<TableLeafCell>,
-    ) -> Result<()> {
+        callback: &mut F,
+    ) -> Result<bool>
+    where
+        F: FnMut(TableLeafCell) -> Result<bool>,
+    {
         let page_buf = pager.read_page(curr_page_id)?;
         let header = read_page_header(&page_buf, curr_page_id)?;
 
@@ -788,19 +804,25 @@ impl BTreeStorage {
                         cell.payload.extend_from_slice(&overflow_data);
                         cell.overflow_page = None;
                     }
-                    out.push(cell);
+                    if !callback(cell)? {
+                        return Ok(false);
+                    }
                 }
-                Ok(())
+                Ok(true)
             }
             PageType::TableInterior => {
                 for i in 0..header.num_cells as usize {
                     let icell = read_interior_cell(&page_buf, curr_page_id, i)?;
-                    self.scan_subtree(pager, icell.left_child, out)?;
+                    if !self.scan_subtree_with(pager, icell.left_child, callback)? {
+                        return Ok(false);
+                    }
                 }
                 if let Some(rc) = header.right_child {
-                    self.scan_subtree(pager, rc, out)?;
+                    if !self.scan_subtree_with(pager, rc, callback)? {
+                        return Ok(false);
+                    }
                 }
-                Ok(())
+                Ok(true)
             }
             other => Err(Error::Corrupted(format!("Invalid page type during scan: {other:?}"))),
         }

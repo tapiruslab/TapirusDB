@@ -48,7 +48,7 @@ pub use tap::{
     TapConfig, TapDeepEngine, TapEngine, TapInferenceEngine, TapRuntime, TapTokenizer, TapWeights,
     TernaryVal, VerifyResult,
 };
-pub use traits::{DatabaseConnection, FromValue, Row, Value, VectorIndexEngine};
+pub use traits::{DatabaseConnection, FromValue, HashableValue, Row, Value, VectorIndexEngine};
 pub use vector::{DistanceMetric, HnswIndex, ProductQuantizer, QuantizedVector8, QuantizedVectorPQ, Vector};
 
 /// Comprehensive diagnostic report of database page, cryptographic, and structural integrity
