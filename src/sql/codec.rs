@@ -90,9 +90,18 @@ pub fn encode_row(values: &[Value]) -> Vec<u8> {
 }
 
 /// Decodes a binary payload into a list of `Value`s.
+/// Decodes a binary payload into a list of `Value`s.
 pub fn decode_row_values(bytes: &[u8]) -> Result<Vec<Value>> {
+    let mut values = Vec::new();
+    decode_row_values_into(bytes, &mut values)?;
+    Ok(values)
+}
+
+/// Decodes a binary payload directly into an existing `Vec<Value>` buffer, reusing memory allocations
+pub fn decode_row_values_into(bytes: &[u8], values: &mut Vec<Value>) -> Result<()> {
+    values.clear();
     if bytes.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let (col_count_u64, mut cursor) = decode_varint(bytes)?;
@@ -105,7 +114,9 @@ pub fn decode_row_values(bytes: &[u8]) -> Result<Vec<Value>> {
     let tags = &bytes[cursor..cursor + col_count];
     cursor += col_count;
 
-    let mut values = Vec::with_capacity(col_count);
+    if values.capacity() < col_count {
+        values.reserve(col_count - values.capacity());
+    }
 
     for &tag in tags {
         match tag {
@@ -215,7 +226,7 @@ pub fn decode_row_values(bytes: &[u8]) -> Result<Vec<Value>> {
         }
     }
 
-    Ok(values)
+    Ok(())
 }
 
 /// Decodes binary bytes into a full `Row` with column names.

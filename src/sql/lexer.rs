@@ -87,6 +87,7 @@ pub enum Token {
     Nothing,
     Ignore,
     Analyze,
+    Pragma,
 
     // Window Function Keywords
     Over,
@@ -440,6 +441,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
                 "NOTHING" => Token::Nothing,
                 "IGNORE" => Token::Ignore,
                 "ANALYZE" => Token::Analyze,
+                "PRAGMA" => Token::Pragma,
                 // Window function keywords
                 "OVER" => Token::Over,
                 "PARTITION" => Token::Partition,

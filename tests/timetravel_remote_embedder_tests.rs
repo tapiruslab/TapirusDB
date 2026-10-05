@@ -16,6 +16,7 @@ use tapirus::{Connection, Error};
 #[test]
 fn test_as_of_timestamp_time_travel_snapshot() {
     let conn = Connection::open_in_memory().expect("Open in-memory DB");
+    conn.execute("PRAGMA time_travel = ON;").expect("Enable time travel");
     conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
         .expect("Create table");
     conn.execute("INSERT INTO users (id, name) VALUES (1, 'Alice')")

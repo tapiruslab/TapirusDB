@@ -215,6 +215,7 @@ fn main() {
         .expect("Create docs with vector");
 
     let query_vec = vec![0.05f32; 128];
+    tapir_conn.execute("BEGIN TRANSACTION;").expect("Begin");
     for i in 1..=500 {
         let mut vec = vec![0.0f32; 128];
         vec[i % 128] = 1.0;
@@ -222,12 +223,13 @@ fn main() {
         let sql = format!("INSERT INTO docs VALUES ({i}, 'Document {i}', '{vec_json}');");
         tapir_conn.execute(&sql).expect("Insert vector");
     }
+    tapir_conn.execute("COMMIT;").expect("Commit");
 
+    let q_str = query_vec.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(", ");
     let start_tapir_vec = Instant::now();
     const VEC_QUERIES: usize = 50;
     for _ in 0..VEC_QUERIES {
-        let q_json = serde_json::to_string(&query_vec).unwrap();
-        let sql = format!("SELECT id, body FROM docs VECTOR SEARCH embedding SIMILAR TO '{q_json}' TOP 10;");
+        let sql = format!("SELECT id, body FROM docs VECTOR NEAR embedding = [{q_str}] TOP 10;");
         let rows = tapir_conn.query(&sql).expect("Vector search");
         assert_eq!(rows.len(), 10);
     }

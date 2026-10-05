@@ -175,6 +175,9 @@ pub struct TableDef {
     pub columns: Vec<ColumnDef>,
     /// Auto-increment counter for primary key generation
     pub next_row_id: u64,
+    /// Whether historical time-travel snapshots are tracked for this table
+    #[serde(default)]
+    pub system_versioning: bool,
 }
 
 impl TableDef {
@@ -185,7 +188,14 @@ impl TableDef {
             root_page,
             columns,
             next_row_id: 1,
+            system_versioning: false,
         }
+    }
+
+    /// Enable or disable system versioning for time-travel queries
+    pub fn with_system_versioning(mut self, enabled: bool) -> Self {
+        self.system_versioning = enabled;
+        self
     }
 
     /// Find column index by name (case-insensitive)

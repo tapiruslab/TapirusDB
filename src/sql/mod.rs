@@ -9,7 +9,7 @@ pub mod planner;
 pub mod vectorized;
 
 pub use catalog::{Catalog, ColumnDef, DataType, IndexDef, TableDef, ViewDef};
-pub use codec::{decode_row, decode_row_values, encode_row};
+pub use codec::{decode_row, decode_row_values, decode_row_values_into, encode_row};
 pub use executor::{matches_condition, SQLExecutor};
 pub use parser::{bind_parameters, parse_sql, parse_tokens, CteClause, Statement};
 pub use planner::{CostEstimate, CostOptimizer, PlanType, TableStats};

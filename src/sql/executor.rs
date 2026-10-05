@@ -5,8 +5,10 @@ use crate::error::{Error, Result};
 use crate::graph::GraphEngine;
 use crate::pager::Pager;
 use crate::sql::catalog::{Catalog, ColumnDef, DataType, IndexDef, TableDef};
-use crate::sql::codec::{decode_row, encode_row};
-use crate::sql::parser::{BinaryOp, JoinType, OnConflict, Statement, WhereCondition, WhereExpr};
+use crate::sql::codec::{decode_row, decode_row_values_into, encode_row};
+use crate::sql::parser::{
+    BinaryOp, JoinType, OnConflict, Statement, WhereCondition, WhereExpr,
+};
 use crate::traits::{HashableValue, Row, Value, VectorIndexEngine};
 use crate::vector::{DistanceMetric, HnswIndex};
 use serde::{Deserialize, Serialize};
@@ -171,6 +173,10 @@ pub struct SQLExecutor {
     vector_indexes: HashMap<String, HnswIndex>,
     graph: GraphEngine,
     last_temporal_timestamp: u64,
+    /// Default system versioning flag for new tables or session-level time travel
+    pub default_system_versioning: bool,
+    statement_cache: HashMap<String, Statement>,
+    statement_cache_order: std::collections::VecDeque<String>,
 }
 
 impl SQLExecutor {
@@ -186,7 +192,30 @@ impl SQLExecutor {
             vector_indexes,
             graph: GraphEngine::new(),
             last_temporal_timestamp: 0,
+            default_system_versioning: false,
+            statement_cache: HashMap::new(),
+            statement_cache_order: std::collections::VecDeque::new(),
         })
+    }
+
+    /// Parse SQL query string into Statement using an internal LRU statement cache
+    pub fn get_or_parse_statement(&mut self, sql: &str) -> Result<Option<Statement>> {
+        if let Some(stmt) = self.statement_cache.get(sql) {
+            return Ok(Some(stmt.clone()));
+        }
+        let tokens = crate::sql::lexer::tokenize(sql)?;
+        if tokens.is_empty() {
+            return Ok(None);
+        }
+        let stmt = crate::sql::parser::parse_tokens(&tokens)?;
+        if self.statement_cache.len() >= 256 {
+            if let Some(oldest) = self.statement_cache_order.pop_front() {
+                self.statement_cache.remove(&oldest);
+            }
+        }
+        self.statement_cache.insert(sql.to_string(), stmt.clone());
+        self.statement_cache_order.push_back(sql.to_string());
+        Ok(Some(stmt))
     }
 
     /// Return reference to graph engine
@@ -797,10 +826,25 @@ impl SQLExecutor {
     /// Execute a non-query SQL or Graph command (CREATE, INSERT, etc.)
     pub fn execute(&mut self, pager: &mut Pager, stmt: Statement) -> Result<usize> {
         match stmt {
+            Statement::Pragma { key, value } => {
+                let k = key.to_lowercase();
+                if k == "time_travel" || k == "system_versioning" || k == "temporal" {
+                    if let Some(v) = value {
+                        let val_lower = v.trim().to_lowercase();
+                        self.default_system_versioning =
+                            val_lower == "1" || val_lower == "true" || val_lower == "on";
+                    }
+                    Ok(if self.default_system_versioning { 1 } else { 0 })
+                } else {
+                    Ok(0)
+                }
+            }
+
             Statement::CreateTable {
                 name,
                 if_not_exists,
                 columns,
+                system_versioning,
             } => {
                 if self.catalog.table_exists(&name) {
                     if if_not_exists {
@@ -816,7 +860,8 @@ impl SQLExecutor {
                 engine::init_leaf_page(&mut root_buf, root_page);
                 pager.write_page(root_page, &root_buf)?;
 
-                let table_def = TableDef::new(name.clone(), root_page, columns);
+                let mut table_def = TableDef::new(name.clone(), root_page, columns);
+                table_def.system_versioning = system_versioning || self.default_system_versioning;
 
                 // If table has a vector column, prepare vector index
                 if let Some((_, dims)) = table_def.vector_column() {
@@ -1363,9 +1408,108 @@ impl SQLExecutor {
                     }
                 }
 
+                // Single-Pass Pushdown Aggregation Optimization using VectorizedAccumulator
+                if join.is_none() && order_by.is_none() && group_by.is_none() && as_of_timestamp.is_none() && !distinct && is_aggregate_query(&columns) {
+                    struct PushdownAgg {
+                        col_name: String,
+                        func: String,
+                        col_idx: Option<usize>,
+                        is_star: bool,
+                        acc: crate::sql::vectorized::VectorizedAccumulator,
+                    }
+
+                    let mut aggs: Vec<PushdownAgg> = Vec::new();
+                    for col in &columns {
+                        let upper = col.to_uppercase();
+                        if let Some(open_p) = upper.find('(') {
+                            if let Some(close_p) = upper.rfind(')') {
+                                let func = upper[..open_p].trim().to_string();
+                                let arg = col[open_p + 1..close_p].trim();
+                                let is_star = arg == "*" || arg.parse::<i64>().is_ok();
+                                let col_idx = if is_star {
+                                    None
+                                } else {
+                                    table_def.column_index(arg)
+                                };
+                                aggs.push(PushdownAgg {
+                                    col_name: col.clone(),
+                                    func,
+                                    col_idx,
+                                    is_star,
+                                    acc: crate::sql::vectorized::VectorizedAccumulator::new(),
+                                });
+                                continue;
+                            }
+                        }
+                        aggs.push(PushdownAgg {
+                            col_name: col.clone(),
+                            func: String::new(),
+                            col_idx: table_def.column_index(col),
+                            is_star: false,
+                            acc: crate::sql::vectorized::VectorizedAccumulator::new(),
+                        });
+                    }
+
+                    let mut row_vals = Vec::with_capacity(all_col_names.len());
+                    self.btree.scan_with(pager, root_page, |cell| {
+                        if let Some(ref r_expr) = resolved_where {
+                            let full_row = decode_row(&cell.payload, &all_col_names)?;
+                            if !row_matches_resolved(&full_row, r_expr) {
+                                return Ok(true);
+                            }
+                            for agg in &mut aggs {
+                                if agg.is_star {
+                                    agg.acc.count_all += 1;
+                                    agg.acc.count += 1;
+                                } else if let Some(idx) = agg.col_idx {
+                                    if let Some(val) = full_row.values().get(idx) {
+                                        agg.acc.accumulate_values(std::iter::once(val));
+                                    }
+                                }
+                            }
+                        } else {
+                            decode_row_values_into(&cell.payload, &mut row_vals)?;
+                            for agg in &mut aggs {
+                                if agg.is_star {
+                                    agg.acc.count_all += 1;
+                                    agg.acc.count += 1;
+                                } else if let Some(idx) = agg.col_idx {
+                                    if let Some(val) = row_vals.get(idx) {
+                                        agg.acc.accumulate_values(std::iter::once(val));
+                                    }
+                                }
+                            }
+                        }
+                        Ok(true)
+                    })?;
+
+                    let mut out_cols = Vec::new();
+                    let mut out_vals = Vec::new();
+                    for agg in aggs {
+                        out_cols.push(agg.col_name);
+                        let v = match agg.func.as_str() {
+                            "COUNT" => agg.acc.finalize_count(agg.is_star),
+                            "SUM" => agg.acc.finalize_sum(),
+                            "AVG" => agg.acc.finalize_avg(),
+                            "MIN" => agg.acc.finalize_min(),
+                            "MAX" => agg.acc.finalize_max(),
+                            _ => Value::Null,
+                        };
+                        out_vals.push(v);
+                    }
+                    return Ok(vec![Row::new(out_cols, out_vals)]);
+                }
+
                 // Table scan left table
                 let mut left_rows = Vec::new();
                 if let Some(ts) = as_of_timestamp {
+                    let is_versioned = table_def.system_versioning || self.default_system_versioning;
+                    if !is_versioned && self.catalog.get_table("__sys_time_travel").is_none() {
+                        return Err(Error::SqlSyntax(format!(
+                            "Table '{}' does not have SYSTEM_VERSIONING enabled. Enable with PRAGMA time_travel = ON or CREATE TABLE ... WITH (SYSTEM_VERSIONING = TRUE)",
+                            table
+                        )));
+                    }
                     if let Some(sys_table) = self.catalog.get_table("__sys_time_travel") {
                         let cells = self.btree.scan(pager, sys_table.root_page)?;
                         for cell in cells {
@@ -1445,10 +1589,28 @@ impl SQLExecutor {
                         })?;
                     }
 
+                    // Precompute merged column names once to eliminate per-row string formatting allocations
+                    let mut merged_cols_template = Vec::with_capacity(all_col_names.len() + right_col_names.len());
+                    for c in &all_col_names {
+                        merged_cols_template.push(format!("{}.{}", table, c));
+                    }
+                    for c in &right_col_names {
+                        merged_cols_template.push(format!("{}.{}", join_clause.table, c));
+                    }
+
+                    // Resolve join column indices for O(1) row value access
+                    let l_col_idx = table_def.column_index(&join_clause.left_col);
+                    let r_col_idx = right_table_def.column_index(&join_clause.right_col);
+
                     // Build hash table for right table: O(M)
                     let mut right_hash_table: HashMap<HashableValue, Vec<usize>> = HashMap::new();
                     for (r_idx, r_row) in right_rows.iter().enumerate() {
-                        if let Some(r_val) = r_row.get_value(&join_clause.right_col) {
+                        let r_val = if let Some(idx) = r_col_idx {
+                            r_row.values().get(idx)
+                        } else {
+                            r_row.get_value(&join_clause.right_col)
+                        };
+                        if let Some(r_val) = r_val {
                             if !r_val.is_null() {
                                 right_hash_table
                                     .entry(HashableValue::from(r_val))
@@ -1463,7 +1625,11 @@ impl SQLExecutor {
 
                     // Probe hash table from left table: O(N)
                     for l_row in &left_rows {
-                        let l_val = l_row.get_value(&join_clause.left_col);
+                        let l_val = if let Some(idx) = l_col_idx {
+                            l_row.values().get(idx)
+                        } else {
+                            l_row.get_value(&join_clause.left_col)
+                        };
                         let mut matched = false;
 
                         if let Some(lv) = l_val {
@@ -1473,38 +1639,20 @@ impl SQLExecutor {
                                     for &r_idx in matching_r_indices {
                                         let r_row = &right_rows[r_idx];
                                         matched_right_indices.insert(r_idx);
-                                        let mut merged_cols = Vec::new();
-                                        let mut merged_vals = Vec::new();
-
-                                        for (c, v) in l_row.columns().iter().zip(l_row.values().iter()) {
-                                            merged_cols.push(format!("{}.{}", table, c));
-                                            merged_vals.push(v.clone());
-                                        }
-                                        for (c, v) in r_row.columns().iter().zip(r_row.values().iter()) {
-                                            merged_cols.push(format!("{}.{}", join_clause.table, c));
-                                            merged_vals.push(v.clone());
-                                        }
-
-                                        joined_rows.push(Row::new(merged_cols, merged_vals));
+                                        let mut merged_vals = Vec::with_capacity(l_row.values().len() + r_row.values().len());
+                                        merged_vals.extend_from_slice(l_row.values());
+                                        merged_vals.extend_from_slice(r_row.values());
+                                        joined_rows.push(Row::new(merged_cols_template.clone(), merged_vals));
                                     }
                                 }
                             }
                         }
 
                         if !matched && (join_clause.join_type == JoinType::Left || join_clause.join_type == JoinType::Full) {
-                            let mut merged_cols = Vec::new();
-                            let mut merged_vals = Vec::new();
-
-                            for (c, v) in l_row.columns().iter().zip(l_row.values().iter()) {
-                                merged_cols.push(format!("{}.{}", table, c));
-                                merged_vals.push(v.clone());
-                            }
-                            for c in &right_col_names {
-                                merged_cols.push(format!("{}.{}", join_clause.table, c));
-                                merged_vals.push(Value::Null);
-                            }
-
-                            joined_rows.push(Row::new(merged_cols, merged_vals));
+                            let mut merged_vals = Vec::with_capacity(l_row.values().len() + right_col_names.len());
+                            merged_vals.extend_from_slice(l_row.values());
+                            merged_vals.resize(merged_vals.len() + right_col_names.len(), Value::Null);
+                            joined_rows.push(Row::new(merged_cols_template.clone(), merged_vals));
                         }
                     }
 
@@ -2585,8 +2733,10 @@ impl SQLExecutor {
         let table_cols;
         let root_page;
         let row_id;
+        let key_may_exist;
         let mut aligned_values;
         let vector_col;
+        let is_temporal;
 
         {
             let table_def = self
@@ -2597,6 +2747,7 @@ impl SQLExecutor {
             root_page = table_def.root_page;
             table_cols = table_def.columns.clone();
             vector_col = table_def.vector_column();
+            is_temporal = table_def.system_versioning || self.default_system_versioning;
 
             // Align values to table columns
             aligned_values = if let Some(cols) = columns {
@@ -2625,33 +2776,37 @@ impl SQLExecutor {
             };
 
             // Determine row_id (from primary key column or auto-increment)
+            let old_next_row_id = table_def.next_row_id;
             let pk_idx = table_def.primary_key_index();
-            row_id = if let Some(idx) = pk_idx {
+            let (rid, may_exist) = if let Some(idx) = pk_idx {
                 match &aligned_values[idx] {
                     Value::Integer(i) => {
                         let id_val = *i as u64;
+                        let may_exist = id_val < old_next_row_id;
                         if id_val >= table_def.next_row_id {
                             table_def.next_row_id = id_val + 1;
                         }
-                        id_val
+                        (id_val, may_exist)
                     }
                     Value::Null => {
                         let rid = table_def.next_row_id;
                         table_def.next_row_id += 1;
                         aligned_values[idx] = Value::Integer(rid as i64);
-                        rid
+                        (rid, false)
                     }
                     _ => {
                         let rid = table_def.next_row_id;
                         table_def.next_row_id += 1;
-                        rid
+                        (rid, false)
                     }
                 }
             } else {
                 let rid = table_def.next_row_id;
                 table_def.next_row_id += 1;
-                rid
+                (rid, false)
             };
+            row_id = rid;
+            key_may_exist = may_exist;
         }
 
         // Enforce column data type validation and coercion
@@ -2683,7 +2838,12 @@ impl SQLExecutor {
         }
 
         // If table has a primary key or specific row_id and it already exists, enforce UNIQUE constraint or handle Upsert
-        if let Some(existing_payload) = self.btree.search(pager, root_page, row_id)? {
+        let existing_payload = if key_may_exist {
+            self.btree.search(pager, root_page, row_id)?
+        } else {
+            None
+        };
+        if let Some(existing_payload) = existing_payload {
             match conflict_action {
                 OnConflict::Abort => {
                     let pk_col_name = table_cols
@@ -2779,8 +2939,10 @@ impl SQLExecutor {
                     if let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase()) {
                         index.remove_vector(row_id);
                     }
-                    let now_ts = self.next_temporal_timestamp();
-                    self.close_temporal_version(pager, &table, row_id, now_ts)?;
+                    if is_temporal {
+                        let now_ts = self.next_temporal_timestamp();
+                        self.close_temporal_version(pager, &table, row_id, now_ts)?;
+                    }
                     self.btree.delete(pager, root_page, row_id)?;
 
                     aligned_values = values;
@@ -2794,9 +2956,11 @@ impl SQLExecutor {
         // Insert into B+Tree
         self.btree.insert(pager, root_page, row_id, &payload)?;
 
-        // Record temporal snapshot for time-travel queries
-        let now_ts = self.next_temporal_timestamp();
-        self.record_temporal_version(pager, &table, row_id, &payload, now_ts, u64::MAX)?;
+        // Record temporal snapshot for time-travel queries if enabled
+        if is_temporal {
+            let now_ts = self.next_temporal_timestamp();
+            self.record_temporal_version(pager, &table, row_id, &payload, now_ts, u64::MAX)?;
+        }
 
         // Update vector index if present
         if let Some((v_idx, _)) = vector_col {
@@ -2963,10 +3127,12 @@ impl SQLExecutor {
                 self.btree.delete(pager, root_page, cell.row_id)?;
                 self.btree.insert(pager, root_page, new_row_id, &new_payload)?;
 
-                // Update temporal snapshot for time-travel queries
-                let now_ts = self.next_temporal_timestamp();
-                self.close_temporal_version(pager, &table, cell.row_id, now_ts)?;
-                self.record_temporal_version(pager, &table, new_row_id, &new_payload, now_ts, u64::MAX)?;
+                // Update temporal snapshot for time-travel queries if enabled
+                if table_def.system_versioning || self.default_system_versioning {
+                    let now_ts = self.next_temporal_timestamp();
+                    self.close_temporal_version(pager, &table, cell.row_id, now_ts)?;
+                    self.record_temporal_version(pager, &table, new_row_id, &new_payload, now_ts, u64::MAX)?;
+                }
 
                 // Update vector index if vector column was updated or row_id changed
                 if let Some((v_idx, _)) = table_def.vector_column() {
@@ -3085,8 +3251,10 @@ impl SQLExecutor {
                 }
 
                 self.btree.delete(pager, root_page, cell.row_id)?;
-                let now_ts = self.next_temporal_timestamp();
-                self.close_temporal_version(pager, &table, cell.row_id, now_ts)?;
+                if table_def.system_versioning || self.default_system_versioning {
+                    let now_ts = self.next_temporal_timestamp();
+                    self.close_temporal_version(pager, &table, cell.row_id, now_ts)?;
+                }
                 if let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase()) {
                     index.remove_vector(cell.row_id);
                 }

@@ -1145,11 +1145,12 @@ impl DatabaseConnection for Connection {
                 .unwrap_or(0);
             return Ok(affected);
         }
-        let tokens = crate::sql::lexer::tokenize(trimmed)?;
-        if tokens.is_empty() {
-            return Ok(0);
-        }
-        let stmt = crate::sql::parser::parse_tokens(&tokens)?;
+        let mut pager = self.pager.write();
+        let mut executor = self.executor.write();
+        let stmt = match executor.get_or_parse_statement(trimmed)? {
+            Some(s) => s,
+            None => return Ok(0),
+        };
 
         // Capture mutation metadata for CDC broadcast
         let cdc_info = match &stmt {
@@ -1159,8 +1160,6 @@ impl DatabaseConnection for Connection {
             _ => None,
         };
 
-        let mut pager = self.pager.write();
-        let mut executor = self.executor.write();
         let affected = executor.execute(&mut pager, stmt)?;
 
         if let Some((op, table)) = cdc_info {
@@ -1190,11 +1189,12 @@ impl DatabaseConnection for Connection {
         if upper.starts_with("MATCH") || upper.starts_with("CYPHER") {
             return self.query_cypher(trimmed);
         }
-        let tokens = crate::sql::lexer::tokenize(trimmed)?;
-        if tokens.is_empty() {
-            return Ok(Vec::new());
-        }
-        let stmt = crate::sql::parser::parse_tokens(&tokens)?;
+        let mut pager = self.pager.write();
+        let mut executor = self.executor.write();
+        let stmt = match executor.get_or_parse_statement(trimmed)? {
+            Some(s) => s,
+            None => return Ok(Vec::new()),
+        };
 
         // Capture mutation metadata for CDC broadcast if RETURNING was used
         let cdc_info = match &stmt {
@@ -1204,8 +1204,6 @@ impl DatabaseConnection for Connection {
             _ => None,
         };
 
-        let mut pager = self.pager.write();
-        let mut executor = self.executor.write();
         let rows = executor.query(&mut pager, stmt)?;
 
         if let Some((op, table)) = cdc_info {
