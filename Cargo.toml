@@ -61,6 +61,7 @@ thiserror = "2.0"
 # Optional SIMD Vector Math
 wide = { version = "0.7", optional = true }
 getrandom = "0.4.3"
+ureq = { version = "2.10", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom-02 = { package = "getrandom", version = "0.2", features = ["js"] }
@@ -74,6 +75,7 @@ default = ["std"]
 std = []
 simd = ["dep:wide"]
 tap-deep = []
+cloud-s3 = ["dep:ureq"]
 
 [profile.release]
 opt-level = 3

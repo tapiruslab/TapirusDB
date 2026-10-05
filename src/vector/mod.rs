@@ -9,7 +9,7 @@ pub mod quantization;
 pub mod simd;
 pub use hnsw::{HnswConfig, HnswIndex, HnswSnapshot};
 pub use ivf::{IvfCluster, IvfConfig, IvfIndex};
-pub use paged_hnsw::{PagedHnswIndex, PagedNodeRecord, PagedVectorStore};
+pub use paged_hnsw::{PagedHnswHeader, PagedHnswIndex, PagedNodeRecord, PagedVectorStore};
 pub use quantization::{
     ProductQuantizer, QuantizedVector8, QuantizedVectorPQ, RaBitQuantizedVector, RaBitQuantizer,
 };

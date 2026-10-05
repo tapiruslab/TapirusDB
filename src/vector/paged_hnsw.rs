@@ -174,6 +174,51 @@ impl PagedVectorStore {
     pub fn is_empty(&self) -> bool {
         self.disk_pages.read().is_empty()
     }
+
+    /// Check whether a vector node exists in cache or on disk
+    pub fn has_node(&self, id: u64) -> bool {
+        if self.lru.lock().cache.contains_key(&id) {
+            return true;
+        }
+        self.disk_pages.read().contains_key(&id)
+    }
+
+    /// Dump all disk page bytes as (node_id, payload)
+    pub fn dump_pages(&self) -> Vec<(u64, Vec<u8>)> {
+        self.disk_pages.read().iter().map(|(&k, v)| (k, v.clone())).collect()
+    }
+
+    /// Load a serialized node page directly into disk storage
+    pub fn load_page(&self, id: u64, bytes: Vec<u8>) {
+        self.disk_pages.write().insert(id, bytes);
+    }
+}
+
+/// Compact metadata for PagedHnswIndex upper navigation layers
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PagedHnswHeader {
+    /// Vector dimensionality
+    pub dimensions: usize,
+    /// Distance metric
+    pub metric: DistanceMetric,
+    /// Maximum connections per node in upper layers
+    pub m: usize,
+    /// Maximum connections per node in bottom layer (L0)
+    pub m0: usize,
+    /// Exploration factor during construction
+    pub ef_construction: usize,
+    /// Exploration factor during search
+    pub ef_search: usize,
+    /// Entry point node ID in the graph
+    pub entry_point: Option<u64>,
+    /// Current maximum level in the index
+    pub max_level: usize,
+    /// Normalization factor for level assignment
+    pub ml: f64,
+    /// Upper layers (L1..Lmax) stored entirely in RAM
+    pub upper_layers: HashMap<u64, Vec<Vec<u64>>>,
+    /// Total count of indexed vector nodes
+    pub count: usize,
 }
 
 /// Disk-Backed Hierarchical Navigable Small World index (DiskANN hybrid)
@@ -205,6 +250,41 @@ pub struct PagedHnswIndex {
 }
 
 impl PagedHnswIndex {
+    /// Export index metadata for lightweight persistence
+    pub fn export_header(&self) -> PagedHnswHeader {
+        PagedHnswHeader {
+            dimensions: self.dimensions,
+            metric: self.metric,
+            m: self.m,
+            m0: self.m0,
+            ef_construction: self.ef_construction,
+            ef_search: self.ef_search,
+            entry_point: self.entry_point,
+            max_level: self.max_level,
+            ml: self.ml,
+            upper_layers: self.upper_layers.clone(),
+            count: self.len(),
+        }
+    }
+
+    /// Reconstruct PagedHnswIndex from a saved header and attach an existing or lazy PagedVectorStore
+    pub fn import_header(header: PagedHnswHeader, store: PagedVectorStore) -> Self {
+        Self {
+            dimensions: header.dimensions,
+            metric: header.metric,
+            m: header.m,
+            m0: header.m0,
+            ef_construction: header.ef_construction,
+            ef_search: header.ef_search,
+            entry_point: header.entry_point,
+            max_level: header.max_level,
+            ml: header.ml,
+            upper_layers: header.upper_layers,
+            store,
+            rng_state: 0x9e3779b97f4a7c15,
+        }
+    }
+
     /// Create a new PagedHnswIndex with vector dimensions and metric
     pub fn new(dimensions: usize, metric: DistanceMetric, cache_capacity: usize) -> Self {
         let m = 16;
