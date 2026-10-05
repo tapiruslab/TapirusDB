@@ -79,6 +79,7 @@ fn test_sql_joins_inner_left_right_full() {
 #[test]
 fn test_point_in_time_time_travel_queries() {
     let conn = Connection::open_in_memory().expect("Open in-memory DB");
+    conn.execute("PRAGMA time_travel = ON;").expect("Enable time travel");
 
     conn.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, holder TEXT, balance INTEGER)")
         .expect("Create accounts");

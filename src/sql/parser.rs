@@ -186,6 +186,8 @@ pub enum Statement {
         if_not_exists: bool,
         /// Column definitions
         columns: Vec<ColumnDef>,
+        /// Whether system versioning / time travel is enabled for this table
+        system_versioning: bool,
     },
     /// INSERT [OR REPLACE|IGNORE] INTO table [(columns...)] VALUES (values...) [ON CONFLICT ...] [RETURNING ...]
     Insert {
@@ -408,6 +410,13 @@ pub enum Statement {
         /// Optional configuration options (e.g. "damping", "iterations", "normalized")
         options: std::collections::HashMap<String, String>,
     },
+    /// PRAGMA key [= value]
+    Pragma {
+        /// Pragma configuration key
+        key: String,
+        /// Optional configuration value
+        value: Option<String>,
+    },
 }
 
 /// Substitute '?' positional placeholders in a token stream with bound Values
@@ -591,6 +600,7 @@ pub fn tokens_to_sql(tokens: &[Token]) -> String {
             Token::Current => s.push_str("CURRENT"),
             Token::Row => s.push_str("ROW"),
             Token::Algorithm => s.push_str("ALGORITHM"),
+            Token::Pragma => s.push_str("PRAGMA"),
         }
     }
     s
@@ -629,6 +639,7 @@ pub fn parse_tokens(tokens: &[Token]) -> Result<Statement> {
         Token::Vacuum => parse_vacuum(tokens, &mut cursor),
         Token::Analyze => parse_analyze(tokens, &mut cursor),
         Token::With => parse_with_cte(tokens, &mut cursor),
+        Token::Pragma => parse_pragma(tokens, &mut cursor),
         other => Err(Error::SqlSyntax(format!(
             "Unexpected statement starting with {other:?}"
         ))),
@@ -827,11 +838,58 @@ fn parse_create_table(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
         }
     }
 
+    let mut system_versioning = false;
+    if check_token(tokens, *cursor, &Token::With) {
+        *cursor += 1;
+        if check_token(tokens, *cursor, &Token::OpenParen) {
+            *cursor += 1;
+            while *cursor < tokens.len() {
+                let opt_key = parse_identifier_or_keyword(tokens, cursor)?;
+                if check_token(tokens, *cursor, &Token::Equals) {
+                    *cursor += 1;
+                }
+                let opt_val = parse_identifier_or_keyword(tokens, cursor)?;
+                if opt_key.eq_ignore_ascii_case("SYSTEM_VERSIONING") || opt_key.eq_ignore_ascii_case("TEMPORAL") {
+                    let v = opt_val.to_uppercase();
+                    if v == "TRUE" || v == "ON" || v == "1" {
+                        system_versioning = true;
+                    }
+                }
+                if check_token(tokens, *cursor, &Token::Comma) {
+                    *cursor += 1;
+                } else if check_token(tokens, *cursor, &Token::CloseParen) {
+                    *cursor += 1;
+                    break;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
     Ok(Statement::CreateTable {
         name: table_name,
         if_not_exists,
         columns,
+        system_versioning,
     })
+}
+
+fn parse_pragma(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
+    expect_token(tokens, cursor, &Token::Pragma)?;
+    let key = parse_identifier_or_keyword(tokens, cursor)?;
+    let mut value = None;
+    if check_token(tokens, *cursor, &Token::Equals) {
+        *cursor += 1;
+        let val = match get_token(tokens, cursor)? {
+            Token::Ident(s) => s.clone(),
+            Token::StringLit(s) => s.clone(),
+            Token::IntLit(n) => n.to_string(),
+            other => format!("{other:?}"),
+        };
+        value = Some(val);
+    }
+    Ok(Statement::Pragma { key, value })
 }
 
 fn parse_insert(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {

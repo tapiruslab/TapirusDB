@@ -8,7 +8,7 @@ use crate::pager::PageId;
 use crc32fast::Hasher;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Magic bytes identifying a TapirusDB WAL file: `b"TAPIRWAL"`
@@ -201,7 +201,7 @@ struct InMemoryFrame {
 #[derive(Debug)]
 pub struct Wal {
     header: WalHeader,
-    file: Option<File>,
+    writer: Option<BufWriter<File>>,
     _path: Option<PathBuf>,
     page_size: usize,
     /// In-memory index mapping PageId -> 0-based frame index
@@ -239,7 +239,7 @@ impl Wal {
 
         let mut wal = Self {
             header,
-            file: Some(file),
+            writer: None,
             _path: Some(path),
             page_size: page_size as usize,
             index: HashMap::new(),
@@ -248,7 +248,9 @@ impl Wal {
         };
 
         // Replay existing frames into in-memory index
-        wal.rebuild_index()?;
+        wal.rebuild_index_from_file(&mut file)?;
+        file.seek(SeekFrom::End(0))?;
+        wal.writer = Some(BufWriter::with_capacity(128 * 1024, file));
         Ok(wal)
     }
 
@@ -256,7 +258,7 @@ impl Wal {
     pub fn open_in_memory(page_size: u32) -> Self {
         Self {
             header: WalHeader::new(page_size),
-            file: None,
+            writer: None,
             _path: None,
             page_size: page_size as usize,
             index: HashMap::new(),
@@ -281,44 +283,42 @@ impl Wal {
     }
 
     /// Rebuild in-memory index from file frames
-    fn rebuild_index(&mut self) -> Result<()> {
-        if let Some(file) = &mut self.file {
-            let file_len = file.metadata()?.len();
-            let frame_size = (WAL_FRAME_HEADER_SIZE + self.page_size) as u64;
+    fn rebuild_index_from_file(&mut self, file: &mut File) -> Result<()> {
+        let file_len = file.metadata()?.len();
+        let frame_size = (WAL_FRAME_HEADER_SIZE + self.page_size) as u64;
 
-            let mut offset = WAL_HEADER_SIZE as u64;
-            let mut frame_idx = 0;
+        let mut offset = WAL_HEADER_SIZE as u64;
+        let mut frame_idx = 0;
 
-            while offset + frame_size <= file_len {
-                file.seek(SeekFrom::Start(offset))?;
+        while offset + frame_size <= file_len {
+            file.seek(SeekFrom::Start(offset))?;
 
-                let mut header_buf = [0u8; WAL_FRAME_HEADER_SIZE];
-                file.read_exact(&mut header_buf)?;
-                let frame_header = WalFrameHeader::from_bytes(&header_buf)?;
+            let mut header_buf = [0u8; WAL_FRAME_HEADER_SIZE];
+            file.read_exact(&mut header_buf)?;
+            let frame_header = WalFrameHeader::from_bytes(&header_buf)?;
 
-                let mut page_data = vec![0u8; self.page_size];
-                file.read_exact(&mut page_data)?;
+            let mut page_data = vec![0u8; self.page_size];
+            file.read_exact(&mut page_data)?;
 
-                // Verify CRC32 checksum
-                let expected_crc = frame_header.calculate_crc(&page_data);
-                if frame_header.frame_crc32 != expected_crc {
-                    // Truncate corrupted or torn frame
-                    break;
-                }
-
-                if frame_header.commit_seq > self.current_commit_seq {
-                    self.current_commit_seq = frame_header.commit_seq;
-                }
-
-                self.index.insert(frame_header.page_id, frame_idx);
-                self.frames.push(InMemoryFrame {
-                    header: frame_header,
-                    page_data,
-                });
-
-                offset += frame_size;
-                frame_idx += 1;
+            // Verify CRC32 checksum
+            let expected_crc = frame_header.calculate_crc(&page_data);
+            if frame_header.frame_crc32 != expected_crc {
+                // Truncate corrupted or torn frame
+                break;
             }
+
+            if frame_header.commit_seq > self.current_commit_seq {
+                self.current_commit_seq = frame_header.commit_seq;
+            }
+
+            self.index.insert(frame_header.page_id, frame_idx);
+            self.frames.push(InMemoryFrame {
+                header: frame_header,
+                page_data,
+            });
+
+            offset += frame_size;
+            frame_idx += 1;
         }
         Ok(())
     }
@@ -356,14 +356,14 @@ impl Wal {
 
         frame_header.frame_crc32 = frame_header.calculate_crc(page_data);
 
-        // Append to file if disk-backed
-        if let Some(file) = &mut self.file {
-            file.seek(SeekFrom::End(0))?;
-            file.write_all(&frame_header.to_bytes())?;
-            file.write_all(page_data)?;
+        // Append to buffered writer if disk-backed
+        if let Some(writer) = &mut self.writer {
+            writer.write_all(&frame_header.to_bytes())?;
+            writer.write_all(page_data)?;
             // Only force physical disk flush on COMMIT frames, eliminating per-page fsync bottleneck
             if is_commit {
-                file.sync_data()?;
+                writer.flush()?;
+                writer.get_mut().sync_data()?;
             }
         }
 
@@ -379,8 +379,9 @@ impl Wal {
 
     /// Flush any pending uncommitted WAL frames to durable physical disk storage
     pub fn sync(&mut self) -> Result<()> {
-        if let Some(file) = &mut self.file {
-            file.sync_data()?;
+        if let Some(writer) = &mut self.writer {
+            writer.flush()?;
+            writer.get_mut().sync_data()?;
         }
         Ok(())
     }
@@ -426,11 +427,14 @@ impl Wal {
         self.header.checkpoint_seq += 1;
         self.header.header_crc32 = self.header.calculate_crc();
 
-        if let Some(file) = &mut self.file {
+        if let Some(writer) = &mut self.writer {
+            writer.flush()?;
+            let file = writer.get_mut();
             file.seek(SeekFrom::Start(0))?;
             file.write_all(&self.header.to_bytes())?;
             file.set_len(WAL_HEADER_SIZE as u64)?;
             file.sync_all()?;
+            file.seek(SeekFrom::End(0))?;
         }
 
         self.index.clear();
@@ -498,11 +502,14 @@ impl Wal {
             return Ok(());
         }
         self.frames.truncate(frame_count);
-        if let Some(file) = &mut self.file {
+        if let Some(writer) = &mut self.writer {
+            writer.flush()?;
+            let file = writer.get_mut();
             let offset = WAL_HEADER_SIZE as u64
                 + frame_count as u64 * (WAL_FRAME_HEADER_SIZE + self.page_size) as u64;
             file.set_len(offset)?;
             file.sync_data()?;
+            file.seek(SeekFrom::End(0))?;
         }
         self.index.clear();
         for (i, frame) in self.frames.iter().enumerate() {
