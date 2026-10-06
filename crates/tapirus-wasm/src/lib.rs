@@ -56,6 +56,28 @@ impl TapirusWasm {
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Convenient 1-line memory storage in WASM
+    #[wasm_bindgen]
+    pub fn remember(&self, content: &str) -> Result<u64, JsValue> {
+        self.conn
+            .remember(content)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Convenient 1-line memory recall in WASM (returns JSON string)
+    #[wasm_bindgen]
+    pub fn recall_json(&self, query: &str, limit: usize) -> Result<String, JsValue> {
+        let results = self.conn.recall(query, limit);
+        serde_json::to_string(&results)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Return prompt-ready context string formatted for LLM prompts in WASM
+    #[wasm_bindgen]
+    pub fn recall_prompt(&self, query: &str, limit: usize) -> String {
+        self.conn.recall_prompt(query, limit)
+    }
+
     /// Recall memories via hybrid BM25 + Recency scoring in WASM
     #[wasm_bindgen]
     pub fn memory_recall_json(&self, query: &str, limit: usize) -> Result<String, JsValue> {

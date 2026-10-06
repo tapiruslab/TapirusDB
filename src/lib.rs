@@ -663,6 +663,29 @@ impl Connection {
         self.memory_recall(Some(query), Some(&vector), limit, &filter)
     }
 
+    /// Convenient 1-line AI Agent Memory: remember plain text with default importance.
+    pub fn remember(&self, content: &str) -> Result<u64> {
+        self.memory_remember_text(content, 0.5, &[])
+    }
+
+    /// Convenient 1-line AI Agent Memory: recall top-K relevant memories for a plain text query.
+    pub fn recall(&self, query: &str, limit: usize) -> Vec<crate::memory::MemoryRecallResult> {
+        self.memory_recall_text(query, limit)
+    }
+
+    /// Synthesize recalled memories into a prompt-ready context string formatted for LLM prompts.
+    pub fn recall_prompt(&self, query: &str, limit: usize) -> String {
+        let results = self.memory_recall_text(query, limit);
+        if results.is_empty() {
+            return String::new();
+        }
+        let mut prompt = String::from("### Recalled Agent Memory Context:\n");
+        for (i, r) in results.iter().enumerate() {
+            prompt.push_str(&format!("{}. [Score: {:.2}] {}\n", i + 1, r.combined_score, r.entry.content));
+        }
+        prompt
+    }
+
     /// Subscribe to real-time table mutations (Reactive Live Queries & Change Data Capture).
     pub fn subscribe<F>(&self, table: &str, listener: F) -> u64
     where
@@ -1715,5 +1738,20 @@ mod tests {
 
         let verified = conn.tap().verify("Client provided active subscription receipt", "active subscription receipt valid").unwrap();
         assert!(verified.is_verified);
+    }
+
+    #[test]
+    fn test_one_line_agent_memory_and_prompt() {
+        let conn = Connection::open_in_memory().expect("Open in-memory");
+        let id = conn.remember("Alex prefers dark mode and high contrast themes").unwrap();
+        assert!(id > 0);
+
+        let results = conn.recall("what theme does Alex prefer", 3);
+        assert!(!results.is_empty());
+        assert!(results[0].entry.content.contains("dark mode"));
+
+        let prompt = conn.recall_prompt("Alex theme", 2);
+        assert!(prompt.contains("Recalled Agent Memory Context"));
+        assert!(prompt.contains("dark mode"));
     }
 }
