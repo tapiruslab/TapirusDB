@@ -104,7 +104,7 @@ edition-ai-brain = ["vectors", "graphs", "tap", "std"]
 ai-brain = ["edition-ai-brain"]
 
 # 4. Tapirus Quad (Default Flagship) — Complete Quad-Model Consolidation
-quad = ["sql", "vectors", "graphs", "documents", "realtime", "tap", "std"]
+quad = ["sql", "vectors", "graphs", "documents", "realtime", "tap", "simd", "std"]
 
 # 5. Tapirus Enterprise — Full Quad-Model + Daemon Server & Protocol Bridges
 edition-enterprise = ["quad", "server"]
