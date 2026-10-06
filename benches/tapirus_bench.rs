@@ -120,6 +120,7 @@ fn main() {
     all_stats.extend(bench_wal_disk_persistence());
     all_stats.extend(bench_ai_agent_memory());
     all_stats.extend(bench_graph_vector_chaining());
+    all_stats.extend(bench_rabitq_vector_scale_and_popcnt());
 
     // Export raw JSON file for peer-review inspection
     if let Ok(json) = serde_json::to_string_pretty(&all_stats) {
@@ -437,9 +438,31 @@ fn bench_ai_agent_memory() -> Vec<LatencyStats> {
     let dur_recall = start_all_recall.elapsed();
     let recall_stats = LatencyStats::compute("memory_hybrid_recall", recall_samples, dur_recall);
     recall_stats.print_summary("Hybrid Recall (BM25+Decay)");
+
+    // Turnkey 1-line Agent Recall & Prompt Synthesis (500-item working context)
+    let agent_conn = Connection::open_in_memory().expect("Open agent DB");
+    for i in 1..=500 {
+        let content = format!(
+            "Observation #{i}: Agent observed telemetry event {i} regarding system configuration parameter"
+        );
+        agent_conn.remember(&content).expect("Remember note");
+    }
+    let agent_recall_count = 1_000;
+    let mut turnkey_samples = Vec::with_capacity(agent_recall_count);
+    let start_turnkey = Instant::now();
+    for i in 1..=agent_recall_count {
+        let query = if i % 2 == 0 { "system configuration" } else { "telemetry event" };
+        let t0 = Instant::now();
+        let prompt = agent_conn.recall_prompt(query, 3);
+        turnkey_samples.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
+        assert!(!prompt.is_empty());
+    }
+    let dur_turnkey = start_turnkey.elapsed();
+    let turnkey_stats = LatencyStats::compute("agent_memory_recall_turnkey", turnkey_samples, dur_turnkey);
+    turnkey_stats.print_summary("Turnkey Agent Recall (500 ctx)");
     println!();
 
-    vec![remember_stats, recall_stats]
+    vec![remember_stats, recall_stats, turnkey_stats]
 }
 
 fn bench_graph_vector_chaining() -> Vec<LatencyStats> {
@@ -508,4 +531,84 @@ fn bench_graph_vector_chaining() -> Vec<LatencyStats> {
 
     vec![chain_stats]
 }
+
+fn bench_rabitq_vector_scale_and_popcnt() -> Vec<LatencyStats> {
+    println!("--- 8. RaBitQ Ultra-Scale Vector Engine (1-Bit POPCNT vs Float32) ---");
+    let dims = 1536; // OpenAI text-embedding-3 standard dimension
+    let quantizer = tapirus::RaBitQuantizer::new(dims, 1);
+
+    // 1. Quantization Throughput & Memory Scale
+    let sample_count = 1_000;
+    let raw_vectors: Vec<Vec<f32>> = (0..sample_count)
+        .map(|i| {
+            (0..dims)
+                .map(|d| ((i * 37 + d * 19) % 1000) as f32 / 1000.0 - 0.5)
+                .collect()
+        })
+        .collect();
+
+    let mut quant_samples = Vec::with_capacity(sample_count);
+    let mut quantized_vecs = Vec::with_capacity(sample_count);
+    let start_all_quant = Instant::now();
+    for vec in &raw_vectors {
+        let t0 = Instant::now();
+        let q = quantizer.quantize(vec);
+        quant_samples.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
+        quantized_vecs.push(q);
+    }
+    let dur_quant = start_all_quant.elapsed();
+    let quant_stats = LatencyStats::compute("rabitq_1bit_quantize_1536d", quant_samples, dur_quant);
+    quant_stats.print_summary("RaBitQ 1-Bit Quantize (1536D)");
+
+    // Exact Physical Memory Scale Verification
+    let bytes_per_quant = (quantized_vecs[0].bits.len() * 8) + 4; // 192 bytes bitmask + 4 bytes norm = 196 bytes
+    let bytes_per_float = dims * 4; // 6,144 bytes
+    let ram_1m_quant_mb = (bytes_per_quant as f64 * 1_000_000.0) / (1024.0 * 1024.0);
+    let ram_1m_float_gb = (bytes_per_float as f64 * 1_000_000.0) / (1024.0 * 1024.0 * 1024.0);
+    println!(
+        "  • {:<24} {:>4} B/vec (1M = {:>5.1} MB) vs Float32: {:>4} B/vec (1M = {:>4.2} GB) [31.3x Less RAM]",
+        "1M Vector RAM Scale",
+        bytes_per_quant,
+        ram_1m_quant_mb,
+        bytes_per_float,
+        ram_1m_float_gb
+    );
+
+    // 2. Hardware Single-Cycle POPCNT vs Float32 Cosine
+    let dist_count = 50_000;
+    let q_a = &quantized_vecs[0];
+    let q_b = &quantized_vecs[1];
+
+    let mut popcnt_samples = Vec::with_capacity(dist_count);
+    let start_all_popcnt = Instant::now();
+    for _ in 0..dist_count {
+        let t0 = Instant::now();
+        let d = q_a.hamming_distance(q_b);
+        popcnt_samples.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
+        let _ = d;
+    }
+    let dur_popcnt = start_all_popcnt.elapsed();
+    let popcnt_stats =
+        LatencyStats::compute("rabitq_popcnt_distance_1536d", popcnt_samples, dur_popcnt);
+    popcnt_stats.print_summary("1-Bit POPCNT Distance");
+
+    // Float32 Cosine baseline for empirical comparison
+    let f_a = &raw_vectors[0];
+    let f_b = &raw_vectors[1];
+    let mut fma_samples = Vec::with_capacity(dist_count);
+    let start_all_fma = Instant::now();
+    for _ in 0..dist_count {
+        let t0 = Instant::now();
+        let dot: f32 = f_a.iter().zip(f_b.iter()).map(|(a, b)| a * b).sum();
+        fma_samples.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
+        let _ = dot;
+    }
+    let dur_fma = start_all_fma.elapsed();
+    let fma_stats = LatencyStats::compute("float32_fma_distance_1536d", fma_samples, dur_fma);
+    fma_stats.print_summary("Float32 FMA Distance");
+    println!();
+
+    vec![quant_stats, popcnt_stats, fma_stats]
+}
+
 

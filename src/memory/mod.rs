@@ -287,7 +287,8 @@ impl MemoryEngine {
             0.0
         };
 
-        let mut scored_results: Vec<MemoryRecallResult> = Vec::with_capacity(self.entries.len());
+        let mut scored_candidates: Vec<(u64, f32, f32, f32, f32, bool)> =
+            Vec::with_capacity(self.entries.len());
 
         // 2. Score candidate memories
         for entry in self.entries.values() {
@@ -346,84 +347,91 @@ impl MemoryEngine {
             };
 
             if matches_query && combined_score >= filter.min_score {
-                scored_results.push(MemoryRecallResult {
-                    entry: entry.clone(),
+                scored_candidates.push((
+                    entry.id,
                     combined_score,
                     semantic_score,
                     lexical_score,
                     recency_score,
-                    is_associative: false,
-                });
+                    false, // is_associative
+                ));
             }
         }
 
         // Sort descending by combined score
-        scored_results.sort_by(|a, b| {
-            b.combined_score
-                .partial_cmp(&a.combined_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+        scored_candidates.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // 3. Graph Associative Expansion
-        if filter.graph_expansion_hops > 0 && !scored_results.is_empty() {
-            let mut existing_ids: HashSet<u64> = scored_results.iter().map(|r| r.entry.id).collect();
-            let mut associative_results: Vec<MemoryRecallResult> = Vec::new();
+        if filter.graph_expansion_hops > 0 && !scored_candidates.is_empty() {
+            let mut existing_ids: HashSet<u64> = scored_candidates.iter().map(|c| c.0).collect();
+            let mut associative_candidates = Vec::new();
 
             // Take the top candidate memories and expand their associations
-            let base_count = scored_results.len().min(limit);
+            let base_count = scored_candidates.len().min(limit);
             for i in 0..base_count {
-                let parent = &scored_results[i];
-                for &assoc_id in &parent.entry.associations {
-                    if !existing_ids.contains(&assoc_id) {
-                        if let Some(assoc_entry) = self.entries.get(&assoc_id) {
-                            if let Some(ref req_ns) = filter.namespace {
-                                match &assoc_entry.namespace {
-                                    Some(ns) if ns.eq_ignore_ascii_case(req_ns) => {}
-                                    _ => continue,
+                let parent_id = scored_candidates[i].0;
+                let parent_score = scored_candidates[i].1;
+                if let Some(parent_entry) = self.entries.get(&parent_id) {
+                    for &assoc_id in &parent_entry.associations {
+                        if !existing_ids.contains(&assoc_id) {
+                            if let Some(assoc_entry) = self.entries.get(&assoc_id) {
+                                if let Some(ref req_ns) = filter.namespace {
+                                    match &assoc_entry.namespace {
+                                        Some(ns) if ns.eq_ignore_ascii_case(req_ns) => {}
+                                        _ => continue,
+                                    }
                                 }
-                            }
-                            if let Some(ref req_sess) = filter.session_id {
-                                match &assoc_entry.session_id {
-                                    Some(sess) if sess == req_sess => {}
-                                    _ => continue,
+                                if let Some(ref req_sess) = filter.session_id {
+                                    match &assoc_entry.session_id {
+                                        Some(sess) if sess == req_sess => {}
+                                        _ => continue,
+                                    }
                                 }
-                            }
 
-                            existing_ids.insert(assoc_id);
-                            // Discount associative memory score by 0.85
-                            let assoc_score = parent.combined_score * 0.85;
-                            associative_results.push(MemoryRecallResult {
-                                entry: assoc_entry.clone(),
-                                combined_score: assoc_score,
-                                semantic_score: 0.0,
-                                lexical_score: 0.0,
-                                recency_score: 0.0,
-                                is_associative: true,
-                            });
+                                existing_ids.insert(assoc_id);
+                                let assoc_score = parent_score * 0.85;
+                                associative_candidates.push((
+                                    assoc_id,
+                                    assoc_score,
+                                    0.0,
+                                    0.0,
+                                    0.0,
+                                    true,
+                                ));
+                            }
                         }
                     }
                 }
             }
 
-            scored_results.extend(associative_results);
-            scored_results.sort_by(|a, b| {
-                b.combined_score
-                    .partial_cmp(&a.combined_score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+            scored_candidates.extend(associative_candidates);
+            scored_candidates.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
             });
         }
 
-        scored_results.truncate(limit);
+        scored_candidates.truncate(limit);
 
-        // Update access metrics for recalled memories
-        for res in &scored_results {
-            if let Some(entry) = self.entries.get_mut(&res.entry.id) {
+        // Hydrate and update access metrics only for the winning top-K memories
+        let mut final_results = Vec::with_capacity(scored_candidates.len());
+        for (id, combined_score, semantic_score, lexical_score, recency_score, is_associative) in scored_candidates {
+            if let Some(entry) = self.entries.get_mut(&id) {
                 entry.last_accessed = now_ts;
                 entry.access_count += 1;
+                final_results.push(MemoryRecallResult {
+                    entry: entry.clone(),
+                    combined_score,
+                    semantic_score,
+                    lexical_score,
+                    recency_score,
+                    is_associative,
+                });
             }
         }
 
-        scored_results
+        final_results
     }
 
     /// Recall memories using Reciprocal Rank Fusion (RRF) combining BM25 lexical and Vector semantic ranks
