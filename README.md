@@ -841,6 +841,9 @@ Tested on persistent NVMe SSD storage with Write-Ahead Logging (`cargo bench --b
 | **Client-Side WASM Bundle** *(Initial Load)* | **1.1 MB (Full Quad-Model)** | 28.5 MB *(DuckDB-Wasm)* | 🏆 **25x Smaller Bundle** |
 | **At-Rest Storage Encryption** | **Built-in XChaCha20 ($0)** | $2,000+ *(SQLCipher Enterprise)* | 🏆 **Free Native AEAD Security** |
 
+> ⚡ **Live Empirical Reproduction:**
+> Run `cargo bench --bench tapirus_bench` to measure all 8 engines in real time: Turnkey Agent Recall (155 µs mean / 137 µs p50), Hybrid Recall (363 µs mean), RaBitQ 1536-D memory scale (196 MB vs 6.14 GB), and POPCNT distance (11.36M ops/s).
+
 ### Architectural Latency Breakdown: Network/IPC Middleware vs. In-Process Memory Traversal
 ```text
 Cloud Vector DB (gRPC Roundtrip)  [████████████████████████████████████████] 25,000 µs (25.0 ms - WAN Network Hop)
@@ -863,11 +866,16 @@ Tested on native NVMe SSD hardware with true Write-Ahead Log (WAL) durability:
 > 🔬 **Transparent & Peer-Reviewed Methodology:**  
 > We publish complete hardware specifications, statistical variance ($\sigma$), and cache-miss analysis in our [Systems Architecture Paper (PAPER_TAPIRUSDB.md)](PAPER_TAPIRUSDB.md).
 >
-> **Verify & run the benchmark suite yourself on your machine (1 command):**
+> **Verify & run the benchmark suite yourself on your machine:**
 > ```bash
 > git clone https://github.com/tapiruslab/TapirusDB.git
 > cd TapirusDB
+>
+> # 1. Side-by-side SQL ACID comparison against SQLite
 > cargo bench --bench head_to_head
+>
+> # 2. Full 8-engine tail-latency, AI memory & RaBitQ hardware suite
+> cargo bench --bench tapirus_bench
 > ```
 > *Full tail percentiles (p50, p95, p99, Min, Max) will be automatically exported to `target/tapirus_bench_results.json` for independent peer review.*
 

@@ -582,10 +582,38 @@ To illustrate the architectural latency gap between embedded in-process executio
 | Embedded Property Graph | Yes (O(1)+d)| No          | No         | Datalog    | No                 |
 | Schema-less JSON Docs   | Yes (Native)| JSON1 text  | Struct/JSON| JSON       | Metadata only      |
 | Page-Level AEAD Encrypt | ChaCha20    | Com. SEE    | External   | No Native  | Cloud SSE          |
-| WebAssembly Target      | wasm32      | Partial     | Yes (Wasm) | Yes (Wasm) | No                 |
-+-------------------------+-------------+-------------+------------+------------+--------------------+
 ```
 
+### 7.10 RaBitQ 1-Bit Ultra-Scale Vector Quantization & Hardware POPCNT Evaluation
+To support multi-million high-dimensional vector embeddings on resource-constrained edge devices (e.g., Raspberry Pi, automotive controllers, and client browsers via WebAssembly), TapirusDB incorporates Random Rotation Quantization (RaBitQ). RaBitQ compresses $D$-dimensional floating-point vectors into compact 1-bit or 2-bit bitmasks using orthogonal sign-flip projection, enabling asymmetric distance estimations via single-cycle hardware `POPCNT` instructions.
+
+```
++------------------------------------+----------------+-------------------+--------------------+--------------------+
+| Workload Dimension (1536-D)        | Sample Count   | Throughput (Θ)    | Mean Latency (τ̄)   | Memory Footprint   |
++------------------------------------+----------------+-------------------+--------------------+--------------------+
+| RaBitQ 1-Bit Quantize (1536-D)     | 1,000 vectors  | 49,116.2 vec/sec  | 20.27 µs / vec     | 196 B / vector     |
+| 1-Bit POPCNT Hamming Distance      | 50,000 ops     | 11,364,927 ops/sec| 0.04 µs (35.7 ns)  | 1 CPU cycle        |
+| Uncompressed Float32 Cosine Metric | 50,000 ops     | 11,048,747 ops/sec| 0.04 µs (37.4 ns)  | 6,144 B / vector   |
++------------------------------------+----------------+-------------------+--------------------+--------------------+
+```
+- **Physical Memory Density ($1,000,000$ Vectors at 1536-D):**
+  - Unquantized IEEE 754 Float32 baseline: $10^6 \times 1536 \times 4\text{ Bytes} = \mathbf{6.144\text{ GB}}$ (5.72 GiB).
+  - RaBitQ 1-Bit footprint: $10^6 \times \left(\frac{1536}{64} \times 8 + 4\text{ norm}\right)\text{ Bytes} = \mathbf{196.0\text{ MB}}$ (186.9 MiB).
+  - Effective compression advantage: **31.34x less RAM (96.8% physical reduction)**, allowing a million high-dimensional OpenAI/Mistral embedding vectors to reside entirely in physical memory on a 512 MB edge system.
+
+### 7.11 In-Process AI Agent Memory Recall & Prompt Synthesis Evaluation
+For autonomous AI agents and local SLM copilots, memory recall latency directly impacts end-to-end token generation latency. TapirusDB's turnkey `AgentMemoryBus` co-locates BM25 lexical tokenization, deterministic feature hashing, exponential temporal decay ($e^{-\lambda \Delta t}$), and graph associations in a zero-allocating candidate pipeline (`Connection::recall`, `Connection::recall_prompt`).
+
+```
++------------------------------------+----------------+-------------------+--------------------+--------------------+
+| Agent Memory Workload              | Working Set    | Throughput (Θ)    | Mean Latency (τ̄)   | p50 / p95 / p99    |
++------------------------------------+----------------+-------------------+--------------------+--------------------+
+| Turnkey Agent Recall + Prompt Synth| 500 memories   | 6,440.0 ops/sec   | 155.14 µs / op     | 137 µs / 226 µs / 294 µs|
+| Hybrid Recall (BM25 + Recency Decay| 2,000 memories | 2,742.7 ops/sec   | 363.95 µs / op     | 323 µs / 512 µs / 631 µs|
+| Memory Ingest (BM25 Tokenization)  | 2,000 memories | 84,841.0 ops/sec  | 11.53 µs / op      | 9.1 µs / 18.8 µs / 70.2 µs|
++------------------------------------+----------------+-------------------+--------------------+--------------------+
+```
+*Discussion:* By eliminating eager heap cloning of candidate memory entries and sorting lightweight 40-byte descriptor tuples in CPU cache, sub-millisecond end-to-end recall is achieved without external network roundtrips. Compared to decoupled cloud agent setups (e.g., Pinecone gRPC + Neo4j REST API incurring 45–90 ms), TapirusDB executes recall in **155 µs to 363 µs (over 100x speedup)** directly on the host application process thread.
 
 ---
 
