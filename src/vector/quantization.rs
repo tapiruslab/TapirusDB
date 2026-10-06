@@ -378,6 +378,15 @@ impl RaBitQuantizedVector {
         self.orig_dim
     }
 
+    /// Return the number of bits per dimension (1 or 2)
+    pub fn num_bits(&self) -> usize {
+        if self.bits_secondary.is_some() {
+            2
+        } else {
+            1
+        }
+    }
+
     /// Compression factor compared to 32-bit floats
     pub fn compression_ratio(&self) -> f32 {
         let total_bytes = (self.bits.len() * 8)

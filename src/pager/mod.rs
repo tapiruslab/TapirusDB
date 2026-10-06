@@ -499,6 +499,69 @@ impl Pager {
         })
     }
 
+    /// Open an in-memory database initialized from a contiguous byte slice (e.g. from browser OPFS or file upload).
+    pub fn open_in_memory_from_bytes(
+        bytes: &[u8],
+        cipher: Option<crate::crypto::DatabaseCipher>,
+    ) -> Result<Self> {
+        if bytes.len() < DATABASE_HEADER_SIZE {
+            return Err(Error::Corrupted("Byte buffer smaller than database header".into()));
+        }
+        let header = DatabaseHeader::from_bytes(&bytes[0..DATABASE_HEADER_SIZE])?;
+        let page_size = header.page_size as usize;
+        if page_size == 0 || bytes.len() % page_size != 0 {
+            return Err(Error::Corrupted("Byte buffer length is not a valid multiple of page size".into()));
+        }
+
+        if header.encryption_flags == 1 {
+            if let Some(ref c) = cipher {
+                if !c.verify_kcv(&header.kcv) {
+                    return Err(Error::DecryptionFailed(1));
+                }
+            } else {
+                return Err(Error::EncryptedDatabase);
+            }
+        }
+
+        let total_pages = (bytes.len() / page_size) as u32;
+        let mut in_memory_pages = HashMap::new();
+
+        for pid in 1..=total_pages {
+            let start = (pid as usize - 1) * page_size;
+            let end = start + page_size;
+            let disk_page = &bytes[start..end];
+            let page_data = if let Some(ref c) = cipher {
+                c.decrypt_page(pid, disk_page)?
+            } else {
+                disk_page.to_vec()
+            };
+            in_memory_pages.insert(pid, page_data);
+        }
+
+        let wal = Wal::open_in_memory(header.page_size as u32);
+        let mut lru_order = VecDeque::new();
+        for pid in 1..=total_pages {
+            lru_order.push_back(pid);
+        }
+
+        Ok(Self {
+            header,
+            file: None,
+            _path: None,
+            _lock_file: None,
+            _lock_path: None,
+            in_memory_pages,
+            wal: Some(wal),
+            checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
+            cipher,
+            transaction_savepoint: None,
+            cache_capacity: 256,
+            lru_order,
+            remote_reader: None,
+            remote_writer: None,
+        })
+    }
+
     /// Open a read-only Pager streaming pages on-demand from remote cloud storage (S3/R2)
     pub fn open_remote(
         reader: Arc<dyn RemoteRangeReader>,
@@ -1342,6 +1405,25 @@ impl Pager {
 
         dest_file.sync_all()?;
         Ok(total)
+    }
+
+    /// Export the entire database as a contiguous byte vector.
+    /// Checkpoints all active WAL frames and exports every encrypted or plaintext slotted page.
+    pub fn export_bytes(&mut self) -> Result<Vec<u8>> {
+        let _ = self.checkpoint()?;
+        let total = self.header.total_pages;
+        let page_size = self.page_size();
+        let mut buffer = Vec::with_capacity(total as usize * page_size);
+        for pid in 1..=total {
+            let page_data = self.read_page(pid)?;
+            let disk_page = if let Some(ref c) = self.cipher {
+                c.encrypt_page(pid, &page_data)?
+            } else {
+                page_data
+            };
+            buffer.extend_from_slice(&disk_page);
+        }
+        Ok(buffer)
     }
 
     /// Export active WAL frames for streaming replication to replica nodes

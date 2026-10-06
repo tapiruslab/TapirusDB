@@ -53,7 +53,7 @@ pub use tap::{
 pub use traits::{DatabaseConnection, FromValue, HashableValue, Row, Value, VectorIndexEngine};
 pub use vector::{
     DistanceMetric, HnswIndex, PagedHnswHeader, PagedHnswIndex, PagedVectorStore, ProductQuantizer,
-    QuantizedVector8, QuantizedVectorPQ, Vector,
+    QuantizedVector8, QuantizedVectorPQ, RaBitQuantizedVector, RaBitQuantizer, Vector,
 };
 
 /// Comprehensive diagnostic report of database page, cryptographic, and structural integrity
@@ -240,6 +240,42 @@ impl Connection {
     pub fn open_in_memory() -> Result<Self> {
         let config = Config::default();
         let mut pager = Pager::open_in_memory(config.page_size, config.page_cache_capacity)?;
+        let mut executor = SQLExecutor::new(&mut pager)?;
+        let mut memory = MemoryEngine::new();
+        executor.load_graph_from_disk(&mut pager)?;
+        executor.load_memory_from_disk(&mut pager, &mut memory)?;
+        executor.load_vector_indexes_from_disk(&mut pager)?;
+        Ok(Self {
+            pager: Arc::new(RwLock::new(pager)),
+            executor: Arc::new(RwLock::new(executor)),
+            memory: Arc::new(RwLock::new(memory)),
+            realtime: Arc::new(RealtimeBus::new()),
+            config,
+        })
+    }
+
+    /// Open a database connection initialized directly from a raw byte buffer (e.g. from browser OPFS or IndexedDB).
+    pub fn open_from_bytes(bytes: &[u8]) -> Result<Self> {
+        Self::open_from_bytes_with_config(bytes, Config::default(), None)
+    }
+
+    /// Open an encrypted database connection initialized directly from raw bytes with passphrase.
+    pub fn open_encrypted_from_bytes(bytes: &[u8], passphrase: &str) -> Result<Self> {
+        if bytes.len() < crate::pager::DATABASE_HEADER_SIZE {
+            return Err(Error::Corrupted("Byte buffer smaller than database header".into()));
+        }
+        let header = crate::pager::DatabaseHeader::from_bytes(&bytes[0..crate::pager::DATABASE_HEADER_SIZE])?;
+        let cipher = Some(DatabaseCipher::from_passphrase(passphrase, header.salt));
+        Self::open_from_bytes_with_config(bytes, Config::default(), cipher)
+    }
+
+    /// Open a database connection from bytes with custom configuration and optional cipher
+    pub fn open_from_bytes_with_config(
+        bytes: &[u8],
+        config: Config,
+        cipher: Option<DatabaseCipher>,
+    ) -> Result<Self> {
+        let mut pager = Pager::open_in_memory_from_bytes(bytes, cipher)?;
         let mut executor = SQLExecutor::new(&mut pager)?;
         let mut memory = MemoryEngine::new();
         executor.load_graph_from_disk(&mut pager)?;
@@ -835,6 +871,35 @@ impl Connection {
     pub fn vacuum_into<P: AsRef<Path>>(&self, dest_path: P) -> Result<u32> {
         let mut pager = self.pager.write();
         pager.backup_to(dest_path.as_ref())
+    }
+
+    /// Export the entire database as a contiguous raw byte vector.
+    /// Perfect for WebAssembly browser export, OPFS sync, and network replication.
+    pub fn export_bytes(&self) -> Result<Vec<u8>> {
+        let mut pager = self.pager.write();
+        pager.export_bytes()
+    }
+
+    /// Quantize a high-dimensional vector into an ultra-compact 1-bit or 2-bit representation using RaBitQ.
+    ///
+    /// Applies deterministic Fast Walsh-Hadamard Transform (FWHT) orthogonal rotation and bit quantization,
+    /// reducing 1536-D embeddings from 6,144 bytes to ~196 bytes for battery-powered edge silicon.
+    pub fn rabitq_quantize(&self, vector: &[f32], num_bits: usize) -> crate::vector::RaBitQuantizedVector {
+        let quantizer = crate::vector::RaBitQuantizer::new(vector.len(), num_bits);
+        quantizer.quantize(vector)
+    }
+
+    /// Evaluate hardware-accelerated single-cycle POPCNT Hamming Distance between two RaBitQ vectors.
+    pub fn rabitq_distance(&self, a: &crate::vector::RaBitQuantizedVector, b: &crate::vector::RaBitQuantizedVector) -> u32 {
+        a.hamming_distance(b)
+    }
+
+    /// Estimate approximate Cosine Similarity between a RaBitQ quantized vector and a raw query vector.
+    pub fn rabitq_similarity(&self, quantized: &crate::vector::RaBitQuantizedVector, query: &[f32]) -> f32 {
+        let quantizer = crate::vector::RaBitQuantizer::new(query.len(), quantized.num_bits());
+        let rotated = quantizer.rotate(query);
+        let norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        1.0 - quantized.asymmetric_cosine_distance(&rotated, norm)
     }
 
     /// Perform a comprehensive cryptographic, page-level, and structural schema audit of the database.
@@ -1753,5 +1818,62 @@ mod tests {
         let prompt = conn.recall_prompt("Alex theme", 2);
         assert!(prompt.contains("Recalled Agent Memory Context"));
         assert!(prompt.contains("dark mode"));
+    }
+
+    #[test]
+    fn test_bytes_export_and_import_roundtrip() {
+        let conn1 = Connection::open_in_memory().expect("Open conn1");
+        conn1.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);").unwrap();
+        conn1.execute("INSERT INTO users (id, name) VALUES (1, 'Alice');").unwrap();
+        conn1.execute("INSERT INTO users (id, name) VALUES (2, 'Bob');").unwrap();
+        let mem_id = conn1.remember("Alice is a cryptographic engineer working on sovereign AI").unwrap();
+        assert!(mem_id > 0);
+
+        let bytes = conn1.export_bytes().expect("Export bytes");
+        assert!(!bytes.is_empty());
+        assert_eq!(bytes.len() % 4096, 0);
+
+        let conn2 = Connection::open_from_bytes(&bytes).expect("Open conn2 from bytes");
+        let rows = conn2.query("SELECT id, name FROM users ORDER BY id;").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get::<String>("name").unwrap(), "Alice");
+        assert_eq!(rows[1].get::<String>("name").unwrap(), "Bob");
+
+        let recalled = conn2.recall("Alice profession", 1);
+        assert!(!recalled.is_empty());
+        assert!(recalled[0].entry.content.contains("cryptographic engineer"));
+    }
+
+    #[test]
+    fn test_connection_rabitq_quantize_and_similarity() {
+        let conn = Connection::open_in_memory().expect("Open in-memory");
+        let vec_a: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
+        let vec_b: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
+        let vec_c: Vec<f32> = (0..128).map(|i| -(i as f32 * 0.1).sin()).collect();
+
+        // 1-Bit Quantization (Theoretical cosine fidelity ~ sqrt(2/pi) = ~0.798)
+        let q_a = conn.rabitq_quantize(&vec_a, 1);
+        let q_b = conn.rabitq_quantize(&vec_b, 1);
+        let q_c = conn.rabitq_quantize(&vec_c, 1);
+
+        assert_eq!(q_a.dimensions(), 128);
+        assert_eq!(q_a.num_bits(), 1);
+
+        // Hamming distance to identical vector must be 0!
+        let dist_self = conn.rabitq_distance(&q_a, &q_b);
+        assert_eq!(dist_self, 0);
+
+        // Hamming distance to inverted vector must be large (~128 bit flips)
+        let dist_inv = conn.rabitq_distance(&q_a, &q_c);
+        assert!(dist_inv > 100);
+
+        let sim_1bit = conn.rabitq_similarity(&q_a, &vec_a);
+        assert!(sim_1bit > 0.70);
+
+        // 2-Bit Quantization (Theoretical fidelity > 0.85)
+        let q_2bit = conn.rabitq_quantize(&vec_a, 2);
+        assert_eq!(q_2bit.num_bits(), 2);
+        let sim_2bit = conn.rabitq_similarity(&q_2bit, &vec_a);
+        assert!(sim_2bit > 0.75);
     }
 }

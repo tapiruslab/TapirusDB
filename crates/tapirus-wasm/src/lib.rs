@@ -116,11 +116,41 @@ impl TapirusWasm {
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
-    /// Open or create an in-browser database using Origin Private File System (OPFS) name identifier
+    /// Export the entire database state as raw binary bytes (.tapir format).
+    /// Used by browser applications to persist database state into OPFS or trigger a file download.
     #[wasm_bindgen]
-    pub fn open_opfs(_db_name: &str) -> Result<TapirusWasm, JsValue> {
-        // Fallback to high-speed in-memory WASM engine for browser runtimes
-        Self::new()
+    pub fn export_bytes(&self) -> Result<Vec<u8>, JsValue> {
+        self.conn
+            .export_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Import and mount a database directly from raw binary bytes (.tapir format).
+    /// Used by browser applications to restore database state from OPFS, IndexedDB, or user file picker.
+    #[wasm_bindgen]
+    pub fn import_bytes(data: &[u8]) -> Result<TapirusWasm, JsValue> {
+        let conn = Connection::open_from_bytes(data)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(Self { conn })
+    }
+
+    /// Import and mount an encrypted database from raw binary bytes with passphrase.
+    #[wasm_bindgen]
+    pub fn import_encrypted_bytes(data: &[u8], passphrase: &str) -> Result<TapirusWasm, JsValue> {
+        let conn = Connection::open_encrypted_from_bytes(data, passphrase)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(Self { conn })
+    }
+
+    /// Quantize a high-dimensional vector using RaBitQ 1-bit or 2-bit quantization in WebAssembly.
+    /// Returns JSON containing bits, norm, dimensions, and compression ratio.
+    #[wasm_bindgen]
+    pub fn rabitq_quantize_json(&self, vector_json: &str, num_bits: usize) -> Result<String, JsValue> {
+        let vec: Vec<f32> = serde_json::from_str(vector_json)
+            .map_err(|e| JsValue::from_str(&format!("Invalid vector JSON array: {e}")))?;
+        let q = self.conn.rabitq_quantize(&vec, num_bits);
+        serde_json::to_string(&q)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Classify text using TAP Sub-millisecond Cognitive Perception Engine in WASM
