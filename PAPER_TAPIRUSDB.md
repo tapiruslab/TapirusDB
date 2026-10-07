@@ -175,7 +175,7 @@ Each 32-bit floating point dimension of embedding $\mathbf{v} \in \mathbb{R}^D$ 
 3. **Absence of Clipping & Coordinate-wise Bound:** For non-degenerate vectors, the resolution step size is:
    $$\Delta = \frac{v_{\max} - v_{\min}}{255}$$
    Because $v_{\min}$ and $v_{\max}$ are derived from the vector itself, every component satisfies $v_i \in [v_{\min}, v_{\max}]$ unconditionally. Therefore, values never exceed the quantizer domain (eliminating clipping artifacts). Applying half-up rounding:
-   $$q_i = \operatorname{clamp}\left(\left\lfloor \frac{v_i - v_{\min}}{\Delta} + 0.5 \right\rfloor, 0, 255\right)$$
+   $$q_i = \min\left(255, \, \max\left(0, \, \left\lfloor \frac{v_i - v_{\min}}{\Delta} + 0.5 \right\rfloor\right)\right)$$
    guarantees that the coordinate-wise reconstruction error $\epsilon_i = \hat{v}_i - v_i$ strictly satisfies:
    $$|\epsilon_i| \le \frac{\Delta}{2} = \frac{v_{\max} - v_{\min}}{510}$$
    which bounds the overall Euclidean reconstruction distortion by $\|\boldsymbol{\epsilon}\|_2 \le \frac{\sqrt{D}}{2} \Delta$.
@@ -664,14 +664,15 @@ TapirusDB demonstrates that memory safety, ultra-compact binary density, and mod
 
 ## References
 
-1. Hipp, D. R. (2000). *SQLite: An Embeddable Database Engine*. USENIX Annual Technical Conference.
+1. Gaffney, K. P., Prammer, M., Brasfield, L., Hipp, D. R., Kennedy, D., & Patel, J. M. (2022). *SQLite: Past, Present, and Future*. Proceedings of the VLDB Endowment (PVLDB), 15(12), pp. 3535-3547.
 2. Raasveldt, M., & Mühleisen, H. (2019). *DuckDB: an Embeddable Analytical Database*. Proceedings of the 2019 ACM SIGMOD International Conference on Management of Data, pp. 1981-1984.
-3. Malkov, Y. A., & Yashunin, D. A. (2018). *Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs*. IEEE Transactions on Pattern Analysis and Machine Intelligence (TPAMI), 42(4), pp. 824-836.
-4. Nir, Y., & Langley, A. (2018). *ChaCha20 and Poly1305 for IETF Protocols*. IETF Request for Comments (RFC 8439).
-5. Kaliski, B. (2000). *PKCS #5: Password-Based Cryptography Specification Version 2.0*. IETF Request for Comments (RFC 2898 / RFC 6070).
-6. Biryukov, A., Dinu, D., & Khovratovich, D. (2016). *Argon2: new generation of memory-hard functions for password hashing and other applications*. IEEE European Symposium on Security and Privacy (EuroS&P), pp. 292-302.
-7. Matsakis, N. D., & Klock, F. S. (2014). *The Rust language*. ACM SIGAda Ada Letters, 34(3), pp. 103-104.
-8. Gray, J., & Reuter, A. (1992). *Transaction Processing: Concepts and Techniques*. Morgan Kaufmann Publishers.
-9. Edge, D., et al. (2024). *From Local to Global: A Graph RAG Approach to Query-Focused Summarization*. Microsoft Research Technical Report arXiv:2404.16130.
-10. Wang, M., et al. (2021). *A Comprehensive Survey on Vector Database: Storage and Retrieval Technique, Challenge*. ACM Computing Surveys.
-11. Faiz, A. (2026). *TapirusDB Architectural Blueprint and Binary Specification*. Tapirus Tech Lab Technical Documentation (https://tapirusdb.com).
+3. Malkov, Y. A., & Yashunin, D. A. (2020). *Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs*. IEEE Transactions on Pattern Analysis and Machine Intelligence (TPAMI), 42(4), pp. 824-836.
+4. Gao, J., & Long, C. (2024). *RaBitQ: Quantizing High-Dimensional Vectors with a Bit*. Proceedings of the ACM on Management of Data (SIGMOD), 2(3), Article 150, pp. 1-26.
+5. Nir, Y., & Langley, A. (2018). *ChaCha20 and Poly1305 for IETF Protocols*. IETF Request for Comments (RFC 8439).
+6. Kaliski, B. (2000). *PKCS #5: Password-Based Cryptography Specification Version 2.0*. IETF Request for Comments (RFC 2898 / RFC 6070).
+7. Biryukov, A., Dinu, D., & Khovratovich, D. (2016). *Argon2: new generation of memory-hard functions for password hashing and other applications*. IEEE European Symposium on Security and Privacy (EuroS&P), pp. 292-302.
+8. Matsakis, N. D., & Klock, F. S. (2014). *The Rust language*. ACM SIGAda Ada Letters, 34(3), pp. 103-104.
+9. Gray, J., & Reuter, A. (1992). *Transaction Processing: Concepts and Techniques*. Morgan Kaufmann Publishers.
+10. Edge, D., Trinh, H., Cheng, N., Bradley, J., Chao, A., Mody, A., Truitt, S., & Larson, J. (2024). *From Local to Global: A Graph RAG Approach to Query-Focused Summarization*. Microsoft Research Technical Report arXiv:2404.16130.
+11. Han, Y., Liu, C., Wang, P., et al. (2023). *A Comprehensive Survey on Vector Database: Storage and Retrieval Technique, Challenge*. arXiv preprint arXiv:2310.11703.
+12. Faiz, A. (2026). *TapirusDB Architectural Blueprint and Binary Specification*. Tapirus Tech Lab Technical Documentation (https://tapirusdb.com).
