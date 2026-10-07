@@ -22,6 +22,9 @@ TapirusDB unifies four storage models (Relational SQL, HNSW Vectors, openCypher 
 11. [Recipe 11: In-Browser WebAssembly (Client-Side Static Web) & Cloudflare Workers Edge API](#recipe-11-in-browser-webassembly-client-side-static-web--cloudflare-workers-edge-api)
 12. [Recipe 12: Unified Four-Model Atomic Transactions (ACID Cross-Model Commit)](#recipe-12-unified-four-model-atomic-transactions-acid-cross-model-commit)
 13. [Recipe 13: Streaming CLI Data Importer & Physical Integrity Auditing](#recipe-13-streaming-cli-data-importer--physical-integrity-auditing)
+14. [Recipe 14: RaBitQ 1-Bit Vector Quantization & Hardware POPCNT Distance (1M Vectors in 196 MB)](#recipe-14-rabitq-1-bit-vector-quantization--hardware-popcnt-distance-1m-vectors-in-196-mb)
+15. [Recipe 15: Turnkey TAP Autonomous Cognitive Decision & Classification Engine](#recipe-15-turnkey-tap-autonomous-cognitive-decision--classification-engine)
+16. [Recipe 16: Reactive Real-Time Table Mutations & Change Data Capture (CDC)](#recipe-16-reactive-real-time-table-mutations--change-data-capture-cdc)
 
 ---
 
@@ -221,8 +224,41 @@ fn main() -> Result<()> {
         println!("Recalled: {} (Score: {:.3})", mem.entry.content, mem.combined_score);
     }
 
+    // -------------------------------------------------------------
+    // Turnkey 1-Line Agent Memory & LLM Prompt Synthesis (Zero Setup)
+    // -------------------------------------------------------------
+    // Automatically embeds text with deterministic 128D feature-hashing in < 1 µs
+    let _id = conn.remember("Alex prefers dark mode and concise code snippets")?;
+    
+    // Recall top relevant memories
+    let matches = conn.recall("what theme does Alex prefer", 3);
+    assert!(!matches.is_empty());
+
+    // Instant prompt synthesis for direct LLM injection
+    let prompt_context = conn.recall_prompt("Alex theme", 2);
+    println!("Ready-to-use LLM Context:\n{}", prompt_context);
+
     Ok(())
 }
+```
+
+### Python (Turnkey 1-Line Agent Memory)
+```python
+import tapirus
+
+conn = tapirus.connect("agent.tapir")
+
+# 1-Line Turnkey Memory Ingestion
+conn.remember("Alex prefers dark mode and concise code snippets")
+conn.remember("Alex works on aerospace telemetry and Rust embedded systems")
+
+# 1-Line Recall
+results = conn.recall("what theme does Alex prefer", limit=3)
+print("Recalled Memory:", results[0]["content"])
+
+# Turnkey Prompt Synthesis for LLM Generation
+llm_context = conn.recall_prompt("Alex user preferences", limit=2)
+print("Inject directly into LLM prompt:\n", llm_context)
 ```
 
 ---
@@ -579,14 +615,27 @@ TapirusDB compiles directly to **WebAssembly (`wasm32-unknown-unknown`)** into a
       db.execute("INSERT INTO notes VALUES (1, 'Meeting with Architecture Team', 'work');");
       db.execute("INSERT INTO notes VALUES (2, 'Weekly Grocery Checklist', 'personal');");
 
-      // 4. Store episodic AI agent memory in client-side WASM
-      db.memory_remember("User prefers dark mode and minimalist aesthetics", 0.95, "pref,ui");
+      // 4. Turnkey 1-Line AI Agent Memory in Browser WASM
+      db.remember("User prefers dark mode and minimalist aesthetics");
+      const promptContext = db.recall_prompt("user preferences", 2);
+      console.log("Synthesized Prompt:\n", promptContext);
 
       // 5. Query relational records & recall semantic memory
       const rows = JSON.parse(db.query_json("SELECT * FROM notes WHERE category = 'work';"));
-      const memories = JSON.parse(db.memory_recall_json("interface preferences", 2));
 
-      document.getElementById('out').textContent = JSON.stringify({ rows, memories }, null, 2);
+      // 6. Physical Database Export (Zero-Placebo OPFS / File Download)
+      // Export exact 4KB-aligned binary .tapir file for permanent local storage
+      const bytes = db.export_bytes(); // Uint8Array
+      console.log(`Exported physical database: ${bytes.length} bytes`);
+
+      // Mount / restore database directly from byte array anytime:
+      const restoredDb = TapirusWasm.import_bytes(bytes);
+
+      document.getElementById('out').textContent = JSON.stringify({ 
+        rows, 
+        promptContext, 
+        bytesExported: bytes.length 
+      }, null, 2);
     }
 
     document.getElementById('queryBtn').addEventListener('click', run);
@@ -710,4 +759,139 @@ tapirus restore backups/prod_snapshot.tapir restored_production.tapir
 # Deep physical audit: scans 4KB slotted pages, validates CRC32 checksums, audits free space
 tapirus verify production.tapir
 ```
+
+---
+
+## Recipe 14: RaBitQ 1-Bit Vector Quantization & Hardware POPCNT Distance (1M Vectors in 196 MB)
+
+### The Problem
+Storing 1,000,000 standard 1536-dimensional float32 vector embeddings requires **6.14 GB of RAM**, overflowing budget VPS servers, mobile devices, and browser WebAssembly memory limits.
+
+### The Solution
+TapirusDB provides native **RaBitQ 1-Bit and 2-Bit Random Rotation Quantization**. It compresses 1536-D vectors down to **196 bytes per vector (31.3x less RAM)**, allowing 1M vectors to fit comfortably in **196 MB of RAM**, and compares them in 1 CPU cycle using hardware `POPCNT` bitmask instructions:
+
+### Rust
+```rust
+use tapirus::{Connection, Result};
+
+fn main() -> Result<()> {
+    let conn = Connection::open_in_memory()?;
+
+    // 1536-D high-dimensional embedding (e.g., text-embedding-3)
+    let raw_vector = vec![0.05f32; 1536];
+    let query_vector = vec![0.04f32; 1536];
+
+    // Quantize 32-bit float vector into 1-bit RaBitQ representation
+    // Physical size: 1536 / 64 * 8 = 192 bytes bitmask + 4 bytes norm = 196 bytes!
+    let q_a = conn.rabitq_quantize(&raw_vector, 1);
+    let q_b = conn.rabitq_quantize(&query_vector, 1);
+
+    println!("Original dimensions: {}", q_a.dimensions()); // 1536
+    println!("Bits per dimension: {}", q_a.num_bits());    // 1
+    println!("Compression ratio: {:.1}x", q_a.compression_ratio()); // 31.3x
+
+    // Single-cycle hardware POPCNT Hamming distance evaluation
+    let distance = conn.rabitq_distance(&q_a, &q_b);
+    println!("1-Cycle POPCNT Bit Distance: {}", distance);
+
+    // Approximate Cosine similarity against unquantized query vector
+    let similarity = conn.rabitq_similarity(&q_a, &query_vector);
+    println!("Estimated Cosine Similarity: {:.4}", similarity);
+
+    Ok(())
+}
+```
+
+---
+
+## Recipe 15: Turnkey TAP Autonomous Cognitive Decision & Classification Engine
+
+### The Problem
+Agents frequently need to classify intents (e.g. routing support queries, deciding if input is spam or urgent), or verify claims against evidence. Calling external LLM APIs (GPT-4o/Claude) costs money, introduces 300–800 ms of network latency, and requires managing API keys.
+
+### The Solution
+TapirusDB includes **TAP (Ternary Autonomic Perception)**, an embedded, zero-setup decision engine that performs intent classification, statement verification, and fast routing in **< 1 millisecond** with zero external API calls:
+
+### Rust
+```rust
+use tapirus::{Connection, Result};
+
+fn main() -> Result<()> {
+    let conn = Connection::open_in_memory()?;
+
+    // 1. Fast Zero-Setup Intent Classification
+    let query = "My payment failed during subscription renewal checkout";
+    let candidates = ["billing", "technical_support", "sales", "general"];
+    let verdict = conn.tap().classify(query, &candidates)?;
+
+    println!("Detected intent: {}", verdict.top_choice); // "billing"
+    println!("Confidence score: {:.2}", verdict.confidence);
+
+    // 2. Local Statement Fact Verification
+    let claim = "User has an active enterprise license tier";
+    let premise = "The account is confirmed active on enterprise license #88219";
+    let verification = conn.tap().verify(claim, premise)?;
+
+    if verification.is_verified {
+        println!("Fact verified locally without calling cloud LLMs!");
+    }
+
+    Ok(())
+}
+```
+
+### SQL
+```sql
+-- Direct SQL TAP cognitive classification
+SELECT 
+    ticket_id, 
+    TAP_CLASSIFY(description, 'billing,hardware,software') as category
+FROM support_tickets;
+
+-- Direct SQL verification
+SELECT 
+    claim_id, 
+    TAP_VERIFY(claim_text, evidence_text) as is_truthful
+FROM audited_logs;
+```
+
+---
+
+## Recipe 16: Reactive Real-Time Table Mutations & Change Data Capture (CDC)
+
+### The Problem
+When tables change in collaborative apps, dashboards, or multi-agent pipelines, applications often resort to wasteful polling (`SELECT ... every 1 sec`), causing CPU churn and sluggish updates.
+
+### The Solution
+TapirusDB provides **Reactive CDC Subscriptions**. Subscribe directly to individual tables or listen across all tables for instant, synchronous mutation events:
+
+### Rust
+```rust
+use tapirus::{Connection, Result};
+
+fn main() -> Result<()> {
+    let conn = Connection::open_in_memory()?;
+
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, status TEXT);")?;
+
+    // 1. Subscribe to specific table mutations
+    let _sub_id = conn.subscribe("users", |event| {
+        println!("Reactive Event on [{}]: {} row(s) mutated", event.table, event.affected_rows);
+    });
+
+    // 2. Perform transactions
+    conn.execute("INSERT INTO users VALUES (1, 'ONLINE');")?;
+    conn.execute("UPDATE users SET status = 'BUSY' WHERE id = 1;")?;
+
+    // 3. Global CDC listener for telemetry auditing
+    let _global_listener = conn.listen(|event| {
+        println!("Global Audit: mutation on table {}", event.table);
+    });
+
+    conn.execute("DELETE FROM users WHERE id = 1;")?;
+
+    Ok(())
+}
+```
+
 

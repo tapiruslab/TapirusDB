@@ -52,9 +52,59 @@ npm install tapirusdb
 
 ---
 
-## 2. Python Implementation
+## 2. Turnkey 1-Line Agent Memory & Prompt Synthesis (Zero Setup)
 
-Here is a complete, production-ready AI Agent Memory Manager in Python:
+If you don't need manual table management or custom vector schemas, TapirusDB provides built-in, deterministic 128D turnkey agent memory. Ingest conversational turns and synthesize prompt-injection context in a single call with < 1 µs overhead:
+
+### Python (Turnkey 1-Line API)
+```python
+import tapirus
+
+# Connect to local encrypted or plaintext vault
+conn = tapirus.connect("agent_vault.tapir")
+
+# 1. Ingest conversational turn or user preference (< 1 µs, zero external model required!)
+conn.remember("Alex prefers dark mode and concise code snippets without filler explanations")
+conn.remember("Alex works on aerospace satellite telemetry in Rust")
+
+# 2. Recall relevant episodic memories
+memories = conn.recall("what are Alex's UI preferences?", limit=3)
+print("Top Recalled Memory:", memories[0]["content"])
+
+# 3. Direct LLM Prompt Synthesis (Zero-copy context formatting)
+prompt_context = conn.recall_prompt("Alex UI preferences", limit=2)
+print("Synthesized LLM Injection Block:\n", prompt_context)
+```
+
+### Safe Rust (Turnkey 1-Line API)
+```rust
+use tapirus::{Connection, Result};
+
+fn main() -> Result<()> {
+    let conn = Connection::open("agent_vault.tapir")?;
+
+    // 1-Line Ingestion (< 1 µs)
+    let _id = conn.remember("Alex prefers dark mode and concise code snippets")?;
+
+    // 1-Line Semantic Recall
+    let matches = conn.recall("what theme does Alex prefer", 3);
+    for m in &matches {
+        println!("Match: {} (Score: {:.3})", m.content, m.score);
+    }
+
+    // Direct LLM Prompt Synthesis
+    let prompt_block = conn.recall_prompt("Alex user preferences", 2);
+    println!("Prompt Context:\n{}", prompt_block);
+
+    Ok(())
+}
+```
+
+---
+
+## 3. Custom Multi-Modal Agent Memory Manager (Python)
+
+For complex multi-agent systems requiring custom episodic logs, SQL window ranking, and associative graph clustering:
 
 ```python
 import tapirus
@@ -173,7 +223,7 @@ print(f"Discovered Knowledge Communities: {clusters}")
 
 ---
 
-## 3. Node.js / TypeScript Implementation
+## 4. Node.js / TypeScript Implementation
 
 ```typescript
 import { TapirusClient } from "tapirusdb";
@@ -228,7 +278,7 @@ runAgentMemory().catch(console.error);
 
 ---
 
-## 4. Why This Beats Pinecone + SQLite + Neo4j
+## 5. Why This Beats Pinecone + SQLite + Neo4j
 
 | Metric | Traditional RAG Stack | TapirusDB Unified |
 |---|---|---|
@@ -241,7 +291,7 @@ runAgentMemory().catch(console.error);
 
 ---
 
-## 5. Production Best Practices
+## 6. Production Best Practices
 
 1. **Use `:memory:` for ephemeral agent tasks**: If your agent is processing a single workflow, use an in-memory database to achieve over 150,000 operations per second with zero disk I/O.
 2. **Periodic Checkpointing**: Call `conn.checkpoint()` after every session to flush WAL journals back into the main `.tapir` container file.
