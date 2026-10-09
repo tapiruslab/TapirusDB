@@ -151,7 +151,13 @@ fn main() {
                     }
                 }
             } else {
-                execute_statement(&conn, &sql_cmd);
+                let stmts: Vec<&str> = sql_cmd.split(';').collect();
+                for stmt in stmts {
+                    let s = stmt.trim();
+                    if !s.is_empty() {
+                        execute_statement(&conn, s);
+                    }
+                }
             }
             return;
         }
@@ -181,6 +187,10 @@ fn print_help() {
     println!("Options:");
     println!("  -h, --help                               Print this help message");
     println!("  -v, --version                            Print TapirusDB version");
+    println!();
+    println!("Query Options:");
+    println!("  -c, --sql <SQL>                          Execute non-interactive SQL statement(s)");
+    println!("  --json <SQL>                             Execute query and format output as JSON array");
     println!();
     println!("Backup Options (for 'tapirus backup'):");
     println!("  --passphrase <KEY>                       Passphrase for encrypted database (ChaCha20-Poly1305)");
@@ -4637,7 +4647,7 @@ fn run_bitnet_command(args: &[String]) {
         let input = vec![0.5f32; 256];
         let _ = block.forward(&input);
 
-        let iterations = 10_000;
+        let iterations = if cfg!(debug_assertions) { 1_000 } else { 10_000 };
         let start = std::time::Instant::now();
         for _ in 0..iterations {
             let _ = block.forward(&input);

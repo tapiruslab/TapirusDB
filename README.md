@@ -727,8 +727,9 @@ tapirus tg --vector "transaction rollback wal" src/
 tapirus grep -i --ext rs,toml "quantization" .
 ```
 
-### 2. Interactive Terminal Shell
+### 2. Interactive Terminal Shell & Batch Execution
 ```bash
+# Launch interactive REPL prompt
 tapirus production.tapir
 ```
 ```text
@@ -747,6 +748,14 @@ tapirus> SELECT * FROM users;
 (1 row(s))
 ```
 
+```bash
+# Non-interactive script execution (-c or --sql)
+tapirus production.tapir -c "INSERT INTO users VALUES (2, 'Samir Patel'); SELECT * FROM users;"
+
+# Pure JSON array output for shell pipelines and CI/CD (--json)
+tapirus production.tapir --json "SELECT id, name FROM users;"
+```
+
 ### 3. Built-in Protected HTTP REST Server (`tapirus serve`)
 Launch an embedded database as a high-throughput, secure REST API with zero external dependencies:
 ```bash
@@ -762,6 +771,11 @@ tapirus serve --port 3005 --api-key "your_secret_api_key" --passphrase "vault_se
 
 ### 4. Autonomous AI Agent MCP Server (`tapirus mcp`)
 Connect Claude Desktop, Cursor, or Gemini to TapirusDB over stdio:
+```bash
+# Auto-generate ready-to-paste Claude Desktop configuration JSON:
+tapirus mcp --config-claude agent_memory.tapir
+```
+
 ```json
 {
   "mcpServers": {
@@ -772,6 +786,8 @@ Connect Claude Desktop, Cursor, or Gemini to TapirusDB over stdio:
   }
 }
 ```
+
+* Exposes standard tools: `tapirus_remember`, `tapirus_recall`, `tapirus_sql`, `tapirus_graph_neighbors`, and `tapirus_status`.
 
 ### 5. High-Throughput Streaming Data Importer (`tapirus import`)
 Stream massive datasets directly into TapirusDB with automatic schema inference and transactional batching:
@@ -798,7 +814,21 @@ tapirus backup production.tapir backups/prod_2026_snapshot.tapir
 tapirus restore backups/prod_2026_snapshot.tapir restored_production.tapir
 
 # Deep physical integrity audit (scans slotted pages, verifies CRC32 checksums, checks encryption keys)
-tapirus verify production.tapir
+tapirus verify --deep production.tapir
+```
+
+### 7. Native BitNet b1.58 Ternary Tensor Engine (`tapirus bitnet`)
+Direct terminal access to the multiplication-free ternary neural engine:
+
+```bash
+# 1. Categorical classification directly via BitNet ternary layers
+tapirus bitnet "Refund requested because product was broken" "refund" "sales" "tech_support"
+
+# 2. Ternary truth verification with international negation detection
+tapirus bitnet verify "user paid invoice" "invoice is paid"
+
+# 3. Benchmark local ternary contraction hardware throughput
+tapirus bitnet benchmark
 ```
 
 ---
