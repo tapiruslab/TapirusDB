@@ -43,7 +43,7 @@ curl http://localhost:8787/health
 {
   "status": "online",
   "engine": "TapirusDB Edge",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "runtime": "Cloudflare Workers (V8 Isolate)"
 }
 ```
@@ -60,30 +60,31 @@ curl -X POST http://localhost:8787/graph-rag \
   }'
 ```
 
-**Response:**
-```json
-{
-  "success": true,
-  "query": "Quantum Machine Learning",
-  "entities": [
-    {
-      "entityId": 101,
-      "label": "SystemNode",
-      "rrfScore": 0.0425,
-      "hopDistance": 0,
-      "relatedEdges": []
-    }
-  ],
-  "promptContext": "### 🧠 Verified Knowledge Graph Context\n..."
-}
-```
-
 ### 3. Execute SQL Query
 ```bash
 curl -X POST http://localhost:8787/sql \
   -H "Content-Type: application/json" \
   -d '{
     "query": "INSERT INTO system_logs (id, level, message, created_at) VALUES (1, '\''INFO'\'', '\''Edge node online'\'', 1726848000);"
+  }'
+```
+
+### 4. AI Agent Memory (Remember & Recall)
+```bash
+# Remember
+curl -X POST http://localhost:8787/memory/remember \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Mission telemetry confirmed for orbit insertion",
+    "importance": 0.95
+  }'
+
+# Recall
+curl -X POST http://localhost:8787/memory/recall \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "telemetry orbit",
+    "limit": 3
   }'
 ```
 

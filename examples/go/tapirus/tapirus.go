@@ -2,7 +2,7 @@ package tapirus
 
 /*
 #cgo CFLAGS: -I../../../include -I../../include -I.
-#cgo LDFLAGS: -L../../../target/release -L../../target/release -L. -ltapirus
+#cgo LDFLAGS: -L../../../target/release -L../../target/release -L../../../target/debug -L../../target/debug -L. -ltapirus
 #include <stdlib.h>
 #include "tapirus.h"
 */

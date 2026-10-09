@@ -96,3 +96,7 @@ compact_disk.*
 compact_log.txt
 *.lnk
 
+
+# Examples build targets
+examples/*/target/
+examples/rust/target/

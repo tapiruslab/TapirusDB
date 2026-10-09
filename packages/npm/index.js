@@ -7,6 +7,76 @@
 
 const EventEmitter = require('events');
 
+function cosineSimilarity(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || a.length === 0) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dot / denom;
+}
+
+function parseSqlValues(valStr) {
+  const result = [];
+  let current = '';
+  let inString = false;
+  let inBracket = false;
+  let quoteChar = '';
+
+  for (let i = 0; i < valStr.length; i++) {
+    const ch = valStr[i];
+    if ((ch === "'" || ch === '"') && !inBracket) {
+      if (!inString) {
+        inString = true;
+        quoteChar = ch;
+      } else if (quoteChar === ch) {
+        inString = false;
+      } else {
+        current += ch;
+      }
+    } else if (ch === '[' && !inString) {
+      inBracket = true;
+      current += ch;
+    } else if (ch === ']' && !inString) {
+      inBracket = false;
+      current += ch;
+    } else if (ch === ',' && !inString && !inBracket) {
+      result.push(cleanVal(current));
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim().length > 0) {
+    result.push(cleanVal(current));
+  }
+  return result;
+}
+
+function cleanVal(raw) {
+  const t = raw.trim();
+  if (t.startsWith('[') && t.endsWith(']')) {
+    try {
+      return JSON.parse(t);
+    } catch (_) {
+      return t.slice(1, -1).split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+    }
+  }
+  if ((t.startsWith("'") && t.endsWith("'")) || (t.startsWith('"') && t.endsWith('"'))) {
+    return t.slice(1, -1);
+  }
+  if (!isNaN(t) && t !== '') {
+    return t.includes('.') ? parseFloat(t) : parseInt(t, 10);
+  }
+  if (t.toLowerCase() === 'true') return true;
+  if (t.toLowerCase() === 'false') return false;
+  if (t.toLowerCase() === 'null') return null;
+  return t;
+}
+
 class SubscriptionHandle {
   constructor(bus, table, listener) {
     this.bus = bus;
@@ -29,11 +99,13 @@ class TapirusDatabase {
     this.eventBus = new EventEmitter();
     this.isOpen = true;
     this.memTables = new Map();
+    this.memories = [];
+    this.graphNodes = new Map();
+    this.graphEdges = [];
   }
 
   static async open(path, options = {}) {
-    const db = new TapirusDatabase(path, options);
-    return db;
+    return new TapirusDatabase(path, options);
   }
 
   static async openInMemory(options = {}) {
@@ -41,47 +113,151 @@ class TapirusDatabase {
   }
 
   static version() {
-    return '1.0.0';
+    return '1.0.1';
   }
 
   async execute(sql, params = []) {
     this._assertOpen();
-    const trimmed = sql.trim().toUpperCase();
+    const trimmed = sql.trim().replace(/;+\s*$/, '');
+    const upper = trimmed.toUpperCase();
 
-    // Check for VACUUM INTO
-    if (trimmed.startsWith('VACUUM INTO')) {
-      const match = sql.match(/VACUUM\s+INTO\s+['"]([^'"]+)['"]/i);
+    // VACUUM INTO
+    if (upper.startsWith('VACUUM INTO')) {
+      const match = trimmed.match(/VACUUM\s+INTO\s+['"]([^'"]+)['"]/i);
       if (match) {
         return this.vacuumInto(match[1]);
       }
     }
 
-    // Capture mutations for CDC & Subscriptions
-    if (trimmed.startsWith('INSERT') || trimmed.startsWith('UPDATE') || trimmed.startsWith('DELETE')) {
-      let table = 'unknown';
-      let op = 'INSERT';
-      if (trimmed.startsWith('INSERT')) {
-        op = 'INSERT';
-        const m = sql.match(/INTO\s+([a-zA-Z0-9_]+)/i);
-        if (m) table = m[1];
-      } else if (trimmed.startsWith('UPDATE')) {
-        op = 'UPDATE';
-        const m = sql.match(/UPDATE\s+([a-zA-Z0-9_]+)/i);
-        if (m) table = m[1];
-      } else if (trimmed.startsWith('DELETE')) {
-        op = 'DELETE';
-        const m = sql.match(/FROM\s+([a-zA-Z0-9_]+)/i);
-        if (m) table = m[1];
+    // CREATE TABLE
+    if (upper.startsWith('CREATE TABLE')) {
+      const match = trimmed.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)\s*\((.+)\)/is);
+      if (match) {
+        const tblName = match[1].toLowerCase();
+        if (!this.memTables.has(tblName)) {
+          const rawCols = match[2].split(',').map(c => c.trim().split(/\s+/)[0]);
+          this.memTables.set(tblName, {
+            name: match[1],
+            columns: rawCols,
+            rows: []
+          });
+        }
+        return 0;
       }
+    }
 
-      this._emitChange({
-        op,
-        table,
-        rowId: Date.now(),
-        timestamp: Math.floor(Date.now() / 1000),
-        data: { query: sql, params }
-      });
-      return 1;
+    // INSERT INTO
+    if (upper.startsWith('INSERT INTO')) {
+      const m = trimmed.match(/INSERT\s+INTO\s+([a-zA-Z0-9_]+)\s*(?:\(([^)]+)\))?\s*VALUES\s*\((.+)\)/is);
+      if (m) {
+        const tblName = m[1].toLowerCase();
+        let table = this.memTables.get(tblName);
+        if (!table) {
+          table = { name: m[1], columns: [], rows: [] };
+          this.memTables.set(tblName, table);
+        }
+
+        const cols = m[2] ? m[2].split(',').map(s => s.trim()) : table.columns;
+        const vals = parseSqlValues(m[3]);
+        const row = {};
+
+        if (cols.length > 0) {
+          cols.forEach((col, idx) => {
+            row[col] = vals[idx] !== undefined ? vals[idx] : null;
+          });
+        } else {
+          vals.forEach((v, idx) => {
+            row[`col_${idx}`] = v;
+          });
+          if (vals.length > 0 && typeof vals[0] === 'number') {
+            row['id'] = vals[0];
+          }
+        }
+
+        table.rows.push(row);
+
+        this._emitChange({
+          op: 'INSERT',
+          table: m[1],
+          rowId: row.id || Date.now(),
+          timestamp: Math.floor(Date.now() / 1000),
+          data: row
+        });
+        return 1;
+      }
+    }
+
+    // UPDATE
+    if (upper.startsWith('UPDATE')) {
+      const m = trimmed.match(/UPDATE\s+([a-zA-Z0-9_]+)\s+SET\s+(.+?)(?:\s+WHERE\s+(.+))?$/is);
+      if (m) {
+        const tblName = m[1].toLowerCase();
+        const table = this.memTables.get(tblName);
+        let affected = 0;
+        if (table) {
+          const setClause = m[2];
+          const whereClause = m[3];
+          const setParts = setClause.split(',').map(s => s.trim().split('='));
+          
+          table.rows.forEach(row => {
+            let match = true;
+            if (whereClause) {
+              const [wCol, wVal] = whereClause.split('=').map(s => s.trim());
+              if (wCol && wVal) {
+                const targetVal = cleanVal(wVal);
+                if (row[wCol] != targetVal) match = false;
+              }
+            }
+            if (match) {
+              setParts.forEach(([c, v]) => {
+                if (c && v) row[c.trim()] = cleanVal(v);
+              });
+              affected++;
+            }
+          });
+
+          this._emitChange({
+            op: 'UPDATE',
+            table: m[1],
+            rowId: Date.now(),
+            timestamp: Math.floor(Date.now() / 1000),
+            data: { affected }
+          });
+        }
+        return affected;
+      }
+    }
+
+    // DELETE
+    if (upper.startsWith('DELETE')) {
+      const m = trimmed.match(/DELETE\s+FROM\s+([a-zA-Z0-9_]+)(?:\s+WHERE\s+(.+))?$/is);
+      if (m) {
+        const tblName = m[1].toLowerCase();
+        const table = this.memTables.get(tblName);
+        let affected = 0;
+        if (table) {
+          const whereClause = m[2];
+          if (whereClause) {
+            const [wCol, wVal] = whereClause.split('=').map(s => s.trim());
+            const targetVal = cleanVal(wVal);
+            const initialLen = table.rows.length;
+            table.rows = table.rows.filter(r => r[wCol] != targetVal);
+            affected = initialLen - table.rows.length;
+          } else {
+            affected = table.rows.length;
+            table.rows = [];
+          }
+
+          this._emitChange({
+            op: 'DELETE',
+            table: m[1],
+            rowId: Date.now(),
+            timestamp: Math.floor(Date.now() / 1000),
+            data: { affected }
+          });
+        }
+        return affected;
+      }
     }
 
     return 0;
@@ -89,53 +265,173 @@ class TapirusDatabase {
 
   async query(sql, params = []) {
     this._assertOpen();
+    const trimmed = sql.trim().replace(/;+\s*$/, '');
+    const upper = trimmed.toUpperCase();
+
+    // SELECT
+    if (upper.startsWith('SELECT')) {
+      // 1. Vector Search: SELECT ... FROM <table> VECTOR NEAR <col> = [...] TOP <k>
+      const vecMatch = trimmed.match(/SELECT\s+(.+?)\s+FROM\s+([a-zA-Z0-9_]+)\s+VECTOR\s+NEAR\s+([a-zA-Z0-9_]+)\s*=\s*(\[[^\]]+\])\s+TOP\s+([0-9]+)/i);
+      if (vecMatch) {
+        const tblName = vecMatch[2].toLowerCase();
+        const vecCol = vecMatch[3];
+        const queryVec = cleanVal(vecMatch[4]);
+        const k = parseInt(vecMatch[5], 10);
+        const table = this.memTables.get(tblName);
+
+        if (!table) return [];
+
+        const scored = table.rows
+          .map(r => {
+            const rVec = r[vecCol];
+            const sim = Array.isArray(rVec) ? cosineSimilarity(queryVec, rVec) : 0;
+            return { row: r, similarity: sim };
+          })
+          .sort((a, b) => b.similarity - a.similarity)
+          .slice(0, k)
+          .map(item => item.row);
+
+        return scored;
+      }
+
+      // 2. Standard SELECT
+      const selMatch = trimmed.match(/SELECT\s+(.+?)\s+FROM\s+([a-zA-Z0-9_]+)(?:\s+WHERE\s+(.+?))?(?:\s+ORDER\s+BY\s+(.+?))?(?:\s+LIMIT\s+([0-9]+))?$/is);
+      if (selMatch) {
+        const tblName = selMatch[2].toLowerCase();
+        const table = this.memTables.get(tblName);
+        if (!table) return [];
+
+        let rows = [...table.rows];
+        const whereClause = selMatch[3];
+        if (whereClause) {
+          const parts = whereClause.split('=').map(s => s.trim());
+          if (parts.length === 2) {
+            const [wCol, wVal] = parts;
+            const targetVal = cleanVal(wVal);
+            rows = rows.filter(r => r[wCol] == targetVal);
+          }
+        }
+
+        const limit = selMatch[5] ? parseInt(selMatch[5], 10) : null;
+        if (limit !== null) {
+          rows = rows.slice(0, limit);
+        }
+
+        return rows;
+      }
+    }
+
     return [];
   }
 
   async searchVector(vector, limit = 5) {
     this._assertOpen();
+    for (const table of this.memTables.values()) {
+      for (const row of table.rows) {
+        for (const [k, v] of Object.entries(row)) {
+          if (Array.isArray(v) && v.length === vector.length) {
+            return this.query(`SELECT * FROM ${table.name} VECTOR NEAR ${k} = ${JSON.stringify(vector)} TOP ${limit};`);
+          }
+        }
+      }
+    }
     return [];
   }
 
-  async hybridSearch({ queryText, queryVector = null, limit = 5, bm25Weight = 0.5, vectorWeight = 0.5, rrfK = 60 }) {
+  async hybridSearch({ queryText, queryVector = null, limit = 5 }) {
     this._assertOpen();
-    return [];
+    const textLower = (queryText || '').toLowerCase();
+    const results = [];
+
+    for (const table of this.memTables.values()) {
+      for (const row of table.rows) {
+        let textScore = 0;
+        let vecScore = 0;
+        for (const val of Object.values(row)) {
+          if (typeof val === 'string' && val.toLowerCase().includes(textLower)) {
+            textScore += 1;
+          }
+          if (queryVector && Array.isArray(val) && val.length === queryVector.length) {
+            vecScore = cosineSimilarity(queryVector, val);
+          }
+        }
+        if (textScore > 0 || vecScore > 0) {
+          results.push({ row, combinedScore: textScore * 0.5 + vecScore * 0.5 });
+        }
+      }
+    }
+
+    return results
+      .sort((a, b) => b.combinedScore - a.combinedScore)
+      .slice(0, limit)
+      .map(item => item.row);
+  }
+
+  async remember(content, importance = 0.5, tags = []) {
+    this._assertOpen();
+    const id = Date.now() + this.memories.length;
+    this.memories.push({
+      id,
+      content,
+      importance,
+      tags: Array.isArray(tags) ? tags : [tags],
+      createdAt: Date.now()
+    });
+    return id;
+  }
+
+  async recall(query, limit = 5) {
+    this._assertOpen();
+    const qLower = (query || '').toLowerCase();
+    const tokens = qLower.split(/\s+/).filter(t => t.length > 2);
+
+    const scored = this.memories.map(m => {
+      const cLower = m.content.toLowerCase();
+      let matchCount = 0;
+      tokens.forEach(t => {
+        if (cLower.includes(t)) matchCount++;
+      });
+      const recencyBoost = Math.max(0, 1 - (Date.now() - m.createdAt) / 86400000);
+      const score = (matchCount * 0.7) + (m.importance * 0.2) + (recencyBoost * 0.1);
+      return { memory: m, score };
+    });
+
+    return scored
+      .filter(item => tokens.length === 0 || item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(item => item.memory);
+  }
+
+  async recallPrompt(query, limit = 5) {
+    const list = await this.recall(query, limit);
+    if (list.length === 0) return '';
+    const lines = ['### [Retrieved Memory Context]:'];
+    list.forEach(m => {
+      lines.push(`- ${m.content}`);
+    });
+    return lines.join('\n');
   }
 
   async graphRagQuery(params) {
     this._assertOpen();
     const query = typeof params === 'string' ? params : (params.query || '');
-    const topSeeds = (typeof params === 'object' && params.topSeeds) || 3;
-    const maxHops = (typeof params === 'object' && params.maxHops) || 2;
     const limit = (typeof params === 'object' && params.limit) || 5;
+
+    const matchedMemories = await this.recall(query, limit);
+    const facts = matchedMemories.map(m => `- Fact: ${m.content}`).join('\n');
 
     return {
       query,
-      results: [
-        {
-          entityId: 101,
-          label: 'SystemNode',
-          properties: JSON.stringify({ query, topSeeds, maxHops }),
-          rrfScore: 0.0425,
-          hopDistance: 0,
-          seedSimilarity: 0.98,
-          relatedEdges: [
-            { id: 1, fromId: 101, toId: 102, label: 'CONNECTS_TO', weight: 1.0 }
-          ]
-        },
-        {
-          entityId: 102,
-          label: 'NeighborNode',
-          properties: JSON.stringify({ parentId: 101, type: 'Entity' }),
-          rrfScore: 0.0315,
-          hopDistance: 1,
-          seedSimilarity: null,
-          relatedEdges: [
-            { id: 1, fromId: 101, toId: 102, label: 'CONNECTS_TO', weight: 1.0 }
-          ]
-        }
-      ].slice(0, limit),
-      promptContext: `### 🧠 Verified Knowledge Graph Context\n\n#### Entities & Facts:\n- **SystemNode** (ID: 101) [Hops: 0, Confidence: 0.0425]\n  - Properties: {"query":"${query}"}\n- **NeighborNode** (ID: 102) [Hops: 1, Confidence: 0.0315]\n  - Properties: {"parentId":101,"type":"Entity"}\n\n#### Relationships:\n- (\`SystemNode\`: #101) ───[CONNECTS_TO]───► (\`NeighborNode\`: #102) (weight: 1.00)\n`
+      results: matchedMemories.map((m, idx) => ({
+        entityId: m.id,
+        label: 'MemoryEntity',
+        properties: JSON.stringify({ content: m.content }),
+        rrfScore: 1.0 / (idx + 1),
+        hopDistance: 0,
+        relatedEdges: []
+      })),
+      promptContext: `### Verified Knowledge Context\n${facts || '- General query context for: ' + query}`
     };
   }
 
@@ -146,9 +442,8 @@ class TapirusDatabase {
     return new SubscriptionHandle(this.eventBus, table, listener);
   }
 
-  async vacuumInto(targetPath) {
+  async vacuumInto(_targetPath) {
     this._assertOpen();
-    // Non-blocking snapshot execution
     return true;
   }
 

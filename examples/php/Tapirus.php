@@ -31,7 +31,13 @@ class Tapirus {
                 $home . '/.tapirusdb-target/release/libtapirus.so',
                 __DIR__ . '/../../target/release/libtapirus.so',
                 __DIR__ . '/../../target/release/tapirus.dll',
+                __DIR__ . '/../../target/release/libtapirus.dylib',
+                __DIR__ . '/../../target/debug/libtapirus.so',
+                __DIR__ . '/../../target/debug/tapirus.dll',
+                __DIR__ . '/../../target/debug/libtapirus.dylib',
                 'libtapirus.so',
+                'tapirus.dll',
+                'libtapirus.dylib',
             ];
 
             $libPath = 'libtapirus.so';

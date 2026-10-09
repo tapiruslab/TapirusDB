@@ -26,6 +26,7 @@ import urllib.parse
 from typing import Dict, Any, Tuple, Optional
 
 # Attempt to load native Python SDK or fallback to TapirusDB HTTP daemon
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../python")))
 try:
     import tapirus
     HAS_NATIVE_SDK = True

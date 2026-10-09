@@ -8,7 +8,13 @@ const candidatePaths = [
   path.join(os.homedir(), ".tapirusdb-target/release/libtapirus.so"),
   path.join(__dirname, "../../target/release/libtapirus.so"),
   path.join(__dirname, "../../target/release/tapirus.dll"),
+  path.join(__dirname, "../../target/release/libtapirus.dylib"),
+  path.join(__dirname, "../../target/debug/libtapirus.so"),
+  path.join(__dirname, "../../target/debug/tapirus.dll"),
+  path.join(__dirname, "../../target/debug/libtapirus.dylib"),
   "libtapirus.so",
+  "tapirus.dll",
+  "libtapirus.dylib",
 ];
 
 let libPath = "libtapirus.so";

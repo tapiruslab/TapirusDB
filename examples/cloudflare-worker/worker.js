@@ -12,7 +12,7 @@
  * - POST /memory/recall    : Hybrid BM25 + Vector + Recency recall
  */
 
-import { TapirusDatabase } from '@tapirus/db';
+import { TapirusDatabase } from '../../packages/npm/index.js';
 
 let dbInstance = null;
 
@@ -147,7 +147,7 @@ export default {
           );
         }
 
-        const memoryId = Date.now();
+        const memoryId = await db.remember(content, importance, tags);
         return new Response(
           JSON.stringify({
             success: true,
@@ -158,9 +158,37 @@ export default {
         );
       }
 
+      // 5. AI Agent Memory: Recall
+      if (url.pathname === '/memory/recall' && request.method === 'POST') {
+        const body = await request.json();
+        const { query, limit = 5 } = body;
+
+        if (!query) {
+          return new Response(
+            JSON.stringify({ error: 'Missing "query" string in request body' }),
+            { status: 400, headers: corsHeaders }
+          );
+        }
+
+        const memories = await db.recall(query, limit);
+        const promptContext = await db.recallPrompt(query, limit);
+        return new Response(
+          JSON.stringify({
+            success: true,
+            query,
+            memories,
+            promptContext,
+          }),
+          { status: 200, headers: corsHeaders }
+        );
+      }
+
       // Not Found
       return new Response(
-        JSON.stringify({ error: 'Endpoint not found', available: ['/health', '/sql', '/graph-rag', '/memory/remember'] }),
+        JSON.stringify({
+          error: 'Endpoint not found',
+          available: ['/health', '/sql', '/graph-rag', '/memory/remember', '/memory/recall']
+        }),
         { status: 404, headers: corsHeaders }
       );
     } catch (err) {

@@ -13,7 +13,13 @@ CANDIDATE_PATHS = [
     os.path.expanduser("~/.tapirusdb-target/release/libtapirus.so"),
     os.path.abspath(os.path.join(os.path.dirname(__file__), "../../target/release/libtapirus.so")),
     os.path.abspath(os.path.join(os.path.dirname(__file__), "../../target/release/tapirus.dll")),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../target/release/libtapirus.dylib")),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../target/debug/libtapirus.so")),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../target/debug/tapirus.dll")),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../target/debug/libtapirus.dylib")),
     "libtapirus.so",
+    "tapirus.dll",
+    "libtapirus.dylib",
 ]
 
 lib_path = None

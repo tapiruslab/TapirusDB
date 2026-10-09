@@ -22,17 +22,20 @@ npm install
 ## 💻 Quick Usage (`index.ts`)
 
 ```typescript
-import { Database } from "./db";
+// See index.ts for full working implementation:
+const db = new Tapirus(":memory:");
 
-const db = new Database("app.tapir");
+// 1. Relational SQL & AI Vectors
+db.execute("CREATE TABLE users (id INT PRIMARY KEY, name TEXT, embedding VECTOR(3));");
+db.execute("INSERT INTO users VALUES (1, 'Ada Lovelace', [0.1, 0.9, 0.0]);");
 
-// Execute SQL
-db.execute("CREATE TABLE notes (id INT PRIMARY KEY, content TEXT);");
-db.execute("INSERT INTO notes VALUES (1, 'Typed edge persistence with TapirusDB!');");
+// 2. Query Rows
+const rows = db.query("SELECT id, name FROM users;");
+console.log("Query Results:", rows);
 
-// Query JSON
-const rows = db.query("SELECT * FROM notes WHERE id = 1;");
-console.log("Query result:", rows);
+// 3. Vector Similarity Search
+const nearest = db.query("SELECT id, name FROM users VECTOR NEAR embedding = [0.15, 0.85, 0.0] TOP 1;");
+console.log("Nearest Vector Neighbor:", nearest);
 ```
 
 ## 🏃 Running the Example

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"./tapirus"
+	"tapirus-example/tapirus"
 )
 
 func main() {

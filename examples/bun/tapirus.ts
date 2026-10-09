@@ -7,6 +7,10 @@ const candidatePaths = [
   "./libtapirus.so",
   "../../target/release/libtapirus.so",
   "../../target/release/tapirus.dll",
+  "../../target/release/libtapirus.dylib",
+  "../../target/debug/libtapirus.so",
+  "../../target/debug/tapirus.dll",
+  "../../target/debug/libtapirus.dylib",
 ];
 
 let libPath = "libtapirus.so";

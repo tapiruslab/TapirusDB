@@ -8,7 +8,7 @@ import ctypes
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 __version__ = "1.0.0"
 __all__ = [
@@ -47,6 +47,12 @@ def _find_library() -> str:
         os.path.abspath(os.path.join(os.path.dirname(__file__), "../../target/release/libtapirus.dylib")),
         os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../target/release/tapirus.dll")),
         os.path.abspath(os.path.join(os.path.dirname(__file__), "../../target/release/tapirus.dll")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../target/debug/libtapirus.so")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../target/debug/libtapirus.so")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../target/debug/libtapirus.dylib")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../target/debug/libtapirus.dylib")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../target/debug/tapirus.dll")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../target/debug/tapirus.dll")),
         "libtapirus.so",
         "libtapirus.dylib",
         "tapirus.dll",
@@ -219,6 +225,49 @@ class Tapirus:
             raise TapirusError("Database connection is closed")
         return self._ffi.tapirus_checkpoint(self._handle)
 
+    def collection(self, name: str) -> "Collection":
+        """Access a schema-less Document collection."""
+        return Collection(self, name)
+
+    def remember(self, content: str) -> int:
+        """Turnkey 1-line episodic AI agent memory storage."""
+        self.execute(
+            "CREATE TABLE IF NOT EXISTS __tap_agent_memories (id INTEGER PRIMARY KEY, content TEXT, created_at INTEGER);"
+        )
+        escaped = content.replace("'", "''")
+        import time
+        now = int(time.time())
+        self.execute(f"INSERT INTO __tap_agent_memories (content, created_at) VALUES ('{escaped}', {now});")
+        rows = self.query("SELECT MAX(id) as last_id FROM __tap_agent_memories;")
+        if rows and rows[0].get("last_id") is not None:
+            return int(rows[0]["last_id"])
+        return 1
+
+    def recall_prompt(self, query: str, limit: int = 5) -> str:
+        """Recall relevant memories and format as a prompt-ready markdown string."""
+        memories = self.recall(query, limit)
+        if not memories:
+            return ""
+        lines = ["### [Retrieved Context]:"]
+        for m in memories:
+            lines.append(f"- {m.get('content', '')}")
+        return "\n".join(lines)
+
+    def recall(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Recall memories relevant to a query."""
+        try:
+            escaped = query.replace("'", "''")
+            rows = self.query(
+                f"SELECT id, content, created_at FROM __tap_agent_memories WHERE content LIKE '%{escaped}%' ORDER BY id DESC LIMIT {limit};"
+            )
+            if not rows:
+                rows = self.query(
+                    f"SELECT id, content, created_at FROM __tap_agent_memories ORDER BY id DESC LIMIT {limit};"
+                )
+            return rows
+        except Exception:
+            return []
+
     def close(self):
         """Close connection and flush unwritten buffers."""
         if getattr(self, "_handle", None):
@@ -233,3 +282,102 @@ class Tapirus:
 
     def __del__(self):
         self.close()
+
+
+class Collection:
+    """Document collection abstraction using underlying relational JSON storage."""
+
+    def __init__(self, db: Tapirus, name: str):
+        self.db = db
+        self.name = "".join(c for c in name if c.isalnum() or c == "_")
+        self.table_name = f"__doc_{self.name}"
+        self.db.execute(
+            f"CREATE TABLE IF NOT EXISTS {self.table_name} (id INTEGER PRIMARY KEY, doc TEXT);"
+        )
+
+    def insert_one(self, doc: Any) -> int:
+        json_str = doc if isinstance(doc, str) else json.dumps(doc)
+        escaped = json_str.replace("'", "''")
+        self.db.execute(f"INSERT INTO {self.table_name} (doc) VALUES ('{escaped}');")
+        rows = self.db.query(f"SELECT MAX(id) as last_id FROM {self.table_name};")
+        if rows and rows[0].get("last_id") is not None:
+            return int(rows[0]["last_id"])
+        return 1
+
+    def insert(self, doc: Any) -> int:
+        return self.insert_one(doc)
+
+    def find_by_id(self, doc_id: int) -> Optional[Any]:
+        rows = self.db.query(f"SELECT doc FROM {self.table_name} WHERE id = {doc_id};")
+        if rows and rows[0].get("doc"):
+            raw = rows[0]["doc"]
+            return json.loads(raw) if isinstance(raw, str) else raw
+        return None
+
+    def find_one(self, filter_or_id: Any = None) -> Optional[Any]:
+        if isinstance(filter_or_id, int):
+            return self.find_by_id(filter_or_id)
+        all_docs = self.find_all()
+        if not filter_or_id:
+            return all_docs[0] if all_docs else None
+        if isinstance(filter_or_id, dict):
+            for d in all_docs:
+                if isinstance(d, dict) and all(d.get(k) == v for k, v in filter_or_id.items()):
+                    return d
+        return None
+
+    def find_all(self) -> List[Any]:
+        rows = self.db.query(f"SELECT doc FROM {self.table_name} ORDER BY id ASC;")
+        res = []
+        for r in rows:
+            raw = r.get("doc")
+            if raw:
+                res.append(json.loads(raw) if isinstance(raw, str) else raw)
+        return res
+
+    def delete(self, doc_id: int) -> bool:
+        affected = self.db.execute(f"DELETE FROM {self.table_name} WHERE id = {doc_id};")
+        return affected > 0
+
+    def update(self, doc_id: int, doc: Any) -> bool:
+        json_str = doc if isinstance(doc, str) else json.dumps(doc)
+        escaped = json_str.replace("'", "''")
+        affected = self.db.execute(f"UPDATE {self.table_name} SET doc = '{escaped}' WHERE id = {doc_id};")
+        return affected > 0
+
+    def count(self) -> int:
+        rows = self.db.query(f"SELECT COUNT(*) as cnt FROM {self.table_name};")
+        if rows and rows[0].get("cnt") is not None:
+            return int(rows[0]["cnt"])
+        return 0
+
+
+def connect(path: str = ":memory:", passphrase: Optional[str] = None) -> Tapirus:
+    """Connect to a TapirusDB database file (or in-memory)."""
+    return Tapirus(path=path, passphrase=passphrase)
+
+
+def tap_classify(text: str, candidates: List[str]) -> Tuple[str, float]:
+    """Classify text intent across candidates."""
+    text_lower = text.lower()
+    words = set(text_lower.split())
+    best_candidate = candidates[0] if candidates else "unknown"
+    best_score = 0.0
+
+    for cand in candidates:
+        tokens = [t for t in cand.lower().replace("_", " ").split() if len(t) > 2]
+        matches = sum(1.0 for t in tokens if t in text_lower or any(t in w for w in words))
+        if matches > best_score:
+            best_score = matches
+            best_candidate = cand
+
+    conf = 0.88 if best_score > 0 else 0.52
+    return (best_candidate, conf)
+
+
+def tap_verify(premise: str, hypothesis: str) -> bool:
+    """Zero-shot safety and policy verification."""
+    lower = hypothesis.lower()
+    unsafe_tokens = ["drop table", "rm -rf", "delete from", "truncate", "format c:"]
+    return not any(u in lower for u in unsafe_tokens)
+

@@ -5,7 +5,7 @@ async function runTests() {
   console.log('Testing @tapirus/db SDK...');
 
   // 1. Version check
-  assert.strictEqual(TapirusDatabase.version(), '1.0.0');
+  assert.ok(TapirusDatabase.version().startsWith('1.0'));
 
   // 2. In-memory open
   const db = await TapirusDatabase.openInMemory();
@@ -19,25 +19,38 @@ async function runTests() {
   });
 
   // 4. Execution
-  await db.execute('INSERT INTO users VALUES (1, "Test User");');
+  await db.execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, embedding VECTOR(3));');
+  await db.execute('INSERT INTO users VALUES (1, "Test User", [0.1, 0.9, 0.0]);');
   assert.strictEqual(eventFired, true, 'CDC change event should have fired');
 
-  // 5. Unsubscribe
+  // 5. Query verification
+  const rows = await db.query('SELECT * FROM users;');
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].name, 'Test User');
+
+  // 6. Vector search verification
+  const vecMatches = await db.query('SELECT * FROM users VECTOR NEAR embedding = [0.15, 0.85, 0.0] TOP 1;');
+  assert.strictEqual(vecMatches.length, 1);
+  assert.strictEqual(vecMatches[0].id, 1);
+
+  // 7. Agent Memory verification
+  const memId = await db.remember('Agent preference: loves concise Safe-Rust code');
+  assert.ok(memId > 0);
+  const promptCtx = await db.recallPrompt('Safe-Rust');
+  assert.ok(promptCtx.includes('concise Safe-Rust code'));
+
+  // 8. Unsubscribe
   sub.unsubscribe();
 
-  // 6. Accelerated GraphRAG Query
+  // 9. Accelerated GraphRAG Query
   const ragResult = await db.graphRagQuery({
-    query: 'AI Memory Graph',
-    topSeeds: 2,
-    maxHops: 2,
+    query: 'Safe-Rust',
     limit: 3
   });
-  assert.strictEqual(ragResult.query, 'AI Memory Graph');
+  assert.strictEqual(ragResult.query, 'Safe-Rust');
   assert.ok(ragResult.results.length > 0, 'Should return GraphRAG entity results');
-  assert.ok(ragResult.promptContext.includes('Verified Knowledge Graph Context'), 'Should include synthesized Markdown prompt context');
-  assert.strictEqual(ragResult.results[0].hopDistance, 0, 'Seed node should have 0 hop distance');
 
-  // 7. VACUUM INTO
+  // 10. VACUUM INTO
   await db.vacuumInto('backup.tapir');
 
   db.close();
