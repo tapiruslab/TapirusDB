@@ -694,6 +694,61 @@ Unlike fragmented multi-database architectures where cross-model consistency is 
 * **Single Atomic Commit**: A transaction can update a Relational SQL state row, insert an unstructured JSON document, link openCypher knowledge graph nodes and edges, and index a vector embedding within a single `conn.begin_transaction()`.
 * **Zero Torn States**: If any operation fails or the host process loses power, Write-Ahead Log (WAL) crash recovery rolls back all four models simultaneously to their exact pre-transaction state, eliminating cross-model state corruption forever.
 
+### Pillar 7: Dynamic Scalar UDF Registry & Advanced SQL Engine
+Extend TapirusDB's SQL dialect with arbitrary Rust closures or use pre-registered high-performance built-in functions directly in `SELECT` projections and `WHERE` clauses:
+* **Custom Scalar UDF Registry**: Register custom thread-safe closures callable directly in SQL queries (`conn.register_scalar_function("MY_HASH", |args| ...)`).
+* **Standard Built-in Scalar Functions**: Out-of-the-box support for `UPPER`, `LOWER`, `LENGTH`/`LEN`, `ABS`, `ROUND`, `COALESCE`, `CONCAT`, `SUBSTR`, `TRIM`, and `REVERSE`.
+* **Correlated & Subquery Expressions**: Native support for `WHERE [NOT] EXISTS (SELECT ...)`, `WHERE col [NOT] IN (SELECT ...)`, and derived tables `FROM (SELECT ...) AS alias`.
+* **Zero-Downtime DDL Migrations**: Non-destructive schema evolution via `ALTER TABLE RENAME TO <new_table>`, `ALTER TABLE RENAME COLUMN <old> TO <new>`, and `ALTER TABLE DROP COLUMN <col>` with automatic primary key safeguards and physical B+Tree row rewriting.
+* **Nested Transaction Savepoints**: Precision partial rollbacks with `SAVEPOINT <name>`, `ROLLBACK TO [SAVEPOINT] <name>`, and `RELEASE [SAVEPOINT] <name>`.
+
+```rust
+// 1. Register custom Rust scalar closure
+conn.register_scalar_function("DOUBLE_VAL", |args| {
+    if let Some(Value::Integer(i)) = args.first() {
+        Ok(Value::Integer(i * 2))
+    } else {
+        Ok(Value::Null)
+    }
+});
+
+// 2. Query with custom UDFs, built-ins, and EXISTS subqueries
+let rows = conn.query("
+    SELECT id, UPPER(name) AS upper_name, DOUBLE_VAL(score) AS bonus
+    FROM employees e
+    WHERE EXISTS (SELECT 1 FROM departments d WHERE d.id = e.dept_id)
+      AND LENGTH(name) > 3;
+")?;
+
+// 3. Precision Transaction Savepoints
+conn.execute("BEGIN TRANSACTION;")?;
+conn.execute("INSERT INTO audit_log VALUES (1, 'STARTED');")?;
+conn.execute("SAVEPOINT sp_stage;")?;
+conn.execute("INSERT INTO audit_log VALUES (2, 'EXPERIMENTAL');")?;
+conn.execute("ROLLBACK TO SAVEPOINT sp_stage;")?; // Undoes step 2, keeps step 1
+conn.execute("COMMIT;")?;
+```
+
+### Pillar 8: Continuous Streaming WAL Replication & Graph Projection
+* **Hardware CRC32-Verified WAL Streaming**: Stream write-ahead log frames continuously from primary to standby replicas without stopping client writes (`WalReplicationStream`, `WalReplicationReceiver`). Frame-level and chunk-level CRC32 checksums guarantee bit-rot immunity and zero torn page states over the network wire.
+* **Instant Graph-over-Relational Projection**: Project relational SQL tables into native openCypher knowledge graphs (`conn.project_table_as_nodes(...)`, `conn.project_table_as_edges(...)`) with zero ETL lag and zero secondary storage overhead.
+
+```rust
+// 1. Export verifiable replication chunk on primary node
+let chunk = primary_conn.export_replication_chunk()?;
+
+// 2. Apply chunk into hot-standby replica node
+let frames_applied = standby_conn.apply_replication_chunk(&chunk)?;
+println!("Replicated {frames_applied} frames to standby replica!");
+
+// 3. Project relational SQL tables directly into the Knowledge Graph
+conn.project_table_as_nodes("users", "id", Some("name"), None)?;
+conn.project_table_as_edges("friendships", "user_a", "user_b", Some("FRIENDS_WITH"), Some("weight"), None)?;
+
+// 4. Immediately query relational data via openCypher or Graph algorithms
+let path = conn.graph_find_path(1, 42, 3);
+```
+
 ---
 
 ## 🌐 Industrial Applications: AI & Beyond

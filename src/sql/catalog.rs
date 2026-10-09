@@ -437,6 +437,162 @@ impl Catalog {
         Ok(())
     }
 
+    /// Rename an existing table (ALTER TABLE RENAME TO) and persist update to Page 1
+    pub fn rename_table(&mut self, pager: &mut Pager, old_name: &str, new_name: &str) -> Result<()> {
+        let old_lower = old_name.to_lowercase();
+        let new_lower = new_name.to_lowercase();
+
+        if !self.tables.contains_key(&old_lower) {
+            return Err(Error::TableNotFound(old_name.to_string()));
+        }
+        if self.tables.contains_key(&new_lower) || self.views.contains_key(&new_lower) {
+            return Err(Error::TableExists(format!("Table or view '{new_name}' already exists")));
+        }
+
+        let mut table_def = self.tables.remove(&old_lower).unwrap();
+        table_def.name = new_name.to_string();
+        let updated_def = table_def.clone();
+
+        // Update Page 1 B+Tree master schema entry
+        let mut btree = BTreeStorage::new();
+        let cells = btree.scan(pager, 1)?;
+        for cell in cells {
+            if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload) {
+                if td.name.eq_ignore_ascii_case(old_name) {
+                    let payload = serde_json::to_vec(&updated_def)
+                        .map_err(|e| Error::Corrupted(format!("Failed to serialize updated table def: {e}")))?;
+                    btree.delete(pager, 1, cell.row_id)?;
+                    btree.insert(pager, 1, cell.row_id, &payload)?;
+                    break;
+                }
+            }
+        }
+
+        // Increment schema cookie
+        pager.header_mut().schema_cookie += 1;
+        let header_bytes = pager.header().to_bytes();
+        let mut page1_buf = pager.read_page(1)?;
+        page1_buf[..crate::pager::DATABASE_HEADER_SIZE].copy_from_slice(&header_bytes);
+        pager.write_page(1, &page1_buf)?;
+
+        self.tables.insert(new_lower, table_def);
+        Ok(())
+    }
+
+    /// Rename a column in an existing table (ALTER TABLE RENAME COLUMN) and persist update to Page 1
+    pub fn rename_column(&mut self, pager: &mut Pager, table_name: &str, old_col: &str, new_col: &str) -> Result<()> {
+        let name_lower = table_name.to_lowercase();
+        let table_def = self
+            .tables
+            .get_mut(&name_lower)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+        if table_def.column_index(new_col).is_some() {
+            return Err(Error::SqlSyntax(format!(
+                "Column '{new_col}' already exists in table '{table_name}'"
+            )));
+        }
+
+        let col_idx = table_def
+            .column_index(old_col)
+            .ok_or_else(|| Error::ColumnNotFound(old_col.to_string()))?;
+
+        table_def.columns[col_idx].name = new_col.to_string();
+        let updated_def = table_def.clone();
+
+        // Update Page 1 B+Tree master schema entry
+        let mut btree = BTreeStorage::new();
+        let cells = btree.scan(pager, 1)?;
+        for cell in cells {
+            if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload) {
+                if td.name.eq_ignore_ascii_case(table_name) {
+                    let payload = serde_json::to_vec(&updated_def)
+                        .map_err(|e| Error::Corrupted(format!("Failed to serialize updated table def: {e}")))?;
+                    btree.delete(pager, 1, cell.row_id)?;
+                    btree.insert(pager, 1, cell.row_id, &payload)?;
+                    break;
+                }
+            }
+        }
+
+        // Increment schema cookie
+        pager.header_mut().schema_cookie += 1;
+        let header_bytes = pager.header().to_bytes();
+        let mut page1_buf = pager.read_page(1)?;
+        page1_buf[..crate::pager::DATABASE_HEADER_SIZE].copy_from_slice(&header_bytes);
+        pager.write_page(1, &page1_buf)?;
+
+        Ok(())
+    }
+
+    /// Drop a column from an existing table (ALTER TABLE DROP COLUMN) and persist update to Page 1
+    pub fn drop_column(&mut self, pager: &mut Pager, table_name: &str, col_name: &str) -> Result<()> {
+        let name_lower = table_name.to_lowercase();
+        let table_def = self
+            .tables
+            .get_mut(&name_lower)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+        let col_idx = table_def
+            .column_index(col_name)
+            .ok_or_else(|| Error::ColumnNotFound(col_name.to_string()))?;
+
+        if table_def.columns[col_idx].primary_key {
+            return Err(Error::ConstraintViolation(format!(
+                "Cannot drop PRIMARY KEY column '{col_name}' from table '{table_name}'"
+            )));
+        }
+
+        if table_def.columns.len() <= 1 {
+            return Err(Error::ConstraintViolation(format!(
+                "Cannot drop column '{col_name}': table must have at least one column"
+            )));
+        }
+
+        let old_def = table_def.clone();
+        table_def.columns.remove(col_idx);
+        let updated_def = table_def.clone();
+        let root_page = table_def.root_page;
+
+        // Rewrite rows in table to physically remove the dropped column
+        let mut btree = BTreeStorage::new();
+        let col_names = old_def.column_names();
+        let cells = btree.scan(pager, root_page)?;
+        for cell in cells {
+            if let Ok(row) = crate::sql::codec::decode_row(&cell.payload, &col_names) {
+                if col_idx < row.values().len() {
+                    let mut vals = row.values().to_vec();
+                    vals.remove(col_idx);
+                    let new_payload = crate::sql::codec::encode_row(&vals);
+                    btree.insert(pager, root_page, cell.row_id, &new_payload)?;
+                }
+            }
+        }
+
+        // Update Page 1 B+Tree master schema entry
+        let cells = btree.scan(pager, 1)?;
+        for cell in cells {
+            if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload) {
+                if td.name.eq_ignore_ascii_case(table_name) {
+                    let payload = serde_json::to_vec(&updated_def)
+                        .map_err(|e| Error::Corrupted(format!("Failed to serialize updated table def: {e}")))?;
+                    btree.delete(pager, 1, cell.row_id)?;
+                    btree.insert(pager, 1, cell.row_id, &payload)?;
+                    break;
+                }
+            }
+        }
+
+        // Increment schema cookie
+        pager.header_mut().schema_cookie += 1;
+        let header_bytes = pager.header().to_bytes();
+        let mut page1_buf = pager.read_page(1)?;
+        page1_buf[..crate::pager::DATABASE_HEADER_SIZE].copy_from_slice(&header_bytes);
+        pager.write_page(1, &page1_buf)?;
+
+        Ok(())
+    }
+
     /// Drop a table from the catalog and delete its entry on Page 1
     pub fn drop_table(&mut self, pager: &mut Pager, table_name: &str) -> Result<bool> {
         let name_lower = table_name.to_lowercase();

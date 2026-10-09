@@ -5,6 +5,7 @@
 
 pub mod compression;
 pub mod remote;
+pub mod replication;
 pub mod wal;
 
 use crate::error::{Error, Result};
@@ -18,6 +19,7 @@ pub use compression::{compress_page_frame, decompress_page_frame, COMPRESSED_PAG
 pub use remote::{MockRemoteRangeStorage, RemotePager, RemoteRangeReader, RemoteStorageAdapter, S3StorageConfig};
 #[cfg(feature = "cloud-s3")]
 pub use remote::CloudS3RemoteStorage;
+pub use replication::{WalReplicationChunk, WalReplicationFrame, WalReplicationReceiver, WalReplicationStream};
 pub use wal::{Wal, WalFrameHeader, WalHeader, DEFAULT_CHECKPOINT_THRESHOLD};
 
 /// Default page size in bytes (4KB)
@@ -225,6 +227,21 @@ struct TransactionSavepoint {
     wal_frame_count: usize,
 }
 
+/// A named savepoint within an active transaction for nested transaction control
+#[derive(Debug, Clone)]
+pub struct NamedSavepoint {
+    /// Savepoint identifier name
+    pub name: String,
+    /// Undo map of original page contents prior to mutations
+    pub undo_pages: HashMap<PageId, Option<Vec<u8>>>,
+    /// Set of dirty pages modified within this savepoint scope
+    pub dirty_pages: HashSet<PageId>,
+    /// Database size in pages at savepoint creation time
+    pub total_pages: u32,
+    /// WAL frame count at savepoint creation time
+    pub wal_frame_count: usize,
+}
+
 /// The Pager responsible for loading, allocating, caching, and writing database pages
 pub struct Pager {
     header: DatabaseHeader,
@@ -237,6 +254,7 @@ pub struct Pager {
     checkpoint_threshold: usize,
     cipher: Option<crate::crypto::DatabaseCipher>,
     transaction_savepoint: Option<TransactionSavepoint>,
+    named_savepoints: Vec<NamedSavepoint>,
     cache_capacity: usize,
     lru_order: VecDeque<PageId>,
     remote_reader: Option<Arc<dyn RemoteRangeReader>>,
@@ -445,6 +463,7 @@ impl Pager {
             checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
             cipher,
             transaction_savepoint: None,
+            named_savepoints: Vec::new(),
             cache_capacity,
             lru_order,
             remote_reader: None,
@@ -492,6 +511,7 @@ impl Pager {
             checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
             cipher,
             transaction_savepoint: None,
+            named_savepoints: Vec::new(),
             cache_capacity,
             lru_order,
             remote_reader: None,
@@ -555,6 +575,7 @@ impl Pager {
             checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
             cipher,
             transaction_savepoint: None,
+            named_savepoints: Vec::new(),
             cache_capacity: 256,
             lru_order,
             remote_reader: None,
@@ -599,6 +620,7 @@ impl Pager {
             checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
             cipher,
             transaction_savepoint: None,
+            named_savepoints: Vec::new(),
             cache_capacity,
             lru_order: VecDeque::new(),
             remote_reader: Some(reader),
@@ -660,6 +682,7 @@ impl Pager {
             checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
             cipher,
             transaction_savepoint: None,
+            named_savepoints: Vec::new(),
             cache_capacity,
             lru_order,
             remote_reader: Some(adapter.clone() as Arc<dyn RemoteRangeReader>),
@@ -747,6 +770,16 @@ impl Pager {
     /// Return the root page of the master vector directory/snapshot from header
     pub fn vector_index_page(&self) -> u32 {
         self.header.vector_index_page
+    }
+
+    /// Immutable reference to the active in-memory pages buffer
+    pub fn in_memory_pages(&self) -> &HashMap<PageId, Vec<u8>> {
+        &self.in_memory_pages
+    }
+
+    /// Mutable reference to the active in-memory pages buffer
+    pub fn in_memory_pages_mut(&mut self) -> &mut HashMap<PageId, Vec<u8>> {
+        &mut self.in_memory_pages
     }
 
     /// Update page access in LRU queue
@@ -926,6 +959,16 @@ impl Pager {
                 None
             };
             if let Some(sp) = &mut self.transaction_savepoint {
+                sp.undo_pages.insert(page_id, prev_data.clone());
+            }
+            if let Some(sp) = self.named_savepoints.last_mut() {
+                if !sp.undo_pages.contains_key(&page_id) {
+                    sp.undo_pages.insert(page_id, prev_data);
+                }
+            }
+        } else if let Some(sp) = self.named_savepoints.last_mut() {
+            if !sp.undo_pages.contains_key(&page_id) {
+                let prev_data = self.in_memory_pages.get(&page_id).cloned();
                 sp.undo_pages.insert(page_id, prev_data);
             }
         }
@@ -933,6 +976,9 @@ impl Pager {
         let is_in_tx = self.is_in_transaction();
         if is_in_tx {
             if let Some(sp) = &mut self.transaction_savepoint {
+                sp.dirty_pages.insert(page_id);
+            }
+            if let Some(sp) = self.named_savepoints.last_mut() {
                 sp.dirty_pages.insert(page_id);
             }
         }
@@ -1011,6 +1057,16 @@ impl Pager {
                 None
             };
             if let Some(sp) = &mut self.transaction_savepoint {
+                sp.undo_pages.insert(page_id, prev_data.clone());
+            }
+            if let Some(sp) = self.named_savepoints.last_mut() {
+                if !sp.undo_pages.contains_key(&page_id) {
+                    sp.undo_pages.insert(page_id, prev_data);
+                }
+            }
+        } else if let Some(sp) = self.named_savepoints.last_mut() {
+            if !sp.undo_pages.contains_key(&page_id) {
+                let prev_data = self.in_memory_pages.get(&page_id).cloned();
                 sp.undo_pages.insert(page_id, prev_data);
             }
         }
@@ -1023,6 +1079,9 @@ impl Pager {
         let is_in_tx = self.is_in_transaction();
         if is_in_tx {
             if let Some(sp) = &mut self.transaction_savepoint {
+                sp.dirty_pages.insert(page_id);
+            }
+            if let Some(sp) = self.named_savepoints.last_mut() {
                 sp.dirty_pages.insert(page_id);
             }
             return Ok(());
@@ -1124,6 +1183,11 @@ impl Pager {
                 sp.undo_pages.insert(allocated_id, None);
             }
         }
+        if let Some(sp) = self.named_savepoints.last_mut() {
+            if !sp.undo_pages.contains_key(&allocated_id) {
+                sp.undo_pages.insert(allocated_id, None);
+            }
+        }
 
         let empty_page = vec![0u8; page_size];
         let is_in_tx = self.is_in_transaction();
@@ -1155,6 +1219,10 @@ impl Pager {
             let is_in_tx = self.transaction_savepoint.is_some();
             if is_in_tx {
                 if let Some(sp) = &mut self.transaction_savepoint {
+                    sp.dirty_pages.insert(1);
+                    sp.dirty_pages.insert(allocated_id);
+                }
+                if let Some(sp) = self.named_savepoints.last_mut() {
                     sp.dirty_pages.insert(1);
                     sp.dirty_pages.insert(allocated_id);
                 }
@@ -1331,6 +1399,7 @@ impl Pager {
         } else {
             self.checkpoint()?;
         }
+        self.named_savepoints.clear();
         Ok(())
     }
 
@@ -1338,6 +1407,8 @@ impl Pager {
     pub fn rollback_transaction(&mut self) -> Result<()> {
         let savepoint = self.transaction_savepoint.take()
             .ok_or_else(|| Error::TransactionError("No active transaction to rollback".into()))?;
+
+        self.named_savepoints.clear();
 
         for (page_id, original_data) in savepoint.undo_pages {
             match original_data {
@@ -1358,6 +1429,67 @@ impl Pager {
         if let Some(wal) = &mut self.wal {
             wal.rollback_to(savepoint.wal_frame_count)?;
         }
+        Ok(())
+    }
+
+    /// Create a named transaction savepoint (SAVEPOINT <name>)
+    pub fn create_savepoint(&mut self, name: &str) -> Result<()> {
+        if self.transaction_savepoint.is_none() {
+            self.begin_transaction()?;
+        }
+        let frame_count = self.wal.as_ref().map(|w| w.frame_count()).unwrap_or(0);
+        self.named_savepoints.push(NamedSavepoint {
+            name: name.to_string(),
+            undo_pages: HashMap::new(),
+            dirty_pages: HashSet::new(),
+            total_pages: self.header.total_pages,
+            wal_frame_count: frame_count,
+        });
+        Ok(())
+    }
+
+    /// Rollback changes made since the named savepoint was created (ROLLBACK TO [SAVEPOINT] <name>)
+    pub fn rollback_to_savepoint(&mut self, name: &str) -> Result<()> {
+        let idx = self
+            .named_savepoints
+            .iter()
+            .rposition(|sp| sp.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| Error::TransactionError(format!("Savepoint '{name}' does not exist")))?;
+
+        // Revert all savepoints from newest down to idx
+        while self.named_savepoints.len() > idx {
+            let sp = self.named_savepoints.pop().unwrap();
+            for (page_id, original_data) in sp.undo_pages {
+                match original_data {
+                    Some(prev) => {
+                        self.in_memory_pages.insert(page_id, prev);
+                        self.touch_lru(page_id);
+                    }
+                    None => {
+                        self.in_memory_pages.remove(&page_id);
+                        if let Some(pos) = self.lru_order.iter().position(|&pid| pid == page_id) {
+                            self.lru_order.remove(pos);
+                        }
+                    }
+                }
+            }
+            self.header.total_pages = sp.total_pages;
+            if let Some(wal) = &mut self.wal {
+                wal.rollback_to(sp.wal_frame_count)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Release a named savepoint (RELEASE [SAVEPOINT] <name>)
+    pub fn release_savepoint(&mut self, name: &str) -> Result<()> {
+        let idx = self
+            .named_savepoints
+            .iter()
+            .rposition(|sp| sp.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| Error::TransactionError(format!("Savepoint '{name}' does not exist")))?;
+
+        self.named_savepoints.truncate(idx);
         Ok(())
     }
 

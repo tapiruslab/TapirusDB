@@ -40,6 +40,10 @@ pub enum Error {
     #[error("Table '{0}' does not exist")]
     TableNotFound(String),
 
+    /// Column does not exist
+    #[error("Column '{0}' does not exist")]
+    ColumnNotFound(String),
+
     /// Vector dimension mismatch
     #[error("Vector dimension mismatch: expected {0} dimensions, got {1}")]
     DimensionMismatch(usize, usize),

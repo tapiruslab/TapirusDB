@@ -36,6 +36,8 @@ pub enum ResolvedWhereExpr {
         /// Whether the condition is NOT IN
         negated: bool,
     },
+    /// Evaluated boolean predicate (e.g. from EXISTS / NOT EXISTS subqueries)
+    Boolean(bool),
 }
 
 /// A temporal version record for point-in-time SQL time-travel queries
@@ -236,6 +238,8 @@ pub struct SQLExecutor {
     pub default_system_versioning: bool,
     statement_cache: HashMap<String, Statement>,
     statement_cache_order: std::collections::VecDeque<String>,
+    /// Thread-safe registry for user-defined functions (UDF) and standard scalar extensions
+    pub udf_registry: crate::sql::udf::UdfRegistry,
 }
 
 impl SQLExecutor {
@@ -254,7 +258,34 @@ impl SQLExecutor {
             default_system_versioning: false,
             statement_cache: HashMap::new(),
             statement_cache_order: std::collections::VecDeque::new(),
+            udf_registry: crate::sql::udf::UdfRegistry::new(),
         })
+    }
+
+    /// Register a custom scalar UDF
+    pub fn register_scalar_function<F>(&mut self, name: &str, func: F)
+    where
+        F: Fn(&[Value]) -> Result<Value> + Send + Sync + 'static,
+    {
+        self.udf_registry.register(name, func);
+    }
+
+    /// Access reference to the UDF registry
+    pub fn udf_registry(&self) -> &crate::sql::udf::UdfRegistry {
+        &self.udf_registry
+    }
+
+    /// Reload catalog, graph, and indexes from disk/pager into executor
+    pub fn reload_from_pager(&mut self, pager: &mut Pager) -> Result<()> {
+        self.catalog = Catalog::load(pager)?;
+        self.load_graph_from_disk(pager)?;
+        self.load_vector_indexes_from_disk(pager)?;
+        Ok(())
+    }
+
+    /// Project a row applying scalar functions and registered UDFs
+    pub fn project_row(&self, row: &Row, requested_cols: &[String]) -> Result<Row> {
+        project_row_with_udf(row, requested_cols, Some(&self.udf_registry))
     }
 
     /// Parse SQL query string into Statement using an internal LRU statement cache
@@ -285,6 +316,204 @@ impl SQLExecutor {
     /// Return mutable reference to graph engine
     pub fn graph_mut(&mut self) -> &mut GraphEngine {
         &mut self.graph
+    }
+
+    /// Project a relational SQL table as graph nodes into the Knowledge Graph
+    pub fn project_table_as_nodes(
+        &mut self,
+        pager: &mut Pager,
+        table_name: &str,
+        id_col: &str,
+        label_col: Option<&str>,
+        prop_cols: Option<&[&str]>,
+    ) -> Result<usize> {
+        let rows = self.query(
+            pager,
+            Statement::Select {
+                distinct: false,
+                columns: Vec::new(),
+                table: table_name.to_string(),
+                from_subquery: None,
+                join: None,
+                where_clause: None,
+                group_by: None,
+                having: None,
+                order_by: None,
+                limit: None,
+                offset: None,
+                as_of_timestamp: None,
+            },
+        )?;
+
+        let mut count = 0;
+        for row in rows {
+            let id_val = row
+                .get_value(id_col)
+                .ok_or_else(|| Error::ColumnNotFound(id_col.to_string()))?;
+            let id = match id_val {
+                Value::Integer(i) => *i as u64,
+                Value::Text(s) => s.parse::<u64>().unwrap_or_else(|_| {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    s.hash(&mut hasher);
+                    hasher.finish()
+                }),
+                other => {
+                    return Err(Error::ConstraintViolation(format!(
+                        "Invalid ID type '{other:?}' for graph node projection"
+                    )));
+                }
+            };
+
+            let label = if let Some(lc) = label_col {
+                row.get_value(lc)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| table_name.to_string())
+            } else {
+                table_name.to_string()
+            };
+
+            let mut props_map = serde_json::Map::new();
+            if let Some(cols) = prop_cols {
+                for &col in cols.iter() {
+                    if let Some(v) = row.get_value(col) {
+                        props_map.insert(col.to_string(), serde_json::json!(v.to_string()));
+                    }
+                }
+            } else {
+                for (name, val) in row.columns().iter().zip(row.values().iter()) {
+                    if name != id_col && label_col.map(|lc| lc != name).unwrap_or(true) {
+                        props_map.insert(name.clone(), serde_json::json!(val.to_string()));
+                    }
+                }
+            }
+            let props_json = serde_json::Value::Object(props_map).to_string();
+
+            let vector = row.values().iter().find_map(|v| {
+                if let Value::Vector(vec) = v {
+                    Some(vec.clone())
+                } else {
+                    None
+                }
+            });
+
+            let node = crate::graph::Node {
+                id,
+                label,
+                properties: props_json,
+                vector,
+            };
+            self.graph.restore_node(node.clone());
+            self.persist_graph_node(pager, &node)?;
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    /// Project a relational SQL table as graph edges into the Knowledge Graph
+    pub fn project_table_as_edges(
+        &mut self,
+        pager: &mut Pager,
+        table_name: &str,
+        from_col: &str,
+        to_col: &str,
+        label_col: Option<&str>,
+        weight_col: Option<&str>,
+        prop_cols: Option<&[&str]>,
+    ) -> Result<usize> {
+        let rows = self.query(
+            pager,
+            Statement::Select {
+                distinct: false,
+                columns: Vec::new(),
+                table: table_name.to_string(),
+                from_subquery: None,
+                join: None,
+                where_clause: None,
+                group_by: None,
+                having: None,
+                order_by: None,
+                limit: None,
+                offset: None,
+                as_of_timestamp: None,
+            },
+        )?;
+
+        let mut count = 0;
+        for row in rows {
+            let from_val = row
+                .get_value(from_col)
+                .ok_or_else(|| Error::ColumnNotFound(from_col.to_string()))?;
+            let to_val = row
+                .get_value(to_col)
+                .ok_or_else(|| Error::ColumnNotFound(to_col.to_string()))?;
+
+            let from_id = match from_val {
+                Value::Integer(i) => *i as u64,
+                Value::Text(s) => s.parse::<u64>().unwrap_or_else(|_| {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    s.hash(&mut hasher);
+                    hasher.finish()
+                }),
+                _ => return Err(Error::ConstraintViolation("Invalid from_id type".into())),
+            };
+
+            let to_id = match to_val {
+                Value::Integer(i) => *i as u64,
+                Value::Text(s) => s.parse::<u64>().unwrap_or_else(|_| {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    s.hash(&mut hasher);
+                    hasher.finish()
+                }),
+                _ => return Err(Error::ConstraintViolation("Invalid to_id type".into())),
+            };
+
+            let label = if let Some(lc) = label_col {
+                row.get_value(lc)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "RELATION".to_string())
+            } else {
+                "RELATION".to_string()
+            };
+
+            let weight = if let Some(wc) = weight_col {
+                match row.get_value(wc) {
+                    Some(Value::Real(r)) => *r as f32,
+                    Some(Value::Integer(i)) => *i as f32,
+                    _ => 1.0,
+                }
+            } else {
+                1.0
+            };
+
+            let mut props_map = serde_json::Map::new();
+            if let Some(cols) = prop_cols {
+                for &col in cols.iter() {
+                    if let Some(v) = row.get_value(col) {
+                        props_map.insert(col.to_string(), serde_json::json!(v.to_string()));
+                    }
+                }
+            } else {
+                for (name, val) in row.columns().iter().zip(row.values().iter()) {
+                    if name != from_col && name != to_col {
+                        props_map.insert(name.clone(), serde_json::json!(val.to_string()));
+                    }
+                }
+            }
+            let props_json = serde_json::Value::Object(props_map).to_string();
+
+            let edge_id = self.graph.add_edge(from_id, to_id, label, weight, props_json)?;
+            if let Some(edge) = self.graph.get_edge(edge_id) {
+                let edge_clone = edge.clone();
+                self.persist_graph_edge(pager, &edge_clone)?;
+            }
+            count += 1;
+        }
+
+        Ok(count)
     }
 
     /// Return reference to all active in-memory HNSW vector indexes
@@ -879,6 +1108,12 @@ impl SQLExecutor {
                     negated: *negated,
                 })
             }
+            WhereExpr::Exists { subquery, negated } => {
+                let sub_rows = self.query(pager, *subquery.clone())?;
+                let exists = !sub_rows.is_empty();
+                let matches = if *negated { !exists } else { exists };
+                Ok(ResolvedWhereExpr::Boolean(matches))
+            }
         }
     }
 
@@ -1125,6 +1360,41 @@ impl SQLExecutor {
                 Ok(1)
             }
 
+            Statement::AlterTableRenameTable { table, new_name } => {
+                self.catalog.rename_table(pager, &table, &new_name)?;
+                Ok(1)
+            }
+
+            Statement::AlterTableRenameColumn { table, old_name, new_name } => {
+                self.catalog.rename_column(pager, &table, &old_name, &new_name)?;
+                Ok(1)
+            }
+
+            Statement::AlterTableDropColumn { table, column } => {
+                self.catalog.drop_column(pager, &table, &column)?;
+                Ok(1)
+            }
+
+            Statement::Savepoint { name } => {
+                pager.create_savepoint(&name)?;
+                Ok(0)
+            }
+
+            Statement::RollbackToSavepoint { name } => {
+                pager.rollback_to_savepoint(&name)?;
+                self.catalog = Catalog::load(pager)?;
+                self.vector_indexes.clear();
+                self.graph = GraphEngine::new();
+                self.load_vector_indexes_from_disk(pager)?;
+                self.load_graph_from_disk(pager)?;
+                Ok(0)
+            }
+
+            Statement::ReleaseSavepoint { name } => {
+                pager.release_savepoint(&name)?;
+                Ok(0)
+            }
+
             Statement::CreateView {
                 name,
                 if_not_exists,
@@ -1290,6 +1560,7 @@ impl SQLExecutor {
                 distinct,
                 columns,
                 table,
+                from_subquery,
                 join,
                 where_clause,
                 group_by,
@@ -1299,6 +1570,27 @@ impl SQLExecutor {
                 offset,
                 as_of_timestamp,
             } => {
+                if let Some((sub_stmt, alias)) = from_subquery {
+                    let mut cte_store = HashMap::new();
+                    let sub_rows = self.query(pager, *sub_stmt)?;
+                    cte_store.insert(alias.clone(), sub_rows);
+                    let outer_stmt = Statement::Select {
+                        distinct,
+                        columns,
+                        table: alias,
+                        from_subquery: None,
+                        join,
+                        where_clause,
+                        group_by,
+                        having,
+                        order_by,
+                        limit,
+                        offset,
+                        as_of_timestamp,
+                    };
+                    return self.query_on_ephemeral_rows(pager, outer_stmt, &cte_store);
+                }
+
                 // If target table is a persistent View, evaluate view query and apply outer filters/order/limit
                 if let Some(view_def) = self.catalog.get_view(&table).cloned() {
                     let mut view_stmt = crate::sql::parse_sql(&view_def.query_sql)?;
@@ -1341,7 +1633,7 @@ impl SQLExecutor {
                     let skip_count = offset.unwrap_or(0);
                     let mut skipped = 0;
                     for row in rows {
-                        let projected = project_row(&row, &output_col_names)?;
+                        let projected = self.project_row(&row, &output_col_names)?;
                         if distinct && result_rows.contains(&projected) {
                             continue;
                         }
@@ -1399,7 +1691,7 @@ impl SQLExecutor {
                                         } else {
                                             columns.clone()
                                         };
-                                        let projected = project_row(&full_row, &output_col_names)?;
+                                        let projected = self.project_row(&full_row, &output_col_names)?;
                                         return Ok(vec![projected]);
                                     } else {
                                         return Ok(Vec::new());
@@ -1444,7 +1736,7 @@ impl SQLExecutor {
                                     for rid in matched_row_ids {
                                         if let Some(payload) = self.btree.search(pager, root_page, rid)? {
                                             let full_row = decode_row(&payload, &all_col_names)?;
-                                            let projected = project_row(&full_row, &output_col_names)?;
+                                            let projected = self.project_row(&full_row, &output_col_names)?;
                                             if distinct && result_rows.contains(&projected) {
                                                 continue;
                                             }
@@ -2276,7 +2568,7 @@ impl SQLExecutor {
                         }
                         Row::with_shared_columns(output_col_shared.clone(), vals)
                     } else {
-                        project_row(&row, &output_col_shared)?
+                        self.project_row(&row, &output_col_shared)?
                     };
 
                     if distinct && rows.contains(&projected) {
@@ -2365,7 +2657,7 @@ impl SQLExecutor {
                     for (row_id, _) in neighbors {
                         if let Some(payload) = self.btree.search(pager, root_page, row_id)? {
                             let full_row = decode_row(&payload, &all_col_names)?;
-                            let projected = project_row(&full_row, &output_col_names)?;
+                            let projected = self.project_row(&full_row, &output_col_names)?;
                             rows.push(projected);
                         }
                     }
@@ -2383,7 +2675,7 @@ impl SQLExecutor {
                             if let Ok(full_row) = decode_row(&cell.payload, &all_col_names) {
                                 if let Some(crate::traits::Value::Vector(v)) = full_row.values().get(vec_idx) {
                                     let dist = crate::vector::cosine_distance(&query_vector, v);
-                                    let projected = project_row(&full_row, &output_col_names)?;
+                                    let projected = self.project_row(&full_row, &output_col_names)?;
                                     scored_rows.push((dist, projected));
                                 }
                             }
@@ -2400,7 +2692,7 @@ impl SQLExecutor {
                                 }
                             }
                             let full_row = decode_row(&cell.payload, &all_col_names)?;
-                            let projected = project_row(&full_row, &output_col_names)?;
+                            let projected = self.project_row(&full_row, &output_col_names)?;
                             rows.push(projected);
                             if rows.len() >= top_k {
                                 break;
@@ -3060,6 +3352,7 @@ impl SQLExecutor {
                             distinct: false,
                             columns: vec![],
                             table: j.table.clone(),
+                            from_subquery: None,
                             join: None,
                             where_clause: None,
                             group_by: None,
@@ -3660,7 +3953,7 @@ impl SQLExecutor {
             if ret_cols.len() == 1 && ret_cols[0] == "*" {
                 vec![full_row]
             } else {
-                vec![project_row(&full_row, ret_cols)?]
+                vec![self.project_row(&full_row, ret_cols)?]
             }
         } else {
             Vec::new()
@@ -3849,7 +4142,7 @@ impl SQLExecutor {
                     if ret_cols.len() == 1 && ret_cols[0] == "*" {
                         returned_rows.push(updated_row);
                     } else {
-                        returned_rows.push(project_row(&updated_row, ret_cols)?);
+                        returned_rows.push(self.project_row(&updated_row, ret_cols)?);
                     }
                 }
 
@@ -3898,7 +4191,7 @@ impl SQLExecutor {
                     if ret_cols.len() == 1 && ret_cols[0] == "*" {
                         returned_rows.push(full_row.clone());
                     } else {
-                        returned_rows.push(project_row(&full_row, ret_cols)?);
+                        returned_rows.push(self.project_row(&full_row, ret_cols)?);
                     }
                 }
 
@@ -4031,13 +4324,23 @@ pub fn matches_condition(actual: &Value, op: &BinaryOp, target: &Value) -> bool 
 
 /// Check if a row satisfies a resolved where expression
 pub fn row_matches_resolved(row: &Row, expr: &ResolvedWhereExpr) -> bool {
+    row_matches_resolved_with_udf(row, expr, None)
+}
+
+/// Check if a row satisfies a resolved where expression, with optional UDF registry support
+pub fn row_matches_resolved_with_udf(
+    row: &Row,
+    expr: &ResolvedWhereExpr,
+    udfs: Option<&crate::sql::udf::UdfRegistry>,
+) -> bool {
     match expr {
+        ResolvedWhereExpr::Boolean(b) => *b,
         ResolvedWhereExpr::Condition(cond) => {
             let val = match row.get_field_or_json_path(&cond.column) {
                 Some(v) => v.clone(),
                 None => {
-                    if let Ok(Some(tap_v)) = try_eval_tap_function(row, &cond.column) {
-                        tap_v
+                    if let Ok(Some(fn_v)) = try_eval_scalar_expr(row, &cond.column, udfs) {
+                        fn_v
                     } else {
                         return false;
                     }
@@ -4046,17 +4349,17 @@ pub fn row_matches_resolved(row: &Row, expr: &ResolvedWhereExpr) -> bool {
             matches_condition(&val, &cond.op, &cond.value)
         }
         ResolvedWhereExpr::And(left, right) => {
-            row_matches_resolved(row, left) && row_matches_resolved(row, right)
+            row_matches_resolved_with_udf(row, left, udfs) && row_matches_resolved_with_udf(row, right, udfs)
         }
         ResolvedWhereExpr::Or(left, right) => {
-            row_matches_resolved(row, left) || row_matches_resolved(row, right)
+            row_matches_resolved_with_udf(row, left, udfs) || row_matches_resolved_with_udf(row, right, udfs)
         }
         ResolvedWhereExpr::InList { column, values, negated } => {
             let val = match row.get_field_or_json_path(column) {
                 Some(v) => v.clone(),
                 None => {
-                    if let Ok(Some(tap_v)) = try_eval_tap_function(row, column) {
-                        tap_v
+                    if let Ok(Some(fn_v)) = try_eval_scalar_expr(row, column, udfs) {
+                        fn_v
                     } else {
                         return false;
                     }
@@ -4403,22 +4706,139 @@ fn evaluate_window_functions(rows: &mut Vec<Row>, columns: &[String]) -> Result<
     Ok(())
 }
 
-fn project_row(row: &Row, requested_cols: &[String]) -> Result<Row> {
+/// Project a row without custom UDF registry (built-ins only)
+pub fn project_row(row: &Row, requested_cols: &[String]) -> Result<Row> {
+    project_row_with_udf(row, requested_cols, None)
+}
+
+/// Project a row with custom scalar UDF registry and standard SQL scalar functions
+pub fn project_row_with_udf(
+    row: &Row,
+    requested_cols: &[String],
+    udfs: Option<&crate::sql::udf::UdfRegistry>,
+) -> Result<Row> {
     let mut names = Vec::with_capacity(requested_cols.len());
     let mut vals = Vec::with_capacity(requested_cols.len());
     for col in requested_cols {
         let (expr, alias) = parse_col_and_alias(col);
-        let val = if let Some(tap_val) = try_eval_tap_function(row, expr)? {
-            tap_val
+        let val = if let Some(fn_val) = try_eval_scalar_expr(row, expr, udfs)? {
+            fn_val
         } else {
             row.get_field_or_json_path(expr)
                 .or_else(|| row.get_field_or_json_path(col))
+                .or_else(|| row.get_value(expr).cloned())
                 .unwrap_or(Value::Null)
         };
         names.push(alias.unwrap_or(expr).to_string());
         vals.push(val);
     }
     Ok(Row::new(names, vals))
+}
+
+fn split_func_args(inner: &str) -> Vec<&str> {
+    if inner.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut args = Vec::new();
+    let mut cur_start = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut bracket_depth: u32 = 0;
+
+    for (idx, ch) in inner.char_indices() {
+        match ch {
+            '\'' if !in_double_quote => in_single_quote = !in_single_quote,
+            '"' if !in_single_quote => in_double_quote = !in_double_quote,
+            '[' if !in_single_quote && !in_double_quote => bracket_depth += 1,
+            ']' if !in_single_quote && !in_double_quote => bracket_depth = bracket_depth.saturating_sub(1),
+            ',' if !in_single_quote && !in_double_quote && bracket_depth == 0 => {
+                args.push(inner[cur_start..idx].trim());
+                cur_start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    args.push(inner[cur_start..].trim());
+    args
+}
+
+fn eval_func_arg(row: &Row, raw: &str, udfs: Option<&crate::sql::udf::UdfRegistry>) -> Result<Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Value::Null);
+    }
+    if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+        || (trimmed.starts_with('"') && trimmed.ends_with('"'))
+    {
+        return Ok(Value::Text(strip_quotes(trimmed).to_string()));
+    }
+    let upper = trimmed.to_ascii_uppercase();
+    if upper == "NULL" {
+        return Ok(Value::Null);
+    }
+    if upper == "TRUE" {
+        return Ok(Value::Integer(1));
+    }
+    if upper == "FALSE" {
+        return Ok(Value::Integer(0));
+    }
+    if let Ok(i) = trimmed.parse::<i64>() {
+        return Ok(Value::Integer(i));
+    }
+    if let Ok(f) = trimmed.parse::<f64>() {
+        return Ok(Value::Real(f));
+    }
+    if trimmed.contains('(') && trimmed.ends_with(')') {
+        if let Some(val) = try_eval_scalar_expr(row, trimmed, udfs)? {
+            return Ok(val);
+        }
+    }
+    if let Some(val) = row.get_field_or_json_path(trimmed).or_else(|| row.get_value(trimmed).cloned()) {
+        return Ok(val);
+    }
+    Ok(Value::Text(trimmed.to_string()))
+}
+
+/// Try evaluating a scalar expression (built-in SQL function, custom UDF, or TAP function)
+pub fn try_eval_scalar_expr(
+    row: &Row,
+    expr: &str,
+    udfs: Option<&crate::sql::udf::UdfRegistry>,
+) -> Result<Option<Value>> {
+    let trimmed = expr.trim();
+    if !trimmed.contains('(') || !trimmed.ends_with(')') {
+        return Ok(None);
+    }
+
+    if let Some(tap_val) = try_eval_tap_function(row, trimmed)? {
+        return Ok(Some(tap_val));
+    }
+
+    let paren_idx = match trimmed.find('(') {
+        Some(idx) => idx,
+        None => return Ok(None),
+    };
+    let func_name = trimmed[..paren_idx].trim();
+    let inner = trimmed[paren_idx + 1..trimmed.len() - 1].trim();
+
+    let raw_args = split_func_args(inner);
+    let mut evaluated_args = Vec::with_capacity(raw_args.len());
+    for raw_arg in raw_args {
+        evaluated_args.push(eval_func_arg(row, raw_arg, udfs)?);
+    }
+
+    if let Some(registry) = udfs {
+        if let Some(res) = registry.try_call(func_name, &evaluated_args)? {
+            return Ok(Some(res));
+        }
+    }
+
+    let standard = crate::sql::udf::UdfRegistry::new();
+    if let Some(res) = standard.try_call(func_name, &evaluated_args)? {
+        return Ok(Some(res));
+    }
+
+    Ok(None)
 }
 
 fn try_eval_tap_function(row: &Row, expr: &str) -> Result<Option<Value>> {

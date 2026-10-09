@@ -144,6 +144,13 @@ pub enum WhereExpr {
         /// Whether the condition is negated (`NOT IN`)
         negated: bool,
     },
+    /// `[NOT] EXISTS (SELECT ...)`
+    Exists {
+        /// Inner SELECT subquery
+        subquery: Box<Statement>,
+        /// Whether the condition is negated (`NOT EXISTS`)
+        negated: bool,
+    },
 }
 
 impl WhereExpr {
@@ -210,6 +217,8 @@ pub enum Statement {
         columns: Vec<String>,
         /// Source table
         table: String,
+        /// Optional derived table subquery in FROM clause `(SELECT ...) AS alias`
+        from_subquery: Option<(Box<Statement>, String)>,
         /// Optional table JOIN
         join: Option<JoinClause>,
         /// Optional WHERE expression (supports AND, OR, IN, Subqueries)
@@ -372,6 +381,44 @@ pub enum Statement {
         table: String,
         /// New column definition
         column: ColumnDef,
+    },
+    /// ALTER TABLE \<table> RENAME TO \<new_name\>
+    AlterTableRenameTable {
+        /// Target table name
+        table: String,
+        /// New table name
+        new_name: String,
+    },
+    /// ALTER TABLE \<table> RENAME \[COLUMN\] \<old_name\> TO \<new_name\>
+    AlterTableRenameColumn {
+        /// Target table name
+        table: String,
+        /// Old column name
+        old_name: String,
+        /// New column name
+        new_name: String,
+    },
+    /// ALTER TABLE \<table> DROP \[COLUMN\] \<column\>
+    AlterTableDropColumn {
+        /// Target table name
+        table: String,
+        /// Column name to drop
+        column: String,
+    },
+    /// SAVEPOINT \<name\>
+    Savepoint {
+        /// Savepoint identifier
+        name: String,
+    },
+    /// ROLLBACK TO \[SAVEPOINT\] \<name\>
+    RollbackToSavepoint {
+        /// Savepoint identifier
+        name: String,
+    },
+    /// RELEASE \[SAVEPOINT\] \<name\>
+    ReleaseSavepoint {
+        /// Savepoint identifier
+        name: String,
     },
     /// CREATE VIEW \[IF NOT EXISTS\] \<name\> AS \<query\>
     CreateView {
@@ -601,6 +648,10 @@ pub fn tokens_to_sql(tokens: &[Token]) -> String {
             Token::Row => s.push_str("ROW"),
             Token::Algorithm => s.push_str("ALGORITHM"),
             Token::Pragma => s.push_str("PRAGMA"),
+            Token::Savepoint => s.push_str("SAVEPOINT"),
+            Token::Release => s.push_str("RELEASE"),
+            Token::Rename => s.push_str("RENAME"),
+            Token::To => s.push_str("TO"),
         }
     }
     s
@@ -640,6 +691,8 @@ pub fn parse_tokens(tokens: &[Token]) -> Result<Statement> {
         Token::Analyze => parse_analyze(tokens, &mut cursor),
         Token::With => parse_with_cte(tokens, &mut cursor),
         Token::Pragma => parse_pragma(tokens, &mut cursor),
+        Token::Savepoint => parse_savepoint(tokens, &mut cursor),
+        Token::Release => parse_release(tokens, &mut cursor),
         other => Err(Error::SqlSyntax(format!(
             "Unexpected statement starting with {other:?}"
         ))),
@@ -1252,6 +1305,23 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
             expect_token(tokens, cursor, &Token::CloseParen)?;
             format!("{func_name}({col}, {arg2})")
         }
+        Token::Ident(id) if *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::OpenParen => {
+            let func_name = id.clone();
+            *cursor += 2;
+            let mut args = Vec::new();
+            if !check_token(tokens, *cursor, &Token::CloseParen) {
+                while *cursor < tokens.len() {
+                    args.push(parse_func_arg_expr(tokens, cursor)?);
+                    if check_token(tokens, *cursor, &Token::Comma) {
+                        *cursor += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            expect_token(tokens, cursor, &Token::CloseParen)?;
+            format!("{func_name}({})", args.join(", "))
+        }
         _ => parse_column_ident(tokens, cursor)?,
     };
 
@@ -1274,6 +1344,63 @@ fn parse_column_ident(tokens: &[Token], cursor: &mut usize) -> Result<String> {
         base.push_str(&sub);
     }
     Ok(base)
+}
+
+fn parse_func_arg_expr(tokens: &[Token], cursor: &mut usize) -> Result<String> {
+    if *cursor >= tokens.len() {
+        return Err(Error::SqlSyntax("Unexpected end of function arguments".into()));
+    }
+    match &tokens[*cursor] {
+        Token::StringLit(s) => {
+            let res = format!("'{s}'");
+            *cursor += 1;
+            Ok(res)
+        }
+        Token::IntLit(n) => {
+            let res = n.to_string();
+            *cursor += 1;
+            Ok(res)
+        }
+        Token::FloatLit(f) => {
+            let res = f.to_string();
+            *cursor += 1;
+            Ok(res)
+        }
+        Token::Dash => {
+            *cursor += 1;
+            match get_token(tokens, cursor)? {
+                Token::IntLit(n) => Ok(format!("-{n}")),
+                Token::FloatLit(f) => Ok(format!("-{f}")),
+                other => Err(Error::SqlSyntax(format!("Expected number after '-', got {other:?}"))),
+            }
+        }
+        Token::Asterisk => {
+            *cursor += 1;
+            Ok("*".to_string())
+        }
+        Token::Null => {
+            *cursor += 1;
+            Ok("NULL".to_string())
+        }
+        Token::Ident(id) if *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::OpenParen => {
+            let func_name = id.clone();
+            *cursor += 2;
+            let mut args = Vec::new();
+            if !check_token(tokens, *cursor, &Token::CloseParen) {
+                while *cursor < tokens.len() {
+                    args.push(parse_func_arg_expr(tokens, cursor)?);
+                    if check_token(tokens, *cursor, &Token::Comma) {
+                        *cursor += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            expect_token(tokens, cursor, &Token::CloseParen)?;
+            Ok(format!("{func_name}({})", args.join(", ")))
+        }
+        _ => parse_column_ident(tokens, cursor),
+    }
 }
 
 fn parse_optional_returning(tokens: &[Token], cursor: &mut usize) -> Result<Option<Vec<String>>> {
@@ -1334,9 +1461,27 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 
     expect_token(tokens, cursor, &Token::From)?;
 
-    let table_name = match get_token(tokens, cursor)? {
-        Token::Ident(s) => s.clone(),
-        other => return Err(Error::SqlSyntax(format!("Expected table name, got {other:?}"))),
+    let (table_name, from_subquery) = if check_token(tokens, *cursor, &Token::OpenParen) {
+        *cursor += 1;
+        let subquery = parse_select(tokens, cursor)?;
+        expect_token(tokens, cursor, &Token::CloseParen)?;
+        if check_token(tokens, *cursor, &Token::As) {
+            *cursor += 1;
+        }
+        let alias = parse_identifier_or_keyword(tokens, cursor)?;
+        (alias.clone(), Some((Box::new(subquery), alias)))
+    } else {
+        let name = match get_token(tokens, cursor)? {
+            Token::Ident(s) => s.clone(),
+            other => return Err(Error::SqlSyntax(format!("Expected table name, got {other:?}"))),
+        };
+        if check_token(tokens, *cursor, &Token::As)
+            && !(*cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::Of)
+        {
+            *cursor += 1;
+            let _alias = parse_identifier_or_keyword(tokens, cursor)?;
+        }
+        (name, None)
     };
 
     // Optional JOIN clause: [INNER|LEFT|RIGHT] [OUTER] JOIN other_table ON left_col = right_col
@@ -1582,6 +1727,7 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         distinct,
         columns,
         table: table_name,
+        from_subquery,
         join,
         where_clause,
         group_by,
@@ -1653,15 +1799,58 @@ fn parse_alter(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     *cursor += 1; // consume ALTER
     expect_token(tokens, cursor, &Token::Table)?;
     let table_name = parse_identifier_or_keyword(tokens, cursor)?;
-    expect_token(tokens, cursor, &Token::Add)?;
-    if check_token(tokens, *cursor, &Token::Column) {
-        *cursor += 1; // optional COLUMN keyword
+    if check_token(tokens, *cursor, &Token::Add) {
+        *cursor += 1;
+        if check_token(tokens, *cursor, &Token::Column) {
+            *cursor += 1; // optional COLUMN keyword
+        }
+        let col = parse_column_def(tokens, cursor)?;
+        Ok(Statement::AlterTableAddColumn {
+            table: table_name,
+            column: col,
+        })
+    } else if check_token(tokens, *cursor, &Token::Rename) {
+        *cursor += 1; // consume RENAME
+        if check_token(tokens, *cursor, &Token::Column) {
+            *cursor += 1; // consume COLUMN
+            let old_col = parse_identifier_or_keyword(tokens, cursor)?;
+            expect_token(tokens, cursor, &Token::To)?;
+            let new_col = parse_identifier_or_keyword(tokens, cursor)?;
+            Ok(Statement::AlterTableRenameColumn {
+                table: table_name,
+                old_name: old_col,
+                new_name: new_col,
+            })
+        } else if check_token(tokens, *cursor, &Token::To) {
+            *cursor += 1; // consume TO
+            let new_table = parse_identifier_or_keyword(tokens, cursor)?;
+            Ok(Statement::AlterTableRenameTable {
+                table: table_name,
+                new_name: new_table,
+            })
+        } else {
+            let old_col = parse_identifier_or_keyword(tokens, cursor)?;
+            expect_token(tokens, cursor, &Token::To)?;
+            let new_col = parse_identifier_or_keyword(tokens, cursor)?;
+            Ok(Statement::AlterTableRenameColumn {
+                table: table_name,
+                old_name: old_col,
+                new_name: new_col,
+            })
+        }
+    } else if check_token(tokens, *cursor, &Token::Drop) {
+        *cursor += 1; // consume DROP
+        if check_token(tokens, *cursor, &Token::Column) {
+            *cursor += 1; // optional COLUMN keyword
+        }
+        let col = parse_identifier_or_keyword(tokens, cursor)?;
+        Ok(Statement::AlterTableDropColumn {
+            table: table_name,
+            column: col,
+        })
+    } else {
+        Err(Error::SqlSyntax("Expected ADD, RENAME, or DROP in ALTER TABLE statement".into()))
     }
-    let col = parse_column_def(tokens, cursor)?;
-    Ok(Statement::AlterTableAddColumn {
-        table: table_name,
-        column: col,
-    })
 }
 
 fn parse_create_view(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
@@ -1758,10 +1947,33 @@ fn parse_commit(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 
 fn parse_rollback(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     *cursor += 1; // consume ROLLBACK
+    if check_token(tokens, *cursor, &Token::To) {
+        *cursor += 1; // consume TO
+        if check_token(tokens, *cursor, &Token::Savepoint) {
+            *cursor += 1; // optional SAVEPOINT keyword
+        }
+        let name = parse_identifier_or_keyword(tokens, cursor)?;
+        return Ok(Statement::RollbackToSavepoint { name });
+    }
     if check_token(tokens, *cursor, &Token::Transaction) {
         *cursor += 1;
     }
     Ok(Statement::RollbackTransaction)
+}
+
+fn parse_savepoint(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
+    *cursor += 1; // consume SAVEPOINT
+    let name = parse_identifier_or_keyword(tokens, cursor)?;
+    Ok(Statement::Savepoint { name })
+}
+
+fn parse_release(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
+    *cursor += 1; // consume RELEASE
+    if check_token(tokens, *cursor, &Token::Savepoint) {
+        *cursor += 1; // optional SAVEPOINT keyword
+    }
+    let name = parse_identifier_or_keyword(tokens, cursor)?;
+    Ok(Statement::ReleaseSavepoint { name })
 }
 
 fn parse_create_index(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
@@ -1830,6 +2042,28 @@ fn parse_primary_where_expr(tokens: &[Token], cursor: &mut usize) -> Result<Wher
         let inner = parse_or_expr(tokens, cursor)?;
         expect_token(tokens, cursor, &Token::CloseParen)?;
         return Ok(inner);
+    }
+
+    if check_token(tokens, *cursor, &Token::Exists) {
+        *cursor += 1;
+        expect_token(tokens, cursor, &Token::OpenParen)?;
+        let subquery = parse_select(tokens, cursor)?;
+        expect_token(tokens, cursor, &Token::CloseParen)?;
+        return Ok(WhereExpr::Exists {
+            subquery: Box::new(subquery),
+            negated: false,
+        });
+    }
+
+    if check_token(tokens, *cursor, &Token::Not) && *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::Exists {
+        *cursor += 2;
+        expect_token(tokens, cursor, &Token::OpenParen)?;
+        let subquery = parse_select(tokens, cursor)?;
+        expect_token(tokens, cursor, &Token::CloseParen)?;
+        return Ok(WhereExpr::Exists {
+            subquery: Box::new(subquery),
+            negated: true,
+        });
     }
 
     let col_name = parse_column_expression(tokens, cursor)?;
@@ -2099,6 +2333,8 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                 && tokens[*cursor + 1] == Token::GreaterThan
             {
                 *cursor += 2;
+            } else if check_token(tokens, *cursor, &Token::To) {
+                *cursor += 1;
             } else if let Ok(Token::Ident(to_kw)) = get_token_peek(tokens, *cursor) {
                 if to_kw.eq_ignore_ascii_case("TO") {
                     *cursor += 1;
@@ -2226,12 +2462,12 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             };
 
             // Optional TO keyword
-            if let Ok(Token::Ident(to_kw)) = get_token_peek(tokens, *cursor) {
+            if check_token(tokens, *cursor, &Token::To) || check_token(tokens, *cursor, &Token::Into) {
+                *cursor += 1;
+            } else if let Ok(Token::Ident(to_kw)) = get_token_peek(tokens, *cursor) {
                 if to_kw.eq_ignore_ascii_case("TO") {
                     *cursor += 1;
                 }
-            } else if check_token(tokens, *cursor, &Token::Into) {
-                *cursor += 1;
             }
 
             let end_id = match get_token(tokens, cursor)? {

@@ -39,12 +39,15 @@ pub use memory::{
 };
 pub use pager::{
     DatabaseHeader, MockRemoteRangeStorage, PageId, Pager, RemotePager, RemoteRangeReader,
-    RemoteStorageAdapter, S3StorageConfig, DEFAULT_PAGE_SIZE,
+    RemoteStorageAdapter, S3StorageConfig, WalReplicationChunk, WalReplicationFrame,
+    WalReplicationReceiver, WalReplicationStream, DEFAULT_PAGE_SIZE,
 };
 #[cfg(feature = "cloud-s3")]
 pub use pager::CloudS3RemoteStorage;
 pub use realtime::{ChangeEvent, ChangeOp, RealtimeBus};
-pub use sql::{bind_parameters, parse_sql, parse_tokens, SQLExecutor, Statement};
+pub use sql::{
+    bind_parameters, parse_sql, parse_tokens, ScalarUdf, SQLExecutor, Statement, UdfRegistry,
+};
 pub use tap::{
     BitNetBlock, BitNetLinear, BitNetRmsNorm, ClassificationResult, RouteResult, ScoreResult,
     TapConfig, TapDeepEngine, TapEngine, TapInferenceEngine, TapRuntime, TapTokenizer, TapWeights,
@@ -362,6 +365,61 @@ impl Connection {
     /// Access the Tap Sub-Millisecond Cognitive Decision Engine
     pub fn tap(&self) -> &'static TapEngine {
         crate::tap::sql_bridge::get_global_tap_engine()
+    }
+
+    /// Register a custom scalar UDF closure callable directly in SQL queries
+    pub fn register_scalar_function<F>(&self, name: &str, func: F)
+    where
+        F: Fn(&[Value]) -> Result<Value> + Send + Sync + 'static,
+    {
+        self.executor.write().register_scalar_function(name, func);
+    }
+
+    /// Project a relational SQL table as graph nodes into the Knowledge Graph
+    pub fn project_table_as_nodes(
+        &self,
+        table_name: &str,
+        id_col: &str,
+        label_col: Option<&str>,
+        prop_cols: Option<&[&str]>,
+    ) -> Result<usize> {
+        let mut pager = self.pager.write();
+        let mut executor = self.executor.write();
+        executor.project_table_as_nodes(&mut pager, table_name, id_col, label_col, prop_cols)
+    }
+
+    /// Project a relational SQL table as graph edges into the Knowledge Graph
+    pub fn project_table_as_edges(
+        &self,
+        table_name: &str,
+        from_col: &str,
+        to_col: &str,
+        label_col: Option<&str>,
+        weight_col: Option<&str>,
+        prop_cols: Option<&[&str]>,
+    ) -> Result<usize> {
+        let mut pager = self.pager.write();
+        let mut executor = self.executor.write();
+        executor.project_table_as_edges(&mut pager, table_name, from_col, to_col, label_col, weight_col, prop_cols)
+    }
+
+    /// Export a WAL replication chunk containing committed/cached frames
+    pub fn export_replication_chunk(&self) -> Result<WalReplicationChunk> {
+        let pager = self.pager.read();
+        WalReplicationStream::create_chunk(&pager, 1)
+    }
+
+    /// Apply an incoming WAL replication chunk into this replica database
+    pub fn apply_replication_chunk(&self, chunk: &WalReplicationChunk) -> Result<usize> {
+        let mut pager = self.pager.write();
+        let affected = WalReplicationReceiver::apply_to_pager(&mut pager, chunk)?;
+        self.executor.write().reload_from_pager(&mut pager)?;
+        Ok(affected)
+    }
+
+    /// Return active WAL sequence number
+    pub fn wal_sequence(&self) -> u32 {
+        self.pager.read().header().wal_sequence
     }
 
     // --- High-Performance Graph API ---
