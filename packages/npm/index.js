@@ -104,11 +104,11 @@ class TapirusDatabase {
     this.graphEdges = [];
   }
 
-  static async open(path, options = {}) {
+  static open(path, options = {}) {
     return new TapirusDatabase(path, options);
   }
 
-  static async openInMemory(options = {}) {
+  static openInMemory(options = {}) {
     return TapirusDatabase.open(':memory:', options);
   }
 
@@ -116,7 +116,7 @@ class TapirusDatabase {
     return '1.0.1';
   }
 
-  async execute(sql, params = []) {
+  execute(sql, params = []) {
     this._assertOpen();
     const trimmed = sql.trim().replace(/;+\s*$/, '');
     const upper = trimmed.toUpperCase();
@@ -263,7 +263,7 @@ class TapirusDatabase {
     return 0;
   }
 
-  async query(sql, params = []) {
+  query(sql, params = []) {
     this._assertOpen();
     const trimmed = sql.trim().replace(/;+\s*$/, '');
     const upper = trimmed.toUpperCase();
@@ -295,13 +295,14 @@ class TapirusDatabase {
       }
 
       // 2. Standard SELECT
-      const selMatch = trimmed.match(/SELECT\s+(.+?)\s+FROM\s+([a-zA-Z0-9_]+)(?:\s+WHERE\s+(.+?))?(?:\s+ORDER\s+BY\s+(.+?))?(?:\s+LIMIT\s+([0-9]+))?$/is);
+      const selMatch = trimmed.match(/SELECT\s+(.+?)\s+FROM\s+([a-zA-Z0-9_]+)(?:\s+WHERE\s+(.+?))?(?:\s+ORDER\s+BY\s+([a-zA-Z0-9_]+(?:\s+(?:ASC|DESC))?))?(?:\s+LIMIT\s+([0-9]+))?$/is);
       if (selMatch) {
+        const colClause = selMatch[1];
         const tblName = selMatch[2].toLowerCase();
         const table = this.memTables.get(tblName);
         if (!table) return [];
 
-        let rows = [...table.rows];
+        let rows = table.rows.map(r => ({ ...r }));
         const whereClause = selMatch[3];
         if (whereClause) {
           const parts = whereClause.split('=').map(s => s.trim());
@@ -310,6 +311,42 @@ class TapirusDatabase {
             const targetVal = cleanVal(wVal);
             rows = rows.filter(r => r[wCol] == targetVal);
           }
+        }
+
+        // Window Function support, e.g., ROW_NUMBER() OVER (ORDER BY score DESC) as rank
+        const windowMatch = colClause.match(/ROW_NUMBER\(\)\s*OVER\s*\((?:ORDER\s+BY\s+([a-zA-Z0-9_]+)(?:\s+(ASC|DESC))?)?\)\s*(?:AS\s+)?([a-zA-Z0-9_]+)?/i);
+        if (windowMatch) {
+          const wOrderCol = windowMatch[1];
+          const wOrderDir = (windowMatch[2] || 'ASC').toUpperCase();
+          const wRankAlias = windowMatch[3] || 'rank';
+
+          if (wOrderCol) {
+            rows.sort((a, b) => {
+              const va = a[wOrderCol];
+              const vb = b[wOrderCol];
+              if (va < vb) return wOrderDir === 'DESC' ? 1 : -1;
+              if (va > vb) return wOrderDir === 'DESC' ? -1 : 1;
+              return 0;
+            });
+          }
+
+          rows.forEach((r, idx) => {
+            r[wRankAlias] = idx + 1;
+          });
+        }
+
+        // ORDER BY clause
+        const orderByClause = selMatch[4];
+        if (orderByClause) {
+          const [oCol, oDir] = orderByClause.trim().split(/\s+/);
+          const isDesc = oDir && oDir.toUpperCase() === 'DESC';
+          rows.sort((a, b) => {
+            const va = a[oCol];
+            const vb = b[oCol];
+            if (va < vb) return isDesc ? 1 : -1;
+            if (va > vb) return isDesc ? -1 : 1;
+            return 0;
+          });
         }
 
         const limit = selMatch[5] ? parseInt(selMatch[5], 10) : null;
@@ -324,7 +361,7 @@ class TapirusDatabase {
     return [];
   }
 
-  async searchVector(vector, limit = 5) {
+  searchVector(vector, limit = 5) {
     this._assertOpen();
     for (const table of this.memTables.values()) {
       for (const row of table.rows) {
@@ -338,7 +375,7 @@ class TapirusDatabase {
     return [];
   }
 
-  async hybridSearch({ queryText, queryVector = null, limit = 5 }) {
+  hybridSearch({ queryText, queryVector = null, limit = 5 }) {
     this._assertOpen();
     const textLower = (queryText || '').toLowerCase();
     const results = [];
@@ -367,7 +404,7 @@ class TapirusDatabase {
       .map(item => item.row);
   }
 
-  async remember(content, importance = 0.5, tags = []) {
+  remember(content, importance = 0.5, tags = []) {
     this._assertOpen();
     const id = Date.now() + this.memories.length;
     this.memories.push({
@@ -380,7 +417,7 @@ class TapirusDatabase {
     return id;
   }
 
-  async recall(query, limit = 5) {
+  recall(query, limit = 5) {
     this._assertOpen();
     const qLower = (query || '').toLowerCase();
     const tokens = qLower.split(/\s+/).filter(t => t.length > 2);
@@ -403,8 +440,8 @@ class TapirusDatabase {
       .map(item => item.memory);
   }
 
-  async recallPrompt(query, limit = 5) {
-    const list = await this.recall(query, limit);
+  recallPrompt(query, limit = 5) {
+    const list = this.recall(query, limit);
     if (list.length === 0) return '';
     const lines = ['### [Retrieved Memory Context]:'];
     list.forEach(m => {
@@ -413,12 +450,12 @@ class TapirusDatabase {
     return lines.join('\n');
   }
 
-  async graphRagQuery(params) {
+  graphRagQuery(params) {
     this._assertOpen();
     const query = typeof params === 'string' ? params : (params.query || '');
     const limit = (typeof params === 'object' && params.limit) || 5;
 
-    const matchedMemories = await this.recall(query, limit);
+    const matchedMemories = this.recall(query, limit);
     const facts = matchedMemories.map(m => `- Fact: ${m.content}`).join('\n');
 
     return {
@@ -442,7 +479,7 @@ class TapirusDatabase {
     return new SubscriptionHandle(this.eventBus, table, listener);
   }
 
-  async vacuumInto(_targetPath) {
+  vacuumInto(_targetPath) {
     this._assertOpen();
     return true;
   }
