@@ -50,7 +50,23 @@ async function runTests() {
   assert.strictEqual(ragResult.query, 'Safe-Rust');
   assert.ok(ragResult.results.length > 0, 'Should return GraphRAG entity results');
 
-  // 10. VACUUM INTO
+  // 10. TAP Decision Core (SQL Scalar & Direct Methods)
+  const tapScalarClassify = await db.query("SELECT TAP_CLASSIFY('refund broken item on delivery', '[\"refund\", \"sales\", \"tech\"]') AS cat;");
+  assert.strictEqual(tapScalarClassify[0].cat, 'refund');
+
+  const tapScalarVerifyNeg = await db.query("SELECT TAP_VERIFY('pengguna tidak bersetuju dengan syarat', 'pengguna bersetuju') AS verified;");
+  assert.strictEqual(tapScalarVerifyNeg[0].verified, 0, 'Negation should yield false');
+
+  const tapScalarVerifyPos = await db.query("SELECT TAP_VERIFY('pengguna bersetuju dengan syarat', 'pengguna bersetuju') AS verified;");
+  assert.strictEqual(tapScalarVerifyPos[0].verified, 1, 'Affirmation should yield true');
+
+  const tapDirectScore = db.tapScore('critical emergency server outage', 'emergency');
+  assert.ok(tapDirectScore > 0.5, 'Score should reflect alignment');
+
+  const tapDirectRoute = db.tapRoute('fraudulent account activity block user', ['block', 'allow', 'review']);
+  assert.strictEqual(tapDirectRoute, 'block');
+
+  // 11. VACUUM INTO
   await db.vacuumInto('backup.tapir');
 
   db.close();

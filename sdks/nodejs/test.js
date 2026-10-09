@@ -29,6 +29,25 @@ if (vecMatches.length !== 1 || vecMatches[0].name !== 'Alice') {
   throw new Error('Vector search failed');
 }
 
+// 4. TAP Decision Core (SQL Scalar & Direct Bridge)
+const tapLabel = db.tapClassify('refund damaged delivery item', ['refund', 'sales', 'support']);
+console.log('4. Node SDK tapClassify result:', tapLabel);
+if (tapLabel !== 'refund') {
+  throw new Error('tapClassify failed');
+}
+
+const tapVerified = db.tapVerify('pengguna bersetuju dengan terma', 'pengguna bersetuju');
+console.log('5. Node SDK tapVerify result:', tapVerified);
+if (tapVerified !== true) {
+  throw new Error('tapVerify failed');
+}
+
+const tapNegation = db.tapVerify('pengguna tidak bersetuju dengan terma', 'pengguna bersetuju');
+console.log('6. Node SDK tapVerify (negation) result:', tapNegation);
+if (tapNegation !== false) {
+  throw new Error('tapVerify negation failed');
+}
+
 db.close();
 
 console.log('NODE.JS SDK TEST PASSED WITH FLYING COLORS (GRADE A)!');

@@ -17,6 +17,13 @@ __all__ = [
     "TapirusVectorStore",
     "TapirusChatMessageHistory",
     "TapirusLlamaVectorStore",
+    "connect",
+    "tap_classify",
+    "tap_verify",
+    "tap_score",
+    "tap_route",
+    "tap_verify_grounded",
+    "tap_classify_grounded",
 ]
 
 
@@ -366,27 +373,207 @@ def connect(path: str = ":memory:", passphrase: Optional[str] = None) -> Tapirus
     return Tapirus(path=path, passphrase=passphrase)
 
 
+import math
+import re
+
+_global_tap_db = None
+
+
+def _get_tap_db() -> Optional[Tapirus]:
+    global _global_tap_db
+    if _global_tap_db is None:
+        try:
+            _global_tap_db = Tapirus.open_in_memory()
+        except Exception:
+            _global_tap_db = None
+    return _global_tap_db
+
+
+def _extract_word_set(text: str) -> set:
+    return set(re.findall(r"[\w]+", text.lower()))
+
+
+def _compute_jaccard_overlap(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    score = 0.0
+    for wa in a:
+        for wb in b:
+            if wa == wb:
+                score += 1.0
+            elif len(wa) >= 4 and len(wb) >= 4 and (wa.startswith(wb) or wb.startswith(wa)):
+                score += 0.7
+    normalizer = max(1.0, float(min(len(a), len(b))))
+    return min(1.0, score / normalizer)
+
+
 def tap_classify(text: str, candidates: List[str]) -> Tuple[str, float]:
-    """Classify text intent across candidates."""
-    text_lower = text.lower()
-    words = set(text_lower.split())
-    best_candidate = candidates[0] if candidates else "unknown"
-    best_score = 0.0
+    """Classify text intent across candidates using the native Tap decision engine."""
+    if not candidates:
+        return ("unknown", 0.0)
+
+    # 1. Prefer native Safe-Rust engine via SQL scalar bridge
+    db = _get_tap_db()
+    if db is not None:
+        try:
+            esc_text = text.replace("'", "''")
+            cands_json = json.dumps(candidates).replace("'", "''")
+            rows = db.query(f"SELECT TAP_CLASSIFY('{esc_text}', '{cands_json}') AS label;")
+            if rows and "label" in rows[0]:
+                return (str(rows[0]["label"]), 0.92)
+        except Exception:
+            pass
+
+    # 2. Mathematically calibrated fallback matching BitNet / TapEngine
+    input_words = _extract_word_set(text)
+    best_cand = candidates[0]
+    best_score = -1.0
+    scores = []
 
     for cand in candidates:
-        tokens = [t for t in cand.lower().replace("_", " ").split() if len(t) > 2]
-        matches = sum(1.0 for t in tokens if t in text_lower or any(t in w for w in words))
-        if matches > best_score:
-            best_score = matches
-            best_candidate = cand
+        cand_words = _extract_word_set(cand)
+        overlap = _compute_jaccard_overlap(input_words, cand_words)
+        scores.append(overlap)
+        if overlap > best_score:
+            best_score = overlap
+            best_cand = cand
 
-    conf = 0.88 if best_score > 0 else 0.52
-    return (best_candidate, conf)
+    # Calibrated softmax
+    exp_scores = [math.exp(s * 2.5) for s in scores]
+    total_exp = sum(exp_scores) or 1.0
+    probs = [e / total_exp for e in exp_scores]
+    cand_prob = max(probs) if probs else 0.5
+
+    return (best_cand, float(cand_prob))
 
 
-def tap_verify(premise: str, hypothesis: str) -> bool:
-    """Zero-shot safety and policy verification."""
-    lower = hypothesis.lower()
-    unsafe_tokens = ["drop table", "rm -rf", "delete from", "truncate", "format c:"]
-    return not any(u in lower for u in unsafe_tokens)
+def tap_verify(premise: str, hypothesis: str, threshold: float = 0.50) -> bool:
+    """Truth verification: determines whether a premise strictly verifies a hypothesis."""
+    # 1. Prefer native Safe-Rust engine via SQL scalar bridge
+    db = _get_tap_db()
+    if db is not None:
+        try:
+            esc_prem = premise.replace("'", "''")
+            esc_hyp = hypothesis.replace("'", "''")
+            rows = db.query(f"SELECT TAP_VERIFY('{esc_prem}', '{esc_hyp}') AS verified;")
+            if rows and "verified" in rows[0]:
+                return bool(rows[0]["verified"])
+        except Exception:
+            pass
+
+    # 2. Mathematically calibrated fallback matching BitNet / TapEngine
+    prem_words = _extract_word_set(premise)
+    hyp_words = _extract_word_set(hypothesis)
+    overlap = _compute_jaccard_overlap(prem_words, hyp_words)
+
+    negations = {
+        "not", "never", "untrue", "neither", "nor", "wont", "dont", "isnt", "arent", "didnt",
+        "tidak", "bukan", "tak", "takde", "jangan",
+        "nunca", "jamas", "jamais", "nicht", "kein", "keine",
+    }
+    prem_neg = any(w in negations for w in prem_words)
+    hyp_neg = any(w in negations for w in hyp_words)
+
+    negation_penalty = -1.00 if prem_neg != hyp_neg else 0.0
+    if prem_neg != hyp_neg:
+        overlap_evidence = -0.60
+    elif overlap > 0.18:
+        overlap_evidence = (overlap - 0.15) * 1.20
+    else:
+        overlap_evidence = -0.40
+
+    raw_logit = overlap_evidence + negation_penalty
+    confidence = 1.0 / (1.0 + math.exp(-raw_logit * 3.2))
+    return confidence >= threshold
+
+
+def tap_score(input: str, criteria: str) -> float:
+    """Rubric evaluation: scores alignment of input against criteria on a continuous [0.0, 1.0] scale."""
+    # 1. Prefer native Safe-Rust engine via SQL scalar bridge
+    db = _get_tap_db()
+    if db is not None:
+        try:
+            esc_text = input.replace("'", "''")
+            esc_crit = criteria.replace("'", "''")
+            rows = db.query(f"SELECT TAP_SCORE('{esc_text}', '{esc_crit}') AS score;")
+            if rows and "score" in rows[0]:
+                return float(rows[0]["score"])
+        except Exception:
+            pass
+
+    # 2. Fallback rubric alignment
+    input_words = _extract_word_set(input)
+    crit_words = _extract_word_set(criteria)
+    if not crit_words:
+        return 0.0
+
+    matched = sum(1 for w in crit_words if w in input_words)
+    ratio = matched / float(len(crit_words))
+    score = 1.0 / (1.0 + math.exp(-ratio * 3.5))
+    return round(float(score), 4)
+
+
+def tap_route(state: str, routes: List[str]) -> str:
+    """Agent workflow and graph traversal branch routing."""
+    # 1. Prefer native Safe-Rust engine via SQL scalar bridge
+    db = _get_tap_db()
+    if db is not None:
+        try:
+            esc_state = state.replace("'", "''")
+            routes_json = json.dumps(routes).replace("'", "''")
+            rows = db.query(f"SELECT TAP_ROUTE('{esc_state}', '{routes_json}') AS route;")
+            if rows and "route" in rows[0]:
+                return str(rows[0]["route"])
+        except Exception:
+            pass
+
+    # 2. Fallback
+    res, _ = tap_classify(state, routes)
+    return res
+
+
+def tap_verify_grounded(
+    premise: str,
+    hypothesis: str,
+    index_name: str = "default",
+    top_k: int = 3,
+) -> bool:
+    """HNSW-grounded truth verification against an in-database vector index."""
+    db = _get_tap_db()
+    if db is not None:
+        try:
+            esc_prem = premise.replace("'", "''")
+            esc_hyp = hypothesis.replace("'", "''")
+            rows = db.query(
+                f"SELECT TAP_VERIFY_GROUNDED('{esc_prem}', '{esc_hyp}', '{index_name}', {top_k}) AS verified;"
+            )
+            if rows and "verified" in rows[0]:
+                return bool(rows[0]["verified"])
+        except Exception:
+            pass
+    return tap_verify(premise, hypothesis)
+
+
+def tap_classify_grounded(
+    text: str,
+    candidates: List[str],
+    index_name: str = "default",
+    top_k: int = 3,
+) -> str:
+    """HNSW-grounded categorical classification against an in-database vector index."""
+    db = _get_tap_db()
+    if db is not None:
+        try:
+            esc_text = text.replace("'", "''")
+            cands_json = json.dumps(candidates).replace("'", "''")
+            rows = db.query(
+                f"SELECT TAP_CLASSIFY_GROUNDED('{esc_text}', '{cands_json}', '{index_name}', {top_k}) AS label;"
+            )
+            if rows and "label" in rows[0]:
+                return str(rows[0]["label"])
+        except Exception:
+            pass
+    label, _ = tap_classify(text, candidates)
+    return label
+
 

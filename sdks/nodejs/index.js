@@ -61,8 +61,44 @@ class TapirusConnectionWrapper {
     return this.query(sql);
   }
 
-  graphAlgorithm(algo, _options = {}) {
-    return { algorithm: algo, status: 'converged', iterations: 20 };
+  tapClassify(text, candidates) {
+    if (this._db.tapClassify) {
+      return this._db.tapClassify(text, candidates);
+    }
+    const candsJson = JSON.stringify(candidates).replace(/'/g, "''");
+    const escapedText = text.replace(/'/g, "''");
+    const rows = this.query(`SELECT TAP_CLASSIFY('${escapedText}', '${candsJson}') AS label;`);
+    return rows && rows[0] ? rows[0].label : (candidates[0] || 'unknown');
+  }
+
+  tapVerify(premise, hypothesis, threshold = 0.5) {
+    if (this._db.tapVerify) {
+      return this._db.tapVerify(premise, hypothesis, threshold);
+    }
+    const escP = premise.replace(/'/g, "''");
+    const escH = hypothesis.replace(/'/g, "''");
+    const rows = this.query(`SELECT TAP_VERIFY('${escP}', '${escH}') AS verified;`);
+    return rows && rows[0] && rows[0].verified === 1;
+  }
+
+  tapScore(text, criteria) {
+    if (this._db.tapScore) {
+      return this._db.tapScore(text, criteria);
+    }
+    const escT = text.replace(/'/g, "''");
+    const escC = criteria.replace(/'/g, "''");
+    const rows = this.query(`SELECT TAP_SCORE('${escT}', '${escC}') AS score;`);
+    return rows && rows[0] ? rows[0].score : 0.0;
+  }
+
+  tapRoute(state, routes) {
+    if (this._db.tapRoute) {
+      return this._db.tapRoute(state, routes);
+    }
+    const escS = state.replace(/'/g, "''");
+    const routesJson = JSON.stringify(routes).replace(/'/g, "''");
+    const rows = this.query(`SELECT TAP_ROUTE('${escS}', '${routesJson}') AS route;`);
+    return rows && rows[0] ? rows[0].route : (routes[0] || 'default');
   }
 
   close() {

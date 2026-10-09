@@ -19,6 +19,135 @@ function cosineSimilarity(a, b) {
   return denom === 0 ? 0 : dot / denom;
 }
 
+function extractWordSet(text) {
+  return new Set(
+    (text || '')
+      .toLowerCase()
+      .split(/[^a-zA-Z0-9_\u00C0-\u017F]+/)
+      .filter(s => s.length > 0)
+  );
+}
+
+function computeJaccardOverlap(a, b) {
+  if (a.size === 0 || b.size === 0) return 0;
+  let score = 0;
+  for (const wa of a) {
+    for (const wb of b) {
+      if (wa === wb) {
+        score += 1.0;
+      } else if (wa.length >= 4 && wb.length >= 4 && (wa.startsWith(wb) || wb.startsWith(wa))) {
+        score += 0.7;
+      }
+    }
+  }
+  const normalizer = Math.max(1.0, Math.min(a.size, b.size));
+  return Math.min(1.0, score / normalizer);
+}
+
+function parseCandidateList(raw) {
+  let trimmed = (raw || '').trim();
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    trimmed = trimmed.slice(1, -1).trim();
+  }
+  return trimmed
+    .split(',')
+    .map(s => s.trim().replace(/^['"\[]+|['"\]]+$/g, ''))
+    .filter(s => s.length > 0);
+}
+
+function evalTapClassify(input, candidatesRaw) {
+  const candidates = Array.isArray(candidatesRaw) ? candidatesRaw : parseCandidateList(candidatesRaw);
+  if (candidates.length === 0) return 'unknown';
+  const inputWords = extractWordSet(input);
+  let bestCand = candidates[0];
+  let maxScore = -1;
+  for (const cand of candidates) {
+    const candWords = extractWordSet(cand);
+    const overlap = computeJaccardOverlap(inputWords, candWords);
+    if (overlap > maxScore) {
+      maxScore = overlap;
+      bestCand = cand;
+    }
+  }
+  return bestCand;
+}
+
+function evalTapVerify(premise, hypothesis, threshold = 0.5) {
+  const premWords = extractWordSet(premise);
+  const hypWords = extractWordSet(hypothesis);
+  const overlap = computeJaccardOverlap(premWords, hypWords);
+  const negations = [
+    'not', 'never', 'untrue', 'neither', 'nor', 'wont', 'dont', 'isnt', 'arent', 'didnt',
+    'tidak', 'bukan', 'tak', 'takde', 'jangan',
+    'nunca', 'jamas', 'jamais', 'nicht', 'kein', 'keine'
+  ];
+  let premNeg = false;
+  let hypNeg = false;
+  for (const n of negations) {
+    if (premWords.has(n)) premNeg = true;
+    if (hypWords.has(n)) hypNeg = true;
+  }
+  const negationPenalty = premNeg !== hypNeg ? -1.0 : 0.0;
+  const overlapEvidence = premNeg !== hypNeg ? -0.60 : (overlap > 0.18 ? (overlap - 0.15) * 1.2 : -0.40);
+  const rawLogit = overlapEvidence + negationPenalty;
+  const confidence = 1.0 / (1.0 + Math.exp(-rawLogit * 3.2));
+  return confidence >= threshold ? 1 : 0;
+}
+
+function evalTapScore(input, criteria) {
+  const inputWords = extractWordSet(input);
+  const critWords = extractWordSet(criteria);
+  if (critWords.size === 0) return 0.0;
+  let matches = 0;
+  for (const w of critWords) {
+    if (inputWords.has(w)) matches++;
+  }
+  const ratio = matches / critWords.size;
+  const raw = ratio * 1.5;
+  const score = 1.0 / (1.0 + Math.exp(-raw * 3.5));
+  return parseFloat(score.toFixed(4));
+}
+
+function evalTapRoute(state, routesRaw) {
+  return evalTapClassify(state, routesRaw);
+}
+
+function parseFunctionArgs(raw) {
+  const args = [];
+  let current = '';
+  let inString = false;
+  let inBracket = false;
+  let quoteChar = '';
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if ((ch === "'" || ch === '"') && !inBracket) {
+      if (!inString) {
+        inString = true;
+        quoteChar = ch;
+      } else if (quoteChar === ch) {
+        inString = false;
+      } else {
+        current += ch;
+      }
+    } else if (ch === '[' && !inString) {
+      inBracket = true;
+      current += ch;
+    } else if (ch === ']' && !inString) {
+      inBracket = false;
+      current += ch;
+    } else if (ch === ',' && !inString && !inBracket) {
+      args.push(cleanVal(current));
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim().length > 0) {
+    args.push(cleanVal(current));
+  }
+  return args;
+}
+
 function parseSqlValues(valStr) {
   const result = [];
   let current = '';
@@ -270,6 +399,27 @@ class TapirusDatabase {
 
     // SELECT
     if (upper.startsWith('SELECT')) {
+      // 0. Standalone TAP scalar query (without FROM)
+      if (!upper.includes(' FROM ')) {
+        const tapMatch = trimmed.match(/^SELECT\s+(TAP_[A-Z_]+)\s*\((.+)\)(?:\s+AS\s+([a-zA-Z0-9_]+))?$/i);
+        if (tapMatch) {
+          const fnName = tapMatch[1].toUpperCase();
+          const args = parseFunctionArgs(tapMatch[2]);
+          const alias = tapMatch[3] || fnName.toLowerCase();
+          let val = null;
+          if (fnName === 'TAP_CLASSIFY' || fnName === 'TAP_CLASSIFY_GROUNDED') {
+            val = evalTapClassify(args[0], args[1]);
+          } else if (fnName === 'TAP_VERIFY' || fnName === 'TAP_VERIFY_GROUNDED') {
+            val = evalTapVerify(args[0], args[1]);
+          } else if (fnName === 'TAP_SCORE') {
+            val = evalTapScore(args[0], args[1]);
+          } else if (fnName === 'TAP_ROUTE') {
+            val = evalTapRoute(args[0], args[1]);
+          }
+          return [{ [alias]: val }];
+        }
+      }
+
       // 1. Vector Search: SELECT ... FROM <table> VECTOR NEAR <col> = [...] TOP <k>
       const vecMatch = trimmed.match(/SELECT\s+(.+?)\s+FROM\s+([a-zA-Z0-9_]+)\s+VECTOR\s+NEAR\s+([a-zA-Z0-9_]+)\s*=\s*(\[[^\]]+\])\s+TOP\s+([0-9]+)/i);
       if (vecMatch) {
@@ -303,6 +453,27 @@ class TapirusDatabase {
         if (!table) return [];
 
         let rows = table.rows.map(r => ({ ...r }));
+
+        // Scalar TAP column projection support in table query
+        const tapColMatch = colClause.match(/(TAP_[A-Z_]+)\s*\(([^,]+),\s*(.+?)\)\s*(?:AS\s+([a-zA-Z0-9_]+))?/i);
+        if (tapColMatch) {
+          const fnName = tapColMatch[1].toUpperCase();
+          const colName = tapColMatch[2].trim();
+          const arg2 = cleanVal(tapColMatch[3].trim());
+          const alias = tapColMatch[4] || fnName.toLowerCase();
+          rows.forEach(r => {
+            const inputVal = r[colName] !== undefined ? String(r[colName]) : '';
+            if (fnName === 'TAP_CLASSIFY' || fnName === 'TAP_CLASSIFY_GROUNDED') {
+              r[alias] = evalTapClassify(inputVal, arg2);
+            } else if (fnName === 'TAP_VERIFY' || fnName === 'TAP_VERIFY_GROUNDED') {
+              r[alias] = evalTapVerify(inputVal, arg2);
+            } else if (fnName === 'TAP_SCORE') {
+              r[alias] = evalTapScore(inputVal, arg2);
+            } else if (fnName === 'TAP_ROUTE') {
+              r[alias] = evalTapRoute(inputVal, arg2);
+            }
+          });
+        }
         const whereClause = selMatch[3];
         if (whereClause) {
           const parts = whereClause.split('=').map(s => s.trim());
@@ -493,6 +664,22 @@ class TapirusDatabase {
     if (!this.isOpen) {
       throw new Error('Database is closed');
     }
+  }
+
+  tapClassify(text, candidates) {
+    return evalTapClassify(text, candidates);
+  }
+
+  tapVerify(premise, hypothesis, threshold = 0.5) {
+    return evalTapVerify(premise, hypothesis, threshold) === 1;
+  }
+
+  tapScore(text, criteria) {
+    return evalTapScore(text, criteria);
+  }
+
+  tapRoute(state, routes) {
+    return evalTapRoute(state, routes);
   }
 
   close() {
