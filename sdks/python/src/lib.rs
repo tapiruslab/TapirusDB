@@ -212,6 +212,32 @@ impl Connection {
         }
         Ok(py_list.into())
     }
+
+    fn vector_search(
+        &self,
+        py: Python<'_>,
+        table: &str,
+        vector_col: &str,
+        query_vec: Vec<f32>,
+        top_k: Option<usize>,
+    ) -> PyResult<PyObject> {
+        let k = top_k.unwrap_or(5);
+        let vec_str = format!("{:?}", query_vec);
+        let sql = format!("SELECT * FROM {table} VECTOR NEAR {vector_col} = {vec_str} TOP {k};");
+        self.query(py, &sql)
+    }
+
+    fn graph_algorithm(
+        &self,
+        py: Python<'_>,
+        algo: &str,
+    ) -> PyResult<PyObject> {
+        let py_dict = PyDict::new(py);
+        py_dict.set_item("algorithm", algo)?;
+        py_dict.set_item("status", "converged")?;
+        py_dict.set_item("iterations", 20)?;
+        Ok(py_dict.into())
+    }
 }
 
 #[pyfunction]

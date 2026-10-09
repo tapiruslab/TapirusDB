@@ -47,7 +47,7 @@ pip install tapirus
 
 ### Node.js / TypeScript
 ```bash
-npm install tapirusdb
+npm install tapirus
 ```
 
 ---
@@ -89,7 +89,7 @@ fn main() -> Result<()> {
     // 1-Line Semantic Recall
     let matches = conn.recall("what theme does Alex prefer", 3);
     for m in &matches {
-        println!("Match: {} (Score: {:.3})", m.content, m.score);
+        println!("Match: {} (Score: {:.3})", m.entry.content, m.combined_score);
     }
 
     // Direct LLM Prompt Synthesis
@@ -226,10 +226,10 @@ print(f"Discovered Knowledge Communities: {clusters}")
 ## 4. Node.js / TypeScript Implementation
 
 ```typescript
-import { TapirusClient } from "tapirusdb";
+import { open, Tapirus } from "tapirus";
 
 async function runAgentMemory() {
-  const db = new TapirusClient({ dbPath: "agent_memory.tapir" });
+  const db = open("agent_memory.tapir");
 
   // 1. Initialize schema
   await db.execute(`

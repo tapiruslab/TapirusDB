@@ -155,10 +155,10 @@ Wrap batch inserts in explicit ACID transactions (`BEGIN TRANSACTION` ... `COMMI
 
 ### Node.js / TypeScript
 ```typescript
-import { TapirusClient } from "tapirusdb";
+import { open, Tapirus } from "tapirus";
 
 async function bulkIngest() {
-  const db = new TapirusClient({ dbPath: "telemetry.tapir" });
+  const db = open("telemetry.tapir");
 
   await db.execute("CREATE TABLE IF NOT EXISTS metrics (id INT PRIMARY KEY, sensor TEXT, reading REAL);");
 
@@ -414,7 +414,7 @@ db.execute("""
 # 3. Add chunks (in real apps, generate embeddings with OpenAI / Ollama / FastEmbed)
 db.execute("""
     INSERT INTO doc_chunks VALUES 
-    (1, '/pricing', 'Pricing & Plans', 'TapirusDB is 100% free and open-source forever under Apache-2.0.', [0.89, 0.12, 0.05, 0.22]),
+    (1, '/pricing', 'Pricing & Plans', 'TapirusDB is 100% free and open-source forever under MIT / BUSL-1.1.', [0.89, 0.12, 0.05, 0.22]),
     (2, '/install', 'Installation Guide', 'Install via npm install tapirus or pip install tapirus in 5 seconds.', [0.15, 0.92, 0.31, 0.08]),
     (3, '/security', 'Security & Encryption', 'Built-in ChaCha20-Poly1305 encrypts your entire database file.', [0.05, 0.18, 0.88, 0.45]);
 """)
@@ -442,10 +442,10 @@ print("Generated LLM Prompt:\n", prompt)
 
 ### Node.js / TypeScript (Website Backend, Electron, Tauri)
 ```typescript
-import { TapirusClient } from "tapirusdb";
+import { open, Tapirus } from "tapirus";
 
 // 1. Initialize embedded database file
-const db = new TapirusClient({ dbPath: "website_knowledge.tapir" });
+const db = open("website_knowledge.tapir");
 
 async function initSimpleRAG() {
   await db.execute(`
@@ -876,7 +876,7 @@ fn main() -> Result<()> {
 
     // 1. Subscribe to specific table mutations
     let _sub_id = conn.subscribe("users", |event| {
-        println!("Reactive Event on [{}]: {} row(s) mutated", event.table, event.affected_rows);
+        println!("Reactive Event on [{}]: {:?} row_id={}", event.table, event.op, event.row_id);
     });
 
     // 2. Perform transactions
