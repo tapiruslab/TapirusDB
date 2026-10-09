@@ -24,8 +24,8 @@ for (const p of possibleBindings) {
   }
 }
 
-// Fallback to pure in-memory quad-model engine from packages/npm
-const { TapirusDatabase } = require('../../packages/npm/index.js');
+// Fallback to pure in-memory quad-model engine
+const { TapirusDatabase } = require('./engine.js');
 
 class TapirusConnectionWrapper {
   constructor(db) {
