@@ -214,11 +214,13 @@ fn test_paged_hnsw_disk_persistence_and_reload() {
         }
 
         // Persist to B+Tree disk tables
-        let mut executor = conn.executor().write();
-        let mut pager = conn.pager().write();
-        executor
-            .persist_paged_vector_index(&mut pager, "embeddings", &paged_index)
-            .expect("Persist paged vector index");
+        {
+            let mut executor = conn.executor().write();
+            let mut pager = conn.pager().write();
+            executor
+                .persist_paged_vector_index(&mut pager, "embeddings", &paged_index)
+                .expect("Persist paged vector index");
+        }
         conn.checkpoint().unwrap();
     }
 

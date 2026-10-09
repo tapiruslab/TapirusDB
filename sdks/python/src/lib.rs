@@ -8,6 +8,133 @@ pyo3::create_exception!(tapirus, ConnectionError, TapirusError);
 pyo3::create_exception!(tapirus, QueryError, TapirusError);
 
 #[pyclass(unsendable)]
+struct Collection {
+    conn: TapirusConnection,
+    name: String,
+}
+
+#[pymethods]
+impl Collection {
+    fn insert_one(&self, py: Python<'_>, doc: &PyAny) -> PyResult<u64> {
+        let json_mod = py.import("json")?;
+        let json_str: String = if let Ok(s) = doc.extract::<String>() {
+            s
+        } else {
+            json_mod.getattr("dumps")?.call1((doc,))?.extract()?
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| QueryError::new_err(format!("Invalid JSON: {e}")))?;
+
+        let coll = self.conn.collection(&self.name)
+            .map_err(|e| QueryError::new_err(e.to_string()))?;
+        coll.insert_one(&parsed)
+            .map_err(|e| QueryError::new_err(e.to_string()))
+    }
+
+    fn insert(&self, py: Python<'_>, doc: &PyAny) -> PyResult<u64> {
+        self.insert_one(py, doc)
+    }
+
+    fn find_by_id(&self, py: Python<'_>, id: u64) -> PyResult<Option<PyObject>> {
+        let coll = self.conn.collection(&self.name)
+            .map_err(|e| QueryError::new_err(e.to_string()))?;
+        match coll.find_by_id(id).map_err(|e| QueryError::new_err(e.to_string()))? {
+            Some(val) => {
+                let json_mod = py.import("json")?;
+                let json_str = val.to_string();
+                let py_obj = json_mod.getattr("loads")?.call1((json_str,))?.into();
+                Ok(Some(py_obj))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn find_one(&self, py: Python<'_>, query_or_id: &PyAny) -> PyResult<Option<PyObject>> {
+        if let Ok(id) = query_or_id.extract::<u64>() {
+            return self.find_by_id(py, id);
+        }
+        let coll = self.conn.collection(&self.name)
+            .map_err(|e| QueryError::new_err(e.to_string()))?;
+        let all = coll.find_all().map_err(|e| QueryError::new_err(e.to_string()))?;
+        let json_mod = py.import("json")?;
+
+        if let Ok(filter_dict) = query_or_id.downcast::<PyDict>() {
+            for (_id, val) in all {
+                let json_str = val.to_string();
+                let py_obj = json_mod.getattr("loads")?.call1((json_str,))?;
+                if let Ok(py_dict) = py_obj.downcast::<PyDict>() {
+                    let mut matches = true;
+                    for (k, v) in filter_dict.iter() {
+                        match py_dict.get_item(k) {
+                            Ok(Some(item_val)) => {
+                                if !item_val.eq(v)? {
+                                    matches = false;
+                                    break;
+                                }
+                            }
+                            _ => {
+                                matches = false;
+                                break;
+                            }
+                        }
+                    }
+                    if matches {
+                        return Ok(Some(py_obj.into()));
+                    }
+                }
+            }
+            Ok(None)
+        } else if let Some((_id, val)) = all.into_iter().next() {
+            let json_str = val.to_string();
+            let py_obj = json_mod.getattr("loads")?.call1((json_str,))?.into();
+            Ok(Some(py_obj))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn find_all(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let coll = self.conn.collection(&self.name)
+            .map_err(|e| QueryError::new_err(e.to_string()))?;
+        let all = coll.find_all().map_err(|e| QueryError::new_err(e.to_string()))?;
+        let json_mod = py.import("json")?;
+        let py_list = PyList::empty(py);
+        for (_id, val) in all {
+            let json_str = val.to_string();
+            let py_obj = json_mod.getattr("loads")?.call1((json_str,))?;
+            py_list.append(py_obj)?;
+        }
+        Ok(py_list.into())
+    }
+
+    fn delete(&self, id: u64) -> PyResult<bool> {
+        let coll = self.conn.collection(&self.name)
+            .map_err(|e| QueryError::new_err(e.to_string()))?;
+        coll.delete(id).map_err(|e| QueryError::new_err(e.to_string()))
+    }
+
+    fn update(&self, py: Python<'_>, id: u64, doc: &PyAny) -> PyResult<bool> {
+        let json_mod = py.import("json")?;
+        let json_str: String = if let Ok(s) = doc.extract::<String>() {
+            s
+        } else {
+            json_mod.getattr("dumps")?.call1((doc,))?.extract()?
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| QueryError::new_err(format!("Invalid JSON: {e}")))?;
+        let coll = self.conn.collection(&self.name)
+            .map_err(|e| QueryError::new_err(e.to_string()))?;
+        coll.update_by_id(id, &parsed).map_err(|e| QueryError::new_err(e.to_string()))
+    }
+
+    fn count(&self) -> PyResult<usize> {
+        let coll = self.conn.collection(&self.name)
+            .map_err(|e| QueryError::new_err(e.to_string()))?;
+        coll.count().map_err(|e| QueryError::new_err(e.to_string()))
+    }
+}
+
+#[pyclass(unsendable)]
 struct Connection {
     inner: TapirusConnection,
 }
@@ -54,6 +181,36 @@ impl Connection {
 
     fn checkpoint(&self) -> PyResult<usize> {
         self.inner.checkpoint().map_err(|e| TapirusError::new_err(e.to_string()))
+    }
+
+    fn collection(&self, name: &str) -> PyResult<Collection> {
+        self.inner.collection(name).map_err(|e| QueryError::new_err(e.to_string()))?;
+        Ok(Collection {
+            conn: self.inner.clone(),
+            name: name.to_string(),
+        })
+    }
+
+    fn remember(&self, content: &str) -> PyResult<u64> {
+        self.inner.remember(content).map_err(|e| TapirusError::new_err(e.to_string()))
+    }
+
+    fn recall_prompt(&self, query: &str, limit: Option<usize>) -> PyResult<String> {
+        Ok(self.inner.recall_prompt(query, limit.unwrap_or(5)))
+    }
+
+    fn recall(&self, py: Python<'_>, query: &str, limit: Option<usize>) -> PyResult<PyObject> {
+        let results = self.inner.recall(query, limit.unwrap_or(5));
+        let py_list = PyList::empty(py);
+        for r in results {
+            let py_dict = PyDict::new(py);
+            py_dict.set_item("id", r.entry.id)?;
+            py_dict.set_item("content", r.entry.content)?;
+            py_dict.set_item("importance", r.entry.importance)?;
+            py_dict.set_item("score", r.combined_score)?;
+            py_list.append(py_dict)?;
+        }
+        Ok(py_list.into())
     }
 }
 
@@ -107,6 +264,7 @@ fn tap_classify_grounded(text: &str, candidates_raw: &str, index_name: &str, top
 #[pymodule]
 fn tapirus(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Connection>()?;
+    m.add_class::<Collection>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(tap_classify, m)?)?;
     m.add_function(wrap_pyfunction!(tap_classify_grounded, m)?)?;

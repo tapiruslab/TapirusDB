@@ -1944,8 +1944,10 @@ impl SQLExecutor {
                             let mut final_rows = Vec::with_capacity(left_rows.len().min(right_rows.len() * 2));
 
                             for l_row in &left_rows {
+                                let mut matched = false;
                                 if let Some(Value::Integer(lk)) = l_row.values().get(l_idx_col) {
                                     if let Some(entry) = int_hash.get(lk) {
+                                        matched = true;
                                         let r_slice = match entry {
                                             IntEntry::One(idx) => std::slice::from_ref(idx),
                                             IntEntry::Many(v) => v.as_slice(),
@@ -1966,6 +1968,20 @@ impl SQLExecutor {
                                             final_rows.push(Row::with_shared_columns(output_col_shared.clone(), vals));
                                         }
                                     }
+                                }
+                                if !matched && (join_clause.join_type == JoinType::Left || join_clause.is_left) {
+                                    let mut vals = Vec::with_capacity(direct_sources.len());
+                                    for src in direct_sources {
+                                        match src {
+                                            JoinOutputCol::Left(idx) => {
+                                                vals.push(l_row.values().get(*idx).cloned().unwrap_or(Value::Null));
+                                            }
+                                            JoinOutputCol::Right(_) => {
+                                                vals.push(Value::Null);
+                                            }
+                                        }
+                                    }
+                                    final_rows.push(Row::with_shared_columns(output_col_shared.clone(), vals));
                                 }
                             }
 
@@ -1993,8 +2009,10 @@ impl SQLExecutor {
 
                         // Fallback within integer path when direct_sources is None (e.g. ORDER BY present)
                         for l_row in &left_rows {
+                            let mut matched = false;
                             if let Some(Value::Integer(lk)) = l_row.values().get(l_idx_col) {
                                 if let Some(entry) = int_hash.get(lk) {
+                                    matched = true;
                                     let r_slice = match entry {
                                         IntEntry::One(idx) => std::slice::from_ref(idx),
                                         IntEntry::Many(v) => v.as_slice(),
@@ -2012,6 +2030,19 @@ impl SQLExecutor {
                                         ));
                                     }
                                 }
+                            }
+                            if !matched && (join_clause.join_type == JoinType::Left || join_clause.is_left) {
+                                let mut merged_vals = Vec::with_capacity(
+                                    l_row.values().len() + right_table_def.columns.len(),
+                                );
+                                merged_vals.extend_from_slice(l_row.values());
+                                for _ in 0..right_table_def.columns.len() {
+                                    merged_vals.push(Value::Null);
+                                }
+                                joined_rows.push(Row::with_shared_columns(
+                                    merged_cols_shared.clone(),
+                                    merged_vals,
+                                ));
                             }
                         }
                     } else {
@@ -3219,18 +3250,16 @@ impl SQLExecutor {
                 }
             };
 
-            let old_next_row_id = table_def.next_row_id;
             let pk_idx = table_def.primary_key_index();
             let source = if use_aligned { &aligned_storage[..] } else { values };
             let (rid, may_exist) = if let Some(idx) = pk_idx {
                 match &source[idx] {
                     Value::Integer(i) => {
                         let id_val = *i as u64;
-                        let may_exist = id_val < old_next_row_id;
                         if id_val >= table_def.next_row_id {
                             table_def.next_row_id = id_val + 1;
                         }
-                        (id_val, may_exist)
+                        (id_val, true)
                     }
                     Value::Null => {
                         let rid = table_def.next_row_id;
@@ -3398,17 +3427,15 @@ impl SQLExecutor {
             };
 
             // Determine row_id (from primary key column or auto-increment)
-            let old_next_row_id = table_def.next_row_id;
             let pk_idx = table_def.primary_key_index();
             let (rid, may_exist) = if let Some(idx) = pk_idx {
                 match &aligned_values[idx] {
                     Value::Integer(i) => {
                         let id_val = *i as u64;
-                        let may_exist = id_val < old_next_row_id;
                         if id_val >= table_def.next_row_id {
                             table_def.next_row_id = id_val + 1;
                         }
-                        (id_val, may_exist)
+                        (id_val, true)
                     }
                     Value::Null => {
                         let rid = table_def.next_row_id;
@@ -4410,6 +4437,12 @@ fn try_eval_tap_function(row: &Row, expr: &str) -> Result<Option<Value>> {
         ("VERIFY", &trimmed[11..])
     } else if upper.starts_with("TAP_ROUTE(") {
         ("ROUTE", &trimmed[10..])
+    } else if upper.starts_with("VECTOR_COSINE(") {
+        ("VECTOR_COSINE", &trimmed[14..])
+    } else if upper.starts_with("VECTOR_L2(") {
+        ("VECTOR_L2", &trimmed[10..])
+    } else if upper.starts_with("VECTOR_DISTANCE(") {
+        ("VECTOR_L2", &trimmed[16..])
     } else {
         return Ok(None);
     };
@@ -4456,6 +4489,18 @@ fn try_eval_tap_function(row: &Row, expr: &str) -> Result<Option<Value>> {
     let arg2_val = strip_quotes(raw_arg2);
 
     match func_type {
+        "VECTOR_COSINE" => {
+            let vec1 = resolve_vector_arg(row, raw_arg1)?;
+            let vec2 = resolve_vector_arg(row, raw_arg2)?;
+            let sim = crate::vector::cosine_similarity(&vec1, &vec2);
+            Ok(Some(Value::Real(sim as f64)))
+        }
+        "VECTOR_L2" => {
+            let vec1 = resolve_vector_arg(row, raw_arg1)?;
+            let vec2 = resolve_vector_arg(row, raw_arg2)?;
+            let dist = crate::vector::euclidean_distance(&vec1, &vec2);
+            Ok(Some(Value::Real(dist as f64)))
+        }
         "CLASSIFY_GROUNDED" => {
             let index_name = args.get(2).map(|s| strip_quotes(s)).unwrap_or("default");
             let top_k = args.get(3).and_then(|s| s.parse::<usize>().ok()).unwrap_or(3);
@@ -4485,6 +4530,30 @@ fn try_eval_tap_function(row: &Row, expr: &str) -> Result<Option<Value>> {
             Ok(Some(Value::Text(route)))
         }
         _ => Ok(None),
+    }
+}
+
+fn resolve_vector_arg(row: &Row, raw_arg: &str) -> Result<Vec<f32>> {
+    let trimmed = raw_arg.trim();
+    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let mut vec = Vec::new();
+        for item in inner.split(',') {
+            let item_t = item.trim();
+            if !item_t.is_empty() {
+                if let Ok(f) = item_t.parse::<f32>() {
+                    vec.push(f);
+                }
+            }
+        }
+        Ok(vec)
+    } else if let Some(val) = row.get_field_or_json_path(trimmed).or_else(|| row.get_value(trimmed).cloned()) {
+        match val {
+            Value::Vector(v) => Ok(v),
+            _ => Err(Error::ConstraintViolation(format!("Argument '{trimmed}' is not a vector"))),
+        }
+    } else {
+        Err(Error::ConstraintViolation(format!("Could not resolve vector argument '{trimmed}'")))
     }
 }
 
@@ -4821,4 +4890,29 @@ mod tests {
         assert_eq!(rows_where.len(), 1);
         assert_eq!(rows_where[0].get::<i64>("id").unwrap(), 2);
     }
+
+    #[test]
+    fn test_executor_vector_cosine_and_timestamp() {
+        let mut pager = Pager::open_in_memory(4096, 128).expect("Pager open");
+        let mut executor = SQLExecutor::new(&mut pager).expect("Init executor");
+
+        executor.execute(&mut pager, parse_sql("CREATE TABLE embeddings (doc_id INTEGER PRIMARY KEY, content TEXT, vector VECTOR(3), created_at TIMESTAMP);").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("INSERT INTO embeddings VALUES (1, 'Machine Learning', [1.0, 0.0, 0.0], '2026-10-09T08:00:00Z');").unwrap()).unwrap();
+        executor.execute(&mut pager, parse_sql("INSERT INTO embeddings VALUES (2, 'Culinary Arts', [0.0, 1.0, 0.0], '2026-10-09T08:01:00Z');").unwrap()).unwrap();
+
+        // 1. SELECT with VECTOR_COSINE in projection
+        let rows = executor.query(&mut pager, parse_sql("SELECT doc_id, content, VECTOR_COSINE(vector, [0.9, 0.1, 0.0]) AS score FROM embeddings ORDER BY score DESC;").unwrap()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get::<i64>("doc_id").unwrap(), 1);
+        let score_1 = rows[0].get::<f64>("score").unwrap();
+        let score_2 = rows[1].get::<f64>("score").unwrap();
+        assert!(score_1 > 0.9);
+        assert!(score_2 < 0.2);
+
+        // 2. SELECT with VECTOR_L2 in projection
+        let rows_l2 = executor.query(&mut pager, parse_sql("SELECT doc_id, VECTOR_L2(vector, [1.0, 0.0, 0.0]) AS dist FROM embeddings ORDER BY dist ASC;").unwrap()).unwrap();
+        assert_eq!(rows_l2[0].get::<i64>("doc_id").unwrap(), 1);
+        assert_eq!(rows_l2[0].get::<f64>("dist").unwrap(), 0.0);
+    }
 }
+

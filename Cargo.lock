@@ -1090,6 +1090,7 @@ name = "tapirus-python"
 version = "1.0.1"
 dependencies = [
  "pyo3",
+ "serde_json",
  "tapirus",
 ]
 

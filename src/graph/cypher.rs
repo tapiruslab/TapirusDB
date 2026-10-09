@@ -150,9 +150,32 @@ impl CypherParser {
                 .trim()
                 .to_string();
 
-            let edge_str = Self::extract_bracket_content(remainder, '[', ']')
+            let edge_raw = Self::extract_bracket_content(remainder, '[', ']')
                 .unwrap_or_else(|| "REL".to_string());
-            let edge_label = edge_str.trim_start_matches(':').trim().to_string();
+            
+            let (edge_label, edge_props, edge_weight) = if let Some(brace_pos) = edge_raw.find('{') {
+                let lbl = edge_raw[..brace_pos].trim().trim_start_matches(':').trim();
+                let prop_content = edge_raw[brace_pos..].trim();
+                let prop_str = if prop_content.ends_with('}') {
+                    prop_content.to_string()
+                } else {
+                    format!("{prop_content}}}")
+                };
+                let weight = if let Some(w_pos) = prop_str.to_lowercase().find("weight") {
+                    let after = &prop_str[w_pos + 6..];
+                    let val_str = after.trim_start_matches(|c: char| c == ':' || c.is_whitespace() || c == '"' || c == '\'');
+                    val_str.split(|c: char| c == ',' || c == '}' || c.is_whitespace())
+                        .next()
+                        .and_then(|s| s.parse::<f32>().ok())
+                        .unwrap_or(1.0)
+                } else {
+                    1.0
+                };
+                (if lbl.is_empty() { "RELATED".to_string() } else { lbl.to_string() }, prop_str, weight)
+            } else {
+                let lbl = edge_raw.trim_start_matches(':').trim();
+                (if lbl.is_empty() { "RELATED".to_string() } else { lbl.to_string() }, "{}".to_string(), 1.0)
+            };
 
             let after_edge = remainder.split(']').nth(1).unwrap_or("");
             let to_var = Self::extract_bracket_content(after_edge, '(', ')')
@@ -163,9 +186,9 @@ impl CypherParser {
             edges.push(CypherCreateEdge {
                 from_var,
                 to_var,
-                label: if edge_label.is_empty() { "RELATED".to_string() } else { edge_label },
-                weight: 1.0,
-                properties: "{}".to_string(),
+                label: edge_label,
+                weight: edge_weight,
+                properties: edge_props,
             });
         } else {
             // Node creation
@@ -813,5 +836,22 @@ mod tests {
         let rows = CypherExecutor::execute_query(&engine, query).expect("Count failed");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get::<i64>("count(*)").unwrap(), 1);
+    }
+
+    #[test]
+    fn test_cypher_create_edge_with_properties_and_weight() {
+        let mut engine = GraphEngine::new();
+        let _ = engine.add_node(1, "Service", r#"{"name": "Auth"}"#);
+        let _ = engine.add_node(2, "Service", r#"{"name": "Payment"}"#);
+
+        let create_query = "CREATE (1)-[:CALLS {weight: 0.85, latency: 12}]->(2)";
+        let rows = CypherExecutor::execute_mutation(&mut engine, create_query).expect("Create edge failed");
+        assert_eq!(rows[0].get::<i64>("edges_created").unwrap(), 1);
+
+        let edges = engine.all_edges();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].label, "CALLS");
+        assert!((edges[0].weight - 0.85).abs() < 1e-4);
+        assert!(edges[0].properties.contains("latency"));
     }
 }

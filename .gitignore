@@ -90,3 +90,9 @@ token.json
 .idea/
 *.sublime-project
 *.sublime-workspace
+
+# Local disk maintenance utilities (Local only / Never commit)
+compact_disk.*
+compact_log.txt
+*.lnk
+

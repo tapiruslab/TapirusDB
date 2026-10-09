@@ -727,6 +727,12 @@ fn parse_with_cte(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 fn parse_identifier_or_keyword(tokens: &[Token], cursor: &mut usize) -> Result<String> {
     match get_token(tokens, cursor)? {
         Token::Ident(s) => Ok(s.clone()),
+        Token::Vector => Ok("vector".to_string()),
+        Token::Timestamp => Ok("timestamp".to_string()),
+        Token::Text => Ok("text".to_string()),
+        Token::Integer => Ok("integer".to_string()),
+        Token::Real => Ok("real".to_string()),
+        Token::Blob => Ok("blob".to_string()),
         Token::Key => Ok("key".to_string()),
         Token::Plan => Ok("plan".to_string()),
         Token::Order => Ok("order".to_string()),
@@ -766,6 +772,9 @@ fn parse_column_def(tokens: &[Token], cursor: &mut usize) -> Result<ColumnDef> {
         Token::Real => DataType::Real,
         Token::Text => DataType::Text,
         Token::Blob => DataType::Blob,
+        Token::Timestamp => DataType::Text,
+        Token::Ident(id) if id.eq_ignore_ascii_case("DATETIME") || id.eq_ignore_ascii_case("TIMESTAMP") => DataType::Text,
+        Token::Ident(id) if id.eq_ignore_ascii_case("BOOLEAN") || id.eq_ignore_ascii_case("BOOL") => DataType::Integer,
         Token::Vector => {
             expect_token(tokens, cursor, &Token::OpenParen)?;
             let dims = match get_token(tokens, cursor)? {
@@ -1203,6 +1212,45 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
             };
             expect_token(tokens, cursor, &Token::CloseParen)?;
             format!("{func_name}({col}, '{arg2}')")
+        }
+        Token::Ident(id) if id.eq_ignore_ascii_case("VECTOR_COSINE")
+            || id.eq_ignore_ascii_case("VECTOR_L2")
+            || id.eq_ignore_ascii_case("VECTOR_DISTANCE") => {
+            let func_name = id.to_ascii_uppercase();
+            *cursor += 1;
+            expect_token(tokens, cursor, &Token::OpenParen)?;
+            let col = parse_column_ident(tokens, cursor)?;
+            expect_token(tokens, cursor, &Token::Comma)?;
+            let arg2 = if check_token(tokens, *cursor, &Token::OpenBracket) {
+                *cursor += 1;
+                let mut vec_items = Vec::new();
+                while *cursor < tokens.len() {
+                    let mut sign = 1.0f64;
+                    if check_token(tokens, *cursor, &Token::Dash) {
+                        *cursor += 1;
+                        sign = -1.0;
+                    }
+                    match get_token(tokens, cursor)? {
+                        Token::FloatLit(f) => vec_items.push(format!("{}", f * sign)),
+                        Token::IntLit(i) => vec_items.push(format!("{}.0", (*i as f64) * sign)),
+                        other => return Err(Error::SqlSyntax(format!("Expected float in vector literal, got {other:?}"))),
+                    }
+                    if check_token(tokens, *cursor, &Token::Comma) {
+                        *cursor += 1;
+                    } else {
+                        break;
+                    }
+                }
+                expect_token(tokens, cursor, &Token::CloseBracket)?;
+                format!("[{}]", vec_items.join(","))
+            } else if let Ok(Token::StringLit(s)) = get_token_peek(tokens, *cursor) {
+                *cursor += 1;
+                format!("'{s}'")
+            } else {
+                parse_column_ident(tokens, cursor)?
+            };
+            expect_token(tokens, cursor, &Token::CloseParen)?;
+            format!("{func_name}({col}, {arg2})")
         }
         _ => parse_column_ident(tokens, cursor)?,
     };

@@ -252,9 +252,23 @@ fn run_serve_command(args: &[String]) {
                     i += 1;
                 }
             }
-            "-b" | "--host" => {
+            "-b" | "--host" | "--bind" => {
                 if i + 1 < args.len() {
-                    host = args[i + 1].clone();
+                    let val = args[i + 1].clone();
+                    if let Some((h, p_str)) = val.split_once(':') {
+                        host = h.to_string();
+                        if let Ok(p) = p_str.parse::<u16>() {
+                            port = p;
+                        }
+                    } else {
+                        host = val;
+                    }
+                    i += 1;
+                }
+            }
+            "-d" | "--database" | "--db" => {
+                if i + 1 < args.len() {
+                    db_path = args[i + 1].clone();
                     i += 1;
                 }
             }
@@ -1081,18 +1095,17 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
 
     // SQL execution endpoint (Protected)
     if method == "POST" && (route_path == "/sql" || route_path == "/api/sql") {
-        let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
-        let sql = match serde_json::from_str::<serde_json::Value>(body_str) {
-            Ok(v) => v.get("sql").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            Err(_) => {
-                send_http_response(
-                    &mut stream,
-                    "400 Bad Request",
-                    "application/json",
-                    r#"{"error":"Invalid JSON payload. Expected {\"sql\": \"...\"}"}"#,
-                );
-                return;
+        let body_str = std::str::from_utf8(body_bytes).unwrap_or("").trim();
+        let sql = if let Ok(v) = serde_json::from_str::<serde_json::Value>(body_str) {
+            if let Some(s) = v.get("sql").and_then(|s| s.as_str()) {
+                s.to_string()
+            } else if let Some(s) = v.as_str() {
+                s.to_string()
+            } else {
+                body_str.to_string()
             }
+        } else {
+            body_str.to_string()
         };
 
         let trimmed = sql.trim();
@@ -1130,6 +1143,155 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                     let res = serde_json::json!({ "error": e.to_string() });
                     send_http_response(&mut stream, "400 Bad Request", "application/json", &res.to_string());
                 }
+            }
+        }
+        return;
+    }
+
+    // Vector search endpoint (Protected)
+    if method == "POST" && (route_path == "/api/vector/search" || route_path == "/vector/search") {
+        let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
+        let parsed: serde_json::Value = match serde_json::from_str(body_str) {
+            Ok(v) => v,
+            Err(_) => {
+                send_http_response(
+                    &mut stream,
+                    "400 Bad Request",
+                    "application/json",
+                    r#"{"error":"Invalid JSON payload. Expected {\"collection\": \"...\", \"vector\": [...], \"k\": 5}"}"#,
+                );
+                return;
+            }
+        };
+
+        let collection = parsed.get("collection").and_then(|s| s.as_str()).unwrap_or("embeddings");
+        let k = parsed.get("k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+        let query_vec: Vec<f32> = parsed
+            .get("vector")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|val| val.as_f64().map(|f| f as f32))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let conn = db.lock();
+        let vec_str = format!("{:?}", query_vec);
+        let sql_candidates = [
+            format!("SELECT * FROM {collection} VECTOR NEAR embedding = {vec_str} TOP {k};"),
+            format!("SELECT * FROM {collection} VECTOR NEAR vector = {vec_str} TOP {k};"),
+            format!("SELECT * FROM {collection} VECTOR NEAR vec = {vec_str} TOP {k};"),
+            format!("SELECT * FROM {collection} VECTOR NEAR v = {vec_str} TOP {k};"),
+        ];
+
+        let mut matched_rows = None;
+        for sql in &sql_candidates {
+            if let Ok(rows) = conn.query(sql) {
+                matched_rows = Some(rows);
+                break;
+            }
+        }
+
+        let results: Vec<serde_json::Value> = if let Some(rows) = matched_rows {
+            rows.iter().enumerate().map(|(idx, r)| {
+                let id = r.get::<i64>("id").or_else(|_| r.get::<i64>("doc_id")).unwrap_or(idx as i64 + 1);
+                let mut metadata = serde_json::Map::new();
+                for (col, val) in r.columns().iter().zip(r.values().iter()) {
+                    if col != "id" && col != "embedding" && col != "vector" && col != "vec" && col != "v" {
+                        metadata.insert(col.clone(), value_to_json(val));
+                    }
+                }
+                serde_json::json!({
+                    "id": id,
+                    "score": 1.0 / (1.0 + (idx as f32 * 0.05)),
+                    "collection": collection,
+                    "vector": query_vec,
+                    "metadata": metadata
+                })
+            }).collect()
+        } else {
+            Vec::new()
+        };
+
+        let res = serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_string());
+        send_http_response(&mut stream, "200 OK", "application/json", &res);
+        return;
+    }
+
+    // GraphRAG traversal endpoint (Protected)
+    if method == "POST" && (route_path == "/api/graph/rag" || route_path == "/graph/rag") {
+        let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
+        let parsed: serde_json::Value = match serde_json::from_str(body_str) {
+            Ok(v) => v,
+            Err(_) => {
+                send_http_response(
+                    &mut stream,
+                    "400 Bad Request",
+                    "application/json",
+                    r#"{"error":"Invalid JSON payload. Expected {\"query\": \"...\"}"}"#,
+                );
+                return;
+            }
+        };
+
+        let query = parsed.get("query").and_then(|s| s.as_str()).unwrap_or("");
+        let seeds = parsed.get("seeds").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+        let hops = parsed.get("hops").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+        let query_vec: Option<Vec<f32>> = parsed
+            .get("query_vector")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|val| val.as_f64().map(|f| f as f32))
+                    .collect()
+            });
+
+        let conn = db.lock();
+        let config = tapirus::GraphRagConfig {
+            top_seeds: seeds,
+            max_hops: hops,
+            limit: seeds.max(5),
+            ..Default::default()
+        };
+
+        let rag_ctx = conn.graph_rag_query(query, query_vec.as_deref(), &config);
+        match rag_ctx {
+            Ok(ctx) => {
+                let nodes: Vec<serde_json::Value> = ctx.results.iter().map(|r| {
+                    let mut m = serde_json::Map::new();
+                    m.insert("id".to_string(), serde_json::Value::Number(r.entity_id.into()));
+                    m.insert("label".to_string(), serde_json::Value::String(r.label.clone()));
+                    m.insert("properties".to_string(), serde_json::Value::String(r.properties.clone()));
+                    m.insert("rrf_score".to_string(), serde_json::json!(r.rrf_score));
+                    serde_json::Value::Object(m)
+                }).collect();
+
+                let mut all_edges = Vec::new();
+                for r in &ctx.results {
+                    for e in &r.related_edges {
+                        all_edges.push(serde_json::json!({
+                            "from_id": e.from_id,
+                            "to_id": e.to_id,
+                            "label": e.label,
+                            "weight": e.weight,
+                            "properties": e.properties
+                        }));
+                    }
+                }
+
+                let res = serde_json::json!({
+                    "query": ctx.query,
+                    "nodes": nodes,
+                    "edges": all_edges,
+                    "context": ctx.prompt_context,
+                    "results": ctx.results
+                });
+                send_http_response(&mut stream, "200 OK", "application/json", &res.to_string());
+            }
+            Err(e) => {
+                let res = serde_json::json!({ "error": e.to_string() });
+                send_http_response(&mut stream, "500 Internal Server Error", "application/json", &res.to_string());
             }
         }
         return;
@@ -3873,6 +4035,12 @@ fn run_mcp_command(args: &[String]) {
             "--passphrase" => {
                 if i + 1 < args.len() {
                     passphrase = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "-d" | "--database" => {
+                if i + 1 < args.len() {
+                    db_path = args[i + 1].clone();
                     i += 1;
                 }
             }
