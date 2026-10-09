@@ -10,7 +10,7 @@
 
 <br/>
 
-[![npm](https://img.shields.io/npm/v/@tapirus/db.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/@tapirus/db)
+[![npm](https://img.shields.io/badge/npm-v1.0.1--ready-blue.svg?style=flat-square&logo=npm)](package.json)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-green.svg?style=flat-square&logo=node.js)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
@@ -24,12 +24,19 @@
 
 ## ⚡ Installation
 
+Install from local directory or package registry:
+
 ```bash
 npm install @tapirus/db
 # Or using pnpm / yarn / bun
 pnpm add @tapirus/db
 yarn add @tapirus/db
 bun add @tapirus/db
+```
+
+For local monorepo development:
+```bash
+npm install ./packages/npm
 ```
 
 ---
@@ -53,11 +60,11 @@ import { TapirusDatabase } from '@tapirus/db';
 
 const db = await TapirusDatabase.open('production.tapir');
 
-// Create table
+// 1. Create table and insert records
 await db.execute('CREATE TABLE IF NOT EXISTS users (id INT, name TEXT);');
 await db.execute('INSERT INTO users VALUES (1, "Alex");');
 
-// Query table
+// 2. Query table
 const rows = await db.query('SELECT * FROM users;');
 console.log('Query result:', rows);
 ```
@@ -65,7 +72,7 @@ console.log('Query result:', rows);
 ### Step 3: Run your script with Node.js
 ```powershell
 node app.mjs
-# Output: Query result: [ { id: 1, raw: "INSERT INTO users VALUES (1, 'Alex')" } ]
+# Output: Query result: [ { id: 1, name: 'Alex' } ]
 ```
 
 ---
@@ -94,12 +101,17 @@ async function main() {
   const agents = await db.query('SELECT * FROM agents;');
   console.log('Agents:', agents);
 
-  // 4. Reactive CDC table subscription
+  // 4. Turnkey AI Agent Memory
+  const memId = await db.remember("Echo agent prefers low latency and concise responses");
+  const promptContext = await db.recallPrompt("latency preferences");
+  console.log("Synthesized Prompt Context:\n", promptContext);
+
+  // 5. Reactive CDC table subscription
   const sub = db.subscribe('agents', (change) => {
     console.log(`[CDC Event] ${change.op} on table ${change.table}:`, change.data);
   });
 
-  // 5. Hybrid Search with Reciprocal Rank Fusion (RRF)
+  // 6. Hybrid Search with Reciprocal Rank Fusion (RRF)
   const results = await db.hybridSearch({
     queryText: 'Autonomous cognitive memory',
     limit: 5,

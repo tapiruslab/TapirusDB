@@ -10,7 +10,7 @@
 
 <br/>
 
-[![npm](https://img.shields.io/npm/v/tapirus.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/tapirus)
+[![npm](https://img.shields.io/badge/npm-v1.0.1--ready-blue.svg?style=flat-square&logo=npm)](package.json)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-green.svg?style=flat-square&logo=node.js)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)

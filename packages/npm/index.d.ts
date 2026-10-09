@@ -124,6 +124,21 @@ export class TapirusDatabase {
   graphRagQuery(params: GraphRagParams | string): Promise<GraphRagContext>;
 
   /**
+   * Turnkey 1-line episodic AI agent memory storage.
+   */
+  remember(content: string, importance?: number, tags?: string[]): Promise<number>;
+
+  /**
+   * Recall relevant memories based on lexical token affinity and recency decay.
+   */
+  recall(query: string, limit?: number): Promise<Array<{ id: number; content: string; importance: number; tags: string[]; createdAt: number }>>;
+
+  /**
+   * Recall prompt-ready markdown context formatted for LLM system prompts.
+   */
+  recallPrompt(query: string, limit?: number): Promise<string>;
+
+  /**
    * Subscribe to real-time table mutations (Reactive Live Queries / Change Data Capture).
    */
   subscribe(table: string, listener: (change: ChangeEvent) => void): SubscriptionHandle;
