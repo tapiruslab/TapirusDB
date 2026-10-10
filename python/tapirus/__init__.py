@@ -284,6 +284,11 @@ class Tapirus:
         """Run graph algorithm (Louvain, PageRank, WCC) on knowledge graph."""
         return {"algorithm": algo, "status": "converged", "iterations": 20}
 
+    @property
+    def tap(self) -> "_TapInterface":
+        """Access Tapirus cognitive intelligence primitives (classify, verify, route, score)."""
+        return _TapInterface(self)
+
     def close(self):
         """Close connection and flush unwritten buffers."""
         if getattr(self, "_handle", None):
@@ -298,6 +303,47 @@ class Tapirus:
 
     def __del__(self):
         self.close()
+
+
+class TapDecision:
+    """Result of Tap cognitive classification."""
+    def __init__(self, top_choice: str, confidence: float):
+        self.top_choice = top_choice
+        self.confidence = confidence
+
+    def __repr__(self):
+        return f"TapDecision(top_choice='{self.top_choice}', confidence={self.confidence:.4f})"
+
+    def __iter__(self):
+        return iter((self.top_choice, self.confidence))
+
+    def __getitem__(self, idx):
+        return (self.top_choice, self.confidence)[idx]
+
+
+class _TapInterface:
+    """Cognitive decision engine interface on active connection."""
+    def __init__(self, db: "Tapirus"):
+        self.db = db
+
+    def classify(self, text: str, candidates: List[str]) -> TapDecision:
+        label, conf = tap_classify(text, candidates)
+        return TapDecision(label, conf)
+
+    def verify(self, premise: str, hypothesis: str, threshold: float = 0.50) -> bool:
+        return tap_verify(premise, hypothesis, threshold)
+
+    def score(self, input: str, criteria: str) -> float:
+        return tap_score(input, criteria)
+
+    def route(self, state: str, routes: List[str]) -> str:
+        return tap_route(state, routes)
+
+    def verify_grounded(self, premise: str, hypothesis: str, index_name: str = "default", top_k: int = 3) -> bool:
+        return tap_verify_grounded(premise, hypothesis, index_name, top_k)
+
+    def classify_grounded(self, text: str, candidates: List[str], index_name: str = "default", top_k: int = 3) -> str:
+        return tap_classify_grounded(text, candidates, index_name, top_k)
 
 
 class Collection:

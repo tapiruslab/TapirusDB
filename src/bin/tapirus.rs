@@ -38,6 +38,12 @@ fn main() {
         return;
     }
 
+    // Check if sub-command is "studio"
+    if args.len() > 1 && args[1] == "studio" {
+        run_studio_command(&args[2..]);
+        return;
+    }
+
     // Check if sub-command is "backup"
     if args.len() > 1 && args[1] == "backup" {
         run_backup_command(&args[2..]);
@@ -180,6 +186,7 @@ fn print_help() {
     println!("  tapirus verify [OPTIONS] <DATABASE_FILE>             Cryptographic & physical page integrity audit");
     println!("  tapirus import <FORMAT> <FILE> [OPTIONS]             High-throughput data importer (CSV, JSONL, Markdown)");
     println!("  tapirus serve [OPTIONS] [DATABASE_FILE]              Launch high-performance HTTP REST server");
+    println!("  tapirus studio [OPTIONS] [DATABASE_FILE]             Launch Tapirus Studio companion bridge server");
     println!("  tapirus mcp [OPTIONS] [DATABASE_FILE]                Launch Model Context Protocol (MCP) server");
     println!("  tapirus grep [OPTIONS] <PATTERN> [PATH]              Accelerated hybrid workspace search (tg)");
     println!("  tapirus bitnet [OPTIONS] <INPUT> [CANDIDATES...]     Safe-Rust BitNet b1.58 ternary tensor neural engine");
@@ -242,6 +249,17 @@ fn print_serve_help() {
     println!();
     println!("Arguments:");
     println!("  [DATABASE_FILE]          Path to database file (defaults to: production.tapir)");
+}
+
+fn run_studio_command(args: &[String]) {
+    println!("===============================================================");
+    println!("  Tapirus Studio Companion Server (v{})", VERSION);
+    println!("===============================================================");
+    println!("  -> Web Studio UI:  https://tapirusdb.com/studio/");
+    println!("  -> Local API:      http://127.0.0.1:3005");
+    println!("  -> Press Ctrl+C to stop server cleanly.");
+    println!("===============================================================\n");
+    run_serve_command(args);
 }
 
 fn run_serve_command(args: &[String]) {
