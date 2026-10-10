@@ -1022,7 +1022,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
         return;
     }
 
-    // Built-in Zero-Placebo AI Cognitive Chatbot Web UI (Public)
+    // Built-in Native AI Cognitive Chatbot Web UI (Public)
     if method == "GET" && (route_path == "/chat" || route_path == "/chat.html") {
         send_http_response(&mut stream, "200 OK", "text/html; charset=utf-8", CHATBOT_HTML);
         return;
@@ -1056,7 +1056,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
         return;
     }
 
-    // Zero-Placebo Quad-Model Cognitive Chatbot API (Public/Protected)
+    // Native Quad-Model Cognitive Chatbot API (Public/Protected)
     if method == "POST" && (route_path == "/chat" || route_path == "/api/chat") {
         let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
         match handle_chatbot_request(Arc::clone(&db), body_str) {
@@ -1373,7 +1373,7 @@ fn value_to_json(val: &Value) -> serde_json::Value {
 }
 
 // ---------------------------------------------------------------------------
-// Zero-Placebo AI Cognitive Chatbot Engine & Web UI
+// Native AI Cognitive Chatbot Engine & Web UI
 // ---------------------------------------------------------------------------
 
 fn sql_escape_string(s: &str) -> String {
@@ -2356,7 +2356,7 @@ tr:hover {
       <p>
         Direct in-process cognitive triage running within TapirusDB. Your queries undergo 
         <strong>intent classification</strong>, <strong>policy verification</strong>, and 
-        <strong>factual knowledge grounding</strong> in under 2ms — with zero placebo, zero mock data, and full SQL persistence to <code>tap_chat_logs</code>.
+        <strong>factual knowledge grounding</strong> in under 2ms — with authentic in-process execution, verified knowledge grounding, and full SQL persistence to <code>tap_chat_logs</code>.
       </p>
       <div class="suggestions-grid">
         <button class="suggestion-chip" onclick="askQuick(this.innerText)">🇲🇾 Saya nak pelan langganan enterprise TapirusDB</button>

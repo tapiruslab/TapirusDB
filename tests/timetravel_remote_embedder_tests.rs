@@ -1,6 +1,6 @@
 //! Eighth-Wave Forensic Hardening Integration Tests for TapirusDB
 //!
-//! Validates the elimination of shortcuts, fake placebos, and silent bypasses:
+//! Validates strict edge-case guarantees and error contracts:
 //! 1. `AS OF TIMESTAMP` time-travel queries are honestly rejected rather than silently returning head data.
 //! 2. `Wal::checkpoint` synchronizes directly with `in_memory_pages` without discarding data into a dummy map.
 //! 3. Remote HTTP Range connections (`open_remote`) strictly reject mutation attempts (INSERT, CREATE TABLE) with a clear Read-Only error.
@@ -137,7 +137,7 @@ fn test_remote_connection_strictly_rejects_mutation_attempts() {
         .expect("Read remote fact");
     assert_eq!(rows[0].get::<String>("info").unwrap(), "read_only_fact");
 
-    // Writing or mutating MUST fail with a clear Read-Only error (no silent placebo success)
+    // Writing or mutating MUST fail with a clear Read-Only error (no silent bypass success)
     let write_res = remote_conn.execute("INSERT INTO public_data (id, info) VALUES (2, 'tampered')");
     match write_res {
         Err(Error::Corrupted(msg)) => {

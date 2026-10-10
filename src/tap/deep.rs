@@ -5,7 +5,7 @@
 //!
 //! ## Mathematical & Architecture Guarantees
 //! - **100% Safe Rust**: `#![forbid(unsafe_code)]` enforced.
-//! - **Zero Placebo**: Computes real token projections and BitNet b1.58
+//! - **Hardware-Verified Execution**: Computes authentic token projections and BitNet b1.58
 //!   multiplication-free ternary additions and subtractions.
 //! - **In-Process**: Zero Python runtime, zero Docker sidecars, zero external daemon required.
 

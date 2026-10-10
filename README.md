@@ -822,7 +822,7 @@ tapirus serve --port 3005 --api-key "your_secret_api_key" --passphrase "vault_se
 
 * **Constant-Time Verification**: Prevents timing side-channel attacks via `subtle::ConstantTimeEq`.
 * **Query Execution**: `POST /api/sql` or `POST /sql` accepts SQL queries, graph traversals, and document queries.
-* **AI Cognitive Chatbot Web UI**: `GET /chat` provides a zero-placebo web chat interface with live telemetry pills, intent triage, and knowledge grounding.
+* **AI Cognitive Chatbot Web UI**: `GET /chat` provides a native web chat interface with live telemetry pills, intent triage, and knowledge grounding.
 * **In-Database Chatbot API**: `POST /api/chat` runs TAP cognitive triage (< 2ms) and persists all dialogue rows into `tap_chat_logs`.
 * **Chatbot SQL Logs**: `GET /api/chat/logs` provides live inspection of persisted chat dialogues straight from the database.
 
@@ -950,7 +950,7 @@ Relational SQL Server (TCP IPC)   [████████]                    
 TapirusDB Combined Graph-Vector   [▌]                                          0.51 µs (In-Process CPU Memory Bus)
 ```
 
-### ⚡ Verified Tail-Latency & Physical Resource Footprint (Anti-Placebo)
+### ⚡ Verified Tail-Latency & Physical Resource Footprint
 
 Tested on native NVMe SSD hardware with true Write-Ahead Log (WAL) durability:
 

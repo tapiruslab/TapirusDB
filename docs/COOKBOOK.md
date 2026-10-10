@@ -623,7 +623,7 @@ TapirusDB compiles directly to **WebAssembly (`wasm32-unknown-unknown`)** into a
       // 5. Query relational records & recall semantic memory
       const rows = JSON.parse(db.query_json("SELECT * FROM notes WHERE category = 'work';"));
 
-      // 6. Physical Database Export (Zero-Placebo OPFS / File Download)
+      // 6. Physical Database Export (Native OPFS / File Download)
       // Export exact 4KB-aligned binary .tapir file for permanent local storage
       const bytes = db.export_bytes(); // Uint8Array
       console.log(`Exported physical database: ${bytes.length} bytes`);

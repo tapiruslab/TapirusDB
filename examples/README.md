@@ -1,6 +1,6 @@
 # 🦛 TapirusDB Examples Directory
 
-This directory contains verified, production-ready, zero-placebo integration examples for **TapirusDB** across 7 programming languages and serverless runtimes.
+This directory contains verified, production-ready integration examples for **TapirusDB** across 7 programming languages and serverless runtimes.
 
 All examples run directly on TapirusDB's **100% Safe-Rust Quad-Model Engine** (`.tapir` single-file container with Relational SQL, HNSW Vector Search, openCypher Knowledge Graph, and Schemaless Document Collections).
 
@@ -41,7 +41,7 @@ Output binary locations automatically discovered by all examples:
 
 ---
 
-## 🛡️ Zero-Placebo Guarantee
+## 🛡️ Production & Reliability Guarantees
 
 Every example in this folder is strictly tested:
 * **No dummy mocks**: SQL queries parse and execute in the genuine ACID database engine.

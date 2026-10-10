@@ -13,7 +13,7 @@
 //!
 //! ## Safety & Purity
 //! - **100% Safe Rust**: `#![forbid(unsafe_code)]` compliant.
-//! - **Zero Placebo**: Computes mathematically verified ternary contractions.
+//! - **Mathematical Verification**: Computes mathematically verified ternary contractions.
 
 use crate::error::{Error, Result};
 

@@ -1,5 +1,5 @@
 """
-TapirusDB Native AI Cognitive Chatbot (Zero-Placebo Implementation)
+TapirusDB Native AI Cognitive Chatbot (Production Implementation)
 ===================================================================
 A complete, runnable, production-ready chatbot powered directly by TapirusDB's
 Safe-Rust Quad-Model Engine:
@@ -246,7 +246,7 @@ class TapirusChatbot:
 
 def run_cli():
     print("=" * 70)
-    print("  🦣 TapirusDB AI Cognitive Chatbot (Zero-Placebo Native Engine)")
+    print("  🦣 TapirusDB AI Cognitive Chatbot (Native Engine)")
     print("  Supported Languages: English, Bahasa Melayu, French, German, Spanish")
     print("  Type 'exit' to quit | Type 'logs' to inspect real SQL persistence")
     print("=" * 70)
