@@ -430,15 +430,15 @@ conn.checkpoint()
 
 #### Node.js & TypeScript: Zero-Daemon Embedded Database
 ```typescript
-import { TapirusClient, open } from "tapirusdb";
+import { open, Tapirus } from "tapirus";
 
 // Connect to single-file database
-const db = new TapirusClient({ dbPath: "production.tapir" });
+const db = open("production.tapir");
 
 // 1. Relational SQL with Window Functions
-await db.execute("CREATE TABLE users (id INT PRIMARY KEY, name TEXT, score REAL);");
-await db.execute("INSERT INTO users VALUES (1, 'Alice', 95.5), (2, 'Bob', 88.0);");
-const ranked = await db.query(`
+db.execute("CREATE TABLE users (id INT PRIMARY KEY, name TEXT, score REAL);");
+db.execute("INSERT INTO users VALUES (1, 'Alice', 95.5), (2, 'Bob', 88.0);");
+const ranked = db.query(`
   SELECT name, score, 
          RANK() OVER (ORDER BY score DESC) as leaderboard_rank 
   FROM users;
@@ -446,8 +446,9 @@ const ranked = await db.query(`
 console.log(ranked);
 
 // 2. Built-in SIMD Vector Search & Graph Clustering
-const neighbors = await db.vectorSearch("docs", "vec", [0.9, 0.1, 0.0], 5);
-const communities = await db.graphAlgorithm("louvain");
+const neighbors = db.vectorSearch("docs", "vec", [0.9, 0.1, 0.0], 5);
+const communities = db.graphAlgorithm("louvain");
+db.close();
 ```
 
 ---
@@ -885,6 +886,17 @@ tapirus bitnet verify "user paid invoice" "invoice is paid"
 # 3. Benchmark local ternary contraction hardware throughput
 tapirus bitnet benchmark
 ```
+
+### 8. Visual Database Manager Companion Server (`tapirus studio`)
+Launch the companion REST server to connect with [Tapirus Studio Web GUI](https://tapirusdb.com/studio/) or desktop workbench:
+
+```bash
+# Start companion bridge server on port 3005 and connect to local database
+tapirus studio production.tapir
+```
+
+* Direct zero-setup companion bridge for the free in-browser and desktop Studio workbench.
+* Allows visual administration of SQL tables, HNSW vector space, openCypher graph relationships, and physical 4KB slotted page telemetry.
 
 ---
 
