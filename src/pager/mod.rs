@@ -9,7 +9,7 @@ pub mod replication;
 pub mod wal;
 
 use crate::error::{Error, Result};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -242,6 +242,12 @@ pub struct NamedSavepoint {
     pub wal_frame_count: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct LruNode {
+    prev: Option<PageId>,
+    next: Option<PageId>,
+}
+
 /// The Pager responsible for loading, allocating, caching, and writing database pages
 pub struct Pager {
     header: DatabaseHeader,
@@ -256,7 +262,9 @@ pub struct Pager {
     transaction_savepoint: Option<TransactionSavepoint>,
     named_savepoints: Vec<NamedSavepoint>,
     cache_capacity: usize,
-    lru_order: VecDeque<PageId>,
+    lru_head: Option<PageId>,
+    lru_tail: Option<PageId>,
+    lru_nodes: HashMap<PageId, LruNode>,
     remote_reader: Option<Arc<dyn RemoteRangeReader>>,
     remote_writer: Option<Arc<dyn RemoteStorageAdapter>>,
 }
@@ -444,31 +452,36 @@ impl Pager {
         }
 
         let cache_capacity = if _cache_capacity == 0 { 256 } else { _cache_capacity };
-        let mut lru_order = VecDeque::new();
-        for &pid in in_memory_pages.keys() {
-            lru_order.push_back(pid);
-        }
 
         _guard.active = false;
         let lock_file = _guard.file.take();
 
-        Ok(Self {
+        let mut pager = Self {
             header,
             file: file_opt,
             _path: Some(path.to_path_buf()),
             _lock_file: lock_file,
             _lock_path: Some(lock_path),
-            in_memory_pages,
+            in_memory_pages: HashMap::new(),
             wal: Some(wal),
             checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
             cipher,
             transaction_savepoint: None,
             named_savepoints: Vec::new(),
             cache_capacity,
-            lru_order,
+            lru_head: None,
+            lru_tail: None,
+            lru_nodes: HashMap::new(),
             remote_reader: None,
             remote_writer: None,
-        })
+        };
+
+        for (pid, page) in in_memory_pages {
+            pager.in_memory_pages.insert(pid, page);
+            pager.touch_lru(pid);
+        }
+
+        Ok(pager)
     }
 
     /// Open an in-memory database with active in-memory WAL
@@ -497,10 +510,8 @@ impl Pager {
 
         let wal = Wal::open_in_memory(page_size as u32);
         let cache_capacity = if _cache_capacity == 0 { 256 } else { _cache_capacity };
-        let mut lru_order = VecDeque::new();
-        lru_order.push_back(1);
 
-        Ok(Self {
+        let mut pager = Self {
             header,
             file: None,
             _path: None,
@@ -513,10 +524,15 @@ impl Pager {
             transaction_savepoint: None,
             named_savepoints: Vec::new(),
             cache_capacity,
-            lru_order,
+            lru_head: None,
+            lru_tail: None,
+            lru_nodes: HashMap::new(),
             remote_reader: None,
             remote_writer: None,
-        })
+        };
+        pager.touch_lru(1);
+
+        Ok(pager)
     }
 
     /// Open an in-memory database initialized from a contiguous byte slice (e.g. from browser OPFS or file upload).
@@ -559,28 +575,33 @@ impl Pager {
         }
 
         let wal = Wal::open_in_memory(header.page_size as u32);
-        let mut lru_order = VecDeque::new();
-        for pid in 1..=total_pages {
-            lru_order.push_back(pid);
-        }
 
-        Ok(Self {
+        let mut pager = Self {
             header,
             file: None,
             _path: None,
             _lock_file: None,
             _lock_path: None,
-            in_memory_pages,
+            in_memory_pages: HashMap::new(),
             wal: Some(wal),
             checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
             cipher,
             transaction_savepoint: None,
             named_savepoints: Vec::new(),
             cache_capacity: 256,
-            lru_order,
+            lru_head: None,
+            lru_tail: None,
+            lru_nodes: HashMap::new(),
             remote_reader: None,
             remote_writer: None,
-        })
+        };
+
+        for (pid, page) in in_memory_pages {
+            pager.in_memory_pages.insert(pid, page);
+            pager.touch_lru(pid);
+        }
+
+        Ok(pager)
     }
 
     /// Open a read-only Pager streaming pages on-demand from remote cloud storage (S3/R2)
@@ -622,7 +643,9 @@ impl Pager {
             transaction_savepoint: None,
             named_savepoints: Vec::new(),
             cache_capacity,
-            lru_order: VecDeque::new(),
+            lru_head: None,
+            lru_tail: None,
+            lru_nodes: HashMap::new(),
             remote_reader: Some(reader),
             remote_writer: None,
         })
@@ -636,7 +659,6 @@ impl Pager {
     ) -> Result<Self> {
         let total_size = adapter.total_size()?;
         let mut in_memory_pages = HashMap::new();
-        let mut lru_order = VecDeque::new();
 
         let header = if total_size >= DATABASE_HEADER_SIZE as u64 {
             let header_buf = adapter.fetch_range(0, DATABASE_HEADER_SIZE)?;
@@ -662,7 +684,6 @@ impl Pager {
             let mut page1 = vec![0u8; DEFAULT_PAGE_SIZE as usize];
             page1[0..DATABASE_HEADER_SIZE].copy_from_slice(&h.to_bytes());
             in_memory_pages.insert(1, page1);
-            lru_order.push_back(1);
             h
         } else {
             return Err(Error::Corrupted("Remote file too small for database header".into()));
@@ -671,7 +692,7 @@ impl Pager {
         let cache_capacity = if _cache_capacity == 0 { 256 } else { _cache_capacity };
         let wal = Wal::open_in_memory(header.page_size as u32);
 
-        Ok(Self {
+        let mut pager = Self {
             header,
             file: None,
             _path: None,
@@ -684,10 +705,18 @@ impl Pager {
             transaction_savepoint: None,
             named_savepoints: Vec::new(),
             cache_capacity,
-            lru_order,
+            lru_head: None,
+            lru_tail: None,
+            lru_nodes: HashMap::new(),
             remote_reader: Some(adapter.clone() as Arc<dyn RemoteRangeReader>),
             remote_writer: Some(adapter),
-        })
+        };
+
+        if pager.in_memory_pages.contains_key(&1) {
+            pager.touch_lru(1);
+        }
+
+        Ok(pager)
     }
 
     /// Push local changes back to the remote cloud storage adapter
@@ -782,38 +811,107 @@ impl Pager {
         &mut self.in_memory_pages
     }
 
-    /// Update page access in LRU queue
+    /// Update page access in LRU queue in O(1) time
     fn touch_lru(&mut self, page_id: PageId) {
-        if let Some(pos) = self.lru_order.iter().position(|&pid| pid == page_id) {
-            self.lru_order.remove(pos);
+        if self.lru_tail == Some(page_id) {
+            return;
         }
-        self.lru_order.push_back(page_id);
+
+        // If page is already in the list, detach it
+        if let Some(node) = self.lru_nodes.get(&page_id).copied() {
+            if let Some(prev) = node.prev {
+                if let Some(p) = self.lru_nodes.get_mut(&prev) {
+                    p.next = node.next;
+                }
+            } else {
+                self.lru_head = node.next;
+            }
+
+            if let Some(next) = node.next {
+                if let Some(n) = self.lru_nodes.get_mut(&next) {
+                    n.prev = node.prev;
+                }
+            } else {
+                self.lru_tail = node.prev;
+            }
+        }
+
+        // Attach to tail (most recently used)
+        let old_tail = self.lru_tail;
+        if let Some(tail_id) = old_tail {
+            if let Some(t) = self.lru_nodes.get_mut(&tail_id) {
+                t.next = Some(page_id);
+            }
+            self.lru_nodes.insert(
+                page_id,
+                LruNode {
+                    prev: Some(tail_id),
+                    next: None,
+                },
+            );
+            self.lru_tail = Some(page_id);
+        } else {
+            self.lru_head = Some(page_id);
+            self.lru_tail = Some(page_id);
+            self.lru_nodes.insert(
+                page_id,
+                LruNode {
+                    prev: None,
+                    next: None,
+                },
+            );
+        }
+    }
+
+    /// Remove a page from the LRU queue in O(1) time
+    fn remove_lru(&mut self, page_id: PageId) {
+        if let Some(node) = self.lru_nodes.remove(&page_id) {
+            if let Some(prev) = node.prev {
+                if let Some(p) = self.lru_nodes.get_mut(&prev) {
+                    p.next = node.next;
+                }
+            } else {
+                self.lru_head = node.next;
+            }
+
+            if let Some(next) = node.next {
+                if let Some(n) = self.lru_nodes.get_mut(&next) {
+                    n.prev = node.prev;
+                }
+            } else {
+                self.lru_tail = node.prev;
+            }
+        }
     }
 
     /// Evict clean pages when in-memory cache exceeds configured capacity.
-    /// Only active for disk-backed databases where pages can be reloaded on demand.
+    /// Traverses from lru_head (least recently used) in O(1) amortized time.
     fn evict_if_needed(&mut self) {
         if self.file.is_none() && self.wal.is_none() {
             return;
         }
         let capacity = self.cache_capacity.max(4);
         while self.in_memory_pages.len() > capacity {
-            let mut target = None;
-            for (idx, &pid) in self.lru_order.iter().enumerate() {
-                if pid == 1 {
-                    continue; // Preserve page 1 header / schema root
-                }
-                if let Some(sp) = &self.transaction_savepoint {
-                    if sp.undo_pages.contains_key(&pid) || sp.dirty_pages.contains(&pid) {
-                        continue; // Preserve active uncommitted transactional pages
+            let mut curr = self.lru_head;
+            let mut evict_target = None;
+            while let Some(pid) = curr {
+                let next = self.lru_nodes.get(&pid).and_then(|n| n.next);
+                if pid != 1 {
+                    let is_active_tx = if let Some(sp) = &self.transaction_savepoint {
+                        sp.undo_pages.contains_key(&pid) || sp.dirty_pages.contains(&pid)
+                    } else {
+                        false
+                    };
+                    if !is_active_tx {
+                        evict_target = Some(pid);
+                        break;
                     }
                 }
-                target = Some((idx, pid));
-                break;
+                curr = next;
             }
 
-            if let Some((idx, pid)) = target {
-                self.lru_order.remove(idx);
+            if let Some(pid) = evict_target {
+                self.remove_lru(pid);
                 self.in_memory_pages.remove(&pid);
             } else {
                 break;
@@ -1418,9 +1516,7 @@ impl Pager {
                 }
                 None => {
                     self.in_memory_pages.remove(&page_id);
-                    if let Some(pos) = self.lru_order.iter().position(|&pid| pid == page_id) {
-                        self.lru_order.remove(pos);
-                    }
+                    self.remove_lru(page_id);
                 }
             }
         }
@@ -1467,9 +1563,7 @@ impl Pager {
                     }
                     None => {
                         self.in_memory_pages.remove(&page_id);
-                        if let Some(pos) = self.lru_order.iter().position(|&pid| pid == page_id) {
-                            self.lru_order.remove(pos);
-                        }
+                        self.remove_lru(page_id);
                     }
                 }
             }
@@ -1716,5 +1810,57 @@ mod tests {
         let p5 = pager.allocate_page().expect("Allocate page 5");
         assert_eq!(p5, 5);
         assert_eq!(pager.total_pages(), 5);
+    }
+
+    #[test]
+    fn test_lru_order_preservation_and_capacity() {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join(format!(
+            "tapirus_lru_order_test_{}.tapir",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        {
+            // Open with capacity 4 (capacity is max(4, ...))
+            let mut pager = Pager::open_with_config(&db_path, 4096, 4).expect("Open with capacity 4");
+
+            // Allocate and write pages 2, 3, 4
+            for pid in 2..=4 {
+                let p = pager.allocate_page().unwrap();
+                assert_eq!(p, pid);
+                let pdata = vec![pid as u8; 4096];
+                pager.write_page(p, &pdata).unwrap();
+            }
+            pager.sync().unwrap();
+
+            // Cache now contains: 1 (header), 2, 3, 4 (4 pages total)
+            assert!(pager.in_memory_pages().contains_key(&2));
+            assert!(pager.in_memory_pages().contains_key(&3));
+            assert!(pager.in_memory_pages().contains_key(&4));
+
+            // Touch page 2 (simulate reading it) -> page 2 moves to LRU tail (most recently used)
+            let _ = pager.read_page(2).unwrap();
+
+            // Allocate and write page 5 -> exceeds capacity 4, must evict page 3 (LRU)!
+            let p5 = pager.allocate_page().unwrap();
+            let pdata5 = vec![5u8; 4096];
+            pager.write_page(p5, &pdata5).unwrap();
+
+            // Page 2 was recently accessed, so page 3 should have been evicted instead of page 2
+            assert!(pager.in_memory_pages().contains_key(&2), "Page 2 should still be cached because it was touched");
+            assert!(!pager.in_memory_pages().contains_key(&3), "Page 3 should be evicted as LRU");
+            assert!(pager.in_memory_pages().contains_key(&5), "Page 5 should be in cache");
+
+            // Read evicted page 3 -> reloads cleanly from disk/WAL
+            let p3_reloaded = pager.read_page(3).unwrap();
+            assert_eq!(p3_reloaded[0], 3);
+            assert!(pager.in_memory_pages().contains_key(&3));
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("tapir-wal"));
     }
 }

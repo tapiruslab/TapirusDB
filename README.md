@@ -26,7 +26,7 @@
 <br/>
 
 > 💡 **"Build private AI applications without operating a massive database stack."**  
-> TapirusDB is the high-performance, embedded quad-model database engine for local AI agents, desktop applications, and edge hardware. It collapses vector similarity search, knowledge graphs, relational tables, and JSON documents into a **single encrypted `.tapir` file** with sub-microsecond in-process retrieval ($0.51\ \mu\text{s}$) — backed by a 100% Safe Rust core for rock-solid data integrity.
+> TapirusDB is the high-performance, embedded quad-model database engine for local AI agents, desktop applications, and edge hardware. It collapses vector similarity search, knowledge graphs, relational tables, and JSON documents into a **single encrypted `.tapir` file** with sub-microsecond in-memory graph-to-vector chaining ($0.51\ \mu\text{s}$), microsecond SQL point lookups (~$2.4\ \mu\text{s}$), and 100k+ ACID writes/sec — backed by a 100% Safe Rust core for rock-solid data integrity.
 
 > 🖥️ **Need a Visual Database Manager (like phpMyAdmin or Supabase Studio)?**  
 > Use **[Tapirus Studio](https://tapirusdb.com/studio/index.html)** — our free visual GUI companion for TapirusDB!  
@@ -55,10 +55,10 @@ Modern AI and edge developers are forced into **Fragmented Polyglot Persistence*
 ## Highlights
 
 * 📁 **Single-File AI Engine (Kill the "Frankenstack")**: Seamlessly consolidates **Relational SQL-92**, **HNSW & IVF Vector Search**, **openCypher Property Graphs**, and **JSON Documents** inside a single `.tapir` file. No Docker containers, no background servers (`mysqld`, `mongod`), and zero network serialization overhead.
-* ⚡ **True In-Process Speed (Zero-IPC)**: Compiles and links directly into your application process (Python, TypeScript, Go, Rust, C/C++). Retrieves cross-model data via direct memory bus pointers ($0.51\ \mu\text{s}$) — **600x faster** than cloud vector DB network hops.
+* ⚡ **True In-Process Speed (Zero-IPC)**: Compiles and links directly into your application process (Python, Node.js, Rust, C/C++) or connects via lightweight high-concurrency clients (Go, PHP, REST). Retrieves in-memory graph-to-vector traversals via direct memory pointers ($0.51\ \mu\text{s}$) — **600x faster** than cloud vector DB network hops.
 * 🧠 **Production GraphRAG & AI Agent Memory**: Built-in hybrid search with Tri-Modal Reciprocal Rank Fusion (RRF fusing lexical BM25, semantic vectors, and graph structural proximity), episodic memory with exponential temporal decay, and isolated agent namespaces.
 * 🔐 **Zero-Config At-Rest Encryption**: XChaCha20-Poly1305 AEAD authenticated page-level encryption built directly into the storage engine. Zero commercial add-on licenses required.
-* 🦀 **Bulletproof 100% Safe Rust Core (`#![forbid(unsafe_code)]`)**: Guaranteed compile-time memory safety across the entire core storage engine with zero memory leaks, buffer overruns, or segfault crashes. 93/93 passing unit tests. (Optional C-ABI bridge in `crates/tapirus-ffi` enforces defensive FFI bounds checks).
+* 🦀 **Bulletproof 100% Safe Rust Core (`#![forbid(unsafe_code)]`)**: Guaranteed compile-time memory safety across the entire core storage engine with zero memory leaks, buffer overruns, or segfault crashes. 100 unit tests and 179 integration tests passing (`cargo test --tests`, 280 tests total with FFI, Oct 2026). (Optional C-ABI bridge in `crates/tapirus-ffi` enforces defensive FFI bounds checks).
 * 📈 **Advanced SQL Window Functions & Graph Algorithms**: Built-in ANSI SQL window operations (`ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `NTILE()`, `LAG()`, `LEAD()`) and native graph topology algorithms (`GRAPH ALGORITHM louvain`, `betweenness`, `connected_components`, `pagerank`).
 * 🧠 **Production GraphRAG & AI Memory**: Built-in seed-and-traverse GraphRAG with Tri-Modal Reciprocal Rank Fusion (RRF), episodic memory with exponential temporal decay, and isolated agent namespaces.
 * ⚡ **Tap Sub-Millisecond Cognitive Instinct Engine**: In-database non-autoregressive System-1 decision core (`Tap::classify`, `Tap::score`, `Tap::verify`, `Tap::route`). Run 1,000 deterministic agent decisions per second directly inside SQL queries (`TAP_CLASSIFY()`, `TAP_VERIFY()`) in pure Safe Rust (< 2ms) with zero cloud tokens and zero API costs.

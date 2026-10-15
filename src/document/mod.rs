@@ -17,6 +17,11 @@ pub struct Collection<'a> {
 impl<'a> Collection<'a> {
     /// Open or create a Document collection by name
     pub fn open(name: &str, conn: &'a Connection) -> Result<Self> {
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(Error::SqlSyntax(format!(
+                "Invalid collection name '{name}': must contain only alphanumeric characters and underscores"
+            )));
+        }
         let table_name = format!("__doc_{name}");
         let sql = format!(
             "CREATE TABLE IF NOT EXISTS {table_name} (id INTEGER PRIMARY KEY, doc TEXT);"
@@ -25,19 +30,24 @@ impl<'a> Collection<'a> {
         Ok(Self { table_name, conn })
     }
 
-    /// Insert a JSON document with an auto-incremented primary key
+    /// Insert a JSON document with an auto-incremented primary key atomically via RETURNING
     pub fn insert_one(&self, doc: &JsonValue) -> Result<u64> {
-        // Find maximum existing ID to guarantee strict monotonic progression and avoid collisions after deletion
-        let sql = format!("SELECT id FROM {} ORDER BY id DESC LIMIT 1;", self.table_name);
-        let rows = self.conn.query(&sql)?;
-        let next_id = if let Some(first) = rows.first() {
-            let max_id: i64 = first.get("id")?;
-            (max_id.max(0) as u64) + 1
+        let json_str = serde_json::to_string(doc)
+            .map_err(|e| Error::Corrupted(format!("Failed to serialize JSON document: {e}")))?;
+        let sql = format!(
+            "INSERT INTO {} (doc) VALUES (?) RETURNING id;",
+            self.table_name
+        );
+        let rows = self.conn.query_with_params(
+            &sql,
+            &[Value::Text(json_str)],
+        )?;
+        if let Some(first) = rows.first() {
+            let id: i64 = first.get("id")?;
+            Ok(id as u64)
         } else {
-            1
-        };
-        self.insert_with_id(next_id, doc)?;
-        Ok(next_id)
+            Err(Error::Internal("Failed to retrieve auto-generated ID from document insert".into()))
+        }
     }
 
     /// Insert a JSON document with an explicit document ID
@@ -190,5 +200,21 @@ mod tests {
 
         let doc3 = collection.find_by_id(3).expect("Find doc 3");
         assert!(doc3.is_some());
+    }
+
+    #[test]
+    fn test_collection_name_sanitization_rejects_sql_injection() {
+        let conn = Connection::open_in_memory().expect("Open in-memory");
+
+        // Malicious names with spaces, semicolons, quotes, comments
+        assert!(conn.collection("users; DROP TABLE users; --").is_err());
+        assert!(conn.collection("users' OR 1=1 --").is_err());
+        assert!(conn.collection("my collection").is_err());
+        assert!(conn.collection("").is_err());
+        assert!(conn.collection("coll-name").is_err());
+
+        // Valid names
+        assert!(conn.collection("valid_name_123").is_ok());
+        assert!(conn.collection("items").is_ok());
     }
 }

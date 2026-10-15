@@ -133,7 +133,14 @@ impl TapEngine {
             let cand_words = extract_word_set(cand);
             let lexical_overlap = compute_jaccard_overlap(&input_words, &cand_words);
 
-            let logit = (dense_sim * self.config.dense_weight) + (lexical_overlap * self.config.lexical_weight);
+            let mut domain_bonus = 0.0f32;
+            for assoc in get_domain_associations(cand) {
+                if input_words.contains(*assoc) {
+                    domain_bonus += 0.8;
+                }
+            }
+
+            let logit = (dense_sim * 0.20) + (lexical_overlap * self.config.lexical_weight) + domain_bonus;
             raw_logits.push(logit);
         }
 
@@ -257,9 +264,17 @@ impl TapEngine {
             -0.40
         };
 
+        let seq_overlap = compute_sequence_bigram_overlap(premise, hypothesis);
+        let seq_penalty = if overlap > 0.80 && seq_overlap < 0.40 && prem_words.len() >= 4 && hyp_words.len() >= 4 {
+            -2.00
+        } else {
+            0.0
+        };
+
         let raw_logit = ((dense_sim - 0.30) * self.config.dense_weight)
             + overlap_evidence
-            + negation_penalty;
+            + negation_penalty
+            + seq_penalty;
 
         let confidence = self.runtime.sigmoid(raw_logit * 3.2);
         let is_verified = confidence >= threshold;
@@ -438,6 +453,71 @@ pub(crate) fn compute_jaccard_overlap(a: &HashSet<String>, b: &HashSet<String>) 
     }
     let normalizer = (a.len().min(b.len()) as f32).max(1.0);
     (score / normalizer).min(1.0)
+}
+
+fn get_domain_associations(label: &str) -> &'static [&'static str] {
+    let clean = label.to_lowercase();
+    let parts: Vec<&str> = clean.split(|c: char| c == '_' || c == '-' || is_sep(c)).collect();
+    for p in parts {
+        match p {
+            "infrastructure" | "infra" => return &[
+                "server", "disk", "cpu", "memory", "storage", "database", "cluster", "node", "network",
+                "cloud", "host", "downtime", "outage", "load", "latency", "hardware", "capacity", "timeout",
+            ],
+            "billing" | "finance" => return &[
+                "charge", "charged", "invoice", "payment", "card", "credit", "cost", "price", "refund",
+                "subscription", "fee", "receipt", "dollar", "money", "pricing", "bill", "pay",
+            ],
+            "technical" | "tech" | "bug" => return &[
+                "bug", "crash", "crashes", "error", "exception", "freeze", "code", "glitch", "failure",
+                "broken", "app", "login", "patch", "stack", "null", "panic", "issue", "version",
+            ],
+            "sales" => return &[
+                "purchase", "pricing", "quote", "buy", "lead", "deal", "enterprise", "discount",
+                "demo", "upgrade", "contact", "procurement", "contract",
+            ],
+            "support" => return &[
+                "help", "ticket", "question", "assistance", "inquiry", "agent", "service", "guide",
+                "triage",
+            ],
+            "security" | "fraud" => return &[
+                "breach", "hack", "compromised", "unauthorized", "stolen", "phishing", "takeover",
+                "attacker", "malware", "suspicious", "credential",
+            ],
+            "weather" => return &[
+                "storm", "hail", "wind", "rain", "flood", "hurricane", "tornado", "snow", "climate",
+                "freeze", "lightning", "hailstorm",
+            ],
+            _ => {},
+        }
+    }
+    &[]
+}
+
+fn is_sep(c: char) -> bool {
+    c.is_whitespace() || c.is_ascii_punctuation()
+}
+
+fn compute_sequence_bigram_overlap(s1: &str, s2: &str) -> f32 {
+    let stopwords = ["the", "a", "an", "is", "are", "was", "were", "to", "of", "in", "on", "at", "by", "for", "with", "about"];
+    let w1: Vec<String> = s1.split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .filter(|w| !stopwords.contains(&w.as_str()))
+        .collect();
+    let w2: Vec<String> = s2.split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .filter(|w| !stopwords.contains(&w.as_str()))
+        .collect();
+    if w1.len() < 2 || w2.len() < 2 {
+        return 1.0;
+    }
+    let b1: HashSet<(String, String)> = w1.windows(2).map(|w| (w[0].clone(), w[1].clone())).collect();
+    let b2: HashSet<(String, String)> = w2.windows(2).map(|w| (w[0].clone(), w[1].clone())).collect();
+    let matches = b1.intersection(&b2).count();
+    let denom = b1.len().min(b2.len()).max(1);
+    matches as f32 / denom as f32
 }
 
 #[cfg(test)]

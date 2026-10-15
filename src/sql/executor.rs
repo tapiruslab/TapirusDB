@@ -915,6 +915,9 @@ impl SQLExecutor {
 
     /// Persist all active in-memory HNSW vector index topologies into `__sys_vector_snapshots`
     pub fn persist_vector_indexes_to_disk(&mut self, pager: &mut Pager) -> Result<()> {
+        if self.vector_indexes.is_empty() {
+            return Ok(());
+        }
         let cols = vec![
             ColumnDef::new("id", DataType::Integer).primary_key(),
             ColumnDef::new("table_name", DataType::Text),
@@ -3629,9 +3632,6 @@ impl SQLExecutor {
                     .entry(table.to_lowercase())
                     .or_insert_with(|| HnswIndex::new(vec_data.len(), DistanceMetric::Cosine));
                 index.insert_vector(row_id, vec_data)?;
-                if !pager.is_in_transaction() {
-                    let _ = self.persist_vector_indexes_to_disk(pager);
-                }
             }
         }
 
@@ -3912,9 +3912,6 @@ impl SQLExecutor {
                     .entry(table.to_lowercase())
                     .or_insert_with(|| HnswIndex::new(vec_data.len(), DistanceMetric::Cosine));
                 index.insert_vector(row_id, vec_data)?;
-                if !pager.is_in_transaction() {
-                    let _ = self.persist_vector_indexes_to_disk(pager);
-                }
             }
         }
 

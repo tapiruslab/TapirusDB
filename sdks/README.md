@@ -86,14 +86,14 @@ On Windows, copy `tapirus.dll` into your application directory or add its direct
 
 ---
 
-## 🐍 Python SDK (`sdks/python`)
+## 🐍 Python SDK (`sdks/python` & `python/`)
 
-The official Python client connects natively to the C-ABI engine via `ctypes`.
+TapirusDB provides dual Python interfaces: a high-performance PyO3 native Rust extension (`sdks/python`) and a zero-dependency C-ABI wrapper via `ctypes` (`python/tapirus`). Both export identical `Tapirus`, `Connection`, and `Collection` classes.
 
 ### Installation
 ```bash
 pip install tapirus
-# Or from local source:
+# Or compile native PyO3 wheel from local source:
 cd sdks/python && pip install .
 ```
 

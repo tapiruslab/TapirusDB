@@ -897,6 +897,7 @@ impl Connection {
     /// Manually trigger a WAL checkpoint, flushing all committed pages
     /// from `.tapir-wal` to the main database file and resetting the log.
     pub fn checkpoint(&self) -> Result<usize> {
+        let _ = self.persist_vector_snapshots();
         let mut pager = self.pager.write();
         pager.checkpoint()
     }
@@ -1288,6 +1289,22 @@ impl Connection {
         let rows = self.query(sql)?;
         serde_json::to_string(&rows)
             .map_err(|e| Error::Corrupted(format!("Failed to serialize query rows to JSON: {e}")))
+    }
+
+    /// Explicitly close the connection, persisting any dirty vector snapshots and checkpointing the WAL.
+    pub fn close(&self) -> Result<()> {
+        let _ = self.persist_vector_snapshots();
+        let mut pager = self.pager.write();
+        let _ = pager.checkpoint();
+        Ok(())
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.pager) == 1 {
+            let _ = self.persist_vector_snapshots();
+        }
     }
 }
 

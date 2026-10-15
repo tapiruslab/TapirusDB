@@ -232,11 +232,9 @@ impl Connection {
         py: Python<'_>,
         algo: &str,
     ) -> PyResult<PyObject> {
-        let py_dict = PyDict::new(py);
-        py_dict.set_item("algorithm", algo)?;
-        py_dict.set_item("status", "converged")?;
-        py_dict.set_item("iterations", 20)?;
-        Ok(py_dict.into())
+        let clean_algo = algo.trim().to_uppercase();
+        let sql = format!("GRAPH ALGORITHM {clean_algo};");
+        self.query(py, &sql)
     }
 }
 
@@ -291,6 +289,7 @@ fn tap_classify_grounded(text: &str, candidates_raw: &str, index_name: &str, top
 fn tapirus(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Connection>()?;
     m.add_class::<Collection>()?;
+    m.add("Tapirus", py.get_type::<Connection>())?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(tap_classify, m)?)?;
     m.add_function(wrap_pyfunction!(tap_classify_grounded, m)?)?;

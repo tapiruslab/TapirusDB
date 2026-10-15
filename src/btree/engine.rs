@@ -487,7 +487,7 @@ pub fn read_overflow_chain(
     Ok(out)
 }
 
-/// Release and zero out chained overflow pages starting from first_page_id
+/// Release and zero out chained overflow pages starting from first_page_id, returning them to the freelist
 pub fn free_overflow_chain(
     pager: &mut Pager,
     first_page_id: PageId,
@@ -500,6 +500,7 @@ pub fn free_overflow_chain(
         let page_buf = pager.read_page(curr)?;
         let next_page = u32::from_le_bytes([page_buf[0], page_buf[1], page_buf[2], page_buf[3]]);
         pager.write_page(curr, &zero_page)?;
+        pager.free_page(curr)?;
         curr = next_page;
     }
 
@@ -659,12 +660,26 @@ impl BTreeStorage {
 
         match page_type {
             PageType::TableLeaf => {
+                let old_overflow = pager.with_page(curr_page_id, |page_buf| {
+                    if let Ok(idx) = find_leaf_cell_index_by_key(page_buf, curr_page_id, key)? {
+                        Ok(read_leaf_cell(page_buf, curr_page_id, idx)?.overflow_page)
+                    } else {
+                        Ok(None)
+                    }
+                })?;
+
                 let inserted = pager.modify_page(curr_page_id, |page_buf| {
                     insert_leaf_cell_raw(page_buf, curr_page_id, key, &payload, overflow_page)
                 })?;
                 if inserted {
+                    if let Some(old_ovf) = old_overflow {
+                        free_overflow_chain(pager, old_ovf)?;
+                    }
                     Ok(None)
                 } else {
+                    if let Some(old_ovf) = old_overflow {
+                        free_overflow_chain(pager, old_ovf)?;
+                    }
                     // Leaf page is full! Must split into two pages
                     let page_buf = pager.read_page(curr_page_id)?;
                     let cell = TableLeafCell {

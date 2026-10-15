@@ -28,32 +28,31 @@ for (const p of possibleBindings) {
 const { TapirusDatabase } = require('./engine.js');
 
 class TapirusConnectionWrapper {
-  constructor(db) {
+  constructor(db, isNative = false) {
     this._db = db;
+    this.isNative = isNative;
   }
 
   execute(sql, params = []) {
-    // Synchronous-compatible bridge for test suites and scripts
-    const res = this._db.execute(sql, params);
-    if (res && typeof res.then === 'function') {
-      let done = false;
-      let val = 0;
-      res.then(v => { val = v; done = true; });
-      return val;
+    let finalSql = sql;
+    if (Array.isArray(params) && params.length > 0) {
+      for (const p of params) {
+        const val = typeof p === 'string' ? `'${p.replace(/'/g, "''")}'` : (p === null ? 'NULL' : p);
+        finalSql = finalSql.replace('?', val);
+      }
     }
-    return res;
+    return this._db.execute(finalSql);
   }
 
   query(sql, params = []) {
-    // Synchronous query execution bridge
-    let rows = [];
-    const res = this._db.query(sql, params);
-    if (res && typeof res.then === 'function') {
-      res.then(r => { rows = r; });
-    } else {
-      rows = res || [];
+    let finalSql = sql;
+    if (Array.isArray(params) && params.length > 0) {
+      for (const p of params) {
+        const val = typeof p === 'string' ? `'${p.replace(/'/g, "''")}'` : (p === null ? 'NULL' : p);
+        finalSql = finalSql.replace('?', val);
+      }
     }
-    return rows;
+    return this._db.query(finalSql);
   }
 
   vectorSearch(table, vectorCol, queryVec, limit = 5) {
@@ -62,7 +61,7 @@ class TapirusConnectionWrapper {
   }
 
   tapClassify(text, candidates) {
-    if (this._db.tapClassify) {
+    if (this._db.tapClassify && !this.isNative) {
       return this._db.tapClassify(text, candidates);
     }
     const candsJson = JSON.stringify(candidates).replace(/'/g, "''");
@@ -72,7 +71,7 @@ class TapirusConnectionWrapper {
   }
 
   tapVerify(premise, hypothesis, threshold = 0.5) {
-    if (this._db.tapVerify) {
+    if (this._db.tapVerify && !this.isNative) {
       return this._db.tapVerify(premise, hypothesis, threshold);
     }
     const escP = premise.replace(/'/g, "''");
@@ -82,7 +81,7 @@ class TapirusConnectionWrapper {
   }
 
   tapScore(text, criteria) {
-    if (this._db.tapScore) {
+    if (this._db.tapScore && !this.isNative) {
       return this._db.tapScore(text, criteria);
     }
     const escT = text.replace(/'/g, "''");
@@ -92,7 +91,7 @@ class TapirusConnectionWrapper {
   }
 
   tapRoute(state, routes) {
-    if (this._db.tapRoute) {
+    if (this._db.tapRoute && !this.isNative) {
       return this._db.tapRoute(state, routes);
     }
     const escS = state.replace(/'/g, "''");
@@ -102,13 +101,24 @@ class TapirusConnectionWrapper {
   }
 
   close() {
-    this._db.close();
+    if (this._db.close) {
+      this._db.close();
+    }
   }
 }
 
 function open(filePath = ':memory:', options = {}) {
+  if (nativeBinding && nativeBinding.TapirusClient) {
+    try {
+      const client = new nativeBinding.TapirusClient({
+        dbPath: filePath,
+        passphrase: options.passphrase || null,
+      });
+      return new TapirusConnectionWrapper(client, true);
+    } catch (_) {}
+  }
   const db = new TapirusDatabase(filePath, options);
-  return new TapirusConnectionWrapper(db);
+  return new TapirusConnectionWrapper(db, false);
 }
 
 module.exports = {
