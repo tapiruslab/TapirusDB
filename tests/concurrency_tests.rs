@@ -23,7 +23,10 @@ fn test_concurrent_cloned_connections_and_pool() {
     // Pre-populate rows
     for i in 1..=50 {
         setup_conn
-            .execute(&format!("INSERT INTO metrics VALUES ({i}, 0, {}.5);", i * 10))
+            .execute(&format!(
+                "INSERT INTO metrics VALUES ({i}, 0, {}.5);",
+                i * 10
+            ))
             .unwrap();
     }
 
@@ -53,7 +56,10 @@ fn test_concurrent_cloned_connections_and_pool() {
     // Verify all 10 worker inserts completed safely without deadlocks or corruption
     let final_conn = pool.acquire();
     let count_rows = final_conn.query("SELECT COUNT(id) FROM metrics;").unwrap();
-    assert_eq!(count_rows[0].get_value("COUNT(id)"), Some(&Value::Integer(60)));
+    assert_eq!(
+        count_rows[0].get_value("COUNT(id)"),
+        Some(&Value::Integer(60))
+    );
 }
 
 #[test]
@@ -118,70 +124,109 @@ fn test_four_model_atomic_transaction() {
 
     // Initialize all 4 models:
     // 1. Relational SQL
-    conn.execute("CREATE TABLE sql_state (id INTEGER PRIMARY KEY, status TEXT);").unwrap();
-    conn.execute("INSERT INTO sql_state (id, status) VALUES (1, 'initial');").unwrap();
+    conn.execute("CREATE TABLE sql_state (id INTEGER PRIMARY KEY, status TEXT);")
+        .unwrap();
+    conn.execute("INSERT INTO sql_state (id, status) VALUES (1, 'initial');")
+        .unwrap();
 
     // 2. Documents (JSON)
     let docs = conn.collection("user_payloads").unwrap();
-    docs.insert_one(&serde_json::json!({"doc_id": 1, "data": "original_payload"})).unwrap();
+    docs.insert_one(&serde_json::json!({"doc_id": 1, "data": "original_payload"}))
+        .unwrap();
 
     // 3. Knowledge Graph
-    conn.graph_add_node(100, "DeviceA", r#"{"type": "edge_node"}"#).unwrap();
-    conn.graph_add_node(200, "ServerB", r#"{"type": "cloud"}"#).unwrap();
-    conn.graph_add_edge(100, 200, "ORIGINAL_LINK", 1.0, "{}").unwrap();
+    conn.graph_add_node(100, "DeviceA", r#"{"type": "edge_node"}"#)
+        .unwrap();
+    conn.graph_add_node(200, "ServerB", r#"{"type": "cloud"}"#)
+        .unwrap();
+    conn.graph_add_edge(100, 200, "ORIGINAL_LINK", 1.0, "{}")
+        .unwrap();
 
     // 4. Vector Embedding
-    conn.execute("CREATE TABLE embeddings (id INTEGER PRIMARY KEY, v VECTOR(3));").unwrap();
-    conn.execute("INSERT INTO embeddings VALUES (1, [1.0, 0.0, 0.0]);").unwrap();
+    conn.execute("CREATE TABLE embeddings (id INTEGER PRIMARY KEY, v VECTOR(3));")
+        .unwrap();
+    conn.execute("INSERT INTO embeddings VALUES (1, [1.0, 0.0, 0.0]);")
+        .unwrap();
 
     // === PHASE 1: ATOMIC ROLLBACK ACROSS ALL 4 MODELS ===
     conn.execute("BEGIN;").unwrap();
 
     // Mutate 1: SQL
-    conn.execute("UPDATE sql_state SET status = 'in_transaction' WHERE id = 1;").unwrap();
-    conn.execute("INSERT INTO sql_state (id, status) VALUES (2, 'temporary');").unwrap();
+    conn.execute("UPDATE sql_state SET status = 'in_transaction' WHERE id = 1;")
+        .unwrap();
+    conn.execute("INSERT INTO sql_state (id, status) VALUES (2, 'temporary');")
+        .unwrap();
 
     // Mutate 2: JSON Document
-    docs.insert_one(&serde_json::json!({"doc_id": 2, "data": "uncommitted_payload"})).unwrap();
+    docs.insert_one(&serde_json::json!({"doc_id": 2, "data": "uncommitted_payload"}))
+        .unwrap();
 
     // Mutate 3: Graph (Node + Edge)
     conn.graph_add_node(300, "TempNode", "{}").unwrap();
-    conn.graph_add_edge(100, 300, "TEMP_EDGE", 0.5, "{}").unwrap();
+    conn.graph_add_edge(100, 300, "TEMP_EDGE", 0.5, "{}")
+        .unwrap();
 
     // Mutate 4: Vector
-    conn.execute("INSERT INTO embeddings VALUES (2, [0.0, 1.0, 0.0]);").unwrap();
+    conn.execute("INSERT INTO embeddings VALUES (2, [0.0, 1.0, 0.0]);")
+        .unwrap();
 
     // Execute ROLLBACK
     conn.execute("ROLLBACK;").unwrap();
 
     // Verify Model 1 (SQL): Reverted!
-    let sql_rows = conn.query("SELECT id, status FROM sql_state ORDER BY id ASC;").unwrap();
+    let sql_rows = conn
+        .query("SELECT id, status FROM sql_state ORDER BY id ASC;")
+        .unwrap();
     assert_eq!(sql_rows.len(), 1);
     assert_eq!(sql_rows[0].get::<String>("status").unwrap(), "initial");
 
     // Verify Model 2 (JSON Documents): Reverted!
-    assert_eq!(docs.count().unwrap(), 1, "Only initial document should remain");
+    assert_eq!(
+        docs.count().unwrap(),
+        1,
+        "Only initial document should remain"
+    );
     let doc_res = docs.find_by_id(2).unwrap();
-    assert!(doc_res.is_none(), "Uncommitted document 2 must be rolled back");
+    assert!(
+        doc_res.is_none(),
+        "Uncommitted document 2 must be rolled back"
+    );
 
     // Verify Model 3 (Graph): Reverted!
-    assert_eq!(conn.graph_nodes().len(), 2, "Graph must only have initial 2 nodes");
-    assert_eq!(conn.graph_edges().len(), 1, "Graph must only have initial 1 edge");
+    assert_eq!(
+        conn.graph_nodes().len(),
+        2,
+        "Graph must only have initial 2 nodes"
+    );
+    assert_eq!(
+        conn.graph_edges().len(),
+        1,
+        "Graph must only have initial 1 edge"
+    );
     assert!(conn.graph_edges().iter().all(|e| e.label != "TEMP_EDGE"));
 
     // Verify Model 4 (Vector): Reverted!
-    let vec_res = conn.query("SELECT id FROM embeddings VECTOR NEAR v = [0.0, 1.0, 0.0] TOP 2;").unwrap();
+    let vec_res = conn
+        .query("SELECT id FROM embeddings VECTOR NEAR v = [0.0, 1.0, 0.0] TOP 2;")
+        .unwrap();
     assert_eq!(vec_res.len(), 1);
     assert_eq!(vec_res[0].get_value("id").unwrap(), &Value::Integer(1));
 
     // === PHASE 2: ATOMIC COMMIT ACROSS ALL 4 MODELS ===
     conn.execute("BEGIN;").unwrap();
 
-    conn.execute("UPDATE sql_state SET status = 'committed_v2' WHERE id = 1;").unwrap();
-    docs.insert_with_id(3, &serde_json::json!({"doc_id": 3, "data": "committed_payload"})).unwrap();
+    conn.execute("UPDATE sql_state SET status = 'committed_v2' WHERE id = 1;")
+        .unwrap();
+    docs.insert_with_id(
+        3,
+        &serde_json::json!({"doc_id": 3, "data": "committed_payload"}),
+    )
+    .unwrap();
     conn.graph_add_node(400, "PermanentNode", "{}").unwrap();
-    conn.graph_add_edge(100, 400, "PERMANENT_LINK", 0.9, "{}").unwrap();
-    conn.execute("INSERT INTO embeddings VALUES (3, [0.0, 0.0, 1.0]);").unwrap();
+    conn.graph_add_edge(100, 400, "PERMANENT_LINK", 0.9, "{}")
+        .unwrap();
+    conn.execute("INSERT INTO embeddings VALUES (3, [0.0, 0.0, 1.0]);")
+        .unwrap();
 
     conn.execute("COMMIT;").unwrap();
 
@@ -190,7 +235,9 @@ fn test_four_model_atomic_transaction() {
     let reopened = Connection::open(&path).expect("Reopen db");
 
     // Verify Model 1 (SQL) committed
-    let sql_rows = reopened.query("SELECT id, status FROM sql_state ORDER BY id ASC;").unwrap();
+    let sql_rows = reopened
+        .query("SELECT id, status FROM sql_state ORDER BY id ASC;")
+        .unwrap();
     assert_eq!(sql_rows[0].get::<String>("status").unwrap(), "committed_v2");
 
     // Verify Model 2 (Documents) committed
@@ -204,7 +251,12 @@ fn test_four_model_atomic_transaction() {
     assert_eq!(reopened.graph_edges().len(), 2);
 
     // Verify Model 4 (Vector) committed
-    let vec_res = reopened.query("SELECT id FROM embeddings VECTOR NEAR v = [0.0, 0.0, 1.0] TOP 2;").unwrap();
-    assert!(vec_res.iter().any(|r| r.get_value("id") == Some(&Value::Integer(3))));
+    let vec_res = reopened
+        .query("SELECT id FROM embeddings VECTOR NEAR v = [0.0, 0.0, 1.0] TOP 2;")
+        .unwrap();
+    assert!(
+        vec_res
+            .iter()
+            .any(|r| r.get_value("id") == Some(&Value::Integer(3)))
+    );
 }
-

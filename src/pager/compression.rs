@@ -55,7 +55,7 @@ pub fn compress_lz4_block(src: &[u8]) -> Vec<u8> {
     let mut anchor = 0;
     let mut ip = 0;
     let end = src.len();
-    let mflimit = if end > 12 { end - 12 } else { 0 };
+    let mflimit = end.saturating_sub(12);
 
     while ip < mflimit {
         let h = hash_4(&src[ip..ip + 4]);
@@ -161,7 +161,7 @@ pub fn decompress_lz4_block(src: &[u8], target_len: usize) -> Result<Vec<u8>> {
         }
 
         // Copy literals
-        if ip + lit_len > src.len() {
+        if ip + lit_len > src.len() || out.len().saturating_add(lit_len) > target_len {
             return Err(Error::Corrupted("LZ4 literal run out of bounds".into()));
         }
         out.extend_from_slice(&src[ip..ip + lit_len]);
@@ -198,6 +198,11 @@ pub fn decompress_lz4_block(src: &[u8], target_len: usize) -> Result<Vec<u8>> {
             }
         }
 
+        if out.len().saturating_add(match_len) > target_len {
+            return Err(Error::Corrupted(
+                "LZ4 match exceeds declared output size".into(),
+            ));
+        }
         // Copy match from previous output buffer bytes
         let match_start = out.len() - offset;
         for i in 0..match_len {
@@ -209,14 +214,18 @@ pub fn decompress_lz4_block(src: &[u8], target_len: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Compress a database page frame. If compressed size is smaller than original, returns
-/// tagged compressed payload. Otherwise, returns tagged uncompressed payload.
+/// Compress a page only when the frame fits before the reserved crypto trailer.
+/// Incompressible pages remain raw, preserving their fixed page size and contents.
 pub fn compress_page_frame(raw_page: &[u8]) -> Vec<u8> {
     let compressed = compress_lz4_block(raw_page);
     let original_len = raw_page.len() as u16;
 
     // We need 4 bytes header: [COMPRESSED_PAGE_MAGIC, FLAG, LEN_LO, LEN_HI]
-    if compressed.len() + 4 < raw_page.len() {
+    if compressed.len() + 4
+        <= raw_page
+            .len()
+            .saturating_sub(crate::btree::PAGE_RESERVED_TRAILER)
+    {
         let mut out = Vec::with_capacity(4 + compressed.len());
         out.push(COMPRESSED_PAGE_MAGIC);
         out.push(LZ4_COMPRESSED_PAGE_FLAG);
@@ -224,12 +233,7 @@ pub fn compress_page_frame(raw_page: &[u8]) -> Vec<u8> {
         out.extend_from_slice(&compressed);
         out
     } else {
-        let mut out = Vec::with_capacity(4 + raw_page.len());
-        out.push(COMPRESSED_PAGE_MAGIC);
-        out.push(UNCOMPRESSED_PAGE_FLAG);
-        out.extend_from_slice(&original_len.to_le_bytes());
-        out.extend_from_slice(raw_page);
-        out
+        raw_page.to_vec()
     }
 }
 
@@ -242,11 +246,22 @@ pub fn decompress_page_frame(frame: &[u8], default_page_size: usize) -> Result<V
 
     let flag = frame[1];
     let original_len = u16::from_le_bytes([frame[2], frame[3]]) as usize;
-    let expected_len = if original_len > 0 { original_len } else { default_page_size };
+    // Overflow pages start with a next-page ID. Its low byte may equal 'T';
+    // a lone magic byte must never shift an ordinary page's payload.
+    if original_len != default_page_size {
+        return Ok(frame.to_vec());
+    }
+    let expected_len = default_page_size;
 
     match flag {
         UNCOMPRESSED_PAGE_FLAG => Ok(frame[4..].to_vec()),
-        LZ4_COMPRESSED_PAGE_FLAG => decompress_lz4_block(&frame[4..], expected_len),
+        LZ4_COMPRESSED_PAGE_FLAG => {
+            let result = decompress_lz4_block(&frame[4..], expected_len)?;
+            if result.len() != expected_len {
+                return Err(Error::Corrupted("Compressed page length mismatch".into()));
+            }
+            Ok(result)
+        }
         _ => Ok(frame.to_vec()),
     }
 }
@@ -266,9 +281,13 @@ mod tests {
         }
 
         let compressed_frame = compress_page_frame(&page);
-        assert!(compressed_frame.len() < page.len() / 2, "LZ4 should compress repetitive page by >50%");
+        assert!(
+            compressed_frame.len() < page.len() / 2,
+            "LZ4 should compress repetitive page by >50%"
+        );
 
-        let decompressed = decompress_page_frame(&compressed_frame, 4096).expect("Decompression should succeed");
+        let decompressed =
+            decompress_page_frame(&compressed_frame, 4096).expect("Decompression should succeed");
         assert_eq!(decompressed.len(), 4096);
         assert_eq!(decompressed, page);
     }
@@ -282,7 +301,8 @@ mod tests {
         }
 
         let compressed_frame = compress_page_frame(&page);
-        let decompressed = decompress_page_frame(&compressed_frame, 512).expect("Decompression fallback succeeds");
+        let decompressed =
+            decompress_page_frame(&compressed_frame, 512).expect("Decompression fallback succeeds");
         assert_eq!(decompressed, page);
     }
 }

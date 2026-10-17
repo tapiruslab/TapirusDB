@@ -1,1026 +1,111 @@
-<div align="center">
+# TapirusDB
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/Logo-TapirusDB-2.png">
-  <source media="(prefers-color-scheme: light)" srcset="assets/Logo-TapirusDB.png">
-  <img alt="TapirusDB" src="assets/Logo-TapirusDB.png" width="540" />
-</picture>
+TapirusDB is an embedded Rust database for local applications that need SQL, vector search and AI document memory in one runtime. Store text and embeddings, retrieve sources for an LLM, and keep SQL and memory changes in the same transaction.
 
-<br/>
-
-### The Single-File Database for the AI Era
-**Replace Postgres + Pinecone + Neo4j with one local file. Zero cloud bills. Sub-millisecond latency.**  
-*Relational SQL • HNSW Vector Search • openCypher Knowledge Graphs • JSON Documents • < 4 MB Idle RAM*
-
-<br/>
-
-[![Crates.io](https://img.shields.io/crates/v/tapirus.svg?style=flat-square&logo=rust&color=e05d44)](https://crates.io/crates/tapirus)
-[![Memory Safety](https://img.shields.io/badge/memory--safety-100%25_Safe_Rust-brightgreen.svg?style=flat-square)](src/lib.rs)
+[![Crates.io](https://img.shields.io/crates/v/tapirus.svg?style=flat-square&logo=rust)](https://crates.io/crates/tapirus)
+[![Core lint](https://img.shields.io/badge/core-unsafe_code_forbidden-brightgreen.svg?style=flat-square)](src/lib.rs)
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-purple.svg?style=flat-square)](LICENSE)
-[![Documentation](https://img.shields.io/badge/docs-tapirusdb.com-0070f3.svg?style=flat-square)](https://tapirusdb.com)
-[![Downloads Hub](https://img.shields.io/badge/downloads-tapirusdb.com%2Fdownload-0284c7.svg?style=flat-square&logo=download)](https://tapirusdb.com/download.html)
-[![Tapirus Studio](https://img.shields.io/badge/Studio_GUI-Free_Workbench-10b981.svg?style=flat-square&logo=react)](https://tapirusdb.com/studio/index.html)
-[![Edge AI & Robotics](https://img.shields.io/badge/Edge_AI-Robotics_%26_IoT-0284c7.svg?style=flat-square)](https://tapirusdb.com/edge.html)
-[![GitHub Releases](https://img.shields.io/github/v/release/tapiruslab/TapirusDB?style=flat-square&color=blue)](https://github.com/tapiruslab/TapirusDB/releases)
 
-<br/>
-
-> 💡 **"Build private AI applications without operating a massive database stack."**  
-> TapirusDB is the high-performance, embedded quad-model database engine for local AI agents, desktop applications, and edge hardware. It collapses vector similarity search, knowledge graphs, relational tables, and JSON documents into a **single encrypted `.tapir` file** with sub-microsecond in-memory graph-to-vector chaining ($0.51\ \mu\text{s}$), microsecond SQL point lookups (~$2.4\ \mu\text{s}$), and 100k+ ACID writes/sec — backed by a 100% Safe Rust core for rock-solid data integrity.
-
-> 🖥️ **Need a Visual Database Manager (like phpMyAdmin or Supabase Studio)?**  
-> Use **[Tapirus Studio](https://tapirusdb.com/studio/index.html)** — our free visual GUI companion for TapirusDB!  
-> • **🌐 Run Instant In-Browser**: [tapirusdb.com/studio](https://tapirusdb.com/studio/index.html) *(Zero installation required)*  
-> • **⬇️ Official Download Landing Page**: [tapirusdb.com/download.html](https://tapirusdb.com/download.html) *(Windows, macOS, Linux, CLI)*  
-> • **📦 Releases & Binary Downloads**: [github.com/tapiruslab/TapirusDB/releases](https://github.com/tapiruslab/TapirusDB/releases)  
-
-</div>
-
----
-
-## Why TapirusDB? (Kill the "Frankenstack")
-
-Modern AI and edge developers are forced into **Fragmented Polyglot Persistence**—gluing together multiple complex, heavy databases across network boundaries:
-
-<p align="center">
-  <picture>
-    <source media="(max-width: 768px)" srcset="https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/.github/assets/architecture-mobile.svg">
-    <source media="(min-width: 769px)" srcset="https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/.github/assets/architecture-comparison.svg">
-    <img alt="TapirusDB Architecture vs The Fragile Frankenstack" src="https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/.github/assets/architecture-comparison.svg" width="100%">
-  </picture>
-</p>
-
----
+This working tree includes audit remediation and new integration coverage. See
+[release validation](docs/RELEASE_VALIDATION.md) and the
+[17 October AI/embedded engineering report](audit/LAPORAN_KEMAJUAN_AI_EMBEDDED_2026-10-17.audit.md)
+for measurements and remaining evidence.
 
 ## Highlights
 
-* 📁 **Single-File AI Engine (Kill the "Frankenstack")**: Seamlessly consolidates **Relational SQL-92**, **HNSW & IVF Vector Search**, **openCypher Property Graphs**, and **JSON Documents** inside a single `.tapir` file. No Docker containers, no background servers (`mysqld`, `mongod`), and zero network serialization overhead.
-* ⚡ **True In-Process Speed (Zero-IPC)**: Compiles and links directly into your application process (Python, Node.js, Rust, C/C++) or connects via lightweight high-concurrency clients (Go, PHP, REST). Retrieves in-memory graph-to-vector traversals via direct memory pointers ($0.51\ \mu\text{s}$) — **600x faster** than cloud vector DB network hops.
-* 🧠 **Production GraphRAG & AI Agent Memory**: Built-in hybrid search with Tri-Modal Reciprocal Rank Fusion (RRF fusing lexical BM25, semantic vectors, and graph structural proximity), episodic memory with exponential temporal decay, and isolated agent namespaces.
-* 🔐 **Zero-Config At-Rest Encryption**: XChaCha20-Poly1305 AEAD authenticated page-level encryption built directly into the storage engine. Zero commercial add-on licenses required.
-* 🦀 **Bulletproof 100% Safe Rust Core (`#![forbid(unsafe_code)]`)**: Guaranteed compile-time memory safety across the entire core storage engine with zero memory leaks, buffer overruns, or segfault crashes. 100 unit tests and 179 integration tests passing (`cargo test --tests`, 280 tests total with FFI, Oct 2026). (Optional C-ABI bridge in `crates/tapirus-ffi` enforces defensive FFI bounds checks).
-* 📈 **Advanced SQL Window Functions & Graph Algorithms**: Built-in ANSI SQL window operations (`ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `NTILE()`, `LAG()`, `LEAD()`) and native graph topology algorithms (`GRAPH ALGORITHM louvain`, `betweenness`, `connected_components`, `pagerank`).
-* 🧠 **Production GraphRAG & AI Memory**: Built-in seed-and-traverse GraphRAG with Tri-Modal Reciprocal Rank Fusion (RRF), episodic memory with exponential temporal decay, and isolated agent namespaces.
-* ⚡ **Tap Sub-Millisecond Cognitive Instinct Engine**: In-database non-autoregressive System-1 decision core (`Tap::classify`, `Tap::score`, `Tap::verify`, `Tap::route`). Run 1,000 deterministic agent decisions per second directly inside SQL queries (`TAP_CLASSIFY()`, `TAP_VERIFY()`) in pure Safe Rust (< 2ms) with zero cloud tokens and zero API costs.
-* 🎯 **Hardware-Accelerated 8-Lane SIMD & RaBitQ 32x Quantization**: Parallel AVX2 / NEON vector kernels (`wide::f32x8`) combined with Fast Walsh-Hadamard 1-bit/2-bit random rotation quantization, reducing 1536-D embeddings from 6,144 bytes to **196 bytes** with single-cycle `POPCNT` distance evaluation.
-* 🕸️ **Compressed Sparse Row (CSR) Topology & Cypher-Lite**: Contiguous adjacency arrays on disk and in memory for zero-allocation slice neighbor sweeps, paired with declarative Cypher-Lite syntax (`MATCH ... WHERE ... RETURN ...`).
-* ⚛️ **Atomic Four-Model Transactions**: Single ACID transaction committing or rolling back across SQL rows, JSON documents, openCypher graph edges, and Vector embeddings simultaneously with zero torn states.
-* 🔐 **Multi-Tenant & Role-Scoped GraphRAG**: Native tenant isolation (`tenant_id`) and role-based ACL filtering (`allowed_roles`) across knowledge graph traversal and vector scoring.
-* 🛡️ **Physical Integrity Audit & Safe Hot Backups**: Zero-downtime atomic backup snapshots, KCV key validation, and slotted-page CRC32 consistency verification (`tapirus backup`, `tapirus restore`, `tapirus verify`).
-* 🚀 **Streaming Data Importer & Protected REST Daemon**: High-throughput streaming ingest for CSV (auto-inferred schema), JSONL, and Markdown straight into tables and AI memory; secure embedded REST server (`tapirus serve`) with constant-time Bearer/API-key verification.
-* 🌐 **Pluggable Remote Range Streaming**: Zero-local-disk 4KB page streaming interface (`RemoteRangeReader`) over cloud object stores (S3, Cloudflare R2, MinIO, GCP) via HTTP Range requests with in-memory LRU caching.
-* 🤖 **Native Model Context Protocol (MCP)**: Out-of-the-box stdio JSON-RPC 2.0 server (`tapirus mcp`) for Claude Desktop, Cursor, and Gemini autonomous agents.
+- Local, in-process database with a `.tapir` file and a write-ahead log.
+- SQL support is a documented subset; TapirusDB is not a SQLite drop-in or a claim of full SQL conformance.
+- Vector, graph, and JSON document APIs are available alongside relational tables.
+- AI source retrieval combines BM25, supplied embeddings, recency and importance, with namespace/session filters and source citations.
+- Indexed memory adds model-specific HNSW, upsert, revision checks, atomic batches, source versions, TTL and configurable budgets. Python tools provide verified SQLite scalar migration, document ingestion and retrieval evaluation. See [AI and embedded workflows](docs/AI_EMBEDDED_WORKFLOWS.md).
+- `SessionDatabase` provides independent transaction ownership over serialized access. The separate [Micro component](crates/tapirus-micro/README.md) targets bounded bare-metal flash records.
+- The Rust WASM workspace opens and exports native `.tapir` files and saves committed browser snapshots to IndexedDB.
+- Page encryption is optional. Review key handling and deployment configuration for your threat model.
+- The main `tapirus` crate forbids explicit unsafe Rust. The C ABI crate contains unsafe boundary code. This does not prove functional correctness, crash safety, or bounded resource use.
 
----
+## Rust quickstart
 
-## Table of Contents
-
-* [Why TapirusDB? (Kill the "Frankenstack")](#why-tapirusdb-kill-the-frankenstack)
-* [Highlights & Technical Advantages](#highlights)
-* [Tap Decision Core: Sub-Millisecond In-Database Instinct Engine](#-tap-decision-core-sub-millisecond-in-database-instinct-engine)
-* [Quickstart & 30-Second Code](#quickstart)
-  * [CLI & Package Managers (Brew, Winget, Shell)](#1-installation)
-  * [SDKs & Ecosystem Registry Matrix](#official-ecosystem--registry-matrix)
-  * [Code in 30 Seconds (Rust, Python, Node, Go, PHP)](#2-code-in-30-seconds)
-* [Beyond AI: Classic Applications (SQLite & Mongo Alternative)](#beyond-ai-an-ultra-fast-embedded-database-for-classic-applications)
-* [High-Impact Domains (Research, Analytics, IoT)](#-high-impact-real-world-domains-research-analytics--smart-home)
-* [Architectural Comparison vs Polyglot Frankenstack](#architectural-comparison)
-* [Core Technical Pillars (SIMD, CSR, RaBitQ, XChaCha20)](#core-technical-pillars)
-* [Industrial Edge & Autonomous Systems](#-industrial-applications-ai--beyond)
-* [Developer Tooling & MCP Server](#developer-tooling--cli)
-* [Verified Benchmarks & Latency Comparison](#verified-benchmarks)
-* [When (and When NOT) to Use TapirusDB](#when-and-when-not-to-use-tapirusdb)
-* [Formal Safety Verification (TLA+)](#formal-safety-verification)
-* [Documentation & Architectural Specs](#documentation--architecture)
-
----
-
-## ⚡ Tap Decision Core: Sub-Millisecond In-Database Instinct Engine
-
-Traditionally, when autonomous AI agents make structured decisions (categorizing a support ticket, checking a policy claim, scoring urgency, or choosing a graph execution branch), developers have been forced to pay an exorbitant **"LLM Latency & Cost Tax"**: sending database payloads over HTTP to an autoregressive model like GPT-4o-mini, waiting 400ms–800ms, risking JSON formatting hallucinations, and paying per-token API bills.
-
-**TapirusDB changes this paradigm with Tap.**
-
-**Tap** is TapirusDB's native System-1 cognitive instinct subsystem. Built directly in Safe Rust with zero external services and zero background Python runtimes, Tap executes deterministic single-pass decision projections directly over database records in **under 2 milliseconds**.
-
-```
-[ Traditional LLM API (e.g. GPT-4o-mini) ]  ══════════════════════════════════ 450ms - 800ms
-[ Remote Decision Microservice (HTTP)   ]  ══════════════════ 85ms - 150ms
-[ Python Decision Server (PyTorch)      ]  ════════ 35ms - 65ms
-```
-
-<p align="center">
-  <img src=".github/assets/tap-decision-core.svg" alt="TapirusDB Tap Decision Core vs External LLM Stack" width="100%" />
-</p>
-
-### The Native Decision Primitives & Grounded Instincts
-
-| Primitive | Purpose | Rust API | SQL Syntax |
-| :--- | :--- | :--- | :--- |
-| **`classify`** | Categorical selection with calibrated softmax distribution | `conn.tap().classify(text, candidates)` | `SELECT TAP_CLASSIFY(body, '["fraud", "legit"]')` |
-| **`score`** | Continuous rubric evaluation in $[0.0, 1.0]$ | `conn.tap().score(text, criteria)` | `SELECT TAP_SCORE(incident, 'emergency_severity')` |
-| **`verify`** | Calibrated boolean truth validation with strict margin | `conn.tap().verify(premise, hypothesis)` | `SELECT id FROM claims WHERE TAP_VERIFY(claim, 'active_policy') = 1` |
-| **`route`** | Autonomous graph & workflow branch selection | `conn.tap().route(state, routes)` | `SELECT TAP_ROUTE(task_state, 'retry, escalate, resolve')` |
-| **`verify_grounded`** | **Option B**: Truth verification cross-referenced against HNSW vectors | `conn.tap().verify_grounded(premise, hyp, index, top_k)` | `SELECT TAP_VERIFY_GROUNDED(claim, 'active_policy', 'kb_index', 3)` |
-| **`classify_grounded`** | **Option B**: Categorical decision grounded in HNSW neighbor clusters | `conn.tap().classify_grounded(text, cands, index, top_k)` | `SELECT TAP_CLASSIFY_GROUNDED(body, '["fraud", "legit"]', 'kb_index', 3)` |
-
-### 1. In-Database SQL Integration
-
-Tap functions can be executed directly inside standard SQL `SELECT` projections and `WHERE` filtering clauses:
-
-```sql
--- Categorize and score incoming tickets in a single database pass (< 2ms)
-SELECT 
-    id, 
-    customer, 
-    TAP_CLASSIFY(message, '["billing", "technical", "sales"]') AS category,
-    TAP_SCORE(message, 'critical system outage emergency') AS urgency_score
-FROM support_inbox;
-
--- Cross-reference heavy compliance claims against HNSW vector knowledge index
-SELECT 
-    claim_id, 
-    TAP_VERIFY_GROUNDED(claim_text, 'valid warranty return policy', 'policy_hnsw_idx', 3) AS is_approved
-FROM insurance_claims;
-
--- Filter fraud or compliance violations directly in SQL WHERE clause
-SELECT id, transaction_amount, merchant
-FROM transaction_audit
-WHERE TAP_VERIFY(notes, 'unauthorized account takeover attempt') = 1;
-```
-
-### 2. Rust Bare-Metal Native Instincts
+Add the crate to a Rust project, then open a database and use the SQL API:
 
 ```rust
 use tapirus::{Connection, Result};
 
 fn main() -> Result<()> {
-    let conn = Connection::open_in_memory()?;
+    let db = Connection::open("notes.tapir")?;
+    db.execute("CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)")?;
+    db.execute("INSERT INTO notes (id, body) VALUES (1, 'Check the recovery path')")?;
 
-    // 1. Categorical Decision (< 1.5ms)
-    let decision = conn.tap().classify(
-        "Refund requested because package arrived damaged", 
-        &["refund", "billing", "sales_inquiry"]
-    )?;
-    println!("Action: {} (Confidence: {:.2}%)", decision.top_choice, decision.confidence * 100.0);
-
-    // 2. Truth Verification (< 1.2ms)
-    let verified = conn.tap().verify(
-        "User confirmed receipt of digital product license", 
-        "digital license successfully received"
-    )?;
-    if verified.is_verified {
-        println!("Claim verified with margin: {:.3}", verified.margin);
-    }
-
-    // 3. Autonomous Graph Branch Routing (< 1.8ms)
-    let step = conn.tap().route(
-        "Payment gateway returned code 504 gateway timeout", 
-        &["retry_transaction", "fallback_processor", "cancel_order"]
-    )?;
-    println!("Next Workflow Step: {}", step.selected_route);
-
+    let rows = db.query("SELECT id, body FROM notes")?;
+    println!("{rows:?}");
+    db.close()?;
     Ok(())
 }
 ```
 
-### 3. Python SDK Native Integration
+Use parameterized APIs for user-provided values. Review the SQL parser and executor for the supported syntax and constraints before depending on a query shape.
 
-```python
-import tapirus
+## Architecture and workload fit
 
-# Query with embedded Tap decision functions
-conn = tapirus.connect(":memory:")
-conn.execute("CREATE TABLE claims (id INTEGER PRIMARY KEY, details TEXT);")
-conn.execute("INSERT INTO claims VALUES (1, 'Claim filed for broken windshield from hailstorm');")
+TapirusDB is intended for local, single-process workloads that benefit from colocated relational, vector, graph, or document data. Its API and query support should be evaluated against the application requirements.
 
-rows = conn.query("SELECT id, TAP_VERIFY(details, 'weather damage claim') AS valid_weather FROM claims;")
-print(rows)  # [{'id': 1, 'valid_weather': 1}]
+`ConnectionPool::acquire()` currently returns a clone of the same connection. Handles share session and transaction state; this is not a pool of independent database sessions. SQL execution uses shared locks, so the pool name does not imply concurrent SQL readers.
 
-# Or call direct decision helpers
-verdict, conf = tapirus.tap_classify("Server disk full emergency", ["infrastructure", "billing", "general"])
-print(f"Top Category: {verdict} ({conf*100:.1f}%)")
-```
+Use `SessionDatabase` when transactions need independent owners. Other sessions
+return Busy or wait until the owning session finishes; access remains serialized.
 
----
+WAL recovery, replication, backups, vector snapshots, HTTP behavior, and SDK bindings have regression tests for selected cases. Tests cover only the scenarios they exercise. Validate crash recovery, resource use, backup and restore, and SDK behavior on the target platform before storing important data.
 
-## Quickstart
+## AI document memory
 
-### 1. Installation
-
-#### Official Downloads Hub & Visual Studio
-* ⬇️ **Official Download Landing Page**: [tapirusdb.com/download.html](https://tapirusdb.com/download.html) (Windows, macOS, Linux, CLI)
-* 🤖 **Edge AI, Robotics & Smart IoT Portal**: [tapirusdb.com/edge.html](https://tapirusdb.com/edge.html) *(Robotics SLAM, Wear-Leveling, Mobile SLMs)*
-* 🖥️ **Tapirus Studio (Free GUI)**: [Run Live in Browser](https://tapirusdb.com/studio/index.html) *(Zero installation required)*
-* 📦 **Pre-Compiled Binary Assets**: [GitHub Releases](https://github.com/tapiruslab/TapirusDB/releases)
-
-#### Supported Platforms & Distributions
-
-TapirusDB is 100% self-contained with zero cloud or daemon dependencies. Pre-compiled binaries run out-of-the-box across:
-
-| Platform Family | Architecture | Supported Operating Systems & Distros |
-| :--- | :--- | :--- |
-| **Linux (Universal glibc)** | `x86_64`, `aarch64` | **Debian, Ubuntu, Fedora, RHEL, CentOS, Rocky Linux, AlmaLinux, Arch Linux, openSUSE, Amazon Linux 2/2023** |
-| **Linux (musl & Containers)** | `x86_64`, `aarch64` | **Alpine Linux, Docker / OCI (`ghcr.io/tapiruslab/tapirusdb`), Embedded Linux / IoT** |
-| **macOS** | Apple Silicon & Intel | **macOS 12+ (Monterey, Ventura, Sonoma, Sequoia)** |
-| **Windows** | `x86_64` | **Windows 10, Windows 11, Windows Server 2019/2022/2025** |
-| **WebAssembly (WASM)** | `wasm32` | **All modern web browsers (Chrome, Edge, Safari, Firefox)** via [Tapirus Studio](https://tapirusdb.com/studio) |
-
-
-#### Package Managers (Terminal & CLI)
-```bash
-# macOS & Linux (Homebrew)
-brew install https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/Formula/tapirus.rb
-
-# Windows (Windows Package Manager)
-winget install --manifest https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/winget/tapirus.yaml
-# (Or 'winget install tapirus' once indexed in Microsoft community repo)
-
-# Linux / macOS Automated Script
-curl -fsSL https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/install.sh | bash
-
-# Windows PowerShell Automated Script
-irm https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/install.ps1 | iex
-```
-
-#### Language SDKs & Client Libraries
-```bash
-# Rust Engine
-cargo add tapirus
-
-# Python SDK (Python 3.9+)
-pip install tapirus
-
-# Node.js & TypeScript SDK
-npm install tapirus
-
-# Bun Runtime
-bun add tapirus
-
-# Go SDK
-go get github.com/tapiruslab/TapirusDB/sdks/go
-
-# PHP Composer
-composer require tapiruslab/tapirusdb
-
-# OCI Container (Docker & Podman)
-docker pull ghcr.io/tapiruslab/tapirusdb:latest
-```
-
-#### Official Ecosystem & Registry Matrix
-
-> 💡 **Looking for FFI integration, C-ABI bindings, or native shared libraries? See the [Multi-Language SDK & FFI Guide](sdks/README.md).**
-
-| Ecosystem | Registry / Package | Installation Command | License |
-| :--- | :--- | :--- | :--- |
-| <img src="assets/icons/rust.svg" width="16" height="16" valign="middle" alt="Rust" /> **Rust** | [![Crates.io](https://img.shields.io/crates/v/tapirus.svg?style=flat-square&logo=rust)](https://crates.io/crates/tapirus) | `cargo add tapirus` | BUSL-1.1 |
-| <img src="assets/icons/python.svg" width="16" height="16" valign="middle" alt="Python" /> **Python** | [![PyPI](https://img.shields.io/pypi/v/tapirus.svg?style=flat-square&logo=pypi)](https://pypi.org/project/tapirus/) | `pip install tapirus` | MIT |
-| <img src="assets/icons/nodejs.svg" width="16" height="16" valign="middle" alt="Node.js" /> **Node.js / TS** | [![npm](https://img.shields.io/npm/v/tapirus.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/tapirus) | `npm install tapirus` | MIT |
-| <img src="assets/icons/go.svg" width="16" height="16" valign="middle" alt="Go" /> **Go** | [![Go Reference](https://pkg.go.dev/badge/github.com/tapiruslab/TapirusDB/sdks/go.svg)](https://pkg.go.dev/github.com/tapiruslab/TapirusDB/sdks/go) | `go get github.com/tapiruslab/TapirusDB/sdks/go` | MIT |
-| <img src="assets/icons/php.svg" width="16" height="16" valign="middle" alt="PHP" /> **PHP** | [![Packagist](https://img.shields.io/badge/packagist-v1.0.0-orange.svg?style=flat-square&logo=php)](https://packagist.org/packages/tapiruslab/tapirusdb) | `composer require tapiruslab/tapirusdb` | MIT |
-| <img src="assets/icons/docker.svg" width="16" height="16" valign="middle" alt="Docker" /> **Docker** | [![Docker](https://img.shields.io/badge/ghcr.io-tapirusdb-2496ed?style=flat-square&logo=docker)](https://github.com/tapiruslab/TapirusDB/pkgs/container/tapirusdb) | `docker pull ghcr.io/tapiruslab/tapirusdb:latest` | BUSL-1.1 |
-| <img src="assets/icons/linux.svg" width="16" height="16" valign="middle" alt="Linux" /> **Linux** | [![Linux](https://img.shields.io/badge/install.sh-v1.0.1-fcc624?style=flat-square&logo=linux&logoColor=black)](https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/install.sh) | `curl -fsSL .../install.sh \| bash` | BUSL-1.1 |
-| <img src="assets/icons/windows.svg" width="16" height="16" valign="middle" alt="Windows" /> **Windows** | [![Winget](https://img.shields.io/badge/winget-tapirus.yaml-0078d4?style=flat-square&logo=windows)](https://github.com/tapiruslab/TapirusDB/blob/main/winget/tapirus.yaml) | `winget install --manifest ...` | BUSL-1.1 |
-| <img src="assets/icons/homebrew.svg" width="16" height="16" valign="middle" alt="Homebrew" /> **macOS (Brew)** | [![Homebrew](https://img.shields.io/badge/brew-tapirus.rb-fbb040?style=flat-square&logo=homebrew)](https://github.com/tapiruslab/TapirusDB/blob/main/Formula/tapirus.rb) | `brew install .../tapirus.rb` | BUSL-1.1 |
-
----
-
-### 2. Code in 30 Seconds
-
-#### Rust: Relational SQL & AI Vector Search
-```rust
-use tapirus::{Connection, DistanceMetric, Result};
-
-fn main() -> Result<()> {
-    // Open in-memory or single-file database: "production.tapir"
-    let db = Connection::open_in_memory()?;
-
-    // 1. Create table with structured columns and dense vector embedding
-    db.execute("
-        CREATE TABLE documents (
-            id INTEGER PRIMARY KEY,
-            title TEXT NOT NULL,
-            category TEXT NOT NULL,
-            embedding VECTOR(4)
-        );
-    ")?;
-
-    db.execute("
-        INSERT INTO documents VALUES 
-        (1, 'Safe Systems in Rust', 'tech', [0.95, 0.05, 0.0, 0.0]),
-        (2, 'Neural Vector Databases', 'ai', [0.10, 0.90, 0.15, 0.0]);
-    ")?;
-
-    // 2. Hybrid Vector Search with Single-Pass SQL Pre-Filtering (Exact k Recall)
-    let rows = db.query("
-        SELECT id, title 
-        FROM documents 
-        VECTOR NEAR embedding = [0.92, 0.08, 0.0, 0.0] TOP 1
-        WHERE category = 'tech';
-    ")?;
-
-    for row in rows {
-        println!("Match: {}", row.get::<String>("title")?);
-    }
-
-    Ok(())
-}
-```
-
-#### Rust: Declarative openCypher Graph Pattern Matching
-```rust
-use tapirus::{Connection, Result};
-
-fn main() -> Result<()> {
-    let db = Connection::open_in_memory()?;
-
-    // 1. Ingest entities and relationships
-    db.execute("GRAPH INSERT NODE 1 LABEL 'Person' PROPERTIES '{\"name\": \"Alice\"}';")?;
-    db.execute("GRAPH INSERT NODE 2 LABEL 'Person' PROPERTIES '{\"name\": \"Bob\"}';")?;
-    db.execute("GRAPH INSERT NODE 3 LABEL 'Company' PROPERTIES '{\"name\": \"TapirusTech\"}';")?;
-
-    db.execute("GRAPH INSERT EDGE 1 -> 2 LABEL 'KNOWS' WEIGHT 0.9;")?;
-    db.execute("GRAPH INSERT EDGE 2 -> 3 LABEL 'WORKS_AT' WEIGHT 1.0;")?;
-
-    // 2. Query graph patterns using industry-standard openCypher
-    let rows = db.query("
-        MATCH (a:Person)-[r:KNOWS]->(b:Person) 
-        WHERE b.name = 'Bob' 
-        RETURN a.name, b.name, r.weight;
-    ")?;
-
-    for row in rows {
-        println!("{} knows {} (weight: {})", 
-            row.get::<String>("a.name")?, 
-            row.get::<String>("b.name")?, 
-            row.get::<f64>("r.weight")?
-        );
-    }
-
-    Ok(())
-}
-```
-
-#### Rust: Bidirectional Graph-Vector Chaining & AI Agent Memory
-```rust
-use tapirus::{Connection, MemoryRecallFilter, Result};
-use tapirus::vector::DistanceMetric;
-
-fn main() -> Result<()> {
-    let conn = Connection::open_in_memory()?;
-
-    // 1. Graph-to-Vector Chaining (Sub-microsecond 0.55 µs retrieval)
-    // Constrains vector distance calculations strictly to local graph neighborhood O(M · D)
-    let candidates = conn
-        .chain(1)                              // Seed Patient Node
-        .out(Some("TREATS"))                  // Traverse outgoing relationships
-        .filter_label("Medicine")             // Target node label
-        .vector_near(&[0.90, 0.10, 0.0, 0.0], 5, DistanceMetric::Cosine)?;
-
-    // 2. Vector-to-Graph Chaining (Seed-and-Traverse)
-    // Seeds from query vector, then traverses adjacent knowledge subgraph
-    let discovered = conn
-        .chain_from_vector(&[0.85, 0.15, 0.0, 0.0], 1)?
-        .out(Some("AUTHORED_BY"))
-        .collect_nodes();
-
-    // 3. Autonomous AI Agent Long-Term Memory (LTM)
-    // Multi-modal recall: Dense Vector + BM25 Lexical + Recency Decay (e^-λΔt)
-    let memory_id = conn.memory_remember(
-        "User prefers sovereign on-device processing and strict privacy",
-        Some(&[0.92, 0.08, 0.0, 0.0]),
-        0.95, // Importance priority score
-        &["preferences", "privacy"],
-    )?;
-
-    let filter = MemoryRecallFilter::default(); // Balanced Vector + BM25 + Recency
-    let recalled = conn.memory_recall(Some("sovereign privacy"), None, 3, &filter);
-    println!("Recalled Agent Memory: {}", recalled[0].entry.content);
-
-    Ok(())
-}
-```
-
-#### Python: Clean Native Integration
-```python
-import tapirus
-
-# Connect directly to local encrypted vault or in-memory
-conn = tapirus.connect("app.tapir")
-
-# 1. Relational SQL & Window Functions
-conn.execute("CREATE TABLE telemetry (id INTEGER PRIMARY KEY, sensor TEXT, value REAL);")
-conn.execute("INSERT INTO telemetry VALUES (1, 'temp', 23.8), (2, 'temp', 24.1), (3, 'temp', 22.9);")
-records = conn.query("""
-    SELECT id, sensor, value, 
-           ROW_NUMBER() OVER (ORDER BY value DESC) as rank 
-    FROM telemetry;
-""")
-print(records)  # [{'id': 2, 'sensor': 'temp', 'value': 24.1, 'rank': 1}, ...]
-
-# 2. Native Vector Search
-conn.execute("CREATE TABLE docs (id INTEGER PRIMARY KEY, vec VECTOR(3));")
-conn.execute("INSERT INTO docs VALUES (1, [0.9, 0.1, 0.0]), (2, [0.1, 0.9, 0.0]);")
-top_docs = conn.vector_search("docs", "vec", [0.85, 0.15, 0.0], top_k=1)
-
-# 3. Native Graph Algorithms
-community_map = conn.graph_algorithm("louvain")
-conn.checkpoint()
-```
-
-#### Node.js & TypeScript: Zero-Daemon Embedded Database
-```typescript
-import { open, Tapirus } from "tapirus";
-
-// Connect to single-file database
-const db = open("production.tapir");
-
-// 1. Relational SQL with Window Functions
-db.execute("CREATE TABLE users (id INT PRIMARY KEY, name TEXT, score REAL);");
-db.execute("INSERT INTO users VALUES (1, 'Alice', 95.5), (2, 'Bob', 88.0);");
-const ranked = db.query(`
-  SELECT name, score, 
-         RANK() OVER (ORDER BY score DESC) as leaderboard_rank 
-  FROM users;
-`);
-console.log(ranked);
-
-// 2. Built-in SIMD Vector Search & Graph Clustering
-const neighbors = db.vectorSearch("docs", "vec", [0.9, 0.1, 0.0], 5);
-const communities = db.graphAlgorithm("louvain");
+```js
+const { open } = require('tapirus');
+const db = open('assistant.tapir');
+db.storeMemory({ content: 'Maintenance is due every 500 hours.', namespace: 'manuals' });
+const sources = db.searchMemories({ query: 'maintenance interval', namespace: 'manuals', limit: 5 });
+console.log(sources.map(source => ({ id: source.entry.id, text: source.entry.content })));
 db.close();
 ```
 
----
+Supply an `embedding` from your chosen model to add vector similarity. These methods run locally and participate in SQL transactions. See [the AI memory guide](docs/AI_MEMORY.md) for Rust, Node.js, score definitions and browser use.
 
-## Beyond AI: An Ultra-Fast Embedded Database for Classic Applications
+## HTTP server
 
-While TapirusDB is the premier memory engine for sovereign AI and robotics, **you do not need AI to benefit from TapirusDB**. It is also a first-class, zero-configuration embedded database for general applications, edge systems, and analytics:
+`tapirus serve` exposes HTTP endpoints. Set an API key when the server is reachable by untrusted clients, bind to an appropriate interface, and use the documented request and response shapes. The browser chat page is public; chat and chat-log API routes require the configured key.
 
-### 1. Modern Drop-In Replacement for SQLite (Full SQL-92 + ACID)
-Need reliable relational tables, transactions, and foreign keys without AI? TapirusDB provides standard SQL with pure Safe Rust reliability:
-```rust
-// Standard Relational SQL with ACID transactions
-db.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT, balance REAL);")?;
-db.execute("INSERT INTO accounts VALUES (1, 'alice@example.com', 1250.50);")?;
+## Security, performance, and formal methods
 
-// Complex queries with Subqueries & CTEs
-let rows = db.query("
-    WITH active_accounts AS (
-        SELECT id, email, balance FROM accounts WHERE balance > 1000.0
-    )
-    SELECT * FROM active_accounts;
-")?;
-```
-* **Advanced Query Engine**: Built-in subqueries, CTEs (`WITH ... AS`), `INNER/LEFT JOIN`, and Cost-Based Optimizer (CBO).
-* **Transparent Encryption Included**: Hardware-accelerated XChaCha20-Poly1305 AEAD encryption at rest with 24-byte CSPRNG nonces per page (eliminating nonce-reuse vulnerabilities) without paying for proprietary SQLite commercial extensions.
+- See [SECURITY.md](SECURITY.md) for the threat boundary, optional encryption, and reporting guidance.
+- Historical latency, throughput, RAM, and binary-size figures are withdrawn pending corrected, reproducible measurements. See [Benchmark status](#benchmark-status).
+- TLA+ files describe selected WAL transitions. The repository has no TLC run output or refinement proof connecting the model to Rust; see [the model scope](#tla-model-scope).
+- No ISO 26262, IEC 62304, DO-178C, or other functional-safety certification is claimed.
 
-### 2. Embedded MongoDB Alternative (Schema-less JSON Documents)
-Need to store dynamic payloads, user settings, or sensor telemetry with flexible schemas?
-```rust
-let collection = db.collection("telemetry")?;
-let doc_id = collection.insert_one(&serde_json::json!({
-    "sensor_id": "temp_probe_09",
-    "reading_celsius": 24.3,
-    "calibration": { "offset": 0.05, "certified": true },
-    "tags": ["factory_floor", "zone_b"]
-}))?;
-```
-
-### 3. In-Process Analytics & SIMD Aggregations
-* **SIMD Aggregations**: Vectorized `SUM`, `AVG`, `COUNT` processing multi-megabyte datasets in microseconds.
-* **Transparent Compression**: Built-in pure Safe Rust LZ4 page compression reduces disk footprint by 50%–70%.
-* **Developer CLI**: Fast code search tool `tapirus tg` built right into the binary.
-
----
-
-## 🎯 High-Impact Real-World Domains: Research, Analytics & Smart Home
-
-TapirusDB's zero-dependency single-file architecture is purpose-built for environments where spinning up complex database server clusters is impossible, expensive, or counterproductive:
-
-### 1. 🔬 Scientific Research & Academic Laboratories
-* **100% Reproducible Research Bundles**: Peer reviewers and researchers no longer need to configure Docker containers, PostgreSQL, Neo4j, and Milvus just to run a paper's code. Package an entire multimodal dataset—molecular/protein graphs, high-dimensional vector embeddings, and assay measurement SQL tables—into a **single verifiable `experiment.tapir` file**.
-* **Zero-Setup Python & Jupyter Workflows**: Install in seconds (`pip install tapirus`) and query directly inside Jupyter notebooks without starting any background daemons.
-* **Guaranteed Memory Determinism**: 100% Pure Safe Rust (`#![forbid(unsafe_code)]`) guarantees zero memory leaks, buffer overruns, or segfault crashes during 72-hour batch computation runs.
-
-```python
-# Python/Jupyter Research Workflow
-import tapirus
-
-# Open single research dataset container
-db = tapirus.open("paper_dataset.tapir")
-
-# Query molecular knowledge graph combined with chemical vector distance
-results = db.query("""
-    MATCH (c:Compound)-[:BINDS_TO]->(p:Protein {id: 'EGFR'})
-    WHERE c.smiles_vector <-> $query_vec < 0.15
-    RETURN c.id, c.affinity_score;
-""", query_vec=target_embedding)
-```
-
-### 2. 📊 High-Performance In-Process Analytics & Edge BI
-* **Zero-IPC Columnar Aggregations**: Vectorized `SUM`, `AVG`, and `COUNT` accumulators run directly across local memory pages with sub-microsecond execution times, eliminating network hop overhead completely.
-* **Transparent LZ4 Disk Compression**: Built-in page compression slashes disk space by 50%–70%, allowing edge gateways and industrial PCs to retain months of historical sensor telemetry locally.
-* **Zero Cloud Egress Costs**: Query, aggregate, and analyze high-frequency telemetry at the edge without paying exorbitant bandwidth and ingress bills to cloud data warehouses.
-
-```rust
-// In-Process Telemetry Aggregation with Common Table Expressions (CTEs)
-let summary = db.query("
-    WITH sensor_rollup AS (
-        SELECT sensor_id, AVG(reading) AS avg_reading, COUNT(*) AS samples
-        FROM telemetry_logs
-        WHERE timestamp >= NOW() - 3600
-        GROUP BY sensor_id
-    )
-    SELECT * FROM sensor_rollup WHERE avg_reading > 85.0;
-")?;
-```
-
-### 3. 🏠 Privacy-First Smart Home & Local Automation (Home Assistant / IoT)
-* **100% Sovereign & Local-First**: Run entirely offline on a Raspberry Pi 4/5 or Intel NUC with **< 4 MB idle RAM**. Your private camera triggers, sensor logs, and home conversations never leak to external cloud servers.
-* **Mesh Network Topology (openCypher Graph)**: Model Zigbee, Matter, and Thread device hierarchies natively (`MATCH (s:Switch)-[:CONTROLS]->(l:Light)`).
-* **Offline Voice Intent Matching (Vector Engine)**: Store speech and intent embeddings locally for sub-millisecond local voice assistant recognition (Whisper / Home Assistant Voice).
-* **Blackout Resilience (ACID WAL)**: If your home experiences an abrupt power outage, TapirusDB's Write-Ahead Log guarantees zero database corruption upon reboot.
-
-```rust
-// Local Voice Intent Resolution + Zigbee Mesh Pathfinding
-let intent_vector = local_whisper.embed("turn off kitchen lights");
-
-// 1. Semantic voice intent match (Vector)
-let matched_action = db.vector_search("voice_intents", &intent_vector, 1)?;
-
-// 2. Resolve Zigbee device relay path (openCypher Graph)
-let route = db.graph_query("
-    MATCH path = (hub:Gateway)-[:ROUTES_THROUGH*1..3]->(d:Device {name: 'kitchen_main_light'})
-    RETURN path LIMIT 1;
-")?;
-```
-
----
-
-## Official Sovereign Editions & Build Profiles
-
-TapirusDB is architected around a unified 100% Safe Rust core with modular **Cargo Feature Profiles**. You can compile tailored editions for ultra-constrained embedded silicon, pure document workloads, or dedicated AI agents without code changes:
-
-| Edition Profile | Cargo Feature Flag | Active Subsystems | Target Use Case & Footprint |
-| :--- | :--- | :--- | :--- |
-| 🪶 **Tapirus Lite** | `--features edition-lite` | Slotted B+Tree + Relational SQL | Microcontrollers, IoT, Bare-Metal ESP32/STM32 (**< 500 KB**) |
-| 📄 **Tapirus Document** | `--features edition-document` | JSON/BSON Collections + Path Indexer | Schemaless NoSQL Document Storage (**~ 1.2 MB**) |
-| 🧠 **Tapirus AI Brain** | `--features edition-ai-brain` | HNSW Vectors + openCypher Graph + Tap | Autonomous AI Agents, Robotics, Cognitive Memory (**~ 2.5 MB**) |
-| 👑 **Tapirus Quad** *(Default)* | `--features quad` | **All 4 Models Unified** (SQL+Vec+Graph+Doc) | Full-Stack Modern AI & Enterprise Applications (**~ 3.8 MB**) |
-| 🏢 **Tapirus Enterprise** | `--features edition-enterprise` | Quad Engine + Daemon Server & Wire Adapters | Cloud VPS, Production Services, ORM Bridges (**~ 6.0 MB**) |
+## Build and test
 
 ```bash
-# Compile tailored edition profiles with one command:
-cargo build --release --no-default-features --features edition-lite      # Tapirus Lite (< 500 KB)
-cargo build --release --no-default-features --features edition-document  # Tapirus Document (~ 1.2 MB)
-cargo build --release --no-default-features --features edition-ai-brain   # Tapirus AI Brain (~ 2.5 MB)
-cargo build --release --features quad                                   # Tapirus Quad (Default Flagship)
+cargo test --workspace --all-targets --offline
+cargo check --workspace --all-features --offline
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --offline -- -D warnings
 ```
 
-> 💡 **Shared Storage DNA:** All editions produce and consume the exact same atomic `.tapir` file format. A database initialized by *Tapirus Lite* can be opened seamlessly by *Tapirus AI Brain* or *Tapirus Quad* without data migrations.
->
-> 📖 Detailed architectural specifications: [**docs/MODULAR_ARCHITECTURE_AND_EXTENSIONS.md**](docs/MODULAR_ARCHITECTURE_AND_EXTENSIONS.md)
+These commands validate the current host build and exercised tests. They do not establish formal verification, certification, or correctness for every failure mode.
 
----
+## Documentation
 
-## Architectural Comparison
+- [API cookbook](docs/COOKBOOK.md)
+- [WAL and recovery architecture notes](docs/architecture/02_WAL_TRANSACTIONS_AND_RECOVERY.md)
+- [TLA+ model scope](docs/formal_verification/README.md)
+- [Assurance scope and limitations](docs/HIGH_ASSURANCE_SAFETY.md)
+- [SDKs](sdks/README.md)
+- [Transactional AI memory](docs/AI_MEMORY.md)
+- [Release validation and packaging](docs/RELEASE_VALIDATION.md)
 
-| Capability | **TapirusDB v1.0.1** | Traditional Relational (SQLite / DuckDB) | Dedicated Vector DBs | Graph Databases (Neo4j) | Document Stores (MongoDB) |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Runtime Architecture** | **In-Process Single File** | In-Process Single File | Server Daemon / Cloud | Server Daemon (JVM) | Server Daemon (`mongod`) |
-| **Memory Safety Model** | **100% Safe Rust (`forbid`)** | C / C++ (Manual memory) | Rust / Go / C++ | Java / JVM | C++ |
-| **Data Models Supported** | **Quad-Model (SQL+Vec+Graph+Doc)** | Relational SQL only | Vector embeddings only | Graph only | JSON Document only |
-| **AI Vector Search** | **Native HNSW, IVF & RaBitQ** | None (or slow extension) | Native ANN | Basic / Extension | Add-on Atlas Vector |
-| **Vector Quantization** | **RaBitQ 32x (1-Bit/2-Bit) + SQ8** | None | PQ / SQ | None | None |
-| **Graph Query Engine** | **openCypher + CSR + GraphRAG** | Recursive CTE only | None | Native Cypher | `$graphLookup` |
-| **Encrypted At-Rest** | **XChaCha20-Poly1305 (Zero-Cost)** | Commercial Add-on ($$$) | Cloud KMS only | Enterprise Tier ($$$) | Enterprise KMS |
-| **Cold Start / Idle RAM** | **< 4 MB RAM** | ~4 MB (SQLite) / ~35 MB | > 500 MB | > 1,200 MB | > 350 MB |
-| **Binary Size** | **~3.8 MB** | ~1.5 MB – 42 MB | > 150 MB | > 300 MB | > 200 MB |
-| **Multi-Service Sync Drift**| **Zero (Single Container)** | High (manual ETL) | High (CDC pipelines) | High (sync lag) | High (glue code) |
+## Benchmark status
 
----
+The audit found benchmark cases that need correction or clearer scope, including operations whose results may be optimized away, a dot-product case labeled as cosine, extrapolated vector-memory estimates, and comparisons with different durability settings. Do not use historical performance figures as product claims.
 
-## Core Technical Pillars
+The corrected `cargo bench --bench release_readiness` harness checks results, reopens both databases and measures HNSW recall against exact neighbors. Its small-workload local results and limitations are recorded in [release validation](docs/RELEASE_VALIDATION.md). Publish the source revision, binary hash, compiler flags, hardware, storage settings, dataset, warm or cold state, and latency distribution with every result.
 
-```text
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                               YOUR APPLICATION HOST PROCESS                            │
-│           (Rust • Python • TypeScript • Bun • Go • PHP • WebAssembly • C/C++)          │
-│                                                                                        │
-│   ┌────────────────────────────────────────────────────────────────────────────────┐   │
-│   │                         TapirusDB Core Engine (In-Process)                     │   │
-│   │                        100% Safe Rust • Idle RAM < 4 MB                        │   │
-│   └───────┬────────────────────┬───────────────────────┬───────────────────┬───────┘   │
-│           │                    │                       │                   │           │
-│   ┌───────▼────────┐   ┌───────▼────────┐      ┌───────▼────────┐  ┌───────▼────────┐  │
-│   │ 1. Relational  │   │ 2. Schema-less │      │  3. AI Vector  │  │  4. Knowledge  │  │
-│   │   SQL Tables   │   │  JSON Document │      │   HNSW + IVF   │  │  Graph Engine  │  │
-│   │ Slotted B+Tree │   │   Collection   │      │  (SIMD/RaBitQ) │  │  (openCypher)  │  │
-│   └───────┬────────┘   └───────┬────────┘      └───────┬────────┘  └───────┬────────┘  │
-│           └────────────────────┴───────────────────────┴───────────────────┘           │
-│                                           │ Direct In-Memory Traversal                 │
-│                                           ▼ (Sub-Microsecond Zero-IPC Chaining)        │
-│                    ┌──────────────────────────────────────────────┐                    │
-│                    │ Anthropic Model Context Protocol (MCP) Tools │                    │
-│                    │ tapirus_remember • tapirus_recall • SQL      │                    │
-│                    └──────────────────────┬───────────────────────┘                    │
-│                                           │ Direct File I/O (WAL + 4KB Slotted Pages)  │
-│                                           ▼                                            │
-│                    ┌──────────────────────────────────────────────┐                    │
-│                    │ Single Encrypted Database File Container     │                    │
-│                    │   • app.tapir      (Authenticated Ciphertext)│                    │
-│                    │   • app.tapir-wal  (ACID Append-Only Log)    │                    │
-│                    └──────────────────────────────────────────────┘                    │
-└────────────────────────────────────────────────────────────────────────────────────────┘
-```
+## TLA+ model scope
 
-### Pillar 1: Inverted File (IVF) Clustering & RaBitQ 32x Quantization
-For multi-million vector scale, TapirusDB pairs $k$-means Voronoi partitioning (`IvfIndex`) with **RaBitQ** (Random Rotation Quantization):
-1. **Fast Walsh-Hadamard Transform ($O(N \log N)$)**: Orthogonal sign-flip rotation equalizes coordinate variance across high dimensions without the $O(N^2)$ memory overhead of dense projection matrices.
-2. **Extreme Compression Ratio**: 1-bit binary sign packing shrinks vectors into `u64` bitmasks:
-   $$\text{1536 Dimensions (FP32)} = 6,144 \text{ bytes} \longrightarrow \mathbf{196 \text{ bytes}} \quad (\mathbf{>31\times \text{ Reduction}})$$
-3. **Single-Cycle Hardware POPCNT**: Vector distance evaluation executes in single-cycle CPU instructions using hardware `POPCNT` (`count_ones()`).
-4. **Multi-Probe Search**: Multi-probe clustering inspects only $n_{\text{probe}} \ll K$ Voronoi cells, pruning ~95% of the vector search space before scoring.
-
-### Pillar 2: Compressed Sparse Row (CSR) & openCypher
-Traditional graph systems suffer from pointer indirection and binary join memory explosion. TapirusDB implements:
-* **Contiguous Slice Adjacency**: Adjacency lists are stored in contiguous flat memory arrays (`outgoing_offsets`, `outgoing_targets`, `outgoing_weights`). Calling `csr.outgoing_neighbors(node_id)` returns a contiguous slice `&[u64]` with **zero heap allocations** and instant hardware prefetching.
-* **Worst-Case Optimal Join (WCOJ) Primitives**: Rapid edge existence checks in $O(\log d)$ via binary search on sorted neighbor slices, with two-pointer intersection sweeps for triangle counting (`triangle_count()`).
-* **Declarative openCypher**: Full support for standard pattern matching:
-  ```cypher
-  MATCH (u:User)-[:FOLLOWS*1..3]->(v:User) 
-  WHERE u.id = 1 AND v.active = true 
-  RETURN v.name, count(*)
-  ```
-
-### Pillar 3: Seed-and-Traverse GraphRAG Engine
-Rather than executing expensive unconstrained global vector scans across gigabytes of embeddings, TapirusDB executes **Seed-and-Traverse GraphRAG**:
-```text
-User Query ──► [IVF/PQ Asymmetric Seeding] ──► Top 2-3 Seed Entities
-                         │                                │
-                  (Sub-millisecond                        ▼
-                   Centroid Pruning)             [Micro-Hop CSR Traversal]
-                                                 (BFS 1-2 Hops, Contiguous Memory:
-                                                  Extract Factual Knowledge Subgraph)
-                                                          │
-                                                          ▼
-                                                 [Tri-Modal RRF Fusion]
-                                                 (Vector + BM25 Lexical + Graph Proximity)
-                                                          │
-                                                          ▼
-                                            [Prompt Context Synthesizer]
-                                            (Compact, Hallucination-Free Markdown)
-```
-
-$$\text{RRF}(e) = \sum_{m \in \{\text{vec}, \text{lex}, \text{graph}\}} \frac{w_m}{k_{\text{rrf}} + \text{rank}_m(e)}$$
-
-* **Enterprise Multi-Tenant & Scoped ACLs**: Filter graph traversals and vector candidate ranking on-the-fly using `tenant_id` and `allowed_roles` (`conn.graph_rag_query_scoped()`), ensuring sensitive contextual subgraphs never leak across tenants or privilege tiers.
-
-### Pillar 4: Cost-Based Query Optimizer (CBO) & Statistics
-TapirusDB features an automated cost-based query optimizer (`src/sql/planner.rs`):
-* Computes disk I/O page fetch costs and CPU tuple comparison costs.
-* Automatically selects between **Sequential Scan**, **B+Tree Secondary Index Scan**, and **Primary Key Point Lookup**.
-* `EXPLAIN QUERY PLAN` outputs estimated execution cost and expected row cardinality.
-
-### Pillar 5: Bidirectional Graph-Vector Chaining & Agent Long-Term Memory
-Traditional distributed stacks decouple graph databases and vector stores, causing high network serialization latency and memory-prohibitive global vector scans. TapirusDB executes native bidirectional in-memory chaining at **1,606,037 ops/sec (0.55 µs)**:
-* **Graph-to-Vector (Targeted Scored Neighborhoods)**: Traverses structured entity relationships first ($A \to B$), then restricts vector distance scoring strictly to candidate neighborhood nodes ($M \ll N$). Yields **100% exact Recall** with zero approximation loss ($O(M \cdot D)$ instead of $O(N \log N)$).
-* **Vector-to-Graph (Seed-and-Traverse GraphRAG)**: Uses ANN centroids to locate seed nodes, then instantly expands 1-hop and 2-hop CSR slices to extract factual context, eliminating LLM hallucinations.
-* **Autonomous Agent Long-Term Memory (LTM)**: Automatically balances semantic vector similarity ($S_v$), BM25 lexical precision ($S_l$), and exponential temporal recency decay:
-  $$\text{RecallScore}(m) = w_v \cdot S_v + w_l \cdot S_l + w_r \cdot e^{-\lambda \Delta t} + w_i \cdot \text{Importance}$$
-
-### Pillar 6: Unified Quad-Model Atomic Transactions (ACID)
-Unlike fragmented multi-database architectures where cross-model consistency is impossible without complex distributed consensus (2PC/Sagas), TapirusDB provides **true single-transaction atomicity across all four data models**:
-* **Single Atomic Commit**: A transaction can update a Relational SQL state row, insert an unstructured JSON document, link openCypher knowledge graph nodes and edges, and index a vector embedding within a single `conn.begin_transaction()`.
-* **Zero Torn States**: If any operation fails or the host process loses power, Write-Ahead Log (WAL) crash recovery rolls back all four models simultaneously to their exact pre-transaction state, eliminating cross-model state corruption forever.
-
-### Pillar 7: Dynamic Scalar UDF Registry & Advanced SQL Engine
-Extend TapirusDB's SQL dialect with arbitrary Rust closures or use pre-registered high-performance built-in functions directly in `SELECT` projections and `WHERE` clauses:
-* **Custom Scalar UDF Registry**: Register custom thread-safe closures callable directly in SQL queries (`conn.register_scalar_function("MY_HASH", |args| ...)`).
-* **Standard Built-in Scalar Functions**: Out-of-the-box support for `UPPER`, `LOWER`, `LENGTH`/`LEN`, `ABS`, `ROUND`, `COALESCE`, `CONCAT`, `SUBSTR`, `TRIM`, and `REVERSE`.
-* **Correlated & Subquery Expressions**: Native support for `WHERE [NOT] EXISTS (SELECT ...)`, `WHERE col [NOT] IN (SELECT ...)`, and derived tables `FROM (SELECT ...) AS alias`.
-* **Zero-Downtime DDL Migrations**: Non-destructive schema evolution via `ALTER TABLE RENAME TO <new_table>`, `ALTER TABLE RENAME COLUMN <old> TO <new>`, and `ALTER TABLE DROP COLUMN <col>` with automatic primary key safeguards and physical B+Tree row rewriting.
-* **Nested Transaction Savepoints**: Precision partial rollbacks with `SAVEPOINT <name>`, `ROLLBACK TO [SAVEPOINT] <name>`, and `RELEASE [SAVEPOINT] <name>`.
-
-```rust
-// 1. Register custom Rust scalar closure
-conn.register_scalar_function("DOUBLE_VAL", |args| {
-    if let Some(Value::Integer(i)) = args.first() {
-        Ok(Value::Integer(i * 2))
-    } else {
-        Ok(Value::Null)
-    }
-});
-
-// 2. Query with custom UDFs, built-ins, and EXISTS subqueries
-let rows = conn.query("
-    SELECT id, UPPER(name) AS upper_name, DOUBLE_VAL(score) AS bonus
-    FROM employees e
-    WHERE EXISTS (SELECT 1 FROM departments d WHERE d.id = e.dept_id)
-      AND LENGTH(name) > 3;
-")?;
-
-// 3. Precision Transaction Savepoints
-conn.execute("BEGIN TRANSACTION;")?;
-conn.execute("INSERT INTO audit_log VALUES (1, 'STARTED');")?;
-conn.execute("SAVEPOINT sp_stage;")?;
-conn.execute("INSERT INTO audit_log VALUES (2, 'EXPERIMENTAL');")?;
-conn.execute("ROLLBACK TO SAVEPOINT sp_stage;")?; // Undoes step 2, keeps step 1
-conn.execute("COMMIT;")?;
-```
-
-### Pillar 8: Continuous Streaming WAL Replication & Graph Projection
-* **Hardware CRC32-Verified WAL Streaming**: Stream write-ahead log frames continuously from primary to standby replicas without stopping client writes (`WalReplicationStream`, `WalReplicationReceiver`). Frame-level and chunk-level CRC32 checksums guarantee bit-rot immunity and zero torn page states over the network wire.
-* **Instant Graph-over-Relational Projection**: Project relational SQL tables into native openCypher knowledge graphs (`conn.project_table_as_nodes(...)`, `conn.project_table_as_edges(...)`) with zero ETL lag and zero secondary storage overhead.
-
-```rust
-// 1. Export verifiable replication chunk on primary node
-let chunk = primary_conn.export_replication_chunk()?;
-
-// 2. Apply chunk into hot-standby replica node
-let frames_applied = standby_conn.apply_replication_chunk(&chunk)?;
-println!("Replicated {frames_applied} frames to standby replica!");
-
-// 3. Project relational SQL tables directly into the Knowledge Graph
-conn.project_table_as_nodes("users", "id", Some("name"), None)?;
-conn.project_table_as_edges("friendships", "user_a", "user_b", Some("FRIENDS_WITH"), Some("weight"), None)?;
-
-// 4. Immediately query relational data via openCypher or Graph algorithms
-let path = conn.graph_find_path(1, 42, 3);
-```
-
----
-
-## 🌐 Industrial Applications: AI & Beyond
-
-TapirusDB's in-process quad-model architecture (Relational SQL + Vector Search + openCypher Graph + JSON Documents) eliminates multi-database operational overhead. A single encrypted `.tapir` container replaces entire distributed infrastructure stacks:
-
-| Domain & High-Impact Use-Case | Quad-Model Synergy (Single `.tapir` Container) | Legacy "Frankenstack" Replaced | Measurable Edge Advantage |
-| :--- | :--- | :--- | :--- |
-| 🧠 **Autonomous AI Agents & Long-Term Memory** | **[Vector]** semantic recall of past interactions; **[Graph]** entity-to-concept associative memory; **[SQL]** structured audit logs, tool state & token budgets; **[Instinct]** learned heuristics loop. | Pinecone ($$$) + Neo4j ($$$) + SQLite + Redis | **< 0.51 µs in-process recall**, 0 Docker daemons, zero multi-DB sync latency. |
-| 🤖 **Autonomous Robotics, Drones & Spatial SLAM** | **[Vector]** visual & LiDAR loop-closure embeddings; **[Graph]** topological waypoint networks & pathfinding; **[SQL]** sensor calibration & safety constraint telemetry. | ROS SQLite + ChromaDB + Network Graph DB | **100% offline air-gapped immunity**, deterministic execution without cloud dropouts. |
-| 📱 **On-Device Private AI & Local SLMs (Mobile/Desktop)** | **[Vector]** local RAG across personal notes & PDFs; **[Graph]** personal knowledge graph; **[Doc]** arbitrary JSON metadata; **[SQL]** encrypted structured records. | LangChain Vector Store + UnQLite + CoreData | **Zero cloud egress**, XChaCha20-Poly1305 encrypted, runs inside iOS/Android/Mac/Win apps. |
-| 🛡️ **Air-Gapped Sovereign Hardware & Defense IoT** | Operates on Raspberry Pi, avionics, tactical UAVs, and naval nodes. **[Doc + SQL]** ingest telemetry; **[Vector]** detects signal anomalies; **[Graph]** traces mission dependencies. | Heavy server clusters, complex Kubernetes setups | **< 4 MB idle RAM**, zero open network ports, tamper-proof WAL crash recovery. |
-| 🔍 **Cybersecurity Threat Hunting & In-Process EDR** | **[Graph]** traverses Active Directory lateral movement attack paths; **[Vector]** flags polymorphic malware & syscall sequence anomalies; **[SQL]** inspects local event logs. | Splunk / Elastic Agent + Neo4j + SQLite | Microsecond anomaly detection directly inside the endpoint agent before data exfiltration. |
-| 💳 **Financial Fraud Detection & Real-Time AML** | **[Graph]** uncovers multi-hop money-mule rings ($A \to B \to C \to A$); **[Vector]** spots atypical transaction patterns; **[SQL]** guarantees immutable ACID balance reconciliation. | TigerGraph + Milvus + PostgreSQL | Eliminates expensive distributed graph-vector network hops during millisecond authorization windows. |
-| 🧬 **Precision Medicine, Genomics & Drug Discovery** | **[Graph]** navigates Disease $\to$ Target $\to$ Variant pathways; **[Vector]** computes chemical fingerprint (SMILES) similarity; **[SQL]** guarantees clinical trial record integrity. | Bio4j + Pinecone + Oracle Health | Fully compliant air-gapped clinical workstation deployments with reproducible single-file datasets. |
-| ⚡ **In-Process High-Frequency Telemetry & Edge SCADA** | **SIMD-vectorized accumulators** calculate `AVG`/`SUM`/`COUNT` across millions of sensor readings in microseconds; **Transparent LZ4** cuts disk usage by 70%. | InfluxDB + Redis TimeSeries + SQLite | Direct C-ABI embedding into industrial PLCs and SCADA controllers with zero network serialization overhead. |
-| 🔬 **Reproducible Scientific Research & Notebooks** | Single-file `.tapir` container packages code, molecular embeddings, relational experiment runs, and citation knowledge graphs for 100% paper reproducibility. | Multi-container Docker setups, cloud DB credentials | Distribute an entire multi-modal research dataset as a single verifiable file to colleagues and reviewers. |
-
----
-
-## Developer Tooling & CLI
-
-TapirusDB ships as a single zero-dependency standalone binary (`tapirus`):
-
-### 1. Accelerated Workspace Search (`tapirus grep` / `tapirus tg`)
-High-throughput in-process developer code search combining regex matching, BM25 token overlap, and local semantic vector similarity:
-```bash
-# Search codebase with semantic vector ranking enabled
-tapirus tg --vector "transaction rollback wal" src/
-
-# Case-insensitive search filtered by file extensions
-tapirus grep -i --ext rs,toml "quantization" .
-```
-
-### 2. Interactive Terminal Shell & Batch Execution
-```bash
-# Launch interactive REPL prompt
-tapirus production.tapir
-```
-```text
-tapirus> CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
-Query OK, 1 row(s) affected
-
-tapirus> INSERT INTO users VALUES (1, 'Alex Chen');
-Query OK, 1 row(s) affected
-
-tapirus> SELECT * FROM users;
-+----+------------+
-| id | name       |
-+----+------------+
-| 1  | Alex Chen  |
-+----+------------+
-(1 row(s))
-```
-
-```bash
-# Non-interactive script execution (-c or --sql)
-tapirus production.tapir -c "INSERT INTO users VALUES (2, 'Samir Patel'); SELECT * FROM users;"
-
-# Pure JSON array output for shell pipelines and CI/CD (--json)
-tapirus production.tapir --json "SELECT id, name FROM users;"
-```
-
-### 3. Built-in Protected HTTP REST Server (`tapirus serve`)
-Launch an embedded database as a high-throughput, secure REST API with zero external dependencies:
-```bash
-# Launch with token authentication and database encryption
-tapirus serve --port 3005 --api-key "your_secret_api_key" --passphrase "vault_secret" production.tapir
-```
-
-* **Constant-Time Verification**: Prevents timing side-channel attacks via `subtle::ConstantTimeEq`.
-* **Query Execution**: `POST /api/sql` or `POST /sql` accepts SQL queries, graph traversals, and document queries.
-* **AI Cognitive Chatbot Web UI**: `GET /chat` provides a native web chat interface with live telemetry pills, intent triage, and knowledge grounding.
-* **In-Database Chatbot API**: `POST /api/chat` runs TAP cognitive triage (< 2ms) and persists all dialogue rows into `tap_chat_logs`.
-* **Chatbot SQL Logs**: `GET /api/chat/logs` provides live inspection of persisted chat dialogues straight from the database.
-
-### 4. Autonomous AI Agent MCP Server (`tapirus mcp`)
-Connect Claude Desktop, Cursor, or Gemini to TapirusDB over stdio:
-```bash
-# Auto-generate ready-to-paste Claude Desktop configuration JSON:
-tapirus mcp --config-claude agent_memory.tapir
-```
-
-```json
-{
-  "mcpServers": {
-    "tapirus": {
-      "command": "tapirus",
-      "args": ["mcp", "agent_memory.tapir"]
-    }
-  }
-}
-```
-
-* Exposes standard tools: `tapirus_remember`, `tapirus_recall`, `tapirus_sql`, `tapirus_graph_neighbors`, and `tapirus_status`.
-
-### 5. High-Throughput Streaming Data Importer (`tapirus import`)
-Stream massive datasets directly into TapirusDB with automatic schema inference and transactional batching:
-
-```bash
-# 1. Ingest CSV with automated type inference (INTEGER, REAL, TEXT) into SQL tables
-tapirus import csv data/telemetry.csv --table sensors --batch 1000 --db production.tapir
-
-# 2. Ingest streaming JSON Lines (JSONL) into Document collections
-tapirus import jsonl data/products.jsonl --collection catalog --batch 500 --db production.tapir
-
-# 3. Semantic Markdown Ingestion into AI Episodic Memory & Knowledge Graph
-tapirus import md docs/spec.md --namespace robotics --tags "hardware,specs" --session-id "session_01" --db production.tapir
-```
-
-### 6. Hot Backup, Safe Restore & Physical Integrity Audit (`tapirus backup`, `restore`, `verify`)
-Enterprise-grade durability, snapshotting, and auditing tools for mission-critical edge deployments:
-
-```bash
-# Atomic online backup snapshot (validates encryption KCV prior to copying)
-tapirus backup production.tapir backups/prod_2026_snapshot.tapir
-
-# Safe restore (validates page headers and file geometry)
-tapirus restore backups/prod_2026_snapshot.tapir restored_production.tapir
-
-# Deep physical integrity audit (scans slotted pages, verifies CRC32 checksums, checks encryption keys)
-tapirus verify --deep production.tapir
-```
-
-### 7. Native BitNet b1.58 Ternary Tensor Engine (`tapirus bitnet`)
-Direct terminal access to the multiplication-free ternary neural engine:
-
-```bash
-# 1. Categorical classification directly via BitNet ternary layers
-tapirus bitnet "Refund requested because product was broken" "refund" "sales" "tech_support"
-
-# 2. Ternary truth verification with international negation detection
-tapirus bitnet verify "user paid invoice" "invoice is paid"
-
-# 3. Benchmark local ternary contraction hardware throughput
-tapirus bitnet benchmark
-```
-
-### 8. Visual Database Manager Companion Server (`tapirus studio`)
-Launch the companion REST server to connect with [Tapirus Studio Web GUI](https://tapirusdb.com/studio/) or desktop workbench:
-
-```bash
-# Start companion bridge server on port 3005 and connect to local database
-tapirus studio production.tapir
-```
-
-* Direct zero-setup companion bridge for the free in-browser and desktop Studio workbench.
-* Allows visual administration of SQL tables, HNSW vector space, openCypher graph relationships, and physical 4KB slotted page telemetry.
-
----
-
-## Verified Benchmarks
-
-Benchmarks executed on native NVMe SSD hardware (`cargo bench --bench tapirus_bench`):
-
-| Operation | Throughput | Mean Latency | Median (p50) | Tail (p99) |
-| :--- | :---: | :---: | :---: | :---: |
-| **Relational Primary Key Point Lookup** | **362,733 ops/sec** | 2.61 µs | 2.37 µs | 4.68 µs |
-| **CSR Graph Adjacency Sweep** | **3,493,852 ops/sec** | 0.23 µs | 0.21 µs | 0.37 µs |
-| **Graph-to-Vector Bidirectional Chaining** | **1,606,037 ops/sec** | 0.55 µs | 0.51 µs | 1.01 µs |
-| **Relational B+Tree Inserts** | **458,400 ops/sec** | 2.18 µs | 1.82 µs | 18.42 µs |
-| **JSON Document Path Lookups** | **355,004 docs/sec** | 2.70 µs | 2.58 µs | 5.45 µs |
-| **HNSW Vector Search (32D, k=5)** | **51,060 QPS** | 19.53 µs | 17.06 µs | 50.36 µs |
-| **RaBitQ Asymmetric POPCNT Distance** | **> 12,000,000 ops/sec**| 0.08 µs | 0.08 µs | 0.12 µs |
-| **WAL Durable Disk Writes** | **107,875 writes/sec**| 9.15 µs | 6.71 µs | 62.21 µs |
-| **AI Memory Ingest (BM25 Indexing)** | **416,529 ops/sec** | 2.30 µs | 1.77 µs | 4.38 µs |
-
-### 🏁 Scientific Head-to-Head Benchmark: TapirusDB vs. SQLite 3.x (WAL)
-
-Tested on persistent NVMe SSD storage with Write-Ahead Logging (`cargo bench --bench head_to_head`):
-
-| Workload Benchmark | TapirusDB (100% Safe Rust) | SQLite 3.x (C WAL Engine) | Architectural Result |
-| :--- | :---: | :---: | :--- |
-| **Primary Key Point Lookup** *(5,000 queries)* | **17.1 ms (293,100 ops/s)** | 61.7 ms (81,100 ops/s) | 🏆 **TapirusDB 3.6x FASTER** |
-| **Table Aggregate Scan** *(COUNT/SUM/AVG x100)* | **29.1 ms (3,400 ops/s)** | 32.6 ms (3,100 ops/s) | 🏆 **TapirusDB OUTPERFORMS** |
-| **Multi-Model AI Vector Search** *(128-D KNN)* | **2.4 ms (20,800 ops/s)** | N/A (Requires ext/C) | 🏆 **TapirusDB EXCLUSIVE NATIVE** |
-| **Relational Bulk Insert** *(5,000 rows in 1 TX)* | **10.9 ms (458,400 ops/s)** | 2.7 ms (1.84M ops/s) | Sub-microsecond per row (33x speedup) |
-| **Multi-Table Relational Join** *(1K×1K records)* | **15.5 ms (1,290 ops/s)** | 2.1 ms (9,600 ops/s) | Sub-millisecond (0.77 ms per join) |
-
-### 🧠 AI Memory Recall, Vector Scale & Edge WASM Matrix
-
-| Evaluation Dimension | TapirusDB v1.0.1 | Standard Cloud / Polyglot Stack | Architectural Verified Advantage |
-| :--- | :---: | :---: | :--- |
-| **AI Agent Memory Recall** *(End-to-End)* | **0.45 ms (450 µs)** | 45 – 90 ms *(Pinecone + Neo4j)* | 🏆 **100x Faster (In-Process)** |
-| **RAM for 1M Vectors** *(1536-D Embeddings)* | **~196 MB (RaBitQ 1-Bit)** | 6.14 GB *(pgvector / Pinecone)* | 🏆 **31.3x Less RAM** |
-| **Vector Distance Calculation** | **1 CPU Cycle (POPCNT)** | 100+ FMA Cycles *(Float32)* | 🏆 **Hardware Bit-Level Acceleration** |
-| **Client-Side WASM Bundle** *(Initial Load)* | **1.1 MB (Full Quad-Model)** | 28.5 MB *(DuckDB-Wasm)* | 🏆 **25x Smaller Bundle** |
-| **At-Rest Storage Encryption** | **Built-in XChaCha20 ($0)** | $2,000+ *(SQLCipher Enterprise)* | 🏆 **Free Native AEAD Security** |
-
-> ⚡ **Live Empirical Reproduction:**
-> Run `cargo bench --bench tapirus_bench` to measure all 8 engines in real time: Turnkey Agent Recall (155 µs mean / 137 µs p50), Hybrid Recall (363 µs mean), RaBitQ 1536-D memory scale (196 MB vs 6.14 GB), and POPCNT distance (11.36M ops/s).
-
-### Architectural Latency Breakdown: Network/IPC Middleware vs. In-Process Memory Traversal
-```text
-Cloud Vector DB (gRPC Roundtrip)  [████████████████████████████████████████] 25,000 µs (25.0 ms - WAN Network Hop)
-Dedicated Graph DB (HTTP/JVM)     [████████████████████████]                 15,000 µs (15.0 ms - TCP / JVM GC)
-Relational SQL Server (TCP IPC)   [████████]                                  5,000 µs (5.0 ms - Unix Socket / IPC)
-TapirusDB Combined Graph-Vector   [▌]                                          0.51 µs (In-Process CPU Memory Bus)
-```
-
-### ⚡ Verified Tail-Latency & Physical Resource Footprint
-
-Tested on native NVMe SSD hardware with true Write-Ahead Log (WAL) durability:
-
-| Dimension | TapirusDB (In-Process) | Traditional Network DBs | Concrete Operational Value |
-| :--- | :---: | :---: | :--- |
-| **Graph-Vector Retrieval** | **0.51 µs** (median) | ~25,000 µs (25 ms) | Sub-microsecond local reasoning vs. WAN gRPC network serialization hop. |
-| **Durable Disk Writes** | **107,875 writes/sec** | ~2,000–8,000 ops/sec | Real ACID WAL disk commits, not volatile in-memory caching. |
-| **Idle Memory Footprint** | **< 4 MB RAM** | > 1.2 GB (multi-daemon) | Fits comfortably in Raspberry Pi, edge robotics, and local desktop apps. |
-| **Initial File Footprint** | **4,096 Bytes** | Server cluster required | Single encrypted `.tapir` container; zero cloud daemons to configure. |
-
-> 🔬 **Transparent & Peer-Reviewed Methodology:**  
-> We publish complete hardware specifications, statistical variance ($\sigma$), and cache-miss analysis in our [Systems Architecture Paper (PAPER_TAPIRUSDB.md)](PAPER_TAPIRUSDB.md).
->
-> **Verify & run the benchmark suite yourself on your machine:**
-> ```bash
-> git clone https://github.com/tapiruslab/TapirusDB.git
-> cd TapirusDB
->
-> # 1. Side-by-side SQL ACID comparison against SQLite
-> cargo bench --bench head_to_head
->
-> # 2. Full 8-engine tail-latency, AI memory & RaBitQ hardware suite
-> cargo bench --bench tapirus_bench
-> ```
-> *Full tail percentiles (p50, p95, p99, Min, Max) will be automatically exported to `target/tapirus_bench_results.json` for independent peer review.*
-
----
-
-## When (and When NOT) to Use TapirusDB
-
-Engineering honesty is paramount. Choosing the right storage engine requires understanding boundary trade-offs:
-
-| Workload & Scenario | Recommended Engine | Architectural Rationale |
-| :--- | :---: | :--- |
-| **Local AI Agents & LLM RAG Memory** | ✅ **TapirusDB** | Microsecond episodic retrieval, combined vector + openCypher graph in one atomic `.tapir` file. |
-| **Embedded Edge, Robotics & IoT Hardware** | ✅ **TapirusDB** | < 4 MB idle RAM, 100% Safe Rust core, zero background daemon processes or JVM runtimes. |
-| **Desktop Apps, CLI Tools & Local-First Web** | ✅ **TapirusDB** | Single-file portability, zero server configuration, pure client-side SQLite/Mongo alternative. |
-| **Petabyte Distributed Big Data Warehousing** | ❌ **ClickHouse / Snowflake** | TapirusDB is optimized for operational single-node/in-process workloads, not massive multi-rack OLAP scans. |
-| **Multi-Region Active-Active Distributed Writes** | ❌ **CockroachDB / Spanner** | For global multi-master write replication, use dedicated distributed consensus databases. |
-| **Complex Analytical BI Cubes over Billions of Rows** | ❌ **DuckDB / ClickHouse** | DuckDB is superior for vectorized columnar OLAP; TapirusDB excels at transactional, graph, vector, and episodic AI memory. |
-
----
-
-## Formal Safety Verification
-
-* **TLA+ Specifications**: Write-Ahead Logging (WAL) state transitions and crash recovery are formally modeled under TLA+ in [`docs/formal_verification/`](docs/formal_verification/).
-* **Memory Safety Contract**: Strict `#![forbid(unsafe_code)]` enforced across all core modules in `src/lib.rs`.
-
----
-
-## Documentation & Architecture
-
-* 📖 [**Production API Cookbook & Code Recipes**](docs/COOKBOOK.md) *(Simple Website/Desktop RAG, 1M+ Low-Spec Research Analytics, Hybrid RRF Search, GraphRAG, Bulk Ingestion, Time-Travel, Window Functions)*
-* 🧠 [**Tutorial: Autonomous AI Agent Memory in 30 Minutes**](docs/tutorials/ai_agent_memory_in_30_minutes.md)
-* 🔌 [**Multi-Language SDK & C-ABI Integration Guide**](sdks/README.md)
-* 📐 **Systems Architecture Deep Dives**:
-  * [**01: 4KB Slotted-Page Storage Engine & Buffer Pool**](docs/architecture/01_STORAGE_ENGINE_AND_PAGING.md)
-  * [**02: WAL2 Transactions, ARIES Recovery & Crash Durability**](docs/architecture/02_WAL_TRANSACTIONS_AND_RECOVERY.md)
-  * [**03: Dynamic SIMD Vector Acceleration & RaBitQ 32x Quantization**](docs/architecture/03_SIMD_VECTOR_AND_QUANTIZATION.md)
-  * [**04: Compressed Sparse Row (CSR) & openCypher Graph Engine**](docs/architecture/04_GRAPHBLAS_AND_OPENCYPHER.md)
-* ☁️ [**GraphRAG & Cloud S3/R2 Remote Storage**](docs/GRAPHRAG_AND_REMOTE_STORAGE.md)
-* 📜 [**Scientific Systems Architecture Paper**](PAPER_TAPIRUSDB.md)
-* ⚙️ [**C ABI & Native Foreign Function Interface**](include/tapirus.h)
-* 🛡️ [**Formal Verification Suite (TLA+)**](docs/formal_verification/README.md)
-* ⚖️ [**Software License (BUSL 1.1)**](LICENSE)
-
----
-
-<div align="center">
-  <b>TapirusDB — Engineered in Safe Rust for Sovereign AI & Edge Systems.</b><br/>
-  <i>Developed & Maintained by TapirusDB Contributors • Tapirus Tech Lab (<a href="https://tapirusdb.com">tapirusdb.com</a>)</i><br/>
-  <small>Contact: <a href="mailto:contact@tapirusdb.com">contact@tapirusdb.com</a></small>
-</div>
+The repository contains a TLA+ model of selected WAL and recovery transitions. There is no TLC run output or refinement proof connecting the model to the Rust implementation. The model is a design artifact, not evidence that the compiled engine is formally verified.

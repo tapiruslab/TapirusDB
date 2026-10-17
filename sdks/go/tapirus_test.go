@@ -22,9 +22,19 @@ func TestTapirusClient(t *testing.T) {
 				"engine":  "Safe-Rust Quad-Model",
 			})
 		case "/api/sql":
-			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			var request struct {
+				SQL    string        `json:"sql"`
+				Params []interface{} `json:"params"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("failed to decode SQL request: %v", err)
+			}
+			if request.SQL != "SELECT * FROM agents WHERE active = ?" || len(request.Params) != 1 || request.Params[0] != true {
+				t.Errorf("unexpected parameterized SQL request: %#v", request)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"rows": []map[string]interface{}{
 				{"id": 1, "name": "Agent Alpha", "score": 0.98},
-			})
+			}})
 		case "/api/vector/search":
 			_ = json.NewEncoder(w).Encode([]tapirus.VectorMatch{
 				{ID: 1, Score: 0.99, Collection: "memories"},

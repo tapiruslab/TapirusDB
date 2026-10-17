@@ -1,6 +1,6 @@
 //! # TapirusDB (`tapirus`)
 //!
-//! The Pure Safe-Rust Embedded Database Engine — SQLite Simplicity with Native AI Vector Search.
+//! The Pure Safe-Rust Embedded Database Engine â€” SQLite Simplicity with Native AI Vector Search.
 //!
 //! Stored entirely in a single `.tapir` file with zero background server processes.
 
@@ -16,6 +16,7 @@ pub mod graph;
 pub mod memory;
 pub mod pager;
 pub mod realtime;
+pub mod session;
 pub mod sql;
 pub mod tap;
 pub mod traits;
@@ -25,28 +26,31 @@ pub use btree::{BTreeEngine, PageHeader, PageType, TableLeafCell};
 pub use crypto::DatabaseCipher;
 pub use document::Collection;
 pub use embedded::{
-    FlashBlockDevice, MicroDatabase, MicroHeader, MicroPager, RamBlockDevice,
-    DEFAULT_MICRO_BLOCK_SIZE, MICRO_DATABASE_MAGIC,
+    DEFAULT_MICRO_BLOCK_SIZE, FlashBlockDevice, MICRO_DATABASE_MAGIC, MicroDatabase, MicroHeader,
+    MicroPager, RamBlockDevice,
 };
 pub use error::{Error, Result};
 pub use graph::{
-    ChainMatch, Direction, Edge, GraphAdjacencyRecord, GraphChain, GraphEngine, GraphRagConfig, GraphRagContext,
-    GraphRagEngine, GraphRagResult, Node, NodeFilter, TraversalStep,
+    ChainMatch, Direction, Edge, GraphAdjacencyRecord, GraphChain, GraphEngine, GraphRagConfig,
+    GraphRagContext, GraphRagEngine, GraphRagResult, Node, NodeFilter, TraversalStep,
 };
 pub use memory::{
-    reciprocal_rank_fusion, Bm25Index, Bm25Params, DeterministicHashEmbedder, EmbeddingEngine,
-    HttpEmbeddingEngine, MemoryEngine, MemoryEntry, MemoryRecallFilter, MemoryRecallResult,
-};
-pub use pager::{
-    DatabaseHeader, MockRemoteRangeStorage, PageId, Pager, RemotePager, RemoteRangeReader,
-    RemoteStorageAdapter, S3StorageConfig, WalReplicationChunk, WalReplicationFrame,
-    WalReplicationReceiver, WalReplicationStream, DEFAULT_PAGE_SIZE,
+    Bm25Index, Bm25Params, DeterministicHashEmbedder, EmbeddingEngine, HttpEmbeddingEngine,
+    MemoryConfig, MemoryDeleteScope, MemoryDocument, MemoryEngine, MemoryEntry, MemoryFusion,
+    MemoryRecallFilter, MemoryRecallResult, MemorySearch, MemorySearchDiagnostics,
+    MemorySearchResponse, MemoryStats, reciprocal_rank_fusion,
 };
 #[cfg(feature = "cloud-s3")]
 pub use pager::CloudS3RemoteStorage;
+pub use pager::{
+    DEFAULT_PAGE_SIZE, DatabaseHeader, MockRemoteRangeStorage, PageId, Pager, RemotePager,
+    RemoteRangeReader, RemoteStorageAdapter, S3StorageConfig, StorageHealth, WalReplicationChunk,
+    WalReplicationFrame, WalReplicationReceiver, WalReplicationStream,
+};
 pub use realtime::{ChangeEvent, ChangeOp, RealtimeBus};
+pub use session::{Session, SessionDatabase};
 pub use sql::{
-    bind_parameters, parse_sql, parse_tokens, ScalarUdf, SQLExecutor, Statement, UdfRegistry,
+    SQLExecutor, ScalarUdf, Statement, UdfRegistry, bind_parameters, parse_sql, parse_tokens,
 };
 pub use tap::{
     BitNetBlock, BitNetLinear, BitNetRmsNorm, ClassificationResult, RouteResult, ScoreResult,
@@ -121,6 +125,8 @@ pub struct Config {
     pub passphrase: Option<String>,
     /// Optional raw 256-bit encryption key
     pub encryption_key: Option<[u8; 32]>,
+    /// Source/index admission limits applied before loading persisted AI memory.
+    pub memory: MemoryConfig,
 }
 
 impl Default for Config {
@@ -131,6 +137,7 @@ impl Default for Config {
             auto_checkpoint: true,
             passphrase: None,
             encryption_key: None,
+            memory: MemoryConfig::default(),
         }
     }
 }
@@ -145,13 +152,64 @@ pub struct Connection {
     executor: Arc<RwLock<SQLExecutor>>,
     memory: Arc<RwLock<MemoryEngine>>,
     realtime: Arc<RealtimeBus>,
+    pending_changes: Arc<parking_lot::Mutex<Vec<(usize, ChangeEvent)>>>,
     config: Config,
 }
 
-/// A thread-safe connection pool for distributing cloned TapirusDB connection handles across threads
+/// A wrapper that distributes cloned handles to one shared connection.
+///
+/// Handles returned by [`ConnectionPool::acquire`] share session and transaction state;
+/// this type does not provide independent database sessions.
 #[derive(Clone)]
 pub struct ConnectionPool {
     conn: Connection,
+}
+
+fn predicted_insert_row_id_for_values(
+    executor: &SQLExecutor,
+    table: &str,
+    columns: Option<&[String]>,
+    values: &[Value],
+) -> Option<u64> {
+    let definition = executor.get_table(table)?;
+    let primary_key_index = definition.primary_key_index();
+    let row_id = if let Some(primary_key_index) = primary_key_index {
+        let key_column = &definition.columns[primary_key_index].name;
+        let value_index = columns
+            .and_then(|columns| {
+                columns
+                    .iter()
+                    .position(|column| column.eq_ignore_ascii_case(key_column))
+            })
+            .unwrap_or(primary_key_index);
+        match values.get(value_index) {
+            Some(Value::Integer(value)) => *value as u64,
+            Some(Value::Null) | Some(_) | None => definition.next_row_id,
+        }
+    } else {
+        definition.next_row_id
+    };
+    Some(row_id)
+}
+
+fn predicted_insert_row_id(executor: &SQLExecutor, statement: &Statement) -> Option<u64> {
+    match statement {
+        Statement::Insert {
+            table,
+            columns,
+            values,
+            ..
+        } => predicted_insert_row_id_for_values(executor, table, columns.as_deref(), values),
+        Statement::InsertMany {
+            table,
+            columns,
+            rows,
+            ..
+        } if rows.len() == 1 => rows.first().and_then(|values| {
+            predicted_insert_row_id_for_values(executor, table, columns.as_deref(), values)
+        }),
+        _ => None,
+    }
 }
 
 impl ConnectionPool {
@@ -172,7 +230,10 @@ impl ConnectionPool {
         Ok(Self::new(conn))
     }
 
-    /// Acquire a thread-safe connection handle
+    /// Clone the pool's shared connection handle.
+    ///
+    /// The returned handle shares transaction state with the pool and every other
+    /// acquired handle. Use it as a shared session, not as an isolated connection.
     pub fn acquire(&self) -> Connection {
         self.conn.clone()
     }
@@ -225,8 +286,9 @@ impl Connection {
             config.page_cache_capacity,
             cipher,
         )?;
+        pager.set_auto_checkpoint(config.auto_checkpoint);
         let mut executor = SQLExecutor::new(&mut pager)?;
-        let mut memory = MemoryEngine::new();
+        let mut memory = MemoryEngine::with_config(config.memory.clone())?;
         executor.load_graph_from_disk(&mut pager)?;
         executor.load_memory_from_disk(&mut pager, &mut memory)?;
         executor.load_vector_indexes_from_disk(&mut pager)?;
@@ -235,16 +297,28 @@ impl Connection {
             executor: Arc::new(RwLock::new(executor)),
             memory: Arc::new(RwLock::new(memory)),
             realtime: Arc::new(RealtimeBus::new()),
+            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
             config,
         })
     }
 
     /// Open a temporary in-memory database
     pub fn open_in_memory() -> Result<Self> {
-        let config = Config::default();
+        Self::open_in_memory_with_config(Config::default())
+    }
+
+    /// Open temporary storage with explicit admission and cache limits.
+    /// Encryption credentials require a file-backed connection.
+    pub fn open_in_memory_with_config(config: Config) -> Result<Self> {
+        if config.passphrase.is_some() || config.encryption_key.is_some() {
+            return Err(Error::ConstraintViolation(
+                "Encryption credentials require file-backed storage".into(),
+            ));
+        }
         let mut pager = Pager::open_in_memory(config.page_size, config.page_cache_capacity)?;
+        pager.set_auto_checkpoint(config.auto_checkpoint);
         let mut executor = SQLExecutor::new(&mut pager)?;
-        let mut memory = MemoryEngine::new();
+        let mut memory = MemoryEngine::with_config(config.memory.clone())?;
         executor.load_graph_from_disk(&mut pager)?;
         executor.load_memory_from_disk(&mut pager, &mut memory)?;
         executor.load_vector_indexes_from_disk(&mut pager)?;
@@ -253,6 +327,7 @@ impl Connection {
             executor: Arc::new(RwLock::new(executor)),
             memory: Arc::new(RwLock::new(memory)),
             realtime: Arc::new(RealtimeBus::new()),
+            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
             config,
         })
     }
@@ -265,9 +340,13 @@ impl Connection {
     /// Open an encrypted database connection initialized directly from raw bytes with passphrase.
     pub fn open_encrypted_from_bytes(bytes: &[u8], passphrase: &str) -> Result<Self> {
         if bytes.len() < crate::pager::DATABASE_HEADER_SIZE {
-            return Err(Error::Corrupted("Byte buffer smaller than database header".into()));
+            return Err(Error::Corrupted(
+                "Byte buffer smaller than database header".into(),
+            ));
         }
-        let header = crate::pager::DatabaseHeader::from_bytes(&bytes[0..crate::pager::DATABASE_HEADER_SIZE])?;
+        let header = crate::pager::DatabaseHeader::from_bytes(
+            &bytes[0..crate::pager::DATABASE_HEADER_SIZE],
+        )?;
         let cipher = Some(DatabaseCipher::from_passphrase(passphrase, header.salt));
         Self::open_from_bytes_with_config(bytes, Config::default(), cipher)
     }
@@ -279,8 +358,9 @@ impl Connection {
         cipher: Option<DatabaseCipher>,
     ) -> Result<Self> {
         let mut pager = Pager::open_in_memory_from_bytes(bytes, cipher)?;
+        pager.set_auto_checkpoint(config.auto_checkpoint);
         let mut executor = SQLExecutor::new(&mut pager)?;
-        let mut memory = MemoryEngine::new();
+        let mut memory = MemoryEngine::with_config(config.memory.clone())?;
         executor.load_graph_from_disk(&mut pager)?;
         executor.load_memory_from_disk(&mut pager, &mut memory)?;
         executor.load_vector_indexes_from_disk(&mut pager)?;
@@ -289,6 +369,7 @@ impl Connection {
             executor: Arc::new(RwLock::new(executor)),
             memory: Arc::new(RwLock::new(memory)),
             realtime: Arc::new(RealtimeBus::new()),
+            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
             config,
         })
     }
@@ -306,8 +387,9 @@ impl Connection {
         cipher: Option<DatabaseCipher>,
     ) -> Result<Self> {
         let mut pager = Pager::open_remote(reader, config.page_cache_capacity, cipher)?;
+        pager.set_auto_checkpoint(config.auto_checkpoint);
         let mut executor = SQLExecutor::new(&mut pager)?;
-        let mut memory = MemoryEngine::new();
+        let mut memory = MemoryEngine::with_config(config.memory.clone())?;
         executor.load_graph_from_disk(&mut pager)?;
         executor.load_memory_from_disk(&mut pager, &mut memory)?;
         executor.load_vector_indexes_from_disk(&mut pager)?;
@@ -316,15 +398,19 @@ impl Connection {
             executor: Arc::new(RwLock::new(executor)),
             memory: Arc::new(RwLock::new(memory)),
             realtime: Arc::new(RealtimeBus::new()),
+            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
             config,
         })
     }
 
     /// Open a bidirectional writable database connection synchronized with remote cloud storage (S3/R2)
     pub fn open_remote_writable(adapter: Arc<dyn RemoteStorageAdapter>) -> Result<Self> {
-        let mut pager = Pager::open_remote_writable(adapter, Config::default().page_cache_capacity, None)?;
+        let config = Config::default();
+        let mut pager =
+            Pager::open_remote_writable(adapter, Config::default().page_cache_capacity, None)?;
+        pager.set_auto_checkpoint(config.auto_checkpoint);
         let mut executor = SQLExecutor::new(&mut pager)?;
-        let mut memory = MemoryEngine::new();
+        let mut memory = MemoryEngine::with_config(config.memory.clone())?;
         executor.load_graph_from_disk(&mut pager)?;
         executor.load_memory_from_disk(&mut pager, &mut memory)?;
         executor.load_vector_indexes_from_disk(&mut pager)?;
@@ -333,7 +419,8 @@ impl Connection {
             executor: Arc::new(RwLock::new(executor)),
             memory: Arc::new(RwLock::new(memory)),
             realtime: Arc::new(RealtimeBus::new()),
-            config: Config::default(),
+            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            config,
         })
     }
 
@@ -400,20 +487,26 @@ impl Connection {
     ) -> Result<usize> {
         let mut pager = self.pager.write();
         let mut executor = self.executor.write();
-        executor.project_table_as_edges(&mut pager, table_name, from_col, to_col, label_col, weight_col, prop_cols)
+        executor.project_table_as_edges(
+            &mut pager, table_name, from_col, to_col, label_col, weight_col, prop_cols,
+        )
     }
 
     /// Export a WAL replication chunk containing committed/cached frames
     pub fn export_replication_chunk(&self) -> Result<WalReplicationChunk> {
         let pager = self.pager.read();
-        WalReplicationStream::create_chunk(&pager, 1)
+        WalReplicationStream::create_chunk(&pager, u64::from(pager.header().change_counter).max(1))
     }
 
     /// Apply an incoming WAL replication chunk into this replica database
     pub fn apply_replication_chunk(&self, chunk: &WalReplicationChunk) -> Result<usize> {
         let mut pager = self.pager.write();
         let affected = WalReplicationReceiver::apply_to_pager(&mut pager, chunk)?;
-        self.executor.write().reload_from_pager(&mut pager)?;
+        let mut executor = self.executor.write();
+        executor.reload_from_pager(&mut pager)?;
+        let mut memory = self.memory.write();
+        *memory = MemoryEngine::with_config(memory.configuration().clone())?;
+        executor.load_memory_from_disk(&mut pager, &mut memory)?;
         Ok(affected)
     }
 
@@ -496,7 +589,12 @@ impl Connection {
     }
 
     /// Find shortest path between two nodes using Breadth-First Search
-    pub fn graph_find_path(&self, start_id: u64, end_id: u64, max_depth: usize) -> Option<Vec<Edge>> {
+    pub fn graph_find_path(
+        &self,
+        start_id: u64,
+        end_id: u64,
+        max_depth: usize,
+    ) -> Option<Vec<Edge>> {
         let executor = self.executor.read();
         executor.graph().find_path(start_id, end_id, max_depth)
     }
@@ -517,9 +615,12 @@ impl Connection {
     ) -> Result<()> {
         let mut pager = self.pager.write();
         let mut executor = self.executor.write();
-        executor
-            .graph_mut()
-            .add_node_with_vector(id, label, properties, vector.map(|v| v.to_vec()))?;
+        executor.graph_mut().add_node_with_vector(
+            id,
+            label,
+            properties,
+            vector.map(|v| v.to_vec()),
+        )?;
         let node = executor.graph().get_node(id).cloned().unwrap();
         executor.persist_graph_node(&mut pager, &node)
     }
@@ -535,7 +636,11 @@ impl Connection {
     }
 
     /// Initiate a Vector-to-Graph chaining query seeded with top-k nearest nodes in the graph
-    pub fn chain_from_vector(&self, query_vec: &[f32], top_k: usize) -> Result<ConnectionChain<'_>> {
+    pub fn chain_from_vector(
+        &self,
+        query_vec: &[f32],
+        top_k: usize,
+    ) -> Result<ConnectionChain<'_>> {
         let executor = self.executor.read();
         let graph = executor.graph();
         let mut heap = std::collections::BinaryHeap::new();
@@ -602,6 +707,47 @@ impl Connection {
 
     // --- Native AI Agent Memory APIs ---
 
+    fn mutate_memory<T>(
+        &self,
+        operation: impl FnOnce(&mut MemoryEngine, &mut SQLExecutor, &mut Pager) -> Result<T>,
+    ) -> Result<T> {
+        // Match the SQL lock order, and expose the memory mutation only after
+        // its entire B-tree write has committed or joined the caller's transaction.
+        let mut pager = self.pager.write();
+        let mut executor = self.executor.write();
+        let mut memory = self.memory.write();
+        let result = executor.atomic_statement(&mut pager, |executor, pager| {
+            operation(&mut memory, executor, pager)
+        });
+        if result.is_err() {
+            let mut restored = MemoryEngine::with_config(memory.configuration().clone())?;
+            executor.load_memory_from_disk(&mut pager, &mut restored)?;
+            *memory = restored;
+        }
+        result
+    }
+
+    fn restore_memory_from_pager(&self, pager: &mut Pager, executor: &SQLExecutor) -> Result<()> {
+        let mut restored = MemoryEngine::with_config(self.memory.read().configuration().clone())?;
+        executor.load_memory_from_disk(pager, &mut restored)?;
+        *self.memory.write() = restored;
+        Ok(())
+    }
+
+    fn validate_memory_input(vector: Option<&[f32]>, importance: f32) -> Result<()> {
+        if !importance.is_finite() {
+            return Err(Error::ConstraintViolation(
+                "Memory importance must be finite".into(),
+            ));
+        }
+        if vector.is_some_and(|v| v.is_empty() || v.iter().any(|x| !x.is_finite())) {
+            return Err(Error::ConstraintViolation(
+                "Memory embedding must contain finite components and be nonempty".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Store a new memory into the AI Agent Memory subsystem.
     ///
     /// The memory is indexed for hybrid semantic vector search and BM25 full-text keyword retrieval.
@@ -612,8 +758,8 @@ impl Connection {
         importance: f32,
         tags: &[&str],
     ) -> Result<u64> {
-        let now_ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now_ts = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         self.memory_remember_at(content, vector, importance, tags, now_ts)
@@ -629,20 +775,29 @@ impl Connection {
         namespace: Option<&str>,
         session_id: Option<&str>,
     ) -> Result<u64> {
-        let now_ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        Self::validate_memory_input(vector, importance)?;
+        let now_ts = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let mut mem = self.memory.write();
-        let id = mem.remember_scoped(content, vector, importance, tags, now_ts, namespace, session_id);
-        let entry = mem.get_memory(id).cloned();
-        drop(mem);
-        if let Some(entry) = entry {
-            let mut pager = self.pager.write();
-            let mut executor = self.executor.write();
-            executor.persist_memory_entry(&mut pager, &entry)?;
-        }
-        Ok(id)
+        self.mutate_memory(|mem, executor, pager| {
+            let id = mem.write_document(
+                &MemoryDocument {
+                    content: content.into(),
+                    embedding: vector.map(<[f32]>::to_vec),
+                    importance,
+                    tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+                    namespace: namespace.map(str::to_owned),
+                    session_id: session_id.map(str::to_owned),
+                    ..Default::default()
+                },
+                false,
+                now_ts,
+            )?;
+            let entry = mem.get_memory(id).expect("newly inserted memory");
+            executor.persist_memory_entry(pager, entry)?;
+            Ok(id)
+        })
     }
 
     /// Store a memory with an explicit timestamp (useful for importing historic agent memories).
@@ -654,16 +809,23 @@ impl Connection {
         tags: &[&str],
         timestamp: u64,
     ) -> Result<u64> {
-        let mut mem = self.memory.write();
-        let id = mem.remember(content, vector, importance, tags, timestamp);
-        let entry = mem.get_memory(id).cloned();
-        drop(mem);
-        if let Some(entry) = entry {
-            let mut pager = self.pager.write();
-            let mut executor = self.executor.write();
-            executor.persist_memory_entry(&mut pager, &entry)?;
-        }
-        Ok(id)
+        Self::validate_memory_input(vector, importance)?;
+        self.mutate_memory(|mem, executor, pager| {
+            let id = mem.write_document(
+                &MemoryDocument {
+                    content: content.into(),
+                    embedding: vector.map(<[f32]>::to_vec),
+                    importance,
+                    tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+                    ..Default::default()
+                },
+                false,
+                timestamp,
+            )?;
+            let entry = mem.get_memory(id).expect("newly inserted memory");
+            executor.persist_memory_entry(pager, entry)?;
+            Ok(id)
+        })
     }
 
     /// Recall relevant memories using hybrid Vector + BM25 + Temporal Decay scoring.
@@ -674,8 +836,8 @@ impl Connection {
         limit: usize,
         filter: &crate::memory::MemoryRecallFilter,
     ) -> Vec<crate::memory::MemoryRecallResult> {
-        let now_ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now_ts = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         self.memory_recall_at(query_text, query_vector, limit, filter, now_ts)
@@ -689,8 +851,8 @@ impl Connection {
         limit: usize,
         rrf_k: f32,
     ) -> Vec<crate::memory::MemoryRecallResult> {
-        let now_ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now_ts = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         let mut mem = self.memory.write();
@@ -723,7 +885,14 @@ impl Connection {
     ) -> Result<u64> {
         let embedder = crate::memory::DeterministicHashEmbedder::default();
         let vector = embedder.embed_text(content);
-        self.memory_remember_scoped(content, Some(&vector), importance, tags, namespace, session_id)
+        self.memory_remember_scoped(
+            content,
+            Some(&vector),
+            importance,
+            tags,
+            namespace,
+            session_id,
+        )
     }
 
     /// Turnkey Zero-Setup AI Agent Memory: recall relevant memories for a plain text query with automatic local embedding.
@@ -751,9 +920,11 @@ impl Connection {
     ) -> Vec<crate::memory::MemoryRecallResult> {
         let embedder = crate::memory::DeterministicHashEmbedder::default();
         let vector = embedder.embed_text(query);
-        let mut filter = crate::memory::MemoryRecallFilter::default();
-        filter.namespace = namespace.map(|s| s.to_string());
-        filter.session_id = session_id.map(|s| s.to_string());
+        let filter = crate::memory::MemoryRecallFilter {
+            namespace: namespace.map(str::to_string),
+            session_id: session_id.map(str::to_string),
+            ..Default::default()
+        };
         self.memory_recall(Some(query), Some(&vector), limit, &filter)
     }
 
@@ -775,7 +946,12 @@ impl Connection {
         }
         let mut prompt = String::from("### Recalled Agent Memory Context:\n");
         for (i, r) in results.iter().enumerate() {
-            prompt.push_str(&format!("{}. [Score: {:.2}] {}\n", i + 1, r.combined_score, r.entry.content));
+            prompt.push_str(&format!(
+                "{}. [Score: {:.2}] {}\n",
+                i + 1,
+                r.combined_score,
+                r.entry.content
+            ));
         }
         prompt
     }
@@ -821,20 +997,14 @@ impl Connection {
 
     /// Link two memories together as an associative connection.
     pub fn memory_link(&self, id_a: u64, id_b: u64) -> Result<()> {
-        let mut mem = self.memory.write();
-        mem.associate(id_a, id_b)?;
-        let entry_a = mem.get_memory(id_a).cloned();
-        let entry_b = mem.get_memory(id_b).cloned();
-        drop(mem);
-        let mut pager = self.pager.write();
-        let mut executor = self.executor.write();
-        if let Some(ea) = entry_a {
-            executor.persist_memory_entry(&mut pager, &ea)?;
-        }
-        if let Some(eb) = entry_b {
-            executor.persist_memory_entry(&mut pager, &eb)?;
-        }
-        Ok(())
+        self.mutate_memory(|mem, executor, pager| {
+            mem.associate(id_a, id_b)?;
+            for id in [id_a, id_b] {
+                let entry = mem.get_memory(id).expect("validated associated memory");
+                executor.persist_memory_entry(pager, entry)?;
+            }
+            Ok(())
+        })
     }
 
     /// Retrieve a single memory by ID.
@@ -851,8 +1021,8 @@ impl Connection {
 
     /// Prune old or decayed memories below the given retention threshold using system time.
     pub fn memory_prune(&self, decay_threshold: f32, half_life_seconds: u64) -> usize {
-        let now_ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now_ts = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         self.memory_prune_at(decay_threshold, half_life_seconds, now_ts)
@@ -865,31 +1035,50 @@ impl Connection {
         half_life_seconds: u64,
         eval_timestamp: u64,
     ) -> usize {
-        let mut mem = self.memory.write();
-        let removed_ids = mem.prune_decayed_ids_at(decay_threshold, half_life_seconds, eval_timestamp);
-        let count = removed_ids.len();
-        drop(mem);
-        if !removed_ids.is_empty() {
-            let mut pager = self.pager.write();
-            let mut executor = self.executor.write();
-            for id in removed_ids {
-                let _ = executor.delete_memory_entry(&mut pager, id);
-            }
+        self.memory_prune_at_checked(decay_threshold, half_life_seconds, eval_timestamp)
+            .unwrap_or(0)
+    }
+
+    /// Atomically prune memories and propagate storage errors to the caller.
+    pub fn memory_prune_at_checked(
+        &self,
+        decay_threshold: f32,
+        half_life_seconds: u64,
+        eval_timestamp: u64,
+    ) -> Result<usize> {
+        if !decay_threshold.is_finite() {
+            return Err(Error::ConstraintViolation(
+                "Retention threshold must be finite".into(),
+            ));
         }
-        count
+        self.mutate_memory(|mem, executor, pager| {
+            let removed_ids =
+                mem.prune_decayed_ids_at(decay_threshold, half_life_seconds, eval_timestamp);
+            for &id in &removed_ids {
+                executor.delete_memory_entry(pager, id)?;
+            }
+            Ok(removed_ids.len())
+        })
     }
 
     /// Explicitly delete and forget a memory by ID.
     pub fn memory_forget(&self, id: u64) -> bool {
-        let mut mem = self.memory.write();
-        let removed = mem.forget(id);
-        drop(mem);
-        if removed {
-            let mut pager = self.pager.write();
-            let mut executor = self.executor.write();
-            let _ = executor.delete_memory_entry(&mut pager, id);
-        }
-        removed
+        self.memory_forget_checked(id).unwrap_or(false)
+    }
+
+    /// Atomically delete a memory and propagate storage errors to the caller.
+    pub fn memory_forget_checked(&self, id: u64) -> Result<bool> {
+        self.mutate_memory(|mem, executor, pager| {
+            let (removed, updated) = mem.remove_ids(&[id]);
+            for id in &removed {
+                executor.delete_memory_entry(pager, *id)?;
+            }
+            for id in updated {
+                executor
+                    .persist_memory_entry(pager, mem.get_memory(id).expect("associated source"))?;
+            }
+            Ok(!removed.is_empty())
+        })
     }
 
     // --- Write-Ahead Log (WAL) & Durability ---
@@ -897,9 +1086,20 @@ impl Connection {
     /// Manually trigger a WAL checkpoint, flushing all committed pages
     /// from `.tapir-wal` to the main database file and resetting the log.
     pub fn checkpoint(&self) -> Result<usize> {
-        let _ = self.persist_vector_snapshots();
+        self.persist_vector_snapshots()?;
         let mut pager = self.pager.write();
         pager.checkpoint()
+    }
+
+    /// Observe deferred maintenance errors and whether storage must be reopened.
+    pub fn storage_health(&self) -> StorageHealth {
+        self.pager.read().storage_health()
+    }
+
+    /// Install/clear a deterministic I/O fault for this connection only.
+    #[cfg(feature = "fault-injection")]
+    pub fn set_io_fault(&self, plan: Option<pager::fault::IoFaultPlan>) -> Result<()> {
+        self.pager.read().set_io_fault(plan)
     }
 
     /// Enable transparent LZ4 block compression for all pages > 1
@@ -919,6 +1119,34 @@ impl Connection {
     pub fn backup<P: AsRef<Path>>(&self, dest_path: P) -> Result<u32> {
         let mut pager = self.pager.write();
         pager.backup_to(dest_path.as_ref())
+    }
+
+    /// Validate an entire native backup before atomically installing it.
+    /// Overwrite never bypasses an active target lock or an uncheckpointed WAL.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn restore_backup(
+        source: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        config: Config,
+        overwrite: bool,
+    ) -> Result<IntegrityReport> {
+        if !source.as_ref().is_file() {
+            return Err(Error::Corrupted("Backup source is not a file".into()));
+        }
+        let connection = Self::open_with_config(source, config)?;
+        let report = connection.check_integrity()?;
+        if !report.is_ok() {
+            return Err(Error::Corrupted(format!(
+                "Backup failed integrity validation: {:?}",
+                report.errors
+            )));
+        }
+        connection.close()?;
+        connection
+            .pager
+            .write()
+            .backup_to_options(destination.as_ref(), overwrite)?;
+        Ok(report)
     }
 
     /// Vacuum and compact the database in place, flushing all WAL frames, synchronizing storage, and purging vector tombstones.
@@ -943,18 +1171,30 @@ impl Connection {
     ///
     /// Applies deterministic Fast Walsh-Hadamard Transform (FWHT) orthogonal rotation and bit quantization,
     /// reducing 1536-D embeddings from 6,144 bytes to ~196 bytes for battery-powered edge silicon.
-    pub fn rabitq_quantize(&self, vector: &[f32], num_bits: usize) -> crate::vector::RaBitQuantizedVector {
+    pub fn rabitq_quantize(
+        &self,
+        vector: &[f32],
+        num_bits: usize,
+    ) -> crate::vector::RaBitQuantizedVector {
         let quantizer = crate::vector::RaBitQuantizer::new(vector.len(), num_bits);
         quantizer.quantize(vector)
     }
 
     /// Evaluate hardware-accelerated single-cycle POPCNT Hamming Distance between two RaBitQ vectors.
-    pub fn rabitq_distance(&self, a: &crate::vector::RaBitQuantizedVector, b: &crate::vector::RaBitQuantizedVector) -> u32 {
+    pub fn rabitq_distance(
+        &self,
+        a: &crate::vector::RaBitQuantizedVector,
+        b: &crate::vector::RaBitQuantizedVector,
+    ) -> u32 {
         a.hamming_distance(b)
     }
 
     /// Estimate approximate Cosine Similarity between a RaBitQ quantized vector and a raw query vector.
-    pub fn rabitq_similarity(&self, quantized: &crate::vector::RaBitQuantizedVector, query: &[f32]) -> f32 {
+    pub fn rabitq_similarity(
+        &self,
+        quantized: &crate::vector::RaBitQuantizedVector,
+        query: &[f32],
+    ) -> f32 {
         let quantizer = crate::vector::RaBitQuantizer::new(query.len(), quantized.num_bits());
         let rotated = quantizer.rotate(query);
         let norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -986,7 +1226,10 @@ impl Connection {
             match pager.read_page(pid) {
                 Ok(page) => {
                     if page.len() != page_size {
-                        errors.push(format!("Page {pid} corrupted: length {} != {page_size}", page.len()));
+                        errors.push(format!(
+                            "Page {pid} corrupted: length {} != {page_size}",
+                            page.len()
+                        ));
                     } else {
                         pages_verified += 1;
                     }
@@ -1000,7 +1243,8 @@ impl Connection {
 
         let executor = self.executor.read();
         let tables_count = executor.tables().len();
-        let (graph_nodes_count, graph_edges_count) = (executor.graph().node_count(), executor.graph().edge_count());
+        let (graph_nodes_count, graph_edges_count) =
+            (executor.graph().node_count(), executor.graph().edge_count());
         let collections_count = self.collections().len();
 
         Ok(IntegrityReport {
@@ -1055,9 +1299,12 @@ impl Connection {
 
     /// Commit the active transaction
     pub fn commit(&self) -> Result<()> {
-        let _ = self.persist_vector_snapshots();
+        self.persist_vector_snapshots()?;
         let mut pager = self.pager.write();
-        pager.commit_transaction()
+        pager.commit_transaction()?;
+        drop(pager);
+        self.finish_pending_changes(true);
+        Ok(())
     }
 
     /// Rollback the active transaction
@@ -1068,10 +1315,50 @@ impl Connection {
         *executor = SQLExecutor::new(&mut pager)?;
         executor.load_graph_from_disk(&mut pager)?;
         let mut memory = self.memory.write();
-        *memory = MemoryEngine::new();
+        *memory = MemoryEngine::with_config(memory.configuration().clone())?;
         executor.load_memory_from_disk(&mut pager, &mut memory)?;
         executor.load_vector_indexes_from_disk(&mut pager)?;
+        drop(memory);
+        drop(executor);
+        drop(pager);
+        self.finish_pending_changes(false);
         Ok(())
+    }
+
+    fn queue_change(&self, event: ChangeEvent, in_transaction: bool, savepoint_depth: usize) {
+        if in_transaction {
+            self.pending_changes.lock().push((savepoint_depth, event));
+            return;
+        }
+        let mut ready = {
+            let mut pending = self.pending_changes.lock();
+            let mut ready: Vec<_> = pending.drain(..).map(|(_, event)| event).collect();
+            ready.push(event);
+            ready
+        };
+        for event in ready.drain(..) {
+            self.realtime.publish(&event);
+        }
+    }
+
+    fn finish_pending_changes(&self, committed: bool) {
+        let ready: Vec<_> = self
+            .pending_changes
+            .lock()
+            .drain(..)
+            .map(|(_, event)| event)
+            .collect();
+        if committed {
+            for event in ready {
+                self.realtime.publish(&event);
+            }
+        }
+    }
+
+    fn discard_changes_after_savepoint(&self, savepoint_position: usize) {
+        self.pending_changes
+            .lock()
+            .retain(|(depth, _)| *depth <= savepoint_position);
     }
 
     // --- Introspection & Utility APIs ---
@@ -1133,9 +1420,16 @@ impl Connection {
     }
 
     /// Compute PageRank centrality scores for all nodes in the Knowledge Graph
-    pub fn graph_pagerank(&self, damping_factor: f32, max_iterations: usize, tolerance: f32) -> std::collections::HashMap<u64, f32> {
+    pub fn graph_pagerank(
+        &self,
+        damping_factor: f32,
+        max_iterations: usize,
+        tolerance: f32,
+    ) -> std::collections::HashMap<u64, f32> {
         let executor = self.executor.read();
-        executor.graph().pagerank(damping_factor, max_iterations, tolerance)
+        executor
+            .graph()
+            .pagerank(damping_factor, max_iterations, tolerance)
     }
 
     /// Calculate weighted shortest path between two nodes using Dijkstra's algorithm
@@ -1170,12 +1464,22 @@ impl Connection {
     pub fn prepare<'a>(&'a self, sql: &str) -> Result<PreparedStatement<'a>> {
         let tokens = crate::sql::lexer::tokenize(sql)?;
         let plan = Self::try_compile_insert_plan(&tokens);
-        let preparsed = if plan.is_none() && !tokens.iter().any(|t| matches!(t, crate::sql::lexer::Token::QuestionMark)) {
+        let preparsed = if plan.is_none()
+            && !tokens
+                .iter()
+                .any(|t| matches!(t, crate::sql::lexer::Token::QuestionMark))
+        {
             crate::sql::parser::parse_tokens(&tokens).ok()
         } else {
             None
         };
-        Ok(PreparedStatement { conn: self, tokens, plan, preparsed, encode_buf: std::cell::RefCell::new(Vec::with_capacity(256)) })
+        Ok(PreparedStatement {
+            conn: self,
+            tokens,
+            plan,
+            preparsed,
+            encode_buf: std::cell::RefCell::new(Vec::with_capacity(256)),
+        })
     }
 
     fn try_compile_insert_plan(tokens: &[crate::sql::lexer::Token]) -> Option<PreparedPlan> {
@@ -1293,16 +1597,19 @@ impl Connection {
 
     /// Explicitly close the connection, persisting any dirty vector snapshots and checkpointing the WAL.
     pub fn close(&self) -> Result<()> {
-        let _ = self.persist_vector_snapshots();
+        if self.is_in_transaction() {
+            self.rollback()?;
+        }
+        self.persist_vector_snapshots()?;
         let mut pager = self.pager.write();
-        let _ = pager.checkpoint();
+        pager.checkpoint()?;
         Ok(())
     }
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.pager) == 1 {
+        if Arc::strong_count(&self.pager) == 1 && !self.is_in_transaction() {
             let _ = self.persist_vector_snapshots();
         }
     }
@@ -1323,14 +1630,19 @@ pub struct PreparedStatement<'a> {
     tokens: Vec<crate::sql::lexer::Token>,
     plan: Option<PreparedPlan>,
     preparsed: Option<Statement>,
-    /// Reusable encode buffer for insert fast-path — avoids per-row Vec allocations
+    /// Reusable encode buffer for insert fast-path â€” avoids per-row Vec allocations
     encode_buf: std::cell::RefCell<Vec<u8>>,
 }
 
 impl<'a> PreparedStatement<'a> {
     /// Execute prepared non-query SQL command with parameter binding
     pub fn execute(&self, params: &[Value]) -> Result<usize> {
-        if let Some(PreparedPlan::Insert { table, columns, param_count }) = &self.plan {
+        if let Some(PreparedPlan::Insert {
+            table,
+            columns,
+            param_count,
+        }) = &self.plan
+        {
             if params.len() != *param_count {
                 return Err(Error::SqlSyntax(format!(
                     "Parameter count mismatch: expected {}, got {}",
@@ -1340,22 +1652,37 @@ impl<'a> PreparedStatement<'a> {
             }
             let mut pager = self.conn.pager.write();
             let mut executor = self.conn.executor.write();
+            let row_id =
+                predicted_insert_row_id_for_values(&executor, table, columns.as_deref(), params)
+                    .unwrap_or(0);
             let mut buf = self.encode_buf.borrow_mut();
-            let (affected, _) = executor.execute_insert_fast(&mut pager, table, columns.as_deref(), params, Some(&mut buf))?;
-
-            if self.conn.realtime.has_subscribers() {
-                let now_ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                self.conn.realtime.publish(&ChangeEvent {
+            let (affected, _) = executor.execute_insert_fast(
+                &mut pager,
+                table,
+                columns.as_deref(),
+                params,
+                Some(&mut buf),
+            )?;
+            let in_transaction = pager.is_in_transaction();
+            let savepoint_depth = pager.savepoint_depth();
+            drop(buf);
+            drop(executor);
+            drop(pager);
+            let now_ts = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.conn.queue_change(
+                ChangeEvent {
                     op: ChangeOp::Insert,
                     table: table.clone(),
-                    row_id: affected as u64,
+                    row_id,
                     timestamp: now_ts,
                     data: serde_json::json!({"affected_rows": affected}),
-                });
-            }
+                },
+                in_transaction,
+                savepoint_depth,
+            );
 
             return Ok(affected);
         }
@@ -1372,30 +1699,57 @@ impl<'a> PreparedStatement<'a> {
 
         // Capture mutation metadata for CDC broadcast
         let cdc_info = match &stmt {
-            Statement::Insert { table, .. } => Some((ChangeOp::Insert, table.clone())),
+            Statement::Insert { table, .. } | Statement::InsertMany { table, .. } => {
+                Some((ChangeOp::Insert, table.clone()))
+            }
             Statement::Update { table, .. } => Some((ChangeOp::Update, table.clone())),
             Statement::Delete { table, .. } => Some((ChangeOp::Delete, table.clone())),
             _ => None,
+        };
+        let change_row_id = predicted_insert_row_id(&self.conn.executor.read(), &stmt).unwrap_or(0);
+        let is_commit = matches!(&stmt, Statement::CommitTransaction);
+        let is_rollback = matches!(&stmt, Statement::RollbackTransaction);
+        let rollback_to = if let Statement::RollbackToSavepoint { name } = &stmt {
+            self.conn.pager.read().savepoint_position(name)
+        } else {
+            None
         };
 
         let mut pager = self.conn.pager.write();
         let mut executor = self.conn.executor.write();
         let affected = executor.execute(&mut pager, stmt)?;
-
+        if is_rollback || rollback_to.is_some() {
+            self.conn.restore_memory_from_pager(&mut pager, &executor)?;
+        }
+        let in_transaction = pager.is_in_transaction();
+        let savepoint_depth = pager.savepoint_depth();
+        drop(executor);
+        drop(pager);
+        if let Some(position) = rollback_to {
+            self.conn.discard_changes_after_savepoint(position);
+        }
+        if is_rollback {
+            self.conn.finish_pending_changes(false);
+        }
         if let Some((op, table)) = cdc_info {
-            if self.conn.realtime.has_subscribers() {
-                let now_ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                self.conn.realtime.publish(&ChangeEvent {
+            let now_ts = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.conn.queue_change(
+                ChangeEvent {
                     op,
                     table,
-                    row_id: affected as u64,
+                    row_id: change_row_id,
                     timestamp: now_ts,
                     data: serde_json::json!({"affected_rows": affected}),
-                });
-            }
+                },
+                in_transaction,
+                savepoint_depth,
+            );
+        }
+        if is_commit {
+            self.conn.finish_pending_changes(true);
         }
 
         Ok(affected)
@@ -1415,28 +1769,52 @@ impl<'a> PreparedStatement<'a> {
 
         // Capture mutation metadata for CDC broadcast if RETURNING was used
         let cdc_info = match &stmt {
-            Statement::Insert { table, .. } => Some((ChangeOp::Insert, table.clone())),
+            Statement::Insert { table, .. } | Statement::InsertMany { table, .. } => {
+                Some((ChangeOp::Insert, table.clone()))
+            }
             Statement::Update { table, .. } => Some((ChangeOp::Update, table.clone())),
             Statement::Delete { table, .. } => Some((ChangeOp::Delete, table.clone())),
             _ => None,
         };
+        let change_row_id = predicted_insert_row_id(&self.conn.executor.read(), &stmt).unwrap_or(0);
 
         let mut pager = self.conn.pager.write();
         let mut executor = self.conn.executor.write();
+        if matches!(
+            &stmt,
+            Statement::BeginTransaction
+                | Statement::CommitTransaction
+                | Statement::RollbackTransaction
+                | Statement::Savepoint { .. }
+                | Statement::RollbackToSavepoint { .. }
+                | Statement::ReleaseSavepoint { .. }
+        ) {
+            drop(executor);
+            drop(pager);
+            self.execute(params)?;
+            return Ok(Vec::new());
+        }
         let rows = executor.query(&mut pager, stmt)?;
-
+        let in_transaction = pager.is_in_transaction();
+        let savepoint_depth = pager.savepoint_depth();
+        drop(executor);
+        drop(pager);
         if let Some((op, table)) = cdc_info {
-            let now_ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let now_ts = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            self.conn.realtime.publish(&ChangeEvent {
-                op,
-                table,
-                row_id: rows.len() as u64,
-                timestamp: now_ts,
-                data: serde_json::json!({"affected_rows": rows.len()}),
-            });
+            self.conn.queue_change(
+                ChangeEvent {
+                    op,
+                    table,
+                    row_id: change_row_id,
+                    timestamp: now_ts,
+                    data: serde_json::json!({"affected_rows": rows.len()}),
+                },
+                in_transaction,
+                savepoint_depth,
+            );
         }
 
         Ok(rows)
@@ -1452,8 +1830,38 @@ impl DatabaseConnection for Connection {
         }
         let upper = trimmed.to_uppercase();
         if upper.starts_with("CREATE (") || upper.starts_with("CREATE(") {
+            let mut pager = self.pager.write();
             let mut executor = self.executor.write();
-            let rows = crate::graph::cypher::CypherExecutor::execute_mutation(executor.graph_mut(), trimmed)?;
+            let rows = executor.atomic_statement(&mut pager, |executor, pager| {
+                let before = executor.graph().clone();
+                let rows = crate::graph::cypher::CypherExecutor::execute_mutation(
+                    executor.graph_mut(),
+                    trimmed,
+                )?;
+                let nodes: Vec<_> = executor
+                    .graph()
+                    .all_nodes()
+                    .into_iter()
+                    .filter(|node| before.get_node(node.id) != Some(*node))
+                    .cloned()
+                    .collect();
+                let old_edges: std::collections::HashSet<_> =
+                    before.all_edges().iter().map(|edge| edge.id).collect();
+                let edges: Vec<_> = executor
+                    .graph()
+                    .all_edges()
+                    .into_iter()
+                    .filter(|edge| !old_edges.contains(&edge.id))
+                    .cloned()
+                    .collect();
+                for node in nodes {
+                    executor.persist_graph_node(pager, &node)?;
+                }
+                for edge in edges {
+                    executor.persist_graph_edge(pager, &edge)?;
+                }
+                Ok(rows)
+            })?;
             let affected: usize = rows
                 .first()
                 .and_then(|r| r.get::<i64>("nodes_created").ok())
@@ -1470,26 +1878,55 @@ impl DatabaseConnection for Connection {
 
         // Capture mutation metadata for CDC broadcast
         let cdc_info = match &stmt {
-            Statement::Insert { table, .. } => Some((ChangeOp::Insert, table.clone())),
+            Statement::Insert { table, .. } | Statement::InsertMany { table, .. } => {
+                Some((ChangeOp::Insert, table.clone()))
+            }
             Statement::Update { table, .. } => Some((ChangeOp::Update, table.clone())),
             Statement::Delete { table, .. } => Some((ChangeOp::Delete, table.clone())),
             _ => None,
         };
+        let change_row_id = predicted_insert_row_id(&executor, &stmt).unwrap_or(0);
+        let is_commit = matches!(&stmt, Statement::CommitTransaction);
+        let is_rollback = matches!(&stmt, Statement::RollbackTransaction);
+        let rollback_to = if let Statement::RollbackToSavepoint { name } = &stmt {
+            pager.savepoint_position(name)
+        } else {
+            None
+        };
 
         let affected = executor.execute(&mut pager, stmt)?;
-
+        if is_rollback || rollback_to.is_some() {
+            self.restore_memory_from_pager(&mut pager, &executor)?;
+        }
+        let in_transaction = pager.is_in_transaction();
+        let savepoint_depth = pager.savepoint_depth();
+        drop(executor);
+        drop(pager);
+        if let Some(position) = rollback_to {
+            self.discard_changes_after_savepoint(position);
+        }
+        if is_rollback {
+            self.finish_pending_changes(false);
+        }
         if let Some((op, table)) = cdc_info {
-            let now_ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let now_ts = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            self.realtime.publish(&ChangeEvent {
-                op,
-                table,
-                row_id: affected as u64,
-                timestamp: now_ts,
-                data: serde_json::json!({"affected_rows": affected}),
-            });
+            self.queue_change(
+                ChangeEvent {
+                    op,
+                    table,
+                    row_id: change_row_id,
+                    timestamp: now_ts,
+                    data: serde_json::json!({"affected_rows": affected}),
+                },
+                in_transaction,
+                savepoint_depth,
+            );
+        }
+        if is_commit {
+            self.finish_pending_changes(true);
         }
 
         Ok(affected)
@@ -1514,26 +1951,50 @@ impl DatabaseConnection for Connection {
 
         // Capture mutation metadata for CDC broadcast if RETURNING was used
         let cdc_info = match &stmt {
-            Statement::Insert { table, .. } => Some((ChangeOp::Insert, table.clone())),
+            Statement::Insert { table, .. } | Statement::InsertMany { table, .. } => {
+                Some((ChangeOp::Insert, table.clone()))
+            }
             Statement::Update { table, .. } => Some((ChangeOp::Update, table.clone())),
             Statement::Delete { table, .. } => Some((ChangeOp::Delete, table.clone())),
             _ => None,
         };
+        let change_row_id = predicted_insert_row_id(&executor, &stmt).unwrap_or(0);
 
+        if matches!(
+            &stmt,
+            Statement::BeginTransaction
+                | Statement::CommitTransaction
+                | Statement::RollbackTransaction
+                | Statement::Savepoint { .. }
+                | Statement::RollbackToSavepoint { .. }
+                | Statement::ReleaseSavepoint { .. }
+        ) {
+            drop(executor);
+            drop(pager);
+            self.execute(trimmed)?;
+            return Ok(Vec::new());
+        }
         let rows = executor.query(&mut pager, stmt)?;
-
+        let in_transaction = pager.is_in_transaction();
+        let savepoint_depth = pager.savepoint_depth();
+        drop(executor);
+        drop(pager);
         if let Some((op, table)) = cdc_info {
-            let now_ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let now_ts = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            self.realtime.publish(&ChangeEvent {
-                op,
-                table,
-                row_id: rows.len() as u64,
-                timestamp: now_ts,
-                data: serde_json::json!({"affected_rows": rows.len()}),
-            });
+            self.queue_change(
+                ChangeEvent {
+                    op,
+                    table,
+                    row_id: change_row_id,
+                    timestamp: now_ts,
+                    data: serde_json::json!({"affected_rows": rows.len()}),
+                },
+                in_transaction,
+                savepoint_depth,
+            );
         }
 
         Ok(rows)
@@ -1551,18 +2012,8 @@ impl DatabaseConnection for Connection {
 }
 
 fn read_or_generate_salt(path: &Path) -> Result<[u8; 16]> {
-    use std::io::Read;
-    if path.exists() {
-        if let Ok(mut f) = std::fs::File::open(path) {
-            let mut buf = [0u8; 100];
-            if f.read_exact(&mut buf).is_ok() {
-                let mut salt = [0u8; 16];
-                salt.copy_from_slice(&buf[49..65]);
-                if salt != [0u8; 16] {
-                    return Ok(salt);
-                }
-            }
-        }
+    if let Some(header) = Pager::read_header_for_open(path)? {
+        return Ok(header.salt);
     }
     Ok(crate::crypto::generate_random_salt())
 }
@@ -1628,20 +2079,18 @@ impl<'a> ConnectionChain<'a> {
 
     /// Filter candidate nodes by label
     pub fn filter_label<S: Into<String>>(mut self, label: S) -> Self {
-        self.node_filters.push(crate::graph::NodeFilter::Label(label.into()));
+        self.node_filters
+            .push(crate::graph::NodeFilter::Label(label.into()));
         self
     }
 
     /// Filter candidate nodes by property presence
-    pub fn filter_property<S1: Into<String>, S2: Into<String>>(
-        mut self,
-        key: S1,
-        val: S2,
-    ) -> Self {
-        self.node_filters.push(crate::graph::NodeFilter::PropertyContains {
-            key: key.into(),
-            val: val.into(),
-        });
+    pub fn filter_property<S1: Into<String>, S2: Into<String>>(mut self, key: S1, val: S2) -> Self {
+        self.node_filters
+            .push(crate::graph::NodeFilter::PropertyContains {
+                key: key.into(),
+                val: val.into(),
+            });
         self
     }
 
@@ -1662,9 +2111,7 @@ impl<'a> ConnectionChain<'a> {
         let graph = executor.graph();
 
         let mem = self.conn.memory.read();
-        let resolver = |id: u64| {
-            mem.get_memory(id).and_then(|e| e.vector.clone())
-        };
+        let resolver = |id: u64| mem.get_memory(id).and_then(|e| e.vector.clone());
 
         let mut chain = crate::graph::GraphChain::new(graph, self.start_nodes);
         chain = chain.with_vector_resolver(&resolver);
@@ -1686,7 +2133,9 @@ impl<'a> ConnectionChain<'a> {
                 }
             };
         }
-        chain.max_hops(self.max_hops).vector_near(query_vec, top_k, metric)
+        chain
+            .max_hops(self.max_hops)
+            .vector_near(query_vec, top_k, metric)
     }
 
     /// Execute graph traversal and rank candidate nodes by BM25 full-text similarity
@@ -1727,9 +2176,7 @@ impl<'a> ConnectionChain<'a> {
         let graph = executor.graph();
 
         let mem = self.conn.memory.read();
-        let resolver = |id: u64| {
-            mem.get_memory(id).and_then(|e| e.vector.clone())
-        };
+        let resolver = |id: u64| mem.get_memory(id).and_then(|e| e.vector.clone());
 
         let mut chain = crate::graph::GraphChain::new(graph, self.start_nodes);
         chain = chain.with_vector_resolver(&resolver);
@@ -1834,8 +2281,10 @@ mod tests {
     #[test]
     fn test_connection_graph_api() {
         let conn = Connection::open_in_memory().expect("Open in-memory");
-        conn.graph_add_node(1, "Person", r#"{"name":"Alex"}"#).unwrap();
-        conn.graph_add_node(2, "Project", r#"{"name":"TapirusDB"}"#).unwrap();
+        conn.graph_add_node(1, "Person", r#"{"name":"Alex"}"#)
+            .unwrap();
+        conn.graph_add_node(2, "Project", r#"{"name":"TapirusDB"}"#)
+            .unwrap();
         conn.graph_add_edge(1, 2, "FOUNDER_OF", 1.0, "").unwrap();
 
         let neighbors = conn.graph_neighbors(1, Direction::Outgoing, Some("FOUNDER_OF"));
@@ -1872,18 +2321,32 @@ mod tests {
     #[test]
     fn test_turnkey_tap_decision_engine() {
         let conn = Connection::open_in_memory().expect("Open in-memory");
-        let verdict = conn.tap().classify("Urgent billing payment failed on checkout", &["billing", "tech", "sales"]).unwrap();
+        let verdict = conn
+            .tap()
+            .classify(
+                "Urgent billing payment failed on checkout",
+                &["billing", "tech", "sales"],
+            )
+            .unwrap();
         assert_eq!(verdict.top_choice, "billing");
         assert!(verdict.confidence > 0.4);
 
-        let verified = conn.tap().verify("Client provided active subscription receipt", "active subscription receipt valid").unwrap();
+        let verified = conn
+            .tap()
+            .verify(
+                "Client provided active subscription receipt",
+                "active subscription receipt valid",
+            )
+            .unwrap();
         assert!(verified.is_verified);
     }
 
     #[test]
     fn test_one_line_agent_memory_and_prompt() {
         let conn = Connection::open_in_memory().expect("Open in-memory");
-        let id = conn.remember("Alex prefers dark mode and high contrast themes").unwrap();
+        let id = conn
+            .remember("Alex prefers dark mode and high contrast themes")
+            .unwrap();
         assert!(id > 0);
 
         let results = conn.recall("what theme does Alex prefer", 3);
@@ -1898,10 +2361,18 @@ mod tests {
     #[test]
     fn test_bytes_export_and_import_roundtrip() {
         let conn1 = Connection::open_in_memory().expect("Open conn1");
-        conn1.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);").unwrap();
-        conn1.execute("INSERT INTO users (id, name) VALUES (1, 'Alice');").unwrap();
-        conn1.execute("INSERT INTO users (id, name) VALUES (2, 'Bob');").unwrap();
-        let mem_id = conn1.remember("Alice is a cryptographic engineer working on sovereign AI").unwrap();
+        conn1
+            .execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);")
+            .unwrap();
+        conn1
+            .execute("INSERT INTO users (id, name) VALUES (1, 'Alice');")
+            .unwrap();
+        conn1
+            .execute("INSERT INTO users (id, name) VALUES (2, 'Bob');")
+            .unwrap();
+        let mem_id = conn1
+            .remember("Alice is a cryptographic engineer working on sovereign AI")
+            .unwrap();
         assert!(mem_id > 0);
 
         let bytes = conn1.export_bytes().expect("Export bytes");
@@ -1909,7 +2380,9 @@ mod tests {
         assert_eq!(bytes.len() % 4096, 0);
 
         let conn2 = Connection::open_from_bytes(&bytes).expect("Open conn2 from bytes");
-        let rows = conn2.query("SELECT id, name FROM users ORDER BY id;").unwrap();
+        let rows = conn2
+            .query("SELECT id, name FROM users ORDER BY id;")
+            .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].get::<String>("name").unwrap(), "Alice");
         assert_eq!(rows[1].get::<String>("name").unwrap(), "Bob");

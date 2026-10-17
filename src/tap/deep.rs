@@ -147,7 +147,9 @@ impl TapDeepEngine {
     /// and returning the highest-scoring candidate and calibrated probability.
     pub fn classify_deep(&self, input: &str, candidates: &[&str]) -> Result<(String, f32)> {
         if candidates.is_empty() {
-            return Err(Error::Internal("TapDeep requires at least one candidate".into()));
+            return Err(Error::Internal(
+                "TapDeep requires at least one candidate".into(),
+            ));
         }
 
         let input_vec = self.embed_and_forward(input)?;
@@ -209,7 +211,11 @@ mod tests {
     fn test_tap_deep_classify_real_scoring() {
         let engine = TapDeepEngine::new();
         let input = "customer requesting a full refund on damaged goods";
-        let candidates = ["technical support", "billing and refunds", "general inquiry"];
+        let candidates = [
+            "technical support",
+            "billing and refunds",
+            "general inquiry",
+        ];
 
         let (winner, score) = engine.classify_deep(input, &candidates).unwrap();
         // Billing and refunds must legitimately win due to subwords and semantic projection

@@ -58,7 +58,8 @@ fn test_truncated_db_file_returns_corrupted_error() {
     // Write a truncated file of 42 bytes (less than DATABASE_HEADER_SIZE of 100 bytes)
     {
         let mut f = File::create(&db_path).expect("Create file");
-        f.write_all(b"TAPIRUSDB truncated partial write crash").expect("Write bytes");
+        f.write_all(b"TAPIRUSDB truncated partial write crash")
+            .expect("Write bytes");
     }
 
     // Attempting to open must return Error::Corrupted, NEVER overwrite
@@ -79,8 +80,10 @@ fn test_update_primary_key_uniqueness_and_sync() {
 
     conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);")
         .expect("Create table");
-    conn.execute("INSERT INTO users VALUES (1, 'Alice');").expect("Insert 1");
-    conn.execute("INSERT INTO users VALUES (2, 'Bob');").expect("Insert 2");
+    conn.execute("INSERT INTO users VALUES (1, 'Alice');")
+        .expect("Insert 1");
+    conn.execute("INSERT INTO users VALUES (2, 'Bob');")
+        .expect("Insert 2");
 
     // 1. Updating PK to an existing key must fail with UNIQUE ConstraintViolation
     let collide_res = conn.execute("UPDATE users SET id = 2 WHERE id = 1;");
@@ -90,22 +93,36 @@ fn test_update_primary_key_uniqueness_and_sync() {
     );
 
     // 2. Updating PK to a non-colliding new key must succeed and migrate B+Tree key
-    conn.execute("UPDATE users SET id = 10 WHERE id = 1;").expect("Update PK to 10");
+    conn.execute("UPDATE users SET id = 10 WHERE id = 1;")
+        .expect("Update PK to 10");
 
     // Search by new PK
-    let rows_new = conn.query("SELECT * FROM users WHERE id = 10;").expect("Query PK 10");
+    let rows_new = conn
+        .query("SELECT * FROM users WHERE id = 10;")
+        .expect("Query PK 10");
     assert_eq!(rows_new.len(), 1);
-    assert_eq!(rows_new[0].get_value("name").unwrap(), &Value::Text("Alice".into()));
+    assert_eq!(
+        rows_new[0].get_value("name").unwrap(),
+        &Value::Text("Alice".into())
+    );
 
     // Old PK must no longer exist
-    let rows_old = conn.query("SELECT * FROM users WHERE id = 1;").expect("Query PK 1");
+    let rows_old = conn
+        .query("SELECT * FROM users WHERE id = 1;")
+        .expect("Query PK 1");
     assert_eq!(rows_old.len(), 0);
 
     // 3. Auto-increment sequence must synchronize: next insert without PK should be 11
-    conn.execute("INSERT INTO users (name) VALUES ('Charlie');").expect("Insert Charlie");
-    let rows_charlie = conn.query("SELECT id FROM users WHERE name = 'Charlie';").expect("Query Charlie");
+    conn.execute("INSERT INTO users (name) VALUES ('Charlie');")
+        .expect("Insert Charlie");
+    let rows_charlie = conn
+        .query("SELECT id FROM users WHERE name = 'Charlie';")
+        .expect("Query Charlie");
     assert_eq!(rows_charlie.len(), 1);
-    assert_eq!(rows_charlie[0].get_value("id").unwrap(), &Value::Integer(11));
+    assert_eq!(
+        rows_charlie[0].get_value("id").unwrap(),
+        &Value::Integer(11)
+    );
 }
 
 #[test]
@@ -127,7 +144,9 @@ fn test_write_cache_memory_bounds() {
     }
 
     // Verify all rows can still be queried accurately
-    let rows = conn.query("SELECT COUNT(*) FROM bulk_data;").expect("Count");
+    let rows = conn
+        .query("SELECT COUNT(*) FROM bulk_data;")
+        .expect("Count");
     let count: i64 = rows[0].get("COUNT(*)").unwrap();
     assert_eq!(count, 100);
 }
@@ -140,13 +159,17 @@ fn test_sql_rollback_clears_vectors_and_graphs() {
         .expect("Create table");
 
     // Initial committed state
-    conn.execute("INSERT INTO items VALUES (1, [1.0, 0.0, 0.0]);").expect("Insert committed");
-    conn.graph_add_node(1, "Root", "{}").expect("Add graph node 1");
+    conn.execute("INSERT INTO items VALUES (1, [1.0, 0.0, 0.0]);")
+        .expect("Insert committed");
+    conn.graph_add_node(1, "Root", "{}")
+        .expect("Add graph node 1");
 
     // Begin transaction and mutate vector and graph
     conn.execute("BEGIN;").expect("BEGIN");
-    conn.execute("INSERT INTO items VALUES (2, [0.0, 1.0, 0.0]);").expect("Insert in txn");
-    conn.graph_add_node(2, "Temporary", "{}").expect("Add graph node 2 in txn");
+    conn.execute("INSERT INTO items VALUES (2, [0.0, 1.0, 0.0]);")
+        .expect("Insert in txn");
+    conn.graph_add_node(2, "Temporary", "{}")
+        .expect("Add graph node 2 in txn");
 
     // Rollback transaction
     conn.execute("ROLLBACK;").expect("ROLLBACK");
@@ -160,7 +183,11 @@ fn test_sql_rollback_clears_vectors_and_graphs() {
 
     // Graph node 2 must not exist
     let graph_nodes = conn.graph_nodes();
-    assert_eq!(graph_nodes.len(), 1, "Only committed graph node 1 should remain");
+    assert_eq!(
+        graph_nodes.len(),
+        1,
+        "Only committed graph node 1 should remain"
+    );
     assert_eq!(graph_nodes[0].id, 1);
 }
 
@@ -182,10 +209,14 @@ fn test_sql_comments_parsing() {
     conn.execute("INSERT INTO users VALUES (1, 'Alice'); -- trailing comment")
         .expect("Insert with comment");
 
-    let query_sql = "SELECT /* inline block comment */ id, name FROM users WHERE id = 1; -- end of query";
+    let query_sql =
+        "SELECT /* inline block comment */ id, name FROM users WHERE id = 1; -- end of query";
     let rows = conn.query(query_sql).expect("Query with comments");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get_value("name").unwrap(), &Value::Text("Alice".into()));
+    assert_eq!(
+        rows[0].get_value("name").unwrap(),
+        &Value::Text("Alice".into())
+    );
 }
 
 #[test]
@@ -195,11 +226,14 @@ fn test_vacuum_purges_vector_tombstones() {
     conn.execute("CREATE TABLE embeddings (id INTEGER PRIMARY KEY, v VECTOR(3));")
         .expect("Create table");
 
-    conn.execute("INSERT INTO embeddings VALUES (1, [1.0, 0.0, 0.0]);").expect("Insert 1");
-    conn.execute("INSERT INTO embeddings VALUES (2, [0.0, 1.0, 0.0]);").expect("Insert 2");
+    conn.execute("INSERT INTO embeddings VALUES (1, [1.0, 0.0, 0.0]);")
+        .expect("Insert 1");
+    conn.execute("INSERT INTO embeddings VALUES (2, [0.0, 1.0, 0.0]);")
+        .expect("Insert 2");
 
     // Delete row 1 (creates tombstone in vector index)
-    conn.execute("DELETE FROM embeddings WHERE id = 1;").expect("Delete 1");
+    conn.execute("DELETE FROM embeddings WHERE id = 1;")
+        .expect("Delete 1");
 
     // Execute VACUUM
     conn.execute("VACUUM;").expect("Execute VACUUM");
@@ -217,18 +251,27 @@ fn test_hnsw_duplicate_vector_and_zero_k() {
     let mut index = HnswIndex::new(3, DistanceMetric::Cosine);
 
     // 1. k = 0 search should return empty without traversal
-    let empty = index.search_knn(&[1.0, 0.0, 0.0], 0, DistanceMetric::Cosine).expect("k=0");
+    let empty = index
+        .search_knn(&[1.0, 0.0, 0.0], 0, DistanceMetric::Cosine)
+        .expect("k=0");
     assert!(empty.is_empty());
 
     // 2. Insert vector 1
     index.insert_vector(1, &[1.0, 0.0, 0.0]).expect("Insert 1");
 
     // Re-insert vector 1 with new embedding
-    index.insert_vector(1, &[0.0, 0.0, 1.0]).expect("Re-insert 1");
+    index
+        .insert_vector(1, &[0.0, 0.0, 1.0])
+        .expect("Re-insert 1");
 
     // Verify search matches updated embedding
-    let res = index.search_knn(&[0.0, 0.0, 1.0], 1, DistanceMetric::Cosine).expect("Search 1");
+    let res = index
+        .search_knn(&[0.0, 0.0, 1.0], 1, DistanceMetric::Cosine)
+        .expect("Search 1");
     assert_eq!(res.len(), 1);
     assert_eq!(res[0].0, 1);
-    assert!(res[0].1 < 0.001, "Distance to updated vector should be near 0");
+    assert!(
+        res[0].1 < 0.001,
+        "Distance to updated vector should be near 0"
+    );
 }

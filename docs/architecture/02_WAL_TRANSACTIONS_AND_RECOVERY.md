@@ -1,116 +1,33 @@
-# Deep Architecture Guide: WAL2 Transactions, ARIES Recovery & Durability
-==========================================================================
+# WAL and recovery architecture notes
 
-> **Author**: Ahmad Faiz • Tapirus Tech Lab  
-> **Status**: Production Reference Specification  
-> **Target Audience**: Systems Engineers, Reliability Officers, and Core Contributors
+**Status:** Conceptual notes. This document does not establish full ACID behavior, ARIES conformance, or crash safety across all filesystems and devices.
 
----
+TapirusDB stores data in a page-oriented `.tapir` file and uses a write-ahead log during mutations. The main Rust crate forbids explicit unsafe Rust. These implementation choices do not prove that every transaction, recovery, or I/O failure path is correct.
 
-## 1. The Write-Ahead Logging (WAL) Invariant
+## Write-ahead log
 
-TapirusDB implements atomic, consistent, isolated, and durable (ACID) transactions using a **Write-Ahead Log (WAL2) Protocol** inspired by IBM's ARIES algorithms, engineered entirely in **100% Safe Rust (`#![forbid(unsafe_code)]`)**.
+The WAL is intended to record page changes before those changes are checkpointed into the database file. Frames contain checksums for detecting some incomplete or corrupted writes. Checksums are not proof against all storage faults or malicious modification.
 
-### The Fundamental WAL Invariant
-> **No modified (dirty) 4KB database page is EVER written to the main `.tapir` container file until the corresponding WAL frame describing that change has been fully serialized and flushed (`fsync`) to the `.tapir-wal` journal file.**
+The exact frame layout and behavior can change with the file format. Consult the current pager and WAL implementation before building tools that read or write these internal files directly.
 
-This guarantees that in the event of an abrupt power failure, operating system crash, or kernel panic, the main `.tapir` file remains intact, and the recovery engine can cleanly reconstruct or roll back transactions.
+## Recovery and checkpoints
 
----
+Opening a database processes its WAL and restores state according to the frames the implementation recognizes as valid and committed. Checkpointing transfers recoverable state into the main database file and advances the journal state.
 
-## 2. WAL2 Journal Frame Physical Layout
+Regression cases for incomplete WAL tails, rollback metadata, savepoints, and persistence live in `tests/durability_regressions.rs`. Those tests cover selected scenarios. Validate crash behavior on the actual filesystem, storage device, and build used by an application before relying on important data.
 
-The `.tapir-wal` journal consists of a 32-byte WAL Header followed by sequential 4,120-byte WAL Frames:
+## Connection and concurrency semantics
 
-```
-+-------------------------------------------------------------+
-|                      WAL File Header (32 Bytes)             |
-| Magic (4B) | Version (4B) | Page Size (4B) | Checksum (8B)  |
-+-------------------------------------------------------------+
-|                      WAL Frame 1 (4,120 Bytes)              |
-| Frame Header (24 Bytes) + Page Payload (4,096 Bytes)        |
-+-------------------------------------------------------------+
-|                      WAL Frame 2 (4,120 Bytes)              |
-| Frame Header (24 Bytes) + Page Payload (4,096 Bytes)        |
-+-------------------------------------------------------------+
-```
+`ConnectionPool::acquire()` returns a clone of the same `Connection`. Acquired handles share session and transaction state; the current API does not create independent sessions. SQL operations use shared locks around pager and executor state. The pool API should not be interpreted as a guarantee of parallel SQL readers or multi-session isolation.
 
-### 2.1 Frame Header Breakdown (24 Bytes)
-```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                     Page Number (4 Bytes)                     |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                   Transaction ID (8 Bytes)                    |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|       Commit Flag (1 Byte)    |       Reserved (3 Bytes)      |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                   CRC32C Checksum (4 Bytes)                   |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                  4,096-Byte Page Data Payload                 |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                   Trailer Checksum (4 Bytes)                  |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
+## Formal model
 
-* **Commit Flag**:
-  * `0x00`: Intermediate transaction frame.
-  * `0x01`: Transaction Commit Boundary (all prior frames within this TxID are atomically permanent).
-* **Dual Checksums (CRC32C)**: Both the frame header and the complete 4,096-byte payload are protected by Castagnoli polynomials (`crc32fast`), detecting silent hardware bit-rot and partial-page write tearing.
+A TLA+ specification for selected WAL transitions is stored in `docs/formal_verification/`. This repository contains no TLC run output, explored-state report, invariant result, or refinement proof linking the model to Rust. The specification is a design artifact, not verification of the compiled database.
 
----
+## Operational guidance
 
-## 3. The 3-Phase Crash Recovery State Machine
-
-When a TapirusDB connection opens an existing database, it inspects whether a `.tapir-wal` journal exists. If present, it executes the **ARIES 3-Phase Recovery Protocol**:
-
-```
- [Open .tapir] ──► [Check .tapir-wal]
-                         │
-                         ├── (No WAL) ──► Normal Read/Write
-                         │
-                         ▼ (WAL Exists)
-           ┌───────────────────────────┐
-           │ Phase 1: Analysis Pass    │ Scan WAL from offset 32 to EOF.
-           │                           │ Identify active & committed TxIDs.
-           └─────────────┬─────────────┘
-                         ▼
-           ┌───────────────────────────┐
-           │ Phase 2: Redo Pass        │ Replay all committed frames in order
-           │                           │ into the in-memory page buffer pool.
-           └─────────────┬─────────────┘
-                         ▼
-           ┌───────────────────────────┐
-           │ Phase 3: Undo Pass        │ Discard uncommitted frames.
-           │                           │ Flush dirty pages to .tapir.
-           └─────────────┬─────────────┘
-                         ▼
-             Truncate & Clear .tapir-wal
-```
-
-### Phase 1: Analysis Pass
-* Scans all frames sequentially.
-* Validates every frame's CRC32C checksum. If a torn frame is detected (e.g., interrupted power failure during write), recovery halts at the last valid frame boundary.
-* Compiles a set of **Committed Transactions** and **Active (Uncommitted) Transactions**.
-
-### Phase 2: Redo Pass
-* For every frame belonging to a transaction with `Commit Flag == 0x01`, the 4KB page is written directly to the target page slot in the container.
-* This restores the database to the exact microsecond before the crash.
-
-### Phase 3: Undo Pass
-* Any frames written by aborted or uncommitted transactions are discarded.
-* The recovery manager executes an atomic checkpoint, flushes all recovered pages to the main `.tapir` container, and truncates the WAL file to zero bytes.
-
----
-
-## 4. Checkpoint Isolation & Concurrency
-
-TapirusDB supports concurrent multi-reader single-writer transactions without write blocking:
-
-1. **Readers Never Block Writers**: Readers read committed pages directly from the buffer pool or main `.tapir` file, consulting the WAL index for recent updates.
-2. **Checkpoint Isolation**: During a `CHECKPOINT` command, active uncommitted transactions continue writing new frames to the WAL without blocking the background checkpoint thread. Only frames up to the checkpoint log sequence number (LSN) are flushed.
-3. **Zero Data Loss**: Formally specified and verified under **TLA+** model checking in [`docs/formal_verification/`](docs/formal_verification/).
+- Test commit, rollback, crash recovery, backup, restore, and reopen behavior on the target platform.
+- Keep independent backups and periodically perform a restore test.
+- Treat checksums as error detection, not a substitute for backups or authenticated encryption.
+- Encryption is optional; applications remain responsible for passphrase handling and key lifecycle.
+- See `SECURITY.md` and the dated audit report for current trust boundaries and known limitations.

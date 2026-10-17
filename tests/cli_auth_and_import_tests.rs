@@ -87,7 +87,9 @@ fn test_cli_import_jsonl() {
 
     // Verify document collection
     let conn = Connection::open(&db_file).expect("Open imported database");
-    let col = conn.collection("telemetry").expect("Open telemetry collection");
+    let col = conn
+        .collection("telemetry")
+        .expect("Open telemetry collection");
     let all_docs = col.find_all().expect("Find all documents");
 
     assert_eq!(all_docs.len(), 3);
@@ -133,11 +135,17 @@ fn test_cli_import_markdown_knowledge_graph_and_memory() {
 
     // Verify AI Agent Memory and Knowledge Graph
     let conn = Connection::open(&db_file).expect("Open imported database");
-    assert!(conn.memory_count() >= 3, "Expected at least 3 remembered sections");
+    assert!(
+        conn.memory_count() >= 3,
+        "Expected at least 3 remembered sections"
+    );
 
     // Test hybrid memory recall
     let recalled = conn.memory_recall_text("failover heartbeat election", 3);
-    assert!(!recalled.is_empty(), "Memory recall should find matching section");
+    assert!(
+        !recalled.is_empty(),
+        "Memory recall should find matching section"
+    );
     assert!(
         recalled[0].entry.content.contains("Failover Protocol")
             || recalled[0].entry.content.contains("heartbeat"),
@@ -148,7 +156,10 @@ fn test_cli_import_markdown_knowledge_graph_and_memory() {
     // Test knowledge graph topology
     let (node_count, edge_count) = conn.graph_stats();
     assert_eq!(node_count, 4, "1 Document node + 3 Section nodes = 4 nodes");
-    assert_eq!(edge_count, 5, "3 CONTAINS edges + 2 PRECEDES edges = 5 edges");
+    assert_eq!(
+        edge_count, 5,
+        "3 CONTAINS edges + 2 PRECEDES edges = 5 edges"
+    );
 
     // Verify graph node labels
     let nodes = conn.graph_nodes();
@@ -158,7 +169,9 @@ fn test_cli_import_markdown_knowledge_graph_and_memory() {
 
 fn http_exchange(host: &str, port: u16, request: &str) -> (u16, String) {
     let mut stream = TcpStream::connect(format!("{host}:{port}")).expect("Connect to HTTP server");
-    stream.write_all(request.as_bytes()).expect("Write HTTP request");
+    stream
+        .write_all(request.as_bytes())
+        .expect("Write HTTP request");
 
     let mut response_bytes = Vec::new();
     let mut buf = [0u8; 1024];
@@ -189,8 +202,10 @@ fn test_serve_api_key_authentication() {
     let dir = tempdir().expect("Create temp dir");
     let db_file = dir.path().join("server_auth.tapir");
     let conn = Connection::open(&db_file).expect("Create db");
-    conn.execute("CREATE TABLE status (id INTEGER PRIMARY KEY, msg TEXT);").unwrap();
-    conn.execute("INSERT INTO status (id, msg) VALUES (1, 'Server Online');").unwrap();
+    conn.execute("CREATE TABLE status (id INTEGER PRIMARY KEY, msg TEXT);")
+        .unwrap();
+    conn.execute("INSERT INTO status (id, msg) VALUES (1, 'Server Online');")
+        .unwrap();
     drop(conn);
 
     let port: u16 = 18492;
@@ -226,7 +241,10 @@ fn test_serve_api_key_authentication() {
         "POST /api/sql HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {plen}\r\nConnection: close\r\n\r\n{payload}"
     );
     let (code, resp) = http_exchange("127.0.0.1", port, &unauth_sql);
-    assert_eq!(code, 401, "Protected route without auth must return 401: {resp}");
+    assert_eq!(
+        code, 401,
+        "Protected route without auth must return 401: {resp}"
+    );
     assert!(resp.contains("WWW-Authenticate: Bearer"));
     assert!(resp.contains("Unauthorized"));
 
@@ -235,14 +253,20 @@ fn test_serve_api_key_authentication() {
         "POST /api/sql HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer wrong_token\r\nContent-Type: application/json\r\nContent-Length: {plen}\r\nConnection: close\r\n\r\n{payload}"
     );
     let (code, resp) = http_exchange("127.0.0.1", port, &wrong_sql);
-    assert_eq!(code, 401, "Protected route with wrong token must return 401: {resp}");
+    assert_eq!(
+        code, 401,
+        "Protected route with wrong token must return 401: {resp}"
+    );
 
     // 4. Protected endpoint with valid Authorization: Bearer <KEY> must succeed (200 OK)
     let bearer_sql = format!(
         "POST /api/sql HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {api_key}\r\nContent-Type: application/json\r\nContent-Length: {plen}\r\nConnection: close\r\n\r\n{payload}"
     );
     let (code, resp) = http_exchange("127.0.0.1", port, &bearer_sql);
-    assert_eq!(code, 200, "Protected route with Bearer key must succeed: {resp}");
+    assert_eq!(
+        code, 200,
+        "Protected route with Bearer key must succeed: {resp}"
+    );
     assert!(resp.contains("Server Online"));
 
     // 5. Protected endpoint with valid X-API-Key: <KEY> must succeed (200 OK)
@@ -250,7 +274,10 @@ fn test_serve_api_key_authentication() {
         "POST /api/sql HTTP/1.1\r\nHost: 127.0.0.1\r\nX-API-Key: {api_key}\r\nContent-Type: application/json\r\nContent-Length: {plen}\r\nConnection: close\r\n\r\n{payload}"
     );
     let (code, resp) = http_exchange("127.0.0.1", port, &x_api_sql);
-    assert_eq!(code, 200, "Protected route with X-API-Key must succeed: {resp}");
+    assert_eq!(
+        code, 200,
+        "Protected route with X-API-Key must succeed: {resp}"
+    );
     assert!(resp.contains("Server Online"));
 
     // 6. Protected endpoint with valid ?api_key=<KEY> parameter must succeed (200 OK)
@@ -258,9 +285,13 @@ fn test_serve_api_key_authentication() {
         "POST /api/sql?api_key={api_key} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {plen}\r\nConnection: close\r\n\r\n{payload}"
     );
     let (code, resp) = http_exchange("127.0.0.1", port, &query_sql);
-    assert_eq!(code, 200, "Protected route with ?api_key= query parameter must succeed: {resp}");
+    assert_eq!(
+        code, 200,
+        "Protected route with ?api_key= query parameter must succeed: {resp}"
+    );
     assert!(resp.contains("Server Online"));
 
     // Clean up server process
     let _ = child.kill();
+    let _ = child.wait();
 }

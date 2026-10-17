@@ -68,9 +68,10 @@ impl UdfRegistry {
         let key = name.trim().to_ascii_uppercase();
         let func = {
             let guard = self.functions.read();
-            guard.get(&key).cloned().ok_or_else(|| {
-                Error::SqlSyntax(format!("Unknown scalar function: '{name}'"))
-            })?
+            guard
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| Error::SqlSyntax(format!("Unknown scalar function: '{name}'")))?
         };
         func(args)
     }
@@ -91,64 +92,61 @@ impl UdfRegistry {
     /// Register standard built-in scalar SQL functions
     fn register_standard_builtins(&self) {
         // UPPER(str)
-        self.register("UPPER", |args| {
-            match args.first() {
-                Some(Value::Text(s)) => Ok(Value::Text(s.to_uppercase())),
-                Some(Value::Null) | None => Ok(Value::Null),
-                Some(other) => Ok(Value::Text(other.to_string().to_uppercase())),
-            }
+        self.register("UPPER", |args| match args.first() {
+            Some(Value::Text(s)) => Ok(Value::Text(s.to_uppercase())),
+            Some(Value::Null) | None => Ok(Value::Null),
+            Some(other) => Ok(Value::Text(other.to_string().to_uppercase())),
         });
 
         // LOWER(str)
-        self.register("LOWER", |args| {
-            match args.first() {
-                Some(Value::Text(s)) => Ok(Value::Text(s.to_lowercase())),
-                Some(Value::Null) | None => Ok(Value::Null),
-                Some(other) => Ok(Value::Text(other.to_string().to_lowercase())),
-            }
+        self.register("LOWER", |args| match args.first() {
+            Some(Value::Text(s)) => Ok(Value::Text(s.to_lowercase())),
+            Some(Value::Null) | None => Ok(Value::Null),
+            Some(other) => Ok(Value::Text(other.to_string().to_lowercase())),
         });
 
         // LENGTH(str) / LEN(str)
-        let len_fn = |args: &[Value]| {
-            match args.first() {
-                Some(Value::Text(s)) => Ok(Value::Integer(s.chars().count() as i64)),
-                Some(Value::Blob(b)) => Ok(Value::Integer(b.len() as i64)),
-                Some(Value::Null) | None => Ok(Value::Null),
-                Some(other) => Ok(Value::Integer(other.to_string().chars().count() as i64)),
-            }
+        let len_fn = |args: &[Value]| match args.first() {
+            Some(Value::Text(s)) => Ok(Value::Integer(s.chars().count() as i64)),
+            Some(Value::Blob(b)) => Ok(Value::Integer(b.len() as i64)),
+            Some(Value::Null) | None => Ok(Value::Null),
+            Some(other) => Ok(Value::Integer(other.to_string().chars().count() as i64)),
         };
         self.register("LENGTH", len_fn);
         self.register("LEN", len_fn);
 
         // ABS(num)
-        self.register("ABS", |args| {
-            match args.first() {
-                Some(Value::Integer(i)) => Ok(Value::Integer(i.abs())),
-                Some(Value::Real(r)) => Ok(Value::Real(r.abs())),
-                Some(Value::Null) | None => Ok(Value::Null),
-                Some(other) => Err(Error::ConstraintViolation(format!("Cannot compute ABS on {other:?}"))),
-            }
+        self.register("ABS", |args| match args.first() {
+            Some(Value::Integer(i)) => Ok(Value::Integer(i.abs())),
+            Some(Value::Real(r)) => Ok(Value::Real(r.abs())),
+            Some(Value::Null) | None => Ok(Value::Null),
+            Some(other) => Err(Error::ConstraintViolation(format!(
+                "Cannot compute ABS on {other:?}"
+            ))),
         });
 
         // ROUND(num, [decimals])
-        self.register("ROUND", |args| {
-            match args.first() {
-                Some(Value::Real(r)) => {
-                    let decimals = args.get(1).and_then(|v| match v {
+        self.register("ROUND", |args| match args.first() {
+            Some(Value::Real(r)) => {
+                let decimals = args
+                    .get(1)
+                    .and_then(|v| match v {
                         Value::Integer(i) => Some(*i as i32),
                         _ => None,
-                    }).unwrap_or(0);
-                    if decimals <= 0 {
-                        Ok(Value::Real(r.round()))
-                    } else {
-                        let factor = 10f64.powi(decimals);
-                        Ok(Value::Real((r * factor).round() / factor))
-                    }
+                    })
+                    .unwrap_or(0);
+                if decimals <= 0 {
+                    Ok(Value::Real(r.round()))
+                } else {
+                    let factor = 10f64.powi(decimals);
+                    Ok(Value::Real((r * factor).round() / factor))
                 }
-                Some(Value::Integer(i)) => Ok(Value::Integer(*i)),
-                Some(Value::Null) | None => Ok(Value::Null),
-                Some(other) => Err(Error::ConstraintViolation(format!("Cannot ROUND {other:?}"))),
             }
+            Some(Value::Integer(i)) => Ok(Value::Integer(*i)),
+            Some(Value::Null) | None => Ok(Value::Null),
+            Some(other) => Err(Error::ConstraintViolation(format!(
+                "Cannot ROUND {other:?}"
+            ))),
         });
 
         // COALESCE(val1, val2, ...)
@@ -203,21 +201,17 @@ impl UdfRegistry {
         });
 
         // TRIM(str)
-        self.register("TRIM", |args| {
-            match args.first() {
-                Some(Value::Text(s)) => Ok(Value::Text(s.trim().to_string())),
-                Some(Value::Null) | None => Ok(Value::Null),
-                Some(other) => Ok(Value::Text(other.to_string().trim().to_string())),
-            }
+        self.register("TRIM", |args| match args.first() {
+            Some(Value::Text(s)) => Ok(Value::Text(s.trim().to_string())),
+            Some(Value::Null) | None => Ok(Value::Null),
+            Some(other) => Ok(Value::Text(other.to_string().trim().to_string())),
         });
 
         // REVERSE(str)
-        self.register("REVERSE", |args| {
-            match args.first() {
-                Some(Value::Text(s)) => Ok(Value::Text(s.chars().rev().collect())),
-                Some(Value::Null) | None => Ok(Value::Null),
-                Some(other) => Ok(Value::Text(other.to_string().chars().rev().collect())),
-            }
+        self.register("REVERSE", |args| match args.first() {
+            Some(Value::Text(s)) => Ok(Value::Text(s.chars().rev().collect())),
+            Some(Value::Null) | None => Ok(Value::Null),
+            Some(other) => Ok(Value::Text(other.to_string().chars().rev().collect())),
         });
     }
 }

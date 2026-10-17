@@ -21,10 +21,10 @@ pub use primitives::{
     ClassificationResult, GroundedClassificationResult, GroundedVerifyResult, RouteResult,
     ScoreResult, VerifyResult,
 };
-pub use runtime::{TapInferenceEngine, TapRuntime, TapWeights, TAP_MODEL_MAGIC};
+pub use runtime::{TAP_MODEL_MAGIC, TapInferenceEngine, TapRuntime, TapWeights};
 pub use sql_bridge::{
-    eval_tap_classify, eval_tap_classify_grounded, eval_tap_route, eval_tap_score,
-    eval_tap_verify, eval_tap_verify_grounded, register_grounding_index,
+    eval_tap_classify, eval_tap_classify_grounded, eval_tap_route, eval_tap_score, eval_tap_verify,
+    eval_tap_verify_grounded, register_grounding_index,
 };
 pub use tokenizer::TapTokenizer;
 
@@ -32,7 +32,7 @@ use crate::error::{Error, Result};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::Instant;
 
 /// Configuration options for the Tap Decision Engine
 #[derive(Debug, Clone)]
@@ -116,7 +116,9 @@ impl TapEngine {
     pub fn classify(&self, input: &str, candidates: &[&str]) -> Result<ClassificationResult> {
         let start = Instant::now();
         if candidates.is_empty() {
-            return Err(Error::Internal("Tap::classify requires at least one candidate choice".into()));
+            return Err(Error::Internal(
+                "Tap::classify requires at least one candidate choice".into(),
+            ));
         }
 
         let input_tokens = self.tokenizer.tokenize(input);
@@ -140,7 +142,8 @@ impl TapEngine {
                 }
             }
 
-            let logit = (dense_sim * 0.20) + (lexical_overlap * self.config.lexical_weight) + domain_bonus;
+            let logit =
+                (dense_sim * 0.20) + (lexical_overlap * self.config.lexical_weight) + domain_bonus;
             raw_logits.push(logit);
         }
 
@@ -154,7 +157,10 @@ impl TapEngine {
 
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let top_choice = ranked.first().cloned().unwrap_or_else(|| ("unknown".into(), 0.0));
+        let top_choice = ranked
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ("unknown".into(), 0.0));
 
         let mut entropy = 0.0f32;
         for &p in &probs {
@@ -201,7 +207,8 @@ impl TapEngine {
             matched_signals.len() as f32 / criteria_words.len() as f32
         };
 
-        let raw_alignment = (dense_sim * self.config.dense_weight) + (lexical_ratio * self.config.lexical_weight);
+        let raw_alignment =
+            (dense_sim * self.config.dense_weight) + (lexical_ratio * self.config.lexical_weight);
         let score = self.runtime.sigmoid(raw_alignment * 3.5);
         let normalized_percentile = (score * 100.0).clamp(0.0, 100.0);
         let latency_us = start.elapsed().as_micros() as u64;
@@ -220,7 +227,12 @@ impl TapEngine {
     }
 
     /// Truth verification with custom threshold
-    pub fn verify_with_threshold(&self, premise: &str, hypothesis: &str, threshold: f32) -> Result<VerifyResult> {
+    pub fn verify_with_threshold(
+        &self,
+        premise: &str,
+        hypothesis: &str,
+        threshold: f32,
+    ) -> Result<VerifyResult> {
         let start = Instant::now();
         let prem_tokens = self.tokenizer.tokenize(premise);
         let hyp_tokens = self.tokenizer.tokenize(hypothesis);
@@ -238,10 +250,8 @@ impl TapEngine {
         // Pure grammatical polarity inverters across international languages
         let negations = [
             "not", "never", "untrue", "neither", "nor", "wont", "dont", "isnt", "arent", "didnt",
-            "tidak", "bukan", "tak", "takde", "jangan",
-            "nunca", "jamas",
-            "jamais",
-            "nicht", "kein", "keine",
+            "tidak", "bukan", "tak", "takde", "jangan", "nunca", "jamas", "jamais", "nicht",
+            "kein", "keine",
         ];
         let mut premise_neg = false;
         let mut hyp_neg = false;
@@ -265,7 +275,11 @@ impl TapEngine {
         };
 
         let seq_overlap = compute_sequence_bigram_overlap(premise, hypothesis);
-        let seq_penalty = if overlap > 0.80 && seq_overlap < 0.40 && prem_words.len() >= 4 && hyp_words.len() >= 4 {
+        let seq_penalty = if overlap > 0.80
+            && seq_overlap < 0.40
+            && prem_words.len() >= 4
+            && hyp_words.len() >= 4
+        {
             -2.00
         } else {
             0.0
@@ -330,7 +344,8 @@ impl TapEngine {
             0.5
         };
 
-        let grounded_confidence = ((base_verify.confidence * 0.60) + (avg_grounding * 0.40)).clamp(0.0, 1.0);
+        let grounded_confidence =
+            ((base_verify.confidence * 0.60) + (avg_grounding * 0.40)).clamp(0.0, 1.0);
         let is_verified = grounded_confidence >= base_verify.threshold;
         let margin = grounded_confidence - base_verify.threshold;
         let latency_us = start.elapsed().as_micros() as u64;
@@ -385,7 +400,8 @@ impl TapEngine {
             0.5
         };
 
-        let modulated_conf = ((base_class.confidence * 0.65) + (avg_grounding * 0.35)).clamp(0.0, 1.0);
+        let modulated_conf =
+            ((base_class.confidence * 0.65) + (avg_grounding * 0.35)).clamp(0.0, 1.0);
         let latency_us = start.elapsed().as_micros() as u64;
 
         Ok(GroundedClassificationResult {
@@ -403,7 +419,9 @@ impl TapEngine {
     pub fn route(&self, state: &str, route_options: &[&str]) -> Result<RouteResult> {
         let start = Instant::now();
         if route_options.is_empty() {
-            return Err(Error::Internal("Tap::route requires at least one route option".into()));
+            return Err(Error::Internal(
+                "Tap::route requires at least one route option".into(),
+            ));
         }
 
         let classification = self.classify(state, route_options)?;
@@ -446,7 +464,8 @@ pub(crate) fn compute_jaccard_overlap(a: &HashSet<String>, b: &HashSet<String>) 
         for wb in b {
             if wa == wb {
                 score += 1.0;
-            } else if (wa.len() >= 4 && wb.len() >= 4) && (wa.starts_with(wb) || wb.starts_with(wa)) {
+            } else if (wa.len() >= 4 && wb.len() >= 4) && (wa.starts_with(wb) || wb.starts_with(wa))
+            {
                 score += 0.7;
             }
         }
@@ -457,38 +476,123 @@ pub(crate) fn compute_jaccard_overlap(a: &HashSet<String>, b: &HashSet<String>) 
 
 fn get_domain_associations(label: &str) -> &'static [&'static str] {
     let clean = label.to_lowercase();
-    let parts: Vec<&str> = clean.split(|c: char| c == '_' || c == '-' || is_sep(c)).collect();
+    let parts: Vec<&str> = clean
+        .split(|c: char| c == '_' || c == '-' || is_sep(c))
+        .collect();
     for p in parts {
         match p {
-            "infrastructure" | "infra" => return &[
-                "server", "disk", "cpu", "memory", "storage", "database", "cluster", "node", "network",
-                "cloud", "host", "downtime", "outage", "load", "latency", "hardware", "capacity", "timeout",
-            ],
-            "billing" | "finance" => return &[
-                "charge", "charged", "invoice", "payment", "card", "credit", "cost", "price", "refund",
-                "subscription", "fee", "receipt", "dollar", "money", "pricing", "bill", "pay",
-            ],
-            "technical" | "tech" | "bug" => return &[
-                "bug", "crash", "crashes", "error", "exception", "freeze", "code", "glitch", "failure",
-                "broken", "app", "login", "patch", "stack", "null", "panic", "issue", "version",
-            ],
-            "sales" => return &[
-                "purchase", "pricing", "quote", "buy", "lead", "deal", "enterprise", "discount",
-                "demo", "upgrade", "contact", "procurement", "contract",
-            ],
-            "support" => return &[
-                "help", "ticket", "question", "assistance", "inquiry", "agent", "service", "guide",
-                "triage",
-            ],
-            "security" | "fraud" => return &[
-                "breach", "hack", "compromised", "unauthorized", "stolen", "phishing", "takeover",
-                "attacker", "malware", "suspicious", "credential",
-            ],
-            "weather" => return &[
-                "storm", "hail", "wind", "rain", "flood", "hurricane", "tornado", "snow", "climate",
-                "freeze", "lightning", "hailstorm",
-            ],
-            _ => {},
+            "infrastructure" | "infra" => {
+                return &[
+                    "server", "disk", "cpu", "memory", "storage", "database", "cluster", "node",
+                    "network", "cloud", "host", "downtime", "outage", "load", "latency",
+                    "hardware", "capacity", "timeout",
+                ];
+            }
+            "billing" | "finance" => {
+                return &[
+                    "charge",
+                    "charged",
+                    "invoice",
+                    "payment",
+                    "card",
+                    "credit",
+                    "cost",
+                    "price",
+                    "refund",
+                    "subscription",
+                    "fee",
+                    "receipt",
+                    "dollar",
+                    "money",
+                    "pricing",
+                    "bill",
+                    "pay",
+                ];
+            }
+            "technical" | "tech" | "bug" => {
+                return &[
+                    "bug",
+                    "crash",
+                    "crashes",
+                    "error",
+                    "exception",
+                    "freeze",
+                    "code",
+                    "glitch",
+                    "failure",
+                    "broken",
+                    "app",
+                    "login",
+                    "patch",
+                    "stack",
+                    "null",
+                    "panic",
+                    "issue",
+                    "version",
+                ];
+            }
+            "sales" => {
+                return &[
+                    "purchase",
+                    "pricing",
+                    "quote",
+                    "buy",
+                    "lead",
+                    "deal",
+                    "enterprise",
+                    "discount",
+                    "demo",
+                    "upgrade",
+                    "contact",
+                    "procurement",
+                    "contract",
+                ];
+            }
+            "support" => {
+                return &[
+                    "help",
+                    "ticket",
+                    "question",
+                    "assistance",
+                    "inquiry",
+                    "agent",
+                    "service",
+                    "guide",
+                    "triage",
+                ];
+            }
+            "security" | "fraud" => {
+                return &[
+                    "breach",
+                    "hack",
+                    "compromised",
+                    "unauthorized",
+                    "stolen",
+                    "phishing",
+                    "takeover",
+                    "attacker",
+                    "malware",
+                    "suspicious",
+                    "credential",
+                ];
+            }
+            "weather" => {
+                return &[
+                    "storm",
+                    "hail",
+                    "wind",
+                    "rain",
+                    "flood",
+                    "hurricane",
+                    "tornado",
+                    "snow",
+                    "climate",
+                    "freeze",
+                    "lightning",
+                    "hailstorm",
+                ];
+            }
+            _ => {}
         }
     }
     &[]
@@ -499,13 +603,18 @@ fn is_sep(c: char) -> bool {
 }
 
 fn compute_sequence_bigram_overlap(s1: &str, s2: &str) -> f32 {
-    let stopwords = ["the", "a", "an", "is", "are", "was", "were", "to", "of", "in", "on", "at", "by", "for", "with", "about"];
-    let w1: Vec<String> = s1.split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
+    let stopwords = [
+        "the", "a", "an", "is", "are", "was", "were", "to", "of", "in", "on", "at", "by", "for",
+        "with", "about",
+    ];
+    let w1: Vec<String> = s1
+        .split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
         .filter(|w| !w.is_empty())
         .map(|w| w.to_lowercase())
         .filter(|w| !stopwords.contains(&w.as_str()))
         .collect();
-    let w2: Vec<String> = s2.split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
+    let w2: Vec<String> = s2
+        .split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
         .filter(|w| !w.is_empty())
         .map(|w| w.to_lowercase())
         .filter(|w| !stopwords.contains(&w.as_str()))
@@ -513,8 +622,14 @@ fn compute_sequence_bigram_overlap(s1: &str, s2: &str) -> f32 {
     if w1.len() < 2 || w2.len() < 2 {
         return 1.0;
     }
-    let b1: HashSet<(String, String)> = w1.windows(2).map(|w| (w[0].clone(), w[1].clone())).collect();
-    let b2: HashSet<(String, String)> = w2.windows(2).map(|w| (w[0].clone(), w[1].clone())).collect();
+    let b1: HashSet<(String, String)> = w1
+        .windows(2)
+        .map(|w| (w[0].clone(), w[1].clone()))
+        .collect();
+    let b2: HashSet<(String, String)> = w2
+        .windows(2)
+        .map(|w| (w[0].clone(), w[1].clone()))
+        .collect();
     let matches = b1.intersection(&b2).count();
     let denom = b1.len().min(b2.len()).max(1);
     matches as f32 / denom as f32
@@ -527,7 +642,12 @@ mod tests {
     #[test]
     fn test_tap_classify() {
         let tap = TapEngine::default();
-        let res = tap.classify("Refund requested because product was broken", &["refund", "billing_support", "sales"]).unwrap();
+        let res = tap
+            .classify(
+                "Refund requested because product was broken",
+                &["refund", "billing_support", "sales"],
+            )
+            .unwrap();
         assert_eq!(res.top_choice, "refund");
         assert!(res.confidence > 0.4);
     }
@@ -535,7 +655,12 @@ mod tests {
     #[test]
     fn test_tap_verify() {
         let tap = TapEngine::default();
-        let res = tap.verify("The user has an active premium subscription", "user is active subscriber").unwrap();
+        let res = tap
+            .verify(
+                "The user has an active premium subscription",
+                "user is active subscriber",
+            )
+            .unwrap();
         assert!(res.is_verified);
         assert!(res.confidence >= 0.50);
     }
@@ -543,7 +668,12 @@ mod tests {
     #[test]
     fn test_tap_score() {
         let tap = TapEngine::default();
-        let res = tap.score("Server down critical emergency production failure", "emergency severity").unwrap();
+        let res = tap
+            .score(
+                "Server down critical emergency production failure",
+                "emergency severity",
+            )
+            .unwrap();
         assert!(res.score > 0.5);
         assert!(res.matched_signals.contains(&"emergency".to_string()));
     }
@@ -551,7 +681,12 @@ mod tests {
     #[test]
     fn test_tap_route() {
         let tap = TapEngine::default();
-        let res = tap.route("High risk fraudulent transfer detected: block immediately", &["block_transfer", "standard_review", "allow"]).unwrap();
+        let res = tap
+            .route(
+                "High risk fraudulent transfer detected: block immediately",
+                &["block_transfer", "standard_review", "allow"],
+            )
+            .unwrap();
         assert_eq!(res.selected_route, "block_transfer");
     }
 
@@ -560,29 +695,51 @@ mod tests {
         let tap = TapEngine::default();
         let iterations = 2000;
 
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         for _ in 0..iterations {
-            let _ = tap.classify("Refund requested because product was broken on delivery", &["refund", "billing_support", "sales"]).unwrap();
+            let _ = tap
+                .classify(
+                    "Refund requested because product was broken on delivery",
+                    &["refund", "billing_support", "sales"],
+                )
+                .unwrap();
         }
         let classify_total = start.elapsed();
         let classify_us = classify_total.as_micros() as f64 / iterations as f64;
         let classify_qps = iterations as f64 / classify_total.as_secs_f64();
 
-        let start_v = std::time::Instant::now();
+        let start_v = web_time::Instant::now();
         for _ in 0..iterations {
-            let _ = tap.verify("The user has an active premium subscription", "user is active subscriber").unwrap();
+            let _ = tap
+                .verify(
+                    "The user has an active premium subscription",
+                    "user is active subscriber",
+                )
+                .unwrap();
         }
         let verify_total = start_v.elapsed();
         let verify_us = verify_total.as_micros() as f64 / iterations as f64;
         let verify_qps = iterations as f64 / verify_total.as_secs_f64();
 
         println!("\n=== TAP DECISION CORE EMPIRICAL BENCHMARK ===");
-        println!("Classify Latency: {:.2} µs ({:.0} decisions/sec)", classify_us, classify_qps);
-        println!("Verify Latency:   {:.2} µs ({:.0} verifications/sec)", verify_us, verify_qps);
+        println!(
+            "Classify Latency: {:.2} µs ({:.0} decisions/sec)",
+            classify_us, classify_qps
+        );
+        println!(
+            "Verify Latency:   {:.2} µs ({:.0} verifications/sec)",
+            verify_us, verify_qps
+        );
         println!("==============================================\n");
 
-        assert!(classify_us < 1500.0, "Classify must take < 1.5 ms (sub-millisecond in release)");
-        assert!(verify_us < 1500.0, "Verify must take < 1.5 ms (sub-millisecond in release)");
+        assert!(
+            classify_us < 1500.0,
+            "Classify must take < 1.5 ms (sub-millisecond in release)"
+        );
+        assert!(
+            verify_us < 1500.0,
+            "Verify must take < 1.5 ms (sub-millisecond in release)"
+        );
     }
 
     #[test]
@@ -590,31 +747,42 @@ mod tests {
         let tap = TapEngine::default();
 
         // 1. Bahasa Melayu / Pasar
-        let bm_res = tap.classify(
-            "Barang rosak dan pecah, nak refund balik duit",
-            &["refund", "tanya_soalan", "daftar_akaun"],
-        ).unwrap();
+        let bm_res = tap
+            .classify(
+                "Barang rosak dan pecah, nak refund balik duit",
+                &["refund", "tanya_soalan", "daftar_akaun"],
+            )
+            .unwrap();
         assert_eq!(bm_res.top_choice, "refund");
 
         // 2. Multilingual negation check (Melayu: 'tidak')
-        let neg_res = tap.verify(
-            "Pengguna tidak bersetuju dengan syarat perjanjian",
-            "pengguna bersetuju dengan syarat perjanjian",
-        ).unwrap();
-        assert!(!neg_res.is_verified, "Negation 'tidak' must prevent false truth verification");
+        let neg_res = tap
+            .verify(
+                "Pengguna tidak bersetuju dengan syarat perjanjian",
+                "pengguna bersetuju dengan syarat perjanjian",
+            )
+            .unwrap();
+        assert!(
+            !neg_res.is_verified,
+            "Negation 'tidak' must prevent false truth verification"
+        );
 
         // 3. Spanish decision
-        let es_res = tap.classify(
-            "Por favor cancelar mi cuenta inmediatamente",
-            &["cancelar", "soporte", "pagar"],
-        ).unwrap();
+        let es_res = tap
+            .classify(
+                "Por favor cancelar mi cuenta inmediatamente",
+                &["cancelar", "soporte", "pagar"],
+            )
+            .unwrap();
         assert_eq!(es_res.top_choice, "cancelar");
 
         // 4. French decision
-        let fr_res = tap.classify(
-            "Demande urgente de remboursement pour commande perdue",
-            &["remboursement", "compte", "securite"],
-        ).unwrap();
+        let fr_res = tap
+            .classify(
+                "Demande urgente de remboursement pour commande perdue",
+                &["remboursement", "compte", "securite"],
+            )
+            .unwrap();
         assert_eq!(fr_res.top_choice, "remboursement");
     }
 
@@ -628,21 +796,27 @@ mod tests {
         let mut index = HnswIndex::new(dim, DistanceMetric::Cosine);
 
         // Populate HNSW index with policy vectors
-        let tokens_refund = tap.tokenizer.tokenize("Valid warranty return policy for damaged delivery item");
+        let tokens_refund = tap
+            .tokenizer
+            .tokenize("Valid warranty return policy for damaged delivery item");
         let vec_refund = tap.runtime.forward_pool(&tokens_refund);
         index.insert_vector(101, &vec_refund).unwrap();
 
-        let tokens_fraud = tap.tokenizer.tokenize("Fraudulent stolen credit card suspicious account activity");
+        let tokens_fraud = tap
+            .tokenizer
+            .tokenize("Fraudulent stolen credit card suspicious account activity");
         let vec_fraud = tap.runtime.forward_pool(&tokens_fraud);
         index.insert_vector(202, &vec_fraud).unwrap();
 
         // Test Grounded Truth Verification
-        let grounded_v = tap.verify_grounded(
-            "Customer provided photo proof of damaged delivery item",
-            "valid warranty return damaged delivery",
-            &index,
-            2,
-        ).unwrap();
+        let grounded_v = tap
+            .verify_grounded(
+                "Customer provided photo proof of damaged delivery item",
+                "valid warranty return damaged delivery",
+                &index,
+                2,
+            )
+            .unwrap();
 
         assert!(grounded_v.is_verified);
         assert!(!grounded_v.retrieved_evidence.is_empty());
@@ -650,12 +824,14 @@ mod tests {
         assert!(grounded_v.grounding_score > 0.5);
 
         // Test Grounded Classification
-        let grounded_c = tap.classify_grounded(
-            "Customer claims parcel arrived broken with shattered parts",
-            &["warranty_return", "fraud_investigation"],
-            &index,
-            2,
-        ).unwrap();
+        let grounded_c = tap
+            .classify_grounded(
+                "Customer claims parcel arrived broken with shattered parts",
+                &["warranty_return", "fraud_investigation"],
+                &index,
+                2,
+            )
+            .unwrap();
 
         assert!(!grounded_c.retrieved_evidence.is_empty());
         assert!(grounded_c.confidence > 0.5);

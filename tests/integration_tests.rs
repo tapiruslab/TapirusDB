@@ -109,10 +109,14 @@ fn test_tri_model_graphrag_workflow() -> Result<()> {
         assert_eq!(analyzed, 1, "Should analyze 1 table");
 
         // Verify CBO EXPLAIN outputs cost metrics
-        let explain_rows = db.query("EXPLAIN QUERY PLAN SELECT * FROM documents WHERE id = 103;")?;
+        let explain_rows =
+            db.query("EXPLAIN QUERY PLAN SELECT * FROM documents WHERE id = 103;")?;
         assert!(!explain_rows.is_empty());
         let detail: String = explain_rows[0].get("detail")?;
-        assert!(detail.contains("cost="), "EXPLAIN detail must contain CBO cost estimate: {detail}");
+        assert!(
+            detail.contains("cost="),
+            "EXPLAIN detail must contain CBO cost estimate: {detail}"
+        );
 
         db.checkpoint()?;
         // db is dropped here, closing file handles
@@ -130,12 +134,19 @@ fn test_tri_model_graphrag_workflow() -> Result<()> {
 
         assert_eq!(vector_matches.len(), 1);
         let matched_doc_id: i64 = vector_matches[0].get("id")?;
-        assert_eq!(matched_doc_id, 102, "Should match Rust Memory Safety document from disk");
+        assert_eq!(
+            matched_doc_id, 102,
+            "Should match Rust Memory Safety document from disk"
+        );
 
         // Step 2 of GraphRAG: Knowledge Graph Traversal on REOPENED disk file
-        let incoming_deps = db.graph_neighbors(102, Direction::Incoming, Some("DEPENDS_ON_PRINCIPLE"));
+        let incoming_deps =
+            db.graph_neighbors(102, Direction::Incoming, Some("DEPENDS_ON_PRINCIPLE"));
         assert_eq!(incoming_deps.len(), 1);
-        assert_eq!(incoming_deps[0].0.id, 103, "TapirusDB depends on Rust safety");
+        assert_eq!(
+            incoming_deps[0].0.id, 103,
+            "TapirusDB depends on Rust safety"
+        );
 
         // Step 3 of GraphRAG: SQL Point Lookup on REOPENED disk file
         let system_rows = db.query("SELECT title, category FROM documents WHERE id = 103;")?;
@@ -157,16 +168,18 @@ fn test_tri_model_graphrag_workflow() -> Result<()> {
 #[test]
 fn test_tap_grounded_sql_decision_workflow() -> Result<()> {
     use std::sync::Arc;
+    use tapirus::tap::register_grounding_index;
     use tapirus::traits::VectorIndexEngine;
     use tapirus::vector::{DistanceMetric, HnswIndex};
-    use tapirus::tap::register_grounding_index;
 
     let db = Connection::open_in_memory()?;
 
     // 1. Create table with audit entries
     db.execute("CREATE TABLE complaints (id INTEGER PRIMARY KEY, message TEXT, department TEXT);")?;
     db.execute("INSERT INTO complaints VALUES (1, 'Barang pecah bila sampai, mohon refund balik duit', 'support');")?;
-    db.execute("INSERT INTO complaints VALUES (2, 'Password reset email was never received', 'it');")?;
+    db.execute(
+        "INSERT INTO complaints VALUES (2, 'Password reset email was never received', 'it');",
+    )?;
 
     // 2. Setup HNSW grounding index
     let mut hnsw = HnswIndex::new(64, DistanceMetric::Cosine);
@@ -239,7 +252,10 @@ fn test_online_chatbot_cognitive_flow() -> Result<()> {
     assert!(classify_res.confidence > 0.30);
 
     // 4. Verification check
-    let verify_res = db.tap().verify("Pengguna ingin maklumat tentang pelan enterprise TapirusDB.", message)?;
+    let verify_res = db.tap().verify(
+        "Pengguna ingin maklumat tentang pelan enterprise TapirusDB.",
+        message,
+    )?;
     assert!(verify_res.is_verified);
 
     // 5. Query knowledge base
@@ -259,13 +275,16 @@ fn test_online_chatbot_cognitive_flow() -> Result<()> {
     db.execute(&insert_sql)?;
 
     // 7. Verify audit log retrieval from SQL
-    let logs = db.query("SELECT id, session_id, intent, is_safe FROM tap_chat_logs WHERE id = 1;")?;
+    let logs =
+        db.query("SELECT id, session_id, intent, is_safe FROM tap_chat_logs WHERE id = 1;")?;
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].get::<i64>("id")?, 1);
     assert_eq!(logs[0].get::<String>("session_id")?, "sess-test");
-    assert_eq!(logs[0].get::<String>("intent")?, "billing_and_enterprise_plans");
+    assert_eq!(
+        logs[0].get::<String>("intent")?,
+        "billing_and_enterprise_plans"
+    );
     assert_eq!(logs[0].get::<i64>("is_safe")?, 1);
 
     Ok(())
 }
-

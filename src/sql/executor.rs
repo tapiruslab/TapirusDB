@@ -1,18 +1,16 @@
 //! SQL Statement Executor connecting the AST, Catalog, B+Tree, Vector, and Graph engines.
 
-use crate::btree::{engine, BTreeStorage};
+use crate::btree::{BTreeStorage, engine};
 use crate::error::{Error, Result};
 use crate::graph::GraphEngine;
 use crate::pager::Pager;
 use crate::sql::catalog::{Catalog, ColumnDef, DataType, IndexDef, TableDef};
 use crate::sql::codec::{
     decode_row, decode_row_shared, decode_row_shared_projected, decode_row_values_into_projected,
-    encode_row, encode_row_into,
+    encode_row,
 };
-use crate::sql::parser::{
-    BinaryOp, JoinType, OnConflict, Statement, WhereCondition, WhereExpr,
-};
-use crate::traits::{col_name_matches, HashableValue, Row, Value, VectorIndexEngine};
+use crate::sql::parser::{BinaryOp, JoinType, OnConflict, Statement, WhereCondition, WhereExpr};
+use crate::traits::{HashableValue, Row, Value, VectorIndexEngine, col_name_matches};
 use crate::vector::{DistanceMetric, HnswIndex};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -224,6 +222,9 @@ pub struct VectorSnapshotRecord {
     pub table_name: String,
     /// Serialized HNSW snapshot graph topology
     pub snapshot: crate::vector::HnswSnapshot,
+    /// Checksum of the durable table rows used to build this snapshot.
+    #[serde(default)]
+    pub table_fingerprint: Option<u32>,
 }
 
 /// The SQL and multi-model execution engine for TapirusDB
@@ -412,6 +413,10 @@ impl SQLExecutor {
     }
 
     /// Project a relational SQL table as graph edges into the Knowledge Graph
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the public graph projection API"
+    )]
     pub fn project_table_as_edges(
         &mut self,
         pager: &mut Pager,
@@ -505,7 +510,9 @@ impl SQLExecutor {
             }
             let props_json = serde_json::Value::Object(props_map).to_string();
 
-            let edge_id = self.graph.add_edge(from_id, to_id, label, weight, props_json)?;
+            let edge_id = self
+                .graph
+                .add_edge(from_id, to_id, label, weight, props_json)?;
             if let Some(edge) = self.graph.get_edge(edge_id) {
                 let edge_clone = edge.clone();
                 self.persist_graph_edge(pager, &edge_clone)?;
@@ -574,7 +581,11 @@ impl SQLExecutor {
     }
 
     /// Persist a Knowledge Graph Node to B+Tree disk storage
-    pub fn persist_graph_node(&mut self, pager: &mut Pager, node: &crate::graph::Node) -> Result<()> {
+    pub fn persist_graph_node(
+        &mut self,
+        pager: &mut Pager,
+        node: &crate::graph::Node,
+    ) -> Result<()> {
         let cols = vec![
             ColumnDef::new("id", DataType::Integer).primary_key(),
             ColumnDef::new("payload", DataType::Text),
@@ -593,15 +604,22 @@ impl SQLExecutor {
         node_id: u64,
     ) -> Result<crate::graph::GraphAdjacencyRecord> {
         if let Some(payload) = self.btree.search(pager, adj_root, node_id)? {
-            serde_json::from_slice::<crate::graph::GraphAdjacencyRecord>(&payload)
-                .map_err(|e| Error::Corrupted(format!("Failed to deserialize adjacency for node #{node_id}: {e}")))
+            serde_json::from_slice::<crate::graph::GraphAdjacencyRecord>(&payload).map_err(|e| {
+                Error::Corrupted(format!(
+                    "Failed to deserialize adjacency for node #{node_id}: {e}"
+                ))
+            })
         } else {
             Ok(crate::graph::GraphAdjacencyRecord::default())
         }
     }
 
     /// Persist a Knowledge Graph Edge to B+Tree disk storage and update adjacency index
-    pub fn persist_graph_edge(&mut self, pager: &mut Pager, edge: &crate::graph::Edge) -> Result<()> {
+    pub fn persist_graph_edge(
+        &mut self,
+        pager: &mut Pager,
+        edge: &crate::graph::Edge,
+    ) -> Result<()> {
         let cols = vec![
             ColumnDef::new("id", DataType::Integer).primary_key(),
             ColumnDef::new("payload", DataType::Text),
@@ -622,17 +640,20 @@ impl SQLExecutor {
         let mut from_adj = self.load_graph_node_adjacency(pager, adj_root, edge.from_id)?;
         if !from_adj.outgoing_edges.contains(&edge.id) {
             from_adj.outgoing_edges.push(edge.id);
-            let from_bytes = serde_json::to_vec(&from_adj)
-                .map_err(|e| Error::Corrupted(format!("Failed to serialize node #{}: {e}", edge.from_id)))?;
-            self.btree.insert(pager, adj_root, edge.from_id, &from_bytes)?;
+            let from_bytes = serde_json::to_vec(&from_adj).map_err(|e| {
+                Error::Corrupted(format!("Failed to serialize node #{}: {e}", edge.from_id))
+            })?;
+            self.btree
+                .insert(pager, adj_root, edge.from_id, &from_bytes)?;
         }
 
         // Update incoming adjacency for target node (edge.to_id)
         let mut to_adj = self.load_graph_node_adjacency(pager, adj_root, edge.to_id)?;
         if !to_adj.incoming_edges.contains(&edge.id) {
             to_adj.incoming_edges.push(edge.id);
-            let to_bytes = serde_json::to_vec(&to_adj)
-                .map_err(|e| Error::Corrupted(format!("Failed to serialize node #{}: {e}", edge.to_id)))?;
+            let to_bytes = serde_json::to_vec(&to_adj).map_err(|e| {
+                Error::Corrupted(format!("Failed to serialize node #{}: {e}", edge.to_id))
+            })?;
             self.btree.insert(pager, adj_root, edge.to_id, &to_bytes)?;
         }
 
@@ -671,16 +692,18 @@ impl SQLExecutor {
                 let mut from_adj = self.load_graph_node_adjacency(pager, adj_root, edge.from_id)?;
                 if from_adj.outgoing_edges.contains(&id) {
                     from_adj.outgoing_edges.retain(|&e| e != id);
-                    let bytes = serde_json::to_vec(&from_adj)
-                        .map_err(|e| Error::Corrupted(format!("Failed to serialize node #{}: {e}", edge.from_id)))?;
+                    let bytes = serde_json::to_vec(&from_adj).map_err(|e| {
+                        Error::Corrupted(format!("Failed to serialize node #{}: {e}", edge.from_id))
+                    })?;
                     self.btree.insert(pager, adj_root, edge.from_id, &bytes)?;
                 }
                 // Remove from to_id
                 let mut to_adj = self.load_graph_node_adjacency(pager, adj_root, edge.to_id)?;
                 if to_adj.incoming_edges.contains(&id) {
                     to_adj.incoming_edges.retain(|&e| e != id);
-                    let bytes = serde_json::to_vec(&to_adj)
-                        .map_err(|e| Error::Corrupted(format!("Failed to serialize node #{}: {e}", edge.to_id)))?;
+                    let bytes = serde_json::to_vec(&to_adj).map_err(|e| {
+                        Error::Corrupted(format!("Failed to serialize node #{}: {e}", edge.to_id))
+                    })?;
                     self.btree.insert(pager, adj_root, edge.to_id, &bytes)?;
                 }
             }
@@ -747,7 +770,8 @@ impl SQLExecutor {
                     };
 
                     if let Some(node_bytes) = self.btree.search(pager, nodes_root, neighbor_id)? {
-                        if let Ok(node) = serde_json::from_slice::<crate::graph::Node>(&node_bytes) {
+                        if let Ok(node) = serde_json::from_slice::<crate::graph::Node>(&node_bytes)
+                        {
                             results.push((node, edge));
                         }
                     }
@@ -817,20 +841,26 @@ impl SQLExecutor {
     ) -> Result<()> {
         if let Some(table) = self.catalog.get_table("__sys_memory") {
             let root_page = table.root_page;
-            let cells = self.btree.scan(pager, root_page)?;
-            for cell in cells {
-                if let Ok(entry) = serde_json::from_slice::<crate::memory::MemoryEntry>(&cell.payload) {
-                    memory_engine.restore_entry(entry);
+            self.btree.scan_with_ref(pager, root_page, |id, payload| {
+                let entry = serde_json::from_slice::<crate::memory::MemoryEntry>(payload)
+                    .map_err(|e| Error::Corrupted(format!("Invalid memory record {id}: {e}")))?;
+                if entry.id != id {
+                    return Err(Error::Corrupted(format!(
+                        "Memory record key {id} does not match payload ID {}",
+                        entry.id
+                    )));
                 }
-            }
+                memory_engine.restore_entry(entry)?;
+                Ok(true)
+            })?;
         }
         Ok(())
     }
 
     /// Return monotonic timestamp in seconds (or sequential increment if within same second)
     pub fn next_temporal_timestamp(&mut self) -> u64 {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         let ts = if now <= self.last_temporal_timestamp {
@@ -861,8 +891,10 @@ impl SQLExecutor {
         ];
         let root_page = self.ensure_system_table(pager, "__sys_time_travel", cols)?;
         let version_id = {
-        let tdef = self.catalog.get_table_mut("__sys_time_travel")
-            .ok_or_else(|| Error::TableNotFound("__sys_time_travel".into()))?;
+            let tdef = self
+                .catalog
+                .get_table_mut("__sys_time_travel")
+                .ok_or_else(|| Error::TableNotFound("__sys_time_travel".into()))?;
             let vid = tdef.next_row_id;
             tdef.next_row_id += 1;
             vid
@@ -877,7 +909,8 @@ impl SQLExecutor {
         };
         let rec_payload = serde_json::to_vec(&record)
             .map_err(|e| Error::Corrupted(format!("Failed to serialize temporal record: {e}")))?;
-        self.btree.insert(pager, root_page, version_id, &rec_payload)?;
+        self.btree
+            .insert(pager, root_page, version_id, &rec_payload)?;
         Ok(())
     }
 
@@ -902,9 +935,11 @@ impl SQLExecutor {
                         && record.valid_to == u64::MAX
                     {
                         record.valid_to = end_time;
-                        let updated_payload = serde_json::to_vec(&record)
-                            .map_err(|e| Error::Corrupted(format!("Failed to serialize temporal record: {e}")))?;
-                        self.btree.insert(pager, root_page, cell.row_id, &updated_payload)?;
+                        let updated_payload = serde_json::to_vec(&record).map_err(|e| {
+                            Error::Corrupted(format!("Failed to serialize temporal record: {e}"))
+                        })?;
+                        self.btree
+                            .insert(pager, root_page, cell.row_id, &updated_payload)?;
                         break;
                     }
                 }
@@ -924,7 +959,7 @@ impl SQLExecutor {
             ColumnDef::new("snapshot", DataType::Blob),
         ];
         let root_page = self.ensure_system_table(pager, "__sys_vector_snapshots", cols)?;
-        let _ = pager.set_vector_index_page(root_page as u32);
+        pager.set_vector_index_page(root_page as u32)?;
 
         for (table_name, index) in &self.vector_indexes {
             let key = {
@@ -937,6 +972,7 @@ impl SQLExecutor {
             let record = VectorSnapshotRecord {
                 table_name: table_name.clone(),
                 snapshot: index.export_snapshot(),
+                table_fingerprint: Some(self.table_fingerprint(pager, table_name)?),
             };
             let payload = serde_json::to_vec(&record)
                 .map_err(|e| Error::Corrupted(format!("Failed to serialize HNSW snapshot: {e}")))?;
@@ -946,21 +982,46 @@ impl SQLExecutor {
     }
 
     /// Automatically warm up and restore in-memory HNSW vector indexes from persisted snapshot or B+Tree tables
+    fn table_fingerprint(&self, pager: &mut Pager, table: &str) -> Result<u32> {
+        let definition = self
+            .catalog
+            .get_table(table)
+            .ok_or_else(|| Error::TableNotFound(table.into()))?;
+        let mut hash = crc32fast::Hasher::new();
+        for cell in self.btree.scan(pager, definition.root_page)? {
+            hash.update(&cell.row_id.to_le_bytes());
+            hash.update(&cell.payload);
+        }
+        Ok(hash.finalize())
+    }
+
+    /// Restore snapshots only when their source rows still match.
     pub fn load_vector_indexes_from_disk(&mut self, pager: &mut Pager) -> Result<()> {
+        self.vector_indexes.clear();
         let mut loaded_tables = HashSet::new();
 
         // 1. Attempt instantaneous O(N) restoration from persistent topology snapshot or header pointer
-        let snap_root = self.catalog.get_table("__sys_vector_snapshots").map(|t| t.root_page)
+        let snap_root = self
+            .catalog
+            .get_table("__sys_vector_snapshots")
+            .map(|t| t.root_page)
             .or_else(|| {
                 let p = pager.vector_index_page();
-                if p != 0 { Some(p as u32) } else { None }
+                if p != 0 { Some(p) } else { None }
             });
         if let Some(root_page) = snap_root {
             if let Ok(cells) = self.btree.scan(pager, root_page) {
                 for cell in cells {
                     if let Ok(rec) = serde_json::from_slice::<VectorSnapshotRecord>(&cell.payload) {
+                        if !self.catalog.table_exists(&rec.table_name)
+                            || rec.table_fingerprint
+                                != Some(self.table_fingerprint(pager, &rec.table_name)?)
+                        {
+                            continue;
+                        }
                         let index = HnswIndex::import_snapshot(rec.snapshot);
-                        self.vector_indexes.insert(rec.table_name.to_lowercase(), index);
+                        self.vector_indexes
+                            .insert(rec.table_name.to_lowercase(), index);
                         loaded_tables.insert(rec.table_name.to_lowercase());
                     }
                 }
@@ -977,8 +1038,10 @@ impl SQLExecutor {
                     let all_col_names = table.column_names();
                     for cell in cells {
                         if let Ok(row) = decode_row(&cell.payload, &all_col_names) {
-                            if let Some(crate::traits::Value::Vector(vec)) = row.values().get(vec_idx) {
-                                let _ = index.insert_vector(cell.row_id, vec);
+                            if let Some(crate::traits::Value::Vector(vec)) =
+                                row.values().get(vec_idx)
+                            {
+                                index.insert_vector(cell.row_id, vec)?;
                             }
                         }
                     }
@@ -1069,7 +1132,9 @@ impl SQLExecutor {
             }
         }
 
-        Ok(Some(crate::vector::PagedHnswIndex::import_header(header, store)))
+        Ok(Some(crate::vector::PagedHnswIndex::import_header(
+            header, store,
+        )))
     }
 
     /// Recursively resolve a WhereExpr into a ResolvedWhereExpr, executing subqueries
@@ -1090,14 +1155,20 @@ impl SQLExecutor {
                 let r = self.resolve_where_expr(pager, right)?;
                 Ok(ResolvedWhereExpr::Or(Box::new(l), Box::new(r)))
             }
-            WhereExpr::InList { column, values, negated } => {
-                Ok(ResolvedWhereExpr::InList {
-                    column: column.clone(),
-                    values: values.clone(),
-                    negated: *negated,
-                })
-            }
-            WhereExpr::InSubquery { column, subquery, negated } => {
+            WhereExpr::InList {
+                column,
+                values,
+                negated,
+            } => Ok(ResolvedWhereExpr::InList {
+                column: column.clone(),
+                values: values.clone(),
+                negated: *negated,
+            }),
+            WhereExpr::InSubquery {
+                column,
+                subquery,
+                negated,
+            } => {
                 let sub_rows = self.query(pager, *subquery.clone())?;
                 let mut values = Vec::new();
                 for r in sub_rows {
@@ -1122,7 +1193,101 @@ impl SQLExecutor {
 
     /// Execute a non-query SQL or Graph command (CREATE, INSERT, etc.)
     pub fn execute(&mut self, pager: &mut Pager, stmt: Statement) -> Result<usize> {
+        if Self::is_mutation(&stmt) {
+            self.atomic_statement(pager, |executor, pager| executor.execute_inner(pager, stmt))
+        } else {
+            self.execute_inner(pager, stmt)
+        }
+    }
+
+    fn is_mutation(stmt: &Statement) -> bool {
+        matches!(
+            stmt,
+            Statement::CreateTable { .. }
+                | Statement::Insert { .. }
+                | Statement::InsertMany { .. }
+                | Statement::Update { .. }
+                | Statement::Delete { .. }
+                | Statement::GraphInsertNode { .. }
+                | Statement::GraphInsertEdge { .. }
+                | Statement::CreateIndex { .. }
+                | Statement::DropTable { .. }
+                | Statement::DropIndex { .. }
+                | Statement::AlterTableAddColumn { .. }
+                | Statement::AlterTableDropColumn { .. }
+                | Statement::AlterTableRenameColumn { .. }
+                | Statement::AlterTableRenameTable { .. }
+                | Statement::CreateView { .. }
+                | Statement::DropView { .. }
+        )
+    }
+
+    pub(crate) fn atomic_statement<T>(
+        &mut self,
+        pager: &mut Pager,
+        operation: impl FnOnce(&mut Self, &mut Pager) -> Result<T>,
+    ) -> Result<T> {
+        let own = !pager.is_in_transaction();
+        let savepoint = format!("__tapirus_statement_{}", pager.savepoint_depth());
+        if own {
+            pager.begin_transaction()?;
+        } else {
+            pager.create_savepoint(&savepoint)?;
+        }
+        match operation(self, pager) {
+            Ok(value) => {
+                let commit = if own {
+                    pager.commit_transaction()
+                } else {
+                    pager.release_savepoint(&savepoint)
+                };
+                if let Err(error) = commit {
+                    if pager.is_in_transaction() {
+                        let _ = pager.rollback_transaction();
+                    }
+                    self.reload_from_pager(pager)?;
+                    return Err(error);
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                if own {
+                    pager.rollback_transaction()?;
+                } else {
+                    pager.rollback_to_savepoint(&savepoint)?;
+                    pager.release_savepoint(&savepoint)?;
+                }
+                self.reload_from_pager(pager)?;
+                Err(error)
+            }
+        }
+    }
+
+    fn execute_inner(&mut self, pager: &mut Pager, stmt: Statement) -> Result<usize> {
         match stmt {
+            Statement::InsertMany {
+                table,
+                columns,
+                rows,
+                conflict_action,
+                returning,
+            } => {
+                let mut affected = 0;
+                let mut returned = Vec::new();
+                for values in rows {
+                    let (count, result) = self.execute_insert(
+                        pager,
+                        table.clone(),
+                        columns.clone(),
+                        values,
+                        conflict_action.clone(),
+                        returning.clone(),
+                    )?;
+                    affected += count;
+                    returned.extend(result);
+                }
+                Ok(affected)
+            }
             Statement::Pragma { key, value } => {
                 let k = key.to_lowercase();
                 if k == "time_travel" || k == "system_versioning" || k == "temporal" {
@@ -1177,11 +1342,16 @@ impl SQLExecutor {
                 conflict_action,
                 returning,
             } => {
-                let (affected, _) = self.execute_insert(pager, table, columns, values, conflict_action, returning)?;
+                let (affected, _) =
+                    self.execute_insert(pager, table, columns, values, conflict_action, returning)?;
                 Ok(affected)
             }
 
-            Statement::GraphInsertNode { id, label, properties } => {
+            Statement::GraphInsertNode {
+                id,
+                label,
+                properties,
+            } => {
                 let node = crate::graph::Node {
                     id,
                     label,
@@ -1200,7 +1370,9 @@ impl SQLExecutor {
                 weight,
                 properties,
             } => {
-                let edge_id = self.graph.add_edge(from_id, to_id, label, weight, properties)?;
+                let edge_id = self
+                    .graph
+                    .add_edge(from_id, to_id, label, weight, properties)?;
                 if let Some(edge) = self.graph.get_edge(edge_id) {
                     let edge_clone = edge.clone();
                     self.persist_graph_edge(pager, &edge_clone)?;
@@ -1214,7 +1386,8 @@ impl SQLExecutor {
                 where_clause,
                 returning,
             } => {
-                let (affected, _) = self.execute_update(pager, table, assignments, where_clause, returning)?;
+                let (affected, _) =
+                    self.execute_update(pager, table, assignments, where_clause, returning)?;
                 Ok(affected)
             }
 
@@ -1233,7 +1406,7 @@ impl SQLExecutor {
             }
 
             Statement::CommitTransaction => {
-                let _ = self.persist_vector_indexes_to_disk(pager);
+                self.persist_vector_indexes_to_disk(pager)?;
                 pager.commit_transaction()?;
                 Ok(0)
             }
@@ -1273,7 +1446,9 @@ impl SQLExecutor {
                 } else {
                     &column
                 };
-                if table_def.column_index(base_col).is_none() && table_def.column_index(&column).is_none() {
+                if table_def.column_index(base_col).is_none()
+                    && table_def.column_index(&column).is_none()
+                {
                     return Err(Error::Corrupted(format!(
                         "Column '{column}' not found in table '{table}' for index '{name}'"
                     )));
@@ -1296,15 +1471,16 @@ impl SQLExecutor {
                             let key = value_to_index_key(&col_val);
                             buckets
                                 .entry(key)
-                                .or_insert_with(IndexBucket::new)
+                                .or_default()
                                 .add_row_id(col_val, cell.row_id);
                         }
                     }
                 }
 
                 for (key, bucket) in buckets {
-                    let idx_payload = serde_json::to_vec(&bucket)
-                        .map_err(|e| Error::Corrupted(format!("Failed to serialize index bucket: {e}")))?;
+                    let idx_payload = serde_json::to_vec(&bucket).map_err(|e| {
+                        Error::Corrupted(format!("Failed to serialize index bucket: {e}"))
+                    })?;
                     self.btree.insert(pager, index_root, key, &idx_payload)?;
                 }
 
@@ -1368,8 +1544,13 @@ impl SQLExecutor {
                 Ok(1)
             }
 
-            Statement::AlterTableRenameColumn { table, old_name, new_name } => {
-                self.catalog.rename_column(pager, &table, &old_name, &new_name)?;
+            Statement::AlterTableRenameColumn {
+                table,
+                old_name,
+                new_name,
+            } => {
+                self.catalog
+                    .rename_column(pager, &table, &old_name, &new_name)?;
                 Ok(1)
             }
 
@@ -1413,7 +1594,9 @@ impl SQLExecutor {
                     }
                 }
                 if self.catalog.table_exists(&name_lower) {
-                    return Err(Error::TableExists(format!("Table with name '{name}' already exists")));
+                    return Err(Error::TableExists(format!(
+                        "Table with name '{name}' already exists"
+                    )));
                 }
 
                 let view_def = crate::sql::catalog::ViewDef::new(name, query_sql);
@@ -1497,7 +1680,8 @@ impl SQLExecutor {
                         }
 
                         let page_count = (total_bytes / pager.page_size()).max(1);
-                        let mut stats = crate::sql::planner::TableStats::new(&tname, total_rows, page_count);
+                        let mut stats =
+                            crate::sql::planner::TableStats::new(&tname, total_rows, page_count);
                         stats.column_distinct = column_distinct;
                         stats.column_nulls = null_map;
                         self.catalog.set_table_stats(&tname, stats);
@@ -1514,17 +1698,44 @@ impl SQLExecutor {
             | Statement::GraphShortestPath { .. }
             | Statement::GraphMatch { .. }
             | Statement::GraphAlgorithm { .. }
-            | Statement::WithCte { .. } => {
-                Err(Error::SqlSyntax(
-                    "Query statement passed to execute(); use query() instead".into(),
-                ))
-            }
+            | Statement::WithCte { .. } => Err(Error::SqlSyntax(
+                "Query statement passed to execute(); use query() instead".into(),
+            )),
         }
     }
 
     /// Execute a query returning rows (SELECT, VECTOR NEAR, EXPLAIN, RETURNING, etc.)
     pub fn query(&mut self, pager: &mut Pager, stmt: Statement) -> Result<Vec<Row>> {
+        if Self::is_mutation(&stmt) {
+            self.atomic_statement(pager, |executor, pager| executor.query_inner(pager, stmt))
+        } else {
+            self.query_inner(pager, stmt)
+        }
+    }
+
+    fn query_inner(&mut self, pager: &mut Pager, stmt: Statement) -> Result<Vec<Row>> {
         match stmt {
+            Statement::InsertMany {
+                table,
+                columns,
+                rows,
+                conflict_action,
+                returning,
+            } => {
+                let mut returned = Vec::new();
+                for values in rows {
+                    let (_, result) = self.execute_insert(
+                        pager,
+                        table.clone(),
+                        columns.clone(),
+                        values,
+                        conflict_action.clone(),
+                        returning.clone(),
+                    )?;
+                    returned.extend(result);
+                }
+                Ok(returned)
+            }
             Statement::Insert {
                 table,
                 columns,
@@ -1532,7 +1743,8 @@ impl SQLExecutor {
                 conflict_action,
                 returning,
             } => {
-                let (_, rows) = self.execute_insert(pager, table, columns, values, conflict_action, returning)?;
+                let (_, rows) =
+                    self.execute_insert(pager, table, columns, values, conflict_action, returning)?;
                 Ok(rows)
             }
             Statement::Update {
@@ -1541,7 +1753,8 @@ impl SQLExecutor {
                 where_clause,
                 returning,
             } => {
-                let (_, rows) = self.execute_update(pager, table, assignments, where_clause, returning)?;
+                let (_, rows) =
+                    self.execute_update(pager, table, assignments, where_clause, returning)?;
                 Ok(rows)
             }
             Statement::Delete {
@@ -1555,9 +1768,10 @@ impl SQLExecutor {
             Statement::WithCte { ctes, main_query } => {
                 self.query_with_cte(pager, ctes, *main_query)
             }
-            Statement::Explain { statement, query_plan } => {
-                self.explain_query_plan(pager, *statement, query_plan)
-            }
+            Statement::Explain {
+                statement,
+                query_plan,
+            } => self.explain_query_plan(pager, *statement, query_plan),
 
             Statement::Select {
                 distinct,
@@ -1573,6 +1787,11 @@ impl SQLExecutor {
                 offset,
                 as_of_timestamp,
             } => {
+                if table.is_empty() {
+                    return Ok(vec![
+                        self.project_row(&Row::new(Vec::new(), Vec::new()), &columns)?,
+                    ]);
+                }
                 if let Some((sub_stmt, alias)) = from_subquery {
                     let mut cte_store = HashMap::new();
                     let sub_rows = self.query(pager, *sub_stmt)?;
@@ -1597,7 +1816,11 @@ impl SQLExecutor {
                 // If target table is a persistent View, evaluate view query and apply outer filters/order/limit
                 if let Some(view_def) = self.catalog.get_view(&table).cloned() {
                     let mut view_stmt = crate::sql::parse_sql(&view_def.query_sql)?;
-                    if let Statement::Select { as_of_timestamp: ref mut view_ts, .. } = view_stmt {
+                    if let Statement::Select {
+                        as_of_timestamp: ref mut view_ts,
+                        ..
+                    } = view_stmt
+                    {
                         *view_ts = as_of_timestamp;
                     }
                     let mut rows = self.query(pager, view_stmt)?;
@@ -1678,8 +1901,14 @@ impl SQLExecutor {
 
                 // Fast Point Lookup Optimization if WHERE matches single Primary Key column equals and no JOIN, ORDER BY, GROUP BY
                 let pk_idx = table_def.primary_key_index();
-                if as_of_timestamp.is_none() && join.is_none() && order_by.is_none() && group_by.is_none() {
-                    if let (Some(pk_col_idx), Some(WhereExpr::Condition(cond))) = (pk_idx, &where_clause) {
+                if as_of_timestamp.is_none()
+                    && join.is_none()
+                    && order_by.is_none()
+                    && group_by.is_none()
+                {
+                    if let (Some(pk_col_idx), Some(WhereExpr::Condition(cond))) =
+                        (pk_idx, &where_clause)
+                    {
                         if cond.op == BinaryOp::Equals {
                             let pk_name = &table_def.columns[pk_col_idx].name;
                             if pk_name.eq_ignore_ascii_case(&cond.column) {
@@ -1687,14 +1916,17 @@ impl SQLExecutor {
                                     if offset.unwrap_or(0) > 0 || limit == Some(0) {
                                         return Ok(Vec::new());
                                     }
-                                    if let Some(payload) = self.btree.search(pager, root_page, target_key as u64)? {
+                                    if let Some(payload) =
+                                        self.btree.search(pager, root_page, target_key as u64)?
+                                    {
                                         let full_row = decode_row(&payload, &all_col_names)?;
                                         let output_col_names = if columns.is_empty() {
                                             all_col_names.clone()
                                         } else {
                                             columns.clone()
                                         };
-                                        let projected = self.project_row(&full_row, &output_col_names)?;
+                                        let projected =
+                                            self.project_row(&full_row, &output_col_names)?;
                                         return Ok(vec![projected]);
                                     } else {
                                         return Ok(Vec::new());
@@ -1706,23 +1938,44 @@ impl SQLExecutor {
                 }
 
                 // Cost-Based Optimizer (CBO) evaluation for Secondary Index vs Sequential Scan
-                if as_of_timestamp.is_none() && join.is_none() && order_by.is_none() && group_by.is_none() {
+                if as_of_timestamp.is_none()
+                    && join.is_none()
+                    && order_by.is_none()
+                    && group_by.is_none()
+                {
                     if let Some(WhereExpr::Condition(cond)) = &where_clause {
                         if cond.op == BinaryOp::Equals {
-                            if let Some(index_def) = self.catalog.find_index_for_column(&table, &cond.column).cloned() {
+                            if let Some(index_def) = self
+                                .catalog
+                                .find_index_for_column(&table, &cond.column)
+                                .cloned()
+                            {
                                 let optimizer = crate::sql::planner::CostOptimizer::new();
-                                let default_stats = crate::sql::planner::TableStats::new(&table, 100, 10);
-                                let stats = self.catalog.get_table_stats(&table).unwrap_or(&default_stats);
+                                let default_stats =
+                                    crate::sql::planner::TableStats::new(&table, 100, 10);
+                                let stats = self
+                                    .catalog
+                                    .get_table_stats(&table)
+                                    .unwrap_or(&default_stats);
                                 let sel = stats.estimate_selectivity(&cond.column, true);
-                                let index_cost = optimizer.estimate_index_scan(stats, &index_def.name, &cond.column, sel);
+                                let index_cost = optimizer.estimate_index_scan(
+                                    stats,
+                                    &index_def.name,
+                                    &cond.column,
+                                    sel,
+                                );
                                 let seq_cost = optimizer.estimate_seq_scan(stats, sel);
 
                                 // Execute Index Scan if Cost-Based Optimizer determines lower or equal cost
                                 if index_cost.total_cost <= seq_cost.total_cost {
                                     let key = value_to_index_key(&cond.value);
                                     let mut matched_row_ids = Vec::new();
-                                    if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                                        if let Ok(bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                                    if let Some(payload) =
+                                        self.btree.search(pager, index_def.root_page, key)?
+                                    {
+                                        if let Ok(bucket) =
+                                            serde_json::from_slice::<IndexBucket>(&payload)
+                                        {
                                             if let Some(rids) = bucket.get_row_ids(&cond.value) {
                                                 matched_row_ids.extend_from_slice(rids);
                                             }
@@ -1737,9 +1990,12 @@ impl SQLExecutor {
                                     let skip_count = offset.unwrap_or(0);
                                     let mut skipped = 0;
                                     for rid in matched_row_ids {
-                                        if let Some(payload) = self.btree.search(pager, root_page, rid)? {
+                                        if let Some(payload) =
+                                            self.btree.search(pager, root_page, rid)?
+                                        {
                                             let full_row = decode_row(&payload, &all_col_names)?;
-                                            let projected = self.project_row(&full_row, &output_col_names)?;
+                                            let projected =
+                                                self.project_row(&full_row, &output_col_names)?;
                                             if distinct && result_rows.contains(&projected) {
                                                 continue;
                                             }
@@ -1763,7 +2019,13 @@ impl SQLExecutor {
                 }
 
                 // Single-Pass Pushdown Aggregation Optimization using VectorizedAccumulator
-                if join.is_none() && order_by.is_none() && group_by.is_none() && as_of_timestamp.is_none() && !distinct && is_aggregate_query(&columns) {
+                if join.is_none()
+                    && order_by.is_none()
+                    && group_by.is_none()
+                    && as_of_timestamp.is_none()
+                    && !distinct
+                    && is_aggregate_query(&columns)
+                {
                     struct PushdownAgg {
                         col_name: String,
                         func: String,
@@ -1786,7 +2048,7 @@ impl SQLExecutor {
                                     table_def.column_index(arg)
                                 };
                                 aggs.push(PushdownAgg {
-                                    col_name: col.clone(),
+                                    col_name: parse_col_and_alias(col).1.unwrap_or(col).to_string(),
                                     func,
                                     col_idx,
                                     is_star,
@@ -1796,7 +2058,7 @@ impl SQLExecutor {
                             }
                         }
                         aggs.push(PushdownAgg {
-                            col_name: col.clone(),
+                            col_name: parse_col_and_alias(col).1.unwrap_or(col).to_string(),
                             func: String::new(),
                             col_idx: table_def.column_index(col),
                             is_star: false,
@@ -1814,37 +2076,42 @@ impl SQLExecutor {
                     }
 
                     let mut row_vals = Vec::with_capacity(all_col_names.len());
-                    self.btree.scan_with_ref(pager, root_page, |_row_id, payload| {
-                        if let Some(ref r_expr) = resolved_where {
-                            let full_row = decode_row(payload, &all_col_names)?;
-                            if !row_matches_resolved(&full_row, r_expr) {
-                                return Ok(true);
-                            }
-                            for agg in &mut aggs {
-                                if agg.is_star {
-                                    agg.acc.count_all += 1;
-                                    agg.acc.count += 1;
-                                } else if let Some(idx) = agg.col_idx {
-                                    if let Some(val) = full_row.values().get(idx) {
-                                        agg.acc.accumulate_values(std::iter::once(val));
+                    self.btree
+                        .scan_with_ref(pager, root_page, |_row_id, payload| {
+                            if let Some(ref r_expr) = resolved_where {
+                                let full_row = decode_row(payload, &all_col_names)?;
+                                if !row_matches_resolved(&full_row, r_expr) {
+                                    return Ok(true);
+                                }
+                                for agg in &mut aggs {
+                                    if agg.is_star {
+                                        agg.acc.count_all += 1;
+                                        agg.acc.count += 1;
+                                    } else if let Some(idx) = agg.col_idx {
+                                        if let Some(val) = full_row.values().get(idx) {
+                                            agg.acc.accumulate_values(std::iter::once(val));
+                                        }
+                                    }
+                                }
+                            } else {
+                                decode_row_values_into_projected(
+                                    payload,
+                                    &needed_mask,
+                                    &mut row_vals,
+                                )?;
+                                for agg in &mut aggs {
+                                    if agg.is_star {
+                                        agg.acc.count_all += 1;
+                                        agg.acc.count += 1;
+                                    } else if let Some(idx) = agg.col_idx {
+                                        if let Some(val) = row_vals.get(idx) {
+                                            agg.acc.accumulate_values(std::iter::once(val));
+                                        }
                                     }
                                 }
                             }
-                        } else {
-                            decode_row_values_into_projected(payload, &needed_mask, &mut row_vals)?;
-                            for agg in &mut aggs {
-                                if agg.is_star {
-                                    agg.acc.count_all += 1;
-                                    agg.acc.count += 1;
-                                } else if let Some(idx) = agg.col_idx {
-                                    if let Some(val) = row_vals.get(idx) {
-                                        agg.acc.accumulate_values(std::iter::once(val));
-                                    }
-                                }
-                            }
-                        }
-                        Ok(true)
-                    })?;
+                            Ok(true)
+                        })?;
 
                     let mut out_cols = Vec::new();
                     let mut out_vals = Vec::new();
@@ -1866,7 +2133,8 @@ impl SQLExecutor {
                 // Table scan left table
                 let mut left_rows = Vec::new();
                 if let Some(ts) = as_of_timestamp {
-                    let is_versioned = table_def.system_versioning || self.default_system_versioning;
+                    let is_versioned =
+                        table_def.system_versioning || self.default_system_versioning;
                     if !is_versioned && self.catalog.get_table("__sys_time_travel").is_none() {
                         return Err(Error::SqlSyntax(format!(
                             "Table '{}' does not have SYSTEM_VERSIONING enabled. Enable with PRAGMA time_travel = ON or CREATE TABLE ... WITH (SYSTEM_VERSIONING = TRUE)",
@@ -1876,7 +2144,8 @@ impl SQLExecutor {
                     if let Some(sys_table) = self.catalog.get_table("__sys_time_travel") {
                         let cells = self.btree.scan(pager, sys_table.root_page)?;
                         for cell in cells {
-                            if let Ok(rec) = serde_json::from_slice::<TemporalRecord>(&cell.payload) {
+                            if let Ok(rec) = serde_json::from_slice::<TemporalRecord>(&cell.payload)
+                            {
                                 if rec.table_name.eq_ignore_ascii_case(&table)
                                     && rec.valid_from <= ts
                                     && rec.valid_to > ts
@@ -1890,8 +2159,8 @@ impl SQLExecutor {
                                     left_rows.push(full_row);
                                 }
                             }
+                        }
                     }
-                }
                 }
 
                 // ── Direct Join Projection Pre-resolution ──
@@ -1933,7 +2202,9 @@ impl SQLExecutor {
                                     let in_r = right_table_def.column_index(col);
                                     match (in_l, in_r) {
                                         (Some(idx), None) => sources.push(JoinOutputCol::Left(idx)),
-                                        (None, Some(idx)) => sources.push(JoinOutputCol::Right(idx)),
+                                        (None, Some(idx)) => {
+                                            sources.push(JoinOutputCol::Right(idx))
+                                        }
                                         _ => {
                                             ok = false;
                                             break;
@@ -1943,7 +2214,9 @@ impl SQLExecutor {
                             }
                             if ok {
                                 let mut mask = vec![false; all_col_names.len()];
-                                if let Some(l_idx) = resolve_table_col_index(&table_def, &jc.left_col) {
+                                if let Some(l_idx) =
+                                    resolve_table_col_index(&table_def, &jc.left_col)
+                                {
                                     if l_idx < mask.len() {
                                         mask[l_idx] = true;
                                     }
@@ -1974,10 +2247,13 @@ impl SQLExecutor {
                 // we bypass the full table scan and hash table construction entirely,
                 // streaming the driving table and performing O(log N) point lookups into the PK B-Tree.
                 if let (Some(jc), Some(sources)) = (join.as_ref(), direct_join_sources.as_ref()) {
-                    if as_of_timestamp.is_none() && where_clause.is_none() && jc.join_type == JoinType::Inner {
+                    if as_of_timestamp.is_none()
+                        && where_clause.is_none()
+                        && jc.join_type == JoinType::Inner
+                    {
                         if let Some(right_table_def) = self.catalog.get_table(&jc.table) {
                             let l_col_idx = resolve_table_col_index(&table_def, &jc.left_col);
-                            let r_col_idx = resolve_table_col_index(&right_table_def, &jc.right_col);
+                            let r_col_idx = resolve_table_col_index(right_table_def, &jc.right_col);
 
                             if let (Some(l_idx), Some(r_idx)) = (l_col_idx, r_col_idx) {
                                 let output_col_shared = Arc::new(columns.clone());
@@ -2000,33 +2276,66 @@ impl SQLExecutor {
                                     }
 
                                     let mut driving_tuples: Vec<(i64, Row)> = Vec::new();
-                                    self.btree.scan_with(pager, right_table_def.root_page, |r_cell| {
-                                        let r_row = decode_row_shared_projected(&r_cell.payload, &right_col_shared, &right_mask)?;
-                                        if let Some(Value::Integer(k)) = r_row.values().get(r_idx) {
-                                            driving_tuples.push((*k, r_row));
-                                        }
-                                        Ok(true)
-                                    })?;
+                                    self.btree.scan_with(
+                                        pager,
+                                        right_table_def.root_page,
+                                        |r_cell| {
+                                            let r_row = decode_row_shared_projected(
+                                                &r_cell.payload,
+                                                &right_col_shared,
+                                                &right_mask,
+                                            )?;
+                                            if let Some(Value::Integer(k)) =
+                                                r_row.values().get(r_idx)
+                                            {
+                                                driving_tuples.push((*k, r_row));
+                                            }
+                                            Ok(true)
+                                        },
+                                    )?;
 
                                     let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
-                                    let mut final_rows = Vec::with_capacity(driving_tuples.len().min(limit.unwrap_or(usize::MAX)));
+                                    let mut final_rows = Vec::with_capacity(
+                                        driving_tuples.len().min(limit.unwrap_or(usize::MAX)),
+                                    );
                                     let mut skipped = 0;
 
                                     for (k, r_row) in driving_tuples {
-                                        if let Some(l_payload) = self.btree.search(pager, root_page, k as u64)? {
+                                        if let Some(l_payload) =
+                                            self.btree.search(pager, root_page, k as u64)?
+                                        {
                                             if skipped < skip_count {
                                                 skipped += 1;
                                                 continue;
                                             }
-                                            let l_row = decode_row_shared_projected(&l_payload, &left_col_shared, left_mask)?;
+                                            let l_row = decode_row_shared_projected(
+                                                &l_payload,
+                                                &left_col_shared,
+                                                left_mask,
+                                            )?;
                                             let mut vals = Vec::with_capacity(sources.len());
                                             for src in sources {
                                                 match src {
-                                                    JoinOutputCol::Left(idx) => vals.push(l_row.values().get(*idx).cloned().unwrap_or(Value::Null)),
-                                                    JoinOutputCol::Right(idx) => vals.push(r_row.values().get(*idx).cloned().unwrap_or(Value::Null)),
+                                                    JoinOutputCol::Left(idx) => vals.push(
+                                                        l_row
+                                                            .values()
+                                                            .get(*idx)
+                                                            .cloned()
+                                                            .unwrap_or(Value::Null),
+                                                    ),
+                                                    JoinOutputCol::Right(idx) => vals.push(
+                                                        r_row
+                                                            .values()
+                                                            .get(*idx)
+                                                            .cloned()
+                                                            .unwrap_or(Value::Null),
+                                                    ),
                                                 }
                                             }
-                                            final_rows.push(Row::with_shared_columns(output_col_shared.clone(), vals));
+                                            final_rows.push(Row::with_shared_columns(
+                                                output_col_shared.clone(),
+                                                vals,
+                                            ));
                                             if let Some(lim) = limit {
                                                 if final_rows.len() >= lim {
                                                     break;
@@ -2044,7 +2353,11 @@ impl SQLExecutor {
                                     let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
                                     let mut driving_tuples: Vec<(i64, Row)> = Vec::new();
                                     self.btree.scan_with(pager, root_page, |l_cell| {
-                                        let l_row = decode_row_shared_projected(&l_cell.payload, &left_col_shared, left_mask)?;
+                                        let l_row = decode_row_shared_projected(
+                                            &l_cell.payload,
+                                            &left_col_shared,
+                                            left_mask,
+                                        )?;
                                         if let Some(Value::Integer(k)) = l_row.values().get(l_idx) {
                                             driving_tuples.push((*k, l_row));
                                         }
@@ -2061,24 +2374,49 @@ impl SQLExecutor {
                                         }
                                     }
 
-                                    let mut final_rows = Vec::with_capacity(driving_tuples.len().min(limit.unwrap_or(usize::MAX)));
+                                    let mut final_rows = Vec::with_capacity(
+                                        driving_tuples.len().min(limit.unwrap_or(usize::MAX)),
+                                    );
                                     let mut skipped = 0;
 
                                     for (k, l_row) in driving_tuples {
-                                        if let Some(r_payload) = self.btree.search(pager, right_table_def.root_page, k as u64)? {
+                                        if let Some(r_payload) = self.btree.search(
+                                            pager,
+                                            right_table_def.root_page,
+                                            k as u64,
+                                        )? {
                                             if skipped < skip_count {
                                                 skipped += 1;
                                                 continue;
                                             }
-                                            let r_row = decode_row_shared_projected(&r_payload, &right_col_shared, &right_mask)?;
+                                            let r_row = decode_row_shared_projected(
+                                                &r_payload,
+                                                &right_col_shared,
+                                                &right_mask,
+                                            )?;
                                             let mut vals = Vec::with_capacity(sources.len());
                                             for src in sources {
                                                 match src {
-                                                    JoinOutputCol::Left(idx) => vals.push(l_row.values().get(*idx).cloned().unwrap_or(Value::Null)),
-                                                    JoinOutputCol::Right(idx) => vals.push(r_row.values().get(*idx).cloned().unwrap_or(Value::Null)),
+                                                    JoinOutputCol::Left(idx) => vals.push(
+                                                        l_row
+                                                            .values()
+                                                            .get(*idx)
+                                                            .cloned()
+                                                            .unwrap_or(Value::Null),
+                                                    ),
+                                                    JoinOutputCol::Right(idx) => vals.push(
+                                                        r_row
+                                                            .values()
+                                                            .get(*idx)
+                                                            .cloned()
+                                                            .unwrap_or(Value::Null),
+                                                    ),
                                                 }
                                             }
-                                            final_rows.push(Row::with_shared_columns(output_col_shared.clone(), vals));
+                                            final_rows.push(Row::with_shared_columns(
+                                                output_col_shared.clone(),
+                                                vals,
+                                            ));
                                             if let Some(lim) = limit {
                                                 if final_rows.len() >= lim {
                                                     break;
@@ -2095,7 +2433,11 @@ impl SQLExecutor {
                 }
 
                 if as_of_timestamp.is_none() {
-                    let can_early_terminate = join.is_none() && order_by.is_none() && group_by.is_none() && !distinct && !is_aggregate_query(&columns);
+                    let can_early_terminate = join.is_none()
+                        && order_by.is_none()
+                        && group_by.is_none()
+                        && !distinct
+                        && !is_aggregate_query(&columns);
                     let needed_rows = if can_early_terminate {
                         limit.map(|lim| offset.unwrap_or(0).saturating_add(lim))
                     } else {
@@ -2137,7 +2479,8 @@ impl SQLExecutor {
                     let right_col_shared = Arc::new(right_col_names.clone());
 
                     // Precompute merged column names once
-                    let mut merged_cols_template = Vec::with_capacity(all_col_names.len() + right_col_names.len());
+                    let mut merged_cols_template =
+                        Vec::with_capacity(all_col_names.len() + right_col_names.len());
                     for c in &all_col_names {
                         merged_cols_template.push(format!("{}.{}", table, c));
                     }
@@ -2148,19 +2491,23 @@ impl SQLExecutor {
 
                     // Resolve join column indices (supporting qualified names like 'users.id' and 'orders.user_id')
                     let l_col_idx = resolve_table_col_index(&table_def, &join_clause.left_col);
-                    let r_col_idx = resolve_table_col_index(right_table_def, &join_clause.right_col);
+                    let r_col_idx =
+                        resolve_table_col_index(right_table_def, &join_clause.right_col);
 
                     // Build hash table on right (smaller) table: O(M)
                     let mut right_rows = Vec::new();
                     if let Some(ts) = as_of_timestamp {
                         if let Some(sys_table) = self.catalog.get_table("__sys_time_travel") {
                             self.btree.scan_with(pager, sys_table.root_page, |cell| {
-                                if let Ok(rec) = serde_json::from_slice::<TemporalRecord>(&cell.payload) {
+                                if let Ok(rec) =
+                                    serde_json::from_slice::<TemporalRecord>(&cell.payload)
+                                {
                                     if rec.table_name.eq_ignore_ascii_case(&join_clause.table)
                                         && rec.valid_from <= ts
                                         && rec.valid_to > ts
                                     {
-                                        let r_row = decode_row_shared(&rec.payload, &right_col_shared)?;
+                                        let r_row =
+                                            decode_row_shared(&rec.payload, &right_col_shared)?;
                                         right_rows.push(r_row);
                                     }
                                 }
@@ -2187,22 +2534,33 @@ impl SQLExecutor {
                             None
                         };
 
-                        self.btree.scan_with(pager, right_table_def.root_page, |r_cell| {
-                            let r_row = if let Some(ref mask) = right_mask {
-                                decode_row_shared_projected(&r_cell.payload, &right_col_shared, mask)?
-                            } else {
-                                decode_row_shared(&r_cell.payload, &right_col_shared)?
-                            };
-                            right_rows.push(r_row);
-                            Ok(true)
-                        })?;
+                        self.btree
+                            .scan_with(pager, right_table_def.root_page, |r_cell| {
+                                let r_row = if let Some(ref mask) = right_mask {
+                                    decode_row_shared_projected(
+                                        &r_cell.payload,
+                                        &right_col_shared,
+                                        mask,
+                                    )?
+                                } else {
+                                    decode_row_shared(&r_cell.payload, &right_col_shared)?
+                                };
+                                right_rows.push(r_row);
+                                Ok(true)
+                            })?;
                     }
 
                     // Check whether join key is an integer column for fast u64-keyed HashMap
-                    let all_int_keys = r_col_idx.map_or(false, |idx| {
-                        right_rows.first().and_then(|r| r.values().get(idx)).map_or(false, |v| matches!(v, Value::Integer(_)))
-                    }) && l_col_idx.map_or(false, |idx| {
-                        left_rows.first().and_then(|l| l.values().get(idx)).map_or(false, |v| matches!(v, Value::Integer(_)))
+                    let all_int_keys = r_col_idx.is_some_and(|idx| {
+                        right_rows
+                            .first()
+                            .and_then(|r| r.values().get(idx))
+                            .is_some_and(|v| matches!(v, Value::Integer(_)))
+                    }) && l_col_idx.is_some_and(|idx| {
+                        left_rows
+                            .first()
+                            .and_then(|l| l.values().get(idx))
+                            .is_some_and(|v| matches!(v, Value::Integer(_)))
                     });
 
                     let is_right_or_full = join_clause.join_type == JoinType::Right
@@ -2214,7 +2572,10 @@ impl SQLExecutor {
                         let r_idx_col = r_col_idx.unwrap();
                         let l_idx_col = l_col_idx.unwrap();
                         let mut int_hash: HashMap<i64, IntEntry, FastIntBuildHasher> =
-                            HashMap::with_capacity_and_hasher(right_rows.len(), FastIntBuildHasher::default());
+                            HashMap::with_capacity_and_hasher(
+                                right_rows.len(),
+                                FastIntBuildHasher::default(),
+                            );
 
                         for (r_idx, r_row) in right_rows.iter().enumerate() {
                             if let Some(Value::Integer(k)) = r_row.values().get(r_idx_col) {
@@ -2236,7 +2597,8 @@ impl SQLExecutor {
                         if let Some(ref direct_sources) = direct_join_sources {
                             // ── Direct Join Projection: Zero intermediate Row allocations ──
                             let output_col_shared = Arc::new(columns.clone());
-                            let mut final_rows = Vec::with_capacity(left_rows.len().min(right_rows.len() * 2));
+                            let mut final_rows =
+                                Vec::with_capacity(left_rows.len().min(right_rows.len() * 2));
 
                             for l_row in &left_rows {
                                 let mut matched = false;
@@ -2253,30 +2615,57 @@ impl SQLExecutor {
                                             for src in direct_sources {
                                                 match src {
                                                     JoinOutputCol::Left(idx) => {
-                                                        vals.push(l_row.values().get(*idx).cloned().unwrap_or(Value::Null));
+                                                        vals.push(
+                                                            l_row
+                                                                .values()
+                                                                .get(*idx)
+                                                                .cloned()
+                                                                .unwrap_or(Value::Null),
+                                                        );
                                                     }
                                                     JoinOutputCol::Right(idx) => {
-                                                        vals.push(r_row.values().get(*idx).cloned().unwrap_or(Value::Null));
+                                                        vals.push(
+                                                            r_row
+                                                                .values()
+                                                                .get(*idx)
+                                                                .cloned()
+                                                                .unwrap_or(Value::Null),
+                                                        );
                                                     }
                                                 }
                                             }
-                                            final_rows.push(Row::with_shared_columns(output_col_shared.clone(), vals));
+                                            final_rows.push(Row::with_shared_columns(
+                                                output_col_shared.clone(),
+                                                vals,
+                                            ));
                                         }
                                     }
                                 }
-                                if !matched && (join_clause.join_type == JoinType::Left || join_clause.is_left) {
+                                if !matched
+                                    && (join_clause.join_type == JoinType::Left
+                                        || join_clause.is_left)
+                                {
                                     let mut vals = Vec::with_capacity(direct_sources.len());
                                     for src in direct_sources {
                                         match src {
                                             JoinOutputCol::Left(idx) => {
-                                                vals.push(l_row.values().get(*idx).cloned().unwrap_or(Value::Null));
+                                                vals.push(
+                                                    l_row
+                                                        .values()
+                                                        .get(*idx)
+                                                        .cloned()
+                                                        .unwrap_or(Value::Null),
+                                                );
                                             }
                                             JoinOutputCol::Right(_) => {
                                                 vals.push(Value::Null);
                                             }
                                         }
                                     }
-                                    final_rows.push(Row::with_shared_columns(output_col_shared.clone(), vals));
+                                    final_rows.push(Row::with_shared_columns(
+                                        output_col_shared.clone(),
+                                        vals,
+                                    ));
                                 }
                             }
 
@@ -2326,7 +2715,9 @@ impl SQLExecutor {
                                     }
                                 }
                             }
-                            if !matched && (join_clause.join_type == JoinType::Left || join_clause.is_left) {
+                            if !matched
+                                && (join_clause.join_type == JoinType::Left || join_clause.is_left)
+                            {
                                 let mut merged_vals = Vec::with_capacity(
                                     l_row.values().len() + right_table_def.columns.len(),
                                 );
@@ -2399,21 +2790,35 @@ impl SQLExecutor {
                                 }
                             }
 
-                            if !matched && (join_clause.join_type == JoinType::Left || join_clause.join_type == JoinType::Full) {
-                                let mut merged_vals = Vec::with_capacity(l_row.values().len() + right_col_names.len());
+                            if !matched
+                                && (join_clause.join_type == JoinType::Left
+                                    || join_clause.join_type == JoinType::Full)
+                            {
+                                let mut merged_vals = Vec::with_capacity(
+                                    l_row.values().len() + right_col_names.len(),
+                                );
                                 merged_vals.extend_from_slice(l_row.values());
-                                merged_vals.resize(merged_vals.len() + right_col_names.len(), Value::Null);
-                                joined_rows.push(Row::with_shared_columns(merged_cols_shared.clone(), merged_vals));
+                                merged_vals
+                                    .resize(merged_vals.len() + right_col_names.len(), Value::Null);
+                                joined_rows.push(Row::with_shared_columns(
+                                    merged_cols_shared.clone(),
+                                    merged_vals,
+                                ));
                             }
                         }
 
                         if is_right_or_full {
                             for (r_idx, r_row) in right_rows.iter().enumerate() {
                                 if !matched_right_indices.contains(&r_idx) {
-                                    let mut merged_vals = Vec::with_capacity(all_col_names.len() + right_col_names.len());
+                                    let mut merged_vals = Vec::with_capacity(
+                                        all_col_names.len() + right_col_names.len(),
+                                    );
                                     merged_vals.resize(all_col_names.len(), Value::Null);
                                     merged_vals.extend_from_slice(r_row.values());
-                                    joined_rows.push(Row::with_shared_columns(merged_cols_shared.clone(), merged_vals));
+                                    joined_rows.push(Row::with_shared_columns(
+                                        merged_cols_shared.clone(),
+                                        merged_vals,
+                                    ));
                                 }
                             }
                         }
@@ -2431,7 +2836,8 @@ impl SQLExecutor {
                             .iter()
                             .map(|c| row.get_value(c).cloned().unwrap_or(Value::Null))
                             .collect();
-                        let hash_key: Vec<HashableValue> = key.iter().map(HashableValue::from).collect();
+                        let hash_key: Vec<HashableValue> =
+                            key.iter().map(HashableValue::from).collect();
                         if let Some(&pos) = group_map.get(&hash_key) {
                             groups[pos].1.push(row);
                         } else {
@@ -2468,7 +2874,11 @@ impl SQLExecutor {
                                 g_cols.push(col.clone());
                                 g_vals.push(key[pos].clone());
                             } else {
-                                let val = g_rows.first().and_then(|r| r.get_value(col)).cloned().unwrap_or(Value::Null);
+                                let val = g_rows
+                                    .first()
+                                    .and_then(|r| r.get_value(col))
+                                    .cloned()
+                                    .unwrap_or(Value::Null);
                                 g_cols.push(col.clone());
                                 g_vals.push(val);
                             }
@@ -2495,12 +2905,13 @@ impl SQLExecutor {
                                 let func = &upper[..open_p];
                                 let arg = col[open_p + 1..close_p].trim();
                                 let computed = compute_aggregate(func, arg, &left_rows);
-                                agg_cols.push(col.clone());
+                                agg_cols
+                                    .push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
                                 agg_vals.push(computed);
                                 continue;
                             }
                         }
-                        agg_cols.push(col.clone());
+                        agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
                         agg_vals.push(Value::Null);
                     }
 
@@ -2548,7 +2959,11 @@ impl SQLExecutor {
                             all_matched = false;
                             break;
                         }
-                        if let Some(pos) = first.columns().iter().position(|c| col_name_matches(c, col)) {
+                        if let Some(pos) = first
+                            .columns()
+                            .iter()
+                            .position(|c| col_name_matches(c, col))
+                        {
                             indices.push(pos);
                         } else {
                             all_matched = false;
@@ -2623,10 +3038,18 @@ impl SQLExecutor {
                     let mut used_index = false;
                     if let ResolvedWhereExpr::Condition(cond) = &resolved {
                         if cond.op == BinaryOp::Equals {
-                            if let Some(index_def) = self.catalog.find_index_for_column(&table, &cond.column).cloned() {
+                            if let Some(index_def) = self
+                                .catalog
+                                .find_index_for_column(&table, &cond.column)
+                                .cloned()
+                            {
                                 let key = value_to_index_key(&cond.value);
-                                if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                                    if let Ok(bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                                if let Some(payload) =
+                                    self.btree.search(pager, index_def.root_page, key)?
+                                {
+                                    if let Ok(bucket) =
+                                        serde_json::from_slice::<IndexBucket>(&payload)
+                                    {
                                         if let Some(rids) = bucket.get_row_ids(&cond.value) {
                                             for &rid in rids {
                                                 matched.insert(rid);
@@ -2656,7 +3079,12 @@ impl SQLExecutor {
 
                 let mut rows = Vec::new();
                 if let Some(index) = self.vector_indexes.get(&table.to_lowercase()) {
-                    let neighbors = index.search_knn_filtered(&query_vector, top_k, DistanceMetric::Cosine, candidate_ids.as_ref())?;
+                    let neighbors = index.search_knn_filtered(
+                        &query_vector,
+                        top_k,
+                        DistanceMetric::Cosine,
+                        candidate_ids.as_ref(),
+                    )?;
                     for (row_id, _) in neighbors {
                         if let Some(payload) = self.btree.search(pager, root_page, row_id)? {
                             let full_row = decode_row(&payload, &all_col_names)?;
@@ -2676,14 +3104,19 @@ impl SQLExecutor {
                                 }
                             }
                             if let Ok(full_row) = decode_row(&cell.payload, &all_col_names) {
-                                if let Some(crate::traits::Value::Vector(v)) = full_row.values().get(vec_idx) {
+                                if let Some(crate::traits::Value::Vector(v)) =
+                                    full_row.values().get(vec_idx)
+                                {
                                     let dist = crate::vector::cosine_distance(&query_vector, v);
-                                    let projected = self.project_row(&full_row, &output_col_names)?;
+                                    let projected =
+                                        self.project_row(&full_row, &output_col_names)?;
                                     scored_rows.push((dist, projected));
                                 }
                             }
                         }
-                        scored_rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                        scored_rows.sort_by(|a, b| {
+                            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                        });
                         for (_, row) in scored_rows.into_iter().take(top_k) {
                             rows.push(row);
                         }
@@ -2732,12 +3165,15 @@ impl SQLExecutor {
 
                 if let Some(start_node) = self.graph.get_node(start_id) {
                     visited.insert(start_id);
-                    rows.push(Row::new(cols.clone(), vec![
-                        Value::Integer(start_node.id as i64),
-                        Value::Text(start_node.label.clone()),
-                        Value::Text(start_node.properties.clone()),
-                        Value::Integer(0),
-                    ]));
+                    rows.push(Row::new(
+                        cols.clone(),
+                        vec![
+                            Value::Integer(start_node.id as i64),
+                            Value::Text(start_node.label.clone()),
+                            Value::Text(start_node.properties.clone()),
+                            Value::Integer(0),
+                        ],
+                    ));
                     queue.push_back((start_id, 0usize));
                 }
 
@@ -2745,7 +3181,9 @@ impl SQLExecutor {
                     if depth >= max_depth {
                         continue;
                     }
-                    let neighbors = self.graph.neighbor_refs(curr_id, direction, label.as_deref());
+                    let neighbors = self
+                        .graph
+                        .neighbor_refs(curr_id, direction, label.as_deref());
                     for (neighbor_node, edge) in neighbors {
                         if visited.contains(&neighbor_node.id) {
                             continue;
@@ -2777,29 +3215,31 @@ impl SQLExecutor {
                             ];
 
                             // Extract JSON properties from neighbor_node
-                            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&neighbor_node.properties) {
-                                if let serde_json::Value::Object(map) = json_val {
-                                    for (k, v) in map {
-                                        let db_val = match v {
-                                            serde_json::Value::Number(n) => {
-                                                if let Some(i) = n.as_i64() {
-                                                    Value::Integer(i)
-                                                } else if let Some(f) = n.as_f64() {
-                                                    Value::Real(f)
-                                                } else {
-                                                    Value::Null
-                                                }
+                            if let Ok(serde_json::Value::Object(map)) =
+                                serde_json::from_str::<serde_json::Value>(&neighbor_node.properties)
+                            {
+                                for (k, v) in map {
+                                    let db_val = match v {
+                                        serde_json::Value::Number(n) => {
+                                            if let Some(i) = n.as_i64() {
+                                                Value::Integer(i)
+                                            } else if let Some(f) = n.as_f64() {
+                                                Value::Real(f)
+                                            } else {
+                                                Value::Null
                                             }
-                                            serde_json::Value::String(s) => Value::Text(s),
-                                            serde_json::Value::Bool(b) => Value::Integer(if b { 1 } else { 0 }),
-                                            serde_json::Value::Null => Value::Null,
-                                            other => Value::Text(other.to_string()),
-                                        };
-                                        test_cols.push(k.clone());
-                                        test_cols.push(format!("target.{k}"));
-                                        test_vals.push(db_val.clone());
-                                        test_vals.push(db_val);
-                                    }
+                                        }
+                                        serde_json::Value::String(s) => Value::Text(s),
+                                        serde_json::Value::Bool(b) => {
+                                            Value::Integer(if b { 1 } else { 0 })
+                                        }
+                                        serde_json::Value::Null => Value::Null,
+                                        other => Value::Text(other.to_string()),
+                                    };
+                                    test_cols.push(k.clone());
+                                    test_cols.push(format!("target.{k}"));
+                                    test_vals.push(db_val.clone());
+                                    test_vals.push(db_val);
                                 }
                             }
 
@@ -2810,12 +3250,15 @@ impl SQLExecutor {
                         }
 
                         if visited.insert(neighbor_node.id) {
-                            rows.push(Row::new(cols.clone(), vec![
-                                Value::Integer(neighbor_node.id as i64),
-                                Value::Text(neighbor_node.label.clone()),
-                                Value::Text(neighbor_node.properties.clone()),
-                                Value::Integer((depth + 1) as i64),
-                            ]));
+                            rows.push(Row::new(
+                                cols.clone(),
+                                vec![
+                                    Value::Integer(neighbor_node.id as i64),
+                                    Value::Text(neighbor_node.label.clone()),
+                                    Value::Text(neighbor_node.properties.clone()),
+                                    Value::Integer((depth + 1) as i64),
+                                ],
+                            ));
                             queue.push_back((neighbor_node.id, depth + 1));
                         }
                     }
@@ -2833,16 +3276,21 @@ impl SQLExecutor {
                     "total_cost".to_string(),
                 ];
                 let mut rows = Vec::new();
-                if let Some((path, total_cost)) = self.graph.dijkstra_shortest_path(start_id, end_id) {
+                if let Some((path, total_cost)) =
+                    self.graph.dijkstra_shortest_path(start_id, end_id)
+                {
                     for (step_idx, edge) in path.into_iter().enumerate() {
-                        rows.push(Row::new(cols.clone(), vec![
-                            Value::Integer((step_idx + 1) as i64),
-                            Value::Integer(edge.from_id as i64),
-                            Value::Integer(edge.to_id as i64),
-                            Value::Text(edge.label),
-                            Value::Real(edge.weight as f64),
-                            Value::Real(total_cost as f64),
-                        ]));
+                        rows.push(Row::new(
+                            cols.clone(),
+                            vec![
+                                Value::Integer((step_idx + 1) as i64),
+                                Value::Integer(edge.from_id as i64),
+                                Value::Integer(edge.to_id as i64),
+                                Value::Text(edge.label),
+                                Value::Real(edge.weight as f64),
+                                Value::Real(total_cost as f64),
+                            ],
+                        ));
                     }
                 }
                 Ok(rows)
@@ -2938,44 +3386,52 @@ impl SQLExecutor {
                     test_vals.push(Value::Real(edge.weight as f64));
 
                     // Parse JSON properties for source node
-                    if let Ok(json_src) = serde_json::from_str::<serde_json::Value>(&source_node.properties) {
-                        if let serde_json::Value::Object(map) = json_src {
-                            for (k, v) in map {
-                                let db_val = match v {
-                                    serde_json::Value::Number(n) => {
-                                        if let Some(i) = n.as_i64() { Value::Integer(i) }
-                                        else if let Some(f) = n.as_f64() { Value::Real(f) }
-                                        else { Value::Null }
+                    if let Ok(serde_json::Value::Object(map)) =
+                        serde_json::from_str::<serde_json::Value>(&source_node.properties)
+                    {
+                        for (k, v) in map {
+                            let db_val = match v {
+                                serde_json::Value::Number(n) => {
+                                    if let Some(i) = n.as_i64() {
+                                        Value::Integer(i)
+                                    } else if let Some(f) = n.as_f64() {
+                                        Value::Real(f)
+                                    } else {
+                                        Value::Null
                                     }
-                                    serde_json::Value::String(s) => Value::Text(s),
-                                    serde_json::Value::Bool(b) => Value::Integer(if b { 1 } else { 0 }),
-                                    serde_json::Value::Null => Value::Null,
-                                    other => Value::Text(other.to_string()),
-                                };
-                                test_cols.push(format!("{source_var}.{k}"));
-                                test_vals.push(db_val);
-                            }
+                                }
+                                serde_json::Value::String(s) => Value::Text(s),
+                                serde_json::Value::Bool(b) => Value::Integer(if b { 1 } else { 0 }),
+                                serde_json::Value::Null => Value::Null,
+                                other => Value::Text(other.to_string()),
+                            };
+                            test_cols.push(format!("{source_var}.{k}"));
+                            test_vals.push(db_val);
                         }
                     }
 
                     // Parse JSON properties for target node
-                    if let Ok(json_tgt) = serde_json::from_str::<serde_json::Value>(&target_node.properties) {
-                        if let serde_json::Value::Object(map) = json_tgt {
-                            for (k, v) in map {
-                                let db_val = match v {
-                                    serde_json::Value::Number(n) => {
-                                        if let Some(i) = n.as_i64() { Value::Integer(i) }
-                                        else if let Some(f) = n.as_f64() { Value::Real(f) }
-                                        else { Value::Null }
+                    if let Ok(serde_json::Value::Object(map)) =
+                        serde_json::from_str::<serde_json::Value>(&target_node.properties)
+                    {
+                        for (k, v) in map {
+                            let db_val = match v {
+                                serde_json::Value::Number(n) => {
+                                    if let Some(i) = n.as_i64() {
+                                        Value::Integer(i)
+                                    } else if let Some(f) = n.as_f64() {
+                                        Value::Real(f)
+                                    } else {
+                                        Value::Null
                                     }
-                                    serde_json::Value::String(s) => Value::Text(s),
-                                    serde_json::Value::Bool(b) => Value::Integer(if b { 1 } else { 0 }),
-                                    serde_json::Value::Null => Value::Null,
-                                    other => Value::Text(other.to_string()),
-                                };
-                                test_cols.push(format!("{target_var}.{k}"));
-                                test_vals.push(db_val);
-                            }
+                                }
+                                serde_json::Value::String(s) => Value::Text(s),
+                                serde_json::Value::Bool(b) => Value::Integer(if b { 1 } else { 0 }),
+                                serde_json::Value::Null => Value::Null,
+                                other => Value::Text(other.to_string()),
+                            };
+                            test_cols.push(format!("{target_var}.{k}"));
+                            test_vals.push(db_val);
                         }
                     }
 
@@ -2997,11 +3453,20 @@ impl SQLExecutor {
                             row_vals.push(Value::Integer(target_node.id as i64));
                             row_vals.push(Value::Text(target_node.label.clone()));
                         } else if ret_col == &source_var {
-                            row_vals.push(Value::Text(format!("(:{} {{id: {}, properties: {}}})", source_node.label, source_node.id, source_node.properties)));
+                            row_vals.push(Value::Text(format!(
+                                "(:{} {{id: {}, properties: {}}})",
+                                source_node.label, source_node.id, source_node.properties
+                            )));
                         } else if ret_col == &target_var {
-                            row_vals.push(Value::Text(format!("(:{} {{id: {}, properties: {}}})", target_node.label, target_node.id, target_node.properties)));
+                            row_vals.push(Value::Text(format!(
+                                "(:{} {{id: {}, properties: {}}})",
+                                target_node.label, target_node.id, target_node.properties
+                            )));
                         } else if rel_var.as_ref() == Some(ret_col) {
-                            row_vals.push(Value::Text(format!("[:{} {{id: {}, weight: {}}}]", edge.label, edge.id, edge.weight)));
+                            row_vals.push(Value::Text(format!(
+                                "[:{} {{id: {}, weight: {}}}]",
+                                edge.label, edge.id, edge.weight
+                            )));
                         } else if let Some(val) = test_row.get_value(ret_col) {
                             row_vals.push(val.clone());
                         } else {
@@ -3015,86 +3480,142 @@ impl SQLExecutor {
                 Ok(rows)
             }
 
-            Statement::GraphAlgorithm { algorithm, options } => {
-                match algorithm.as_str() {
-                    "PAGERANK" => {
-                        let damping: f32 = options.get("damping").and_then(|v| v.parse().ok()).unwrap_or(0.85);
-                        let iterations: usize = options.get("iterations").and_then(|v| v.parse().ok()).unwrap_or(20);
-                        let tol: f32 = options.get("tolerance").and_then(|v| v.parse().ok()).unwrap_or(1e-4);
-                        let ranks = self.graph.pagerank(damping, iterations, tol);
+            Statement::GraphAlgorithm { algorithm, options } => match algorithm.as_str() {
+                "PAGERANK" => {
+                    let damping: f32 = options
+                        .get("damping")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0.85);
+                    let iterations: usize = options
+                        .get("iterations")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(20);
+                    let tol: f32 = options
+                        .get("tolerance")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(1e-4);
+                    let ranks = self.graph.pagerank(damping, iterations, tol);
 
-                        let cols = vec!["node_id".to_string(), "label".to_string(), "pagerank".to_string()];
-                        let mut rows = Vec::new();
-                        let mut sorted: Vec<(u64, f32)> = ranks.into_iter().collect();
-                        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    let cols = vec![
+                        "node_id".to_string(),
+                        "label".to_string(),
+                        "pagerank".to_string(),
+                    ];
+                    let mut rows = Vec::new();
+                    let mut sorted: Vec<(u64, f32)> = ranks.into_iter().collect();
+                    sorted
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-                        for (id, rank) in sorted {
-                            let label = self.graph.get_node(id).map(|n| n.label.clone()).unwrap_or_default();
-                            rows.push(Row::new(cols.clone(), vec![
+                    for (id, rank) in sorted {
+                        let label = self
+                            .graph
+                            .get_node(id)
+                            .map(|n| n.label.clone())
+                            .unwrap_or_default();
+                        rows.push(Row::new(
+                            cols.clone(),
+                            vec![
                                 Value::Integer(id as i64),
                                 Value::Text(label),
                                 Value::Real(rank as f64),
-                            ]));
-                        }
-                        Ok(rows)
+                            ],
+                        ));
                     }
-                    "CONNECTED_COMPONENTS" | "COMPONENTS" | "WCC" => {
-                        let components = self.graph.connected_components();
-                        let cols = vec!["node_id".to_string(), "label".to_string(), "component_id".to_string()];
-                        let mut rows = Vec::new();
-                        let mut sorted: Vec<(u64, usize)> = components.into_iter().collect();
-                        sorted.sort_by_key(|&(id, comp)| (comp, id));
+                    Ok(rows)
+                }
+                "CONNECTED_COMPONENTS" | "COMPONENTS" | "WCC" => {
+                    let components = self.graph.connected_components();
+                    let cols = vec![
+                        "node_id".to_string(),
+                        "label".to_string(),
+                        "component_id".to_string(),
+                    ];
+                    let mut rows = Vec::new();
+                    let mut sorted: Vec<(u64, usize)> = components.into_iter().collect();
+                    sorted.sort_by_key(|&(id, comp)| (comp, id));
 
-                        for (id, comp) in sorted {
-                            let label = self.graph.get_node(id).map(|n| n.label.clone()).unwrap_or_default();
-                            rows.push(Row::new(cols.clone(), vec![
+                    for (id, comp) in sorted {
+                        let label = self
+                            .graph
+                            .get_node(id)
+                            .map(|n| n.label.clone())
+                            .unwrap_or_default();
+                        rows.push(Row::new(
+                            cols.clone(),
+                            vec![
                                 Value::Integer(id as i64),
                                 Value::Text(label),
                                 Value::Integer(comp as i64),
-                            ]));
-                        }
-                        Ok(rows)
+                            ],
+                        ));
                     }
-                    "BETWEENNESS" | "BETWEENNESS_CENTRALITY" => {
-                        let normalized = options.get("normalized").map(|v| v != "false" && v != "0").unwrap_or(true);
-                        let scores = self.graph.betweenness_centrality(normalized);
-                        let cols = vec!["node_id".to_string(), "label".to_string(), "betweenness".to_string()];
-                        let mut rows = Vec::new();
-                        let mut sorted: Vec<(u64, f32)> = scores.into_iter().collect();
-                        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    Ok(rows)
+                }
+                "BETWEENNESS" | "BETWEENNESS_CENTRALITY" => {
+                    let normalized = options
+                        .get("normalized")
+                        .map(|v| v != "false" && v != "0")
+                        .unwrap_or(true);
+                    let scores = self.graph.betweenness_centrality(normalized);
+                    let cols = vec![
+                        "node_id".to_string(),
+                        "label".to_string(),
+                        "betweenness".to_string(),
+                    ];
+                    let mut rows = Vec::new();
+                    let mut sorted: Vec<(u64, f32)> = scores.into_iter().collect();
+                    sorted
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-                        for (id, score) in sorted {
-                            let label = self.graph.get_node(id).map(|n| n.label.clone()).unwrap_or_default();
-                            rows.push(Row::new(cols.clone(), vec![
+                    for (id, score) in sorted {
+                        let label = self
+                            .graph
+                            .get_node(id)
+                            .map(|n| n.label.clone())
+                            .unwrap_or_default();
+                        rows.push(Row::new(
+                            cols.clone(),
+                            vec![
                                 Value::Integer(id as i64),
                                 Value::Text(label),
                                 Value::Real(score as f64),
-                            ]));
-                        }
-                        Ok(rows)
+                            ],
+                        ));
                     }
-                    "LOUVAIN" | "COMMUNITIES" => {
-                        let communities = self.graph.louvain_communities();
-                        let cols = vec!["node_id".to_string(), "label".to_string(), "community_id".to_string()];
-                        let mut rows = Vec::new();
-                        let mut sorted: Vec<(u64, usize)> = communities.into_iter().collect();
-                        sorted.sort_by_key(|&(id, comm)| (comm, id));
+                    Ok(rows)
+                }
+                "LOUVAIN" | "COMMUNITIES" => {
+                    let communities = self.graph.louvain_communities();
+                    let cols = vec![
+                        "node_id".to_string(),
+                        "label".to_string(),
+                        "community_id".to_string(),
+                    ];
+                    let mut rows = Vec::new();
+                    let mut sorted: Vec<(u64, usize)> = communities.into_iter().collect();
+                    sorted.sort_by_key(|&(id, comm)| (comm, id));
 
-                        for (id, comm) in sorted {
-                            let label = self.graph.get_node(id).map(|n| n.label.clone()).unwrap_or_default();
-                            rows.push(Row::new(cols.clone(), vec![
+                    for (id, comm) in sorted {
+                        let label = self
+                            .graph
+                            .get_node(id)
+                            .map(|n| n.label.clone())
+                            .unwrap_or_default();
+                        rows.push(Row::new(
+                            cols.clone(),
+                            vec![
                                 Value::Integer(id as i64),
                                 Value::Text(label),
                                 Value::Integer(comm as i64),
-                            ]));
-                        }
-                        Ok(rows)
+                            ],
+                        ));
                     }
-                    unknown => Err(Error::SqlSyntax(format!(
-                        "Unknown graph algorithm '{unknown}'. Supported: PAGERANK, CONNECTED_COMPONENTS, BETWEENNESS, LOUVAIN"
-                    ))),
+                    Ok(rows)
                 }
-            }
+                unknown => Err(Error::SqlSyntax(format!(
+                    "Unknown graph algorithm '{unknown}'. Supported: PAGERANK, CONNECTED_COMPONENTS, BETWEENNESS, LOUVAIN"
+                ))),
+            },
 
             other => Err(Error::SqlSyntax(format!(
                 "Non-query statement {other:?} passed to query()"
@@ -3126,15 +3647,23 @@ impl SQLExecutor {
 
                 let optimizer = crate::sql::planner::CostOptimizer::new();
                 let default_stats = crate::sql::planner::TableStats::new(&table, 100, 10);
-                let stats = self.catalog.get_table_stats(&table).unwrap_or(&default_stats);
+                let stats = self
+                    .catalog
+                    .get_table_stats(&table)
+                    .unwrap_or(&default_stats);
 
                 // Check if fast point lookup by PK is used
                 let mut is_pk_search = false;
                 if join.is_none() && order_by.is_none() {
-                    if let (Some(pk_col_idx), Some(WhereExpr::Condition(cond))) = (pk_idx, &where_clause) {
+                    if let (Some(pk_col_idx), Some(WhereExpr::Condition(cond))) =
+                        (pk_idx, &where_clause)
+                    {
                         if cond.op == BinaryOp::Equals {
                             if let Some(tdef) = table_def {
-                                if tdef.columns[pk_col_idx].name.eq_ignore_ascii_case(&cond.column) {
+                                if tdef.columns[pk_col_idx]
+                                    .name
+                                    .eq_ignore_ascii_case(&cond.column)
+                                {
                                     is_pk_search = true;
                                     let cost = optimizer.estimate_pk_lookup(stats);
                                     rows.push(Row::new(
@@ -3159,10 +3688,17 @@ impl SQLExecutor {
                 if !is_pk_search && join.is_none() && order_by.is_none() {
                     if let Some(WhereExpr::Condition(cond)) = &where_clause {
                         if cond.op == BinaryOp::Equals {
-                            if let Some(idx_def) = self.catalog.find_index_for_column(&table, &cond.column) {
+                            if let Some(idx_def) =
+                                self.catalog.find_index_for_column(&table, &cond.column)
+                            {
                                 is_index_search = true;
                                 let sel = stats.estimate_selectivity(&cond.column, true);
-                                let cost = optimizer.estimate_index_scan(stats, &idx_def.name, &cond.column, sel);
+                                let cost = optimizer.estimate_index_scan(
+                                    stats,
+                                    &idx_def.name,
+                                    &cond.column,
+                                    sel,
+                                );
                                 rows.push(Row::new(
                                     cols.clone(),
                                     vec![
@@ -3220,7 +3756,10 @@ impl SQLExecutor {
                         vec![
                             Value::Integer(id),
                             Value::Integer(0),
-                            Value::Text(format!("USE TEMP B-TREE FOR ORDER BY {} {}", ord.column, dir)),
+                            Value::Text(format!(
+                                "USE TEMP B-TREE FOR ORDER BY {} {}",
+                                ord.column, dir
+                            )),
                         ],
                     ));
                     id += 1;
@@ -3237,12 +3776,22 @@ impl SQLExecutor {
                     ));
                 }
             }
-            Statement::VectorSearch { table, vector_col, top_k, query_vector, .. } => {
+            Statement::VectorSearch {
+                table,
+                vector_col,
+                top_k,
+                query_vector,
+                ..
+            } => {
                 let optimizer = crate::sql::planner::CostOptimizer::new();
                 let default_stats = crate::sql::planner::TableStats::new(&table, 100, 10);
-                let stats = self.catalog.get_table_stats(&table).unwrap_or(&default_stats);
+                let stats = self
+                    .catalog
+                    .get_table_stats(&table)
+                    .unwrap_or(&default_stats);
                 let has_hnsw = self.vector_indexes.contains_key(&table.to_lowercase());
-                let cost = optimizer.estimate_vector_search(stats, top_k, query_vector.len(), has_hnsw);
+                let cost =
+                    optimizer.estimate_vector_search(stats, top_k, query_vector.len(), has_hnsw);
                 rows.push(Row::new(
                     cols.clone(),
                     vec![
@@ -3251,7 +3800,11 @@ impl SQLExecutor {
                         Value::Text(format!(
                             "SEARCH TABLE {} USING {} ON {} (TOP {}) {}",
                             table,
-                            if has_hnsw { "HNSW VECTOR INDEX" } else { "BRUTE-FORCE SCAN" },
+                            if has_hnsw {
+                                "HNSW VECTOR INDEX"
+                            } else {
+                                "BRUTE-FORCE SCAN"
+                            },
                             vector_col,
                             top_k,
                             cost
@@ -3445,12 +3998,12 @@ impl SQLExecutor {
                             let func = &upper[..open_p];
                             let arg = col[open_p + 1..close_p].trim();
                             let computed = compute_aggregate(func, arg, &rows);
-                            agg_cols.push(col.clone());
+                            agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
                             agg_vals.push(computed);
                             continue;
                         }
                     }
-                    agg_cols.push(col.clone());
+                    agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
                     agg_vals.push(Value::Null);
                 }
 
@@ -3506,163 +4059,29 @@ impl SQLExecutor {
         table: &str,
         columns: Option<&[String]>,
         values: &[Value],
-        encode_buf: Option<&mut Vec<u8>>,
+        _encode_buf: Option<&mut Vec<u8>>,
     ) -> Result<(usize, Vec<Row>)> {
-        let (root_page, row_id, key_may_exist, is_temporal, vector_col);
-        let mut aligned_storage: Vec<Value> = Vec::new();
-        let mut use_aligned = false;
-
-        {
-            let table_def = self
-                .catalog
-                .get_table_mut(table)
-                .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
-
-            root_page = table_def.root_page;
-            vector_col = table_def.vector_column();
-            is_temporal = table_def.system_versioning || self.default_system_versioning;
-
-            if let Some(cols) = columns {
-                if cols.len() != values.len() {
-                    return Err(Error::SqlSyntax(
-                        "Column count does not match value count in INSERT".into(),
-                    ));
-                }
-                aligned_storage = vec![Value::Null; table_def.columns.len()];
-                for (c_name, val) in cols.iter().zip(values.iter().cloned()) {
-                    let idx = table_def
-                        .column_index(c_name)
-                        .ok_or_else(|| Error::Corrupted(format!("Unknown column: {c_name}")))?;
-                    aligned_storage[idx] = val;
-                }
-                use_aligned = true;
+        let statement = Statement::Insert {
+            table: table.to_owned(),
+            columns: columns.map(<[String]>::to_vec),
+            values: values.to_vec(),
+            conflict_action: OnConflict::Abort,
+            returning: None,
+        };
+        self.atomic_statement(pager, |executor, pager| {
+            if let Statement::Insert {
+                table,
+                columns,
+                values,
+                conflict_action,
+                returning,
+            } = statement
+            {
+                executor.execute_insert(pager, table, columns, values, conflict_action, returning)
             } else {
-                if values.len() != table_def.columns.len() {
-                    return Err(Error::SqlSyntax(format!(
-                        "INSERT requires {} values, got {}",
-                        table_def.columns.len(),
-                        values.len()
-                    )));
-                }
-            };
-
-            let pk_idx = table_def.primary_key_index();
-            let source = if use_aligned { &aligned_storage[..] } else { values };
-            let (rid, may_exist) = if let Some(idx) = pk_idx {
-                match &source[idx] {
-                    Value::Integer(i) => {
-                        let id_val = *i as u64;
-                        if id_val >= table_def.next_row_id {
-                            table_def.next_row_id = id_val + 1;
-                        }
-                        (id_val, true)
-                    }
-                    Value::Null => {
-                        let rid = table_def.next_row_id;
-                        table_def.next_row_id += 1;
-                        if !use_aligned {
-                            aligned_storage = values.to_vec();
-                            use_aligned = true;
-                        }
-                        aligned_storage[idx] = Value::Integer(rid as i64);
-                        (rid, false)
-                    }
-                    _ => {
-                        let rid = table_def.next_row_id;
-                        table_def.next_row_id += 1;
-                        (rid, false)
-                    }
-                }
-            } else {
-                let rid = table_def.next_row_id;
-                table_def.next_row_id += 1;
-                (rid, false)
-            };
-            row_id = rid;
-            key_may_exist = may_exist;
-        }
-
-        if key_may_exist {
-            if self.btree.search(pager, root_page, row_id)?.is_some() {
-                return Err(Error::ConstraintViolation(format!(
-                    "UNIQUE constraint failed: {table} (key {row_id} already exists)"
-                )));
+                unreachable!()
             }
-        }
-
-        let final_values: &[Value] = if use_aligned { &aligned_storage } else { values };
-
-        let has_indexes = self.catalog.has_table_indexes(table);
-
-        // Fast-path: When table has no secondary indexes, no temporal versioning, and no vector columns
-        if !is_temporal && vector_col.is_none() && !has_indexes {
-            if let Some(buf) = encode_buf {
-                encode_row_into(final_values, buf);
-                self.btree.insert(pager, root_page, row_id, buf)?;
-            } else {
-                let payload = encode_row(final_values);
-                self.btree.insert(pager, root_page, row_id, &payload)?;
-            }
-            return Ok((1, Vec::new()));
-        }
-
-        // Use reusable encode buffer if provided, otherwise allocate
-        if let Some(buf) = encode_buf {
-            encode_row_into(final_values, buf);
-            self.btree.insert(pager, root_page, row_id, buf)?;
-
-            if is_temporal {
-                let now_ts = self.next_temporal_timestamp();
-                self.record_temporal_version(pager, table, row_id, buf, now_ts, u64::MAX)?;
-            }
-        } else {
-            let payload = encode_row(final_values);
-            self.btree.insert(pager, root_page, row_id, &payload)?;
-
-            if is_temporal {
-                let now_ts = self.next_temporal_timestamp();
-                self.record_temporal_version(pager, table, row_id, &payload, now_ts, u64::MAX)?;
-            }
-        }
-
-        if let Some((v_idx, _)) = vector_col {
-            if let Some(Value::Vector(vec_data)) = final_values.get(v_idx) {
-                let index = self
-                    .vector_indexes
-                    .entry(table.to_lowercase())
-                    .or_insert_with(|| HnswIndex::new(vec_data.len(), DistanceMetric::Cosine));
-                index.insert_vector(row_id, vec_data)?;
-            }
-        }
-
-        let has_indexes = self.catalog.has_table_indexes(table);
-        if has_indexes {
-            let table_def = self.catalog.get_table(table).unwrap();
-            let temp_row = Row::new(
-                table_def.columns.iter().map(|c| c.name.clone()).collect(),
-                final_values.to_vec(),
-            );
-            for index_def in self.catalog.indexes() {
-                if index_def.table.eq_ignore_ascii_case(table) {
-                    if let Some(val) = temp_row.get_field_or_json_path(&index_def.column) {
-                        if !val.is_null() {
-                            let key = value_to_index_key(&val);
-                            let mut bucket = if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                                serde_json::from_slice::<IndexBucket>(&payload).unwrap_or_else(|_| IndexBucket::new())
-                            } else {
-                                IndexBucket::new()
-                            };
-                            bucket.add_row_id(val, row_id);
-                            let idx_payload = serde_json::to_vec(&bucket)
-                                .map_err(|e| Error::Corrupted(format!("Failed to serialize index bucket: {e}")))?;
-                            self.btree.insert(pager, index_def.root_page, key, &idx_payload)?;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok((1, Vec::new()))
+        })
     }
 
     fn execute_insert(
@@ -3801,20 +4220,37 @@ impl SQLExecutor {
                     return Ok((0, Vec::new()));
                 }
                 OnConflict::Replace => {
-                    let all_col_names: Vec<String> = table_cols.iter().map(|c| c.name.clone()).collect();
+                    let all_col_names: Vec<String> =
+                        table_cols.iter().map(|c| c.name.clone()).collect();
                     if let Ok(old_row) = decode_row(&existing_payload, &all_col_names) {
                         for index_def in self.catalog.indexes() {
                             if index_def.table.eq_ignore_ascii_case(&table) {
-                                if let Some(val) = old_row.get_field_or_json_path(&index_def.column) {
+                                if let Some(val) = old_row.get_field_or_json_path(&index_def.column)
+                                {
                                     if !val.is_null() {
                                         let key = value_to_index_key(&val);
-                                        if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                                            if let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                                        if let Some(payload) =
+                                            self.btree.search(pager, index_def.root_page, key)?
+                                        {
+                                            if let Ok(mut bucket) =
+                                                serde_json::from_slice::<IndexBucket>(&payload)
+                                            {
                                                 bucket.remove_row_id(&val, row_id);
                                                 if bucket.is_empty() {
-                                                    let _ = self.btree.delete(pager, index_def.root_page, key);
-                                                } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                                                    let _ = self.btree.insert(pager, index_def.root_page, key, &new_pl);
+                                                    let _ = self.btree.delete(
+                                                        pager,
+                                                        index_def.root_page,
+                                                        key,
+                                                    );
+                                                } else if let Ok(new_pl) =
+                                                    serde_json::to_vec(&bucket)
+                                                {
+                                                    let _ = self.btree.insert(
+                                                        pager,
+                                                        index_def.root_page,
+                                                        key,
+                                                        &new_pl,
+                                                    );
                                                 }
                                             }
                                         }
@@ -3831,11 +4267,15 @@ impl SQLExecutor {
                     self.btree.delete(pager, root_page, row_id)?;
                 }
                 OnConflict::DoUpdate(updates) => {
-                    let all_col_names: Vec<String> = table_cols.iter().map(|c| c.name.clone()).collect();
+                    let all_col_names: Vec<String> =
+                        table_cols.iter().map(|c| c.name.clone()).collect();
                     let old_row = decode_row(&existing_payload, &all_col_names)?;
                     let mut values: Vec<Value> = old_row.values().to_vec();
                     for (col_name, new_val) in updates {
-                        if let Some(col_idx) = table_cols.iter().position(|c| c.name.eq_ignore_ascii_case(&col_name)) {
+                        if let Some(col_idx) = table_cols
+                            .iter()
+                            .position(|c| c.name.eq_ignore_ascii_case(&col_name))
+                        {
                             if col_idx < values.len() {
                                 values[col_idx] = new_val;
                             }
@@ -3845,10 +4285,12 @@ impl SQLExecutor {
                         if let Some(val) = values.get_mut(col_idx) {
                             let orig = std::mem::replace(val, Value::Null);
                             *val = col_def.data_type.coerce_value(orig).map_err(|e| match e {
-                                Error::DimensionMismatch(exp, got) => Error::DimensionMismatch(exp, got),
-                                Error::ConstraintViolation(msg) => {
-                                    Error::ConstraintViolation(format!("{table}.{}: {msg}", col_def.name))
+                                Error::DimensionMismatch(exp, got) => {
+                                    Error::DimensionMismatch(exp, got)
                                 }
+                                Error::ConstraintViolation(msg) => Error::ConstraintViolation(
+                                    format!("{table}.{}: {msg}", col_def.name),
+                                ),
                                 other => other,
                             })?;
                             if col_def.not_null && val.is_null() {
@@ -3864,13 +4306,26 @@ impl SQLExecutor {
                             if let Some(val) = old_row.get_field_or_json_path(&index_def.column) {
                                 if !val.is_null() {
                                     let key = value_to_index_key(&val);
-                                    if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                                        if let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                                    if let Some(payload) =
+                                        self.btree.search(pager, index_def.root_page, key)?
+                                    {
+                                        if let Ok(mut bucket) =
+                                            serde_json::from_slice::<IndexBucket>(&payload)
+                                        {
                                             bucket.remove_row_id(&val, row_id);
                                             if bucket.is_empty() {
-                                                let _ = self.btree.delete(pager, index_def.root_page, key);
+                                                let _ = self.btree.delete(
+                                                    pager,
+                                                    index_def.root_page,
+                                                    key,
+                                                );
                                             } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                                                let _ = self.btree.insert(pager, index_def.root_page, key, &new_pl);
+                                                let _ = self.btree.insert(
+                                                    pager,
+                                                    index_def.root_page,
+                                                    key,
+                                                    &new_pl,
+                                                );
                                             }
                                         }
                                     }
@@ -3916,7 +4371,11 @@ impl SQLExecutor {
         }
 
         // Update secondary indexes with inverted posting lists
-        let has_indexes = self.catalog.indexes().iter().any(|idx| idx.table.eq_ignore_ascii_case(&table));
+        let has_indexes = self
+            .catalog
+            .indexes()
+            .iter()
+            .any(|idx| idx.table.eq_ignore_ascii_case(&table));
         if has_indexes {
             let temp_row = Row::new(
                 table_cols.iter().map(|c| c.name.clone()).collect(),
@@ -3927,15 +4386,20 @@ impl SQLExecutor {
                     if let Some(val) = temp_row.get_field_or_json_path(&index_def.column) {
                         if !val.is_null() {
                             let key = value_to_index_key(&val);
-                            let mut bucket = if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                                serde_json::from_slice::<IndexBucket>(&payload).unwrap_or_else(|_| IndexBucket::new())
+                            let mut bucket = if let Some(payload) =
+                                self.btree.search(pager, index_def.root_page, key)?
+                            {
+                                serde_json::from_slice::<IndexBucket>(&payload)
+                                    .unwrap_or_else(|_| IndexBucket::new())
                             } else {
                                 IndexBucket::new()
                             };
                             bucket.add_row_id(val, row_id);
-                            let idx_payload = serde_json::to_vec(&bucket)
-                                .map_err(|e| Error::Corrupted(format!("Failed to serialize index bucket: {e}")))?;
-                            self.btree.insert(pager, index_def.root_page, key, &idx_payload)?;
+                            let idx_payload = serde_json::to_vec(&bucket).map_err(|e| {
+                                Error::Corrupted(format!("Failed to serialize index bucket: {e}"))
+                            })?;
+                            self.btree
+                                .insert(pager, index_def.root_page, key, &idx_payload)?;
                         }
                     }
                 }
@@ -3979,7 +4443,9 @@ impl SQLExecutor {
         // Validate assignment column names
         for (col_name, _) in &assignments {
             if table_def.column_index(col_name).is_none() {
-                return Err(Error::Corrupted(format!("Unknown column in SET: {col_name}")));
+                return Err(Error::Corrupted(format!(
+                    "Unknown column in SET: {col_name}"
+                )));
             }
         }
 
@@ -4016,10 +4482,13 @@ impl SQLExecutor {
                     if let Some(val) = values.get_mut(col_idx) {
                         let orig = std::mem::replace(val, Value::Null);
                         *val = col_def.data_type.coerce_value(orig).map_err(|e| match e {
-                            Error::DimensionMismatch(exp, got) => Error::DimensionMismatch(exp, got),
-                            Error::ConstraintViolation(msg) => {
-                                Error::ConstraintViolation(format!("{table}.{}: {msg}", col_def.name))
+                            Error::DimensionMismatch(exp, got) => {
+                                Error::DimensionMismatch(exp, got)
                             }
+                            Error::ConstraintViolation(msg) => Error::ConstraintViolation(format!(
+                                "{table}.{}: {msg}",
+                                col_def.name
+                            )),
                             other => other,
                         })?;
                     }
@@ -4067,13 +4536,21 @@ impl SQLExecutor {
 
                 let new_payload = encode_row(&values);
                 self.btree.delete(pager, root_page, cell.row_id)?;
-                self.btree.insert(pager, root_page, new_row_id, &new_payload)?;
+                self.btree
+                    .insert(pager, root_page, new_row_id, &new_payload)?;
 
                 // Update temporal snapshot for time-travel queries if enabled
                 if table_def.system_versioning || self.default_system_versioning {
                     let now_ts = self.next_temporal_timestamp();
                     self.close_temporal_version(pager, &table, cell.row_id, now_ts)?;
-                    self.record_temporal_version(pager, &table, new_row_id, &new_payload, now_ts, u64::MAX)?;
+                    self.record_temporal_version(
+                        pager,
+                        &table,
+                        new_row_id,
+                        &new_payload,
+                        now_ts,
+                        u64::MAX,
+                    )?;
                 }
 
                 // Update vector index if vector column was updated or row_id changed
@@ -4082,7 +4559,9 @@ impl SQLExecutor {
                         let index = self
                             .vector_indexes
                             .entry(table.to_lowercase())
-                            .or_insert_with(|| HnswIndex::new(vec_data.len(), DistanceMetric::Cosine));
+                            .or_insert_with(|| {
+                                HnswIndex::new(vec_data.len(), DistanceMetric::Cosine)
+                            });
                         index.remove_vector(cell.row_id);
                         index.insert_vector(new_row_id, vec_data)?;
                     } else if new_row_id != cell.row_id {
@@ -4098,30 +4577,53 @@ impl SQLExecutor {
                         if let Some(old_val) = full_row.get_field_or_json_path(&index_def.column) {
                             if !old_val.is_null() {
                                 let old_key = value_to_index_key(&old_val);
-                                if let Some(payload) = self.btree.search(pager, index_def.root_page, old_key)? {
-                                    if let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                                if let Some(payload) =
+                                    self.btree.search(pager, index_def.root_page, old_key)?
+                                {
+                                    if let Ok(mut bucket) =
+                                        serde_json::from_slice::<IndexBucket>(&payload)
+                                    {
                                         bucket.remove_row_id(&old_val, cell.row_id);
                                         if bucket.is_empty() {
-                                            let _ = self.btree.delete(pager, index_def.root_page, old_key);
+                                            let _ = self.btree.delete(
+                                                pager,
+                                                index_def.root_page,
+                                                old_key,
+                                            );
                                         } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                                            let _ = self.btree.insert(pager, index_def.root_page, old_key, &new_pl);
+                                            let _ = self.btree.insert(
+                                                pager,
+                                                index_def.root_page,
+                                                old_key,
+                                                &new_pl,
+                                            );
                                         }
                                     }
                                 }
                             }
                         }
                         let updated_temp_row = Row::new(all_col_names.clone(), values.clone());
-                        if let Some(new_val) = updated_temp_row.get_field_or_json_path(&index_def.column) {
+                        if let Some(new_val) =
+                            updated_temp_row.get_field_or_json_path(&index_def.column)
+                        {
                             if !new_val.is_null() {
                                 let new_key = value_to_index_key(&new_val);
-                                let mut bucket = if let Some(payload) = self.btree.search(pager, index_def.root_page, new_key)? {
-                                    serde_json::from_slice::<IndexBucket>(&payload).unwrap_or_else(|_| IndexBucket::new())
+                                let mut bucket = if let Some(payload) =
+                                    self.btree.search(pager, index_def.root_page, new_key)?
+                                {
+                                    serde_json::from_slice::<IndexBucket>(&payload)
+                                        .unwrap_or_else(|_| IndexBucket::new())
                                 } else {
                                     IndexBucket::new()
                                 };
                                 bucket.add_row_id(new_val, new_row_id);
                                 if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                                    let _ = self.btree.insert(pager, index_def.root_page, new_key, &new_pl);
+                                    let _ = self.btree.insert(
+                                        pager,
+                                        index_def.root_page,
+                                        new_key,
+                                        &new_pl,
+                                    );
                                 }
                             }
                         }
@@ -4206,13 +4708,23 @@ impl SQLExecutor {
                         if let Some(val) = full_row.get_field_or_json_path(&index_def.column) {
                             if !val.is_null() {
                                 let key = value_to_index_key(&val);
-                                if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                                    if let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                                if let Some(payload) =
+                                    self.btree.search(pager, index_def.root_page, key)?
+                                {
+                                    if let Ok(mut bucket) =
+                                        serde_json::from_slice::<IndexBucket>(&payload)
+                                    {
                                         bucket.remove_row_id(&val, cell.row_id);
                                         if bucket.is_empty() {
-                                            let _ = self.btree.delete(pager, index_def.root_page, key);
+                                            let _ =
+                                                self.btree.delete(pager, index_def.root_page, key);
                                         } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                                            let _ = self.btree.insert(pager, index_def.root_page, key, &new_pl);
+                                            let _ = self.btree.insert(
+                                                pager,
+                                                index_def.root_page,
+                                                key,
+                                                &new_pl,
+                                            );
                                         }
                                     }
                                 }
@@ -4280,7 +4792,7 @@ pub fn matches_condition(actual: &Value, op: &BinaryOp, target: &Value) -> bool 
     // EXCEPTION: IS NULL and IS NOT NULL are specifically designed to test for
     // nullness and must NOT be short-circuited by this guard.
     match op {
-        BinaryOp::IsNull    => return actual.is_null(),
+        BinaryOp::IsNull => return actual.is_null(),
         BinaryOp::IsNotNull => return !actual.is_null(),
         _ => {}
     }
@@ -4290,10 +4802,10 @@ pub fn matches_condition(actual: &Value, op: &BinaryOp, target: &Value) -> bool 
     }
 
     match op {
-        BinaryOp::Equals    => actual == target,
+        BinaryOp::Equals => actual == target,
         BinaryOp::NotEquals => actual != target,
         BinaryOp::GreaterThan => actual.compare(target) == std::cmp::Ordering::Greater,
-        BinaryOp::LessThan    => actual.compare(target) == std::cmp::Ordering::Less,
+        BinaryOp::LessThan => actual.compare(target) == std::cmp::Ordering::Less,
         BinaryOp::GreaterOrEqual => {
             let ord = actual.compare(target);
             ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal
@@ -4346,12 +4858,18 @@ pub fn row_matches_resolved_with_udf(
             matches_condition(&val, &cond.op, &cond.value)
         }
         ResolvedWhereExpr::And(left, right) => {
-            row_matches_resolved_with_udf(row, left, udfs) && row_matches_resolved_with_udf(row, right, udfs)
+            row_matches_resolved_with_udf(row, left, udfs)
+                && row_matches_resolved_with_udf(row, right, udfs)
         }
         ResolvedWhereExpr::Or(left, right) => {
-            row_matches_resolved_with_udf(row, left, udfs) || row_matches_resolved_with_udf(row, right, udfs)
+            row_matches_resolved_with_udf(row, left, udfs)
+                || row_matches_resolved_with_udf(row, right, udfs)
         }
-        ResolvedWhereExpr::InList { column, values, negated } => {
+        ResolvedWhereExpr::InList {
+            column,
+            values,
+            negated,
+        } => {
             let val = match row.get_field_or_json_path(column) {
                 Some(v) => v.clone(),
                 None => {
@@ -4368,11 +4886,7 @@ pub fn row_matches_resolved_with_udf(
             let has_null = values.iter().any(|v| v.is_null());
             let in_list = values.iter().any(|target| val.compare(target).is_eq());
             if *negated {
-                if has_null {
-                    false
-                } else {
-                    !in_list
-                }
+                if has_null { false } else { !in_list }
             } else {
                 in_list
             }
@@ -4426,8 +4940,7 @@ struct ParsedWindowCol {
 fn parse_window_function(col_str: &str) -> Option<ParsedWindowCol> {
     let (expr, alias) = parse_col_and_alias(col_str);
     let u = expr.to_ascii_uppercase();
-    let over_pos = u.find(" OVER ")
-        .or_else(|| u.find(" OVER("))?;
+    let over_pos = u.find(" OVER ").or_else(|| u.find(" OVER("))?;
 
     let func_part = expr[..over_pos].trim();
     let open_p = func_part.find('(')?;
@@ -4463,8 +4976,10 @@ fn parse_window_function(col_str: &str) -> Option<ParsedWindowCol> {
 
     if let Some(p_idx) = spec_u.find("PARTITION BY") {
         let after_p = spec_inner[p_idx + 12..].trim();
-        let end_p = after_p.to_ascii_uppercase().find("ORDER BY")
-            .unwrap_or_else(|| after_p.len());
+        let end_p = after_p
+            .to_ascii_uppercase()
+            .find("ORDER BY")
+            .unwrap_or(after_p.len());
         let p_cols_str = after_p[..end_p].trim();
         for c in p_cols_str.split(',') {
             let trimmed = c.trim();
@@ -4479,11 +4994,7 @@ fn parse_window_function(col_str: &str) -> Option<ParsedWindowCol> {
         let parts: Vec<&str> = after_o.split_whitespace().collect();
         if !parts.is_empty() {
             let col = parts[0].trim().to_string();
-            let is_asc = if parts.len() > 1 && parts[1].eq_ignore_ascii_case("DESC") {
-                false
-            } else {
-                true
-            };
+            let is_asc = !(parts.len() > 1 && parts[1].eq_ignore_ascii_case("DESC"));
             order_by = Some((col, is_asc));
         }
     }
@@ -4500,7 +5011,7 @@ fn parse_window_function(col_str: &str) -> Option<ParsedWindowCol> {
     })
 }
 
-fn evaluate_window_functions(rows: &mut Vec<Row>, columns: &[String]) -> Result<()> {
+fn evaluate_window_functions(rows: &mut [Row], columns: &[String]) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
@@ -4510,8 +5021,7 @@ fn evaluate_window_functions(rows: &mut Vec<Row>, columns: &[String]) -> Result<
     for col in columns {
         if let Some(w) = parse_window_function(col) {
             let mut partitions: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
-            for i in 0..n_rows {
-                let r = &rows[i];
+            for (i, r) in rows.iter().enumerate() {
                 let mut key = Vec::new();
                 for p_col in &w.partition_by {
                     let v = format!("{:?}", r.get_value(p_col).unwrap_or(&Value::Null));
@@ -4545,7 +5055,10 @@ fn evaluate_window_functions(rows: &mut Vec<Row>, columns: &[String]) -> Result<
                         "ROW_NUMBER" => Value::Integer((pos + 1) as i64),
                         "RANK" => {
                             if let Some((ref o_col, _)) = w.order_by {
-                                let cur_val = rows[row_idx].get_value(o_col).cloned().unwrap_or(Value::Null);
+                                let cur_val = rows[row_idx]
+                                    .get_value(o_col)
+                                    .cloned()
+                                    .unwrap_or(Value::Null);
                                 if pos > 0 {
                                     if let Some(ref prev) = prev_order_val {
                                         if prev != &cur_val {
@@ -4561,7 +5074,10 @@ fn evaluate_window_functions(rows: &mut Vec<Row>, columns: &[String]) -> Result<
                         }
                         "DENSE_RANK" => {
                             if let Some((ref o_col, _)) = w.order_by {
-                                let cur_val = rows[row_idx].get_value(o_col).cloned().unwrap_or(Value::Null);
+                                let cur_val = rows[row_idx]
+                                    .get_value(o_col)
+                                    .cloned()
+                                    .unwrap_or(Value::Null);
                                 if pos > 0 {
                                     if let Some(ref prev) = prev_order_val {
                                         if prev != &cur_val {
@@ -4583,7 +5099,10 @@ fn evaluate_window_functions(rows: &mut Vec<Row>, columns: &[String]) -> Result<
                         "LAG" => {
                             if pos >= w.offset {
                                 let target_row_idx = p_indices[pos - w.offset];
-                                rows[target_row_idx].get_value(&w.arg).cloned().unwrap_or(Value::Null)
+                                rows[target_row_idx]
+                                    .get_value(&w.arg)
+                                    .cloned()
+                                    .unwrap_or(Value::Null)
                             } else {
                                 Value::Null
                             }
@@ -4591,7 +5110,10 @@ fn evaluate_window_functions(rows: &mut Vec<Row>, columns: &[String]) -> Result<
                         "LEAD" => {
                             if pos + w.offset < p_len {
                                 let target_row_idx = p_indices[pos + w.offset];
-                                rows[target_row_idx].get_value(&w.arg).cloned().unwrap_or(Value::Null)
+                                rows[target_row_idx]
+                                    .get_value(&w.arg)
+                                    .cloned()
+                                    .unwrap_or(Value::Null)
                             } else {
                                 Value::Null
                             }
@@ -4661,10 +5183,14 @@ fn evaluate_window_functions(rows: &mut Vec<Row>, columns: &[String]) -> Result<
                             let mut min_val: Option<Value> = None;
                             for &idx in &p_indices {
                                 if let Some(v) = rows[idx].get_value(&w.arg) {
-                                    if v != &Value::Null {
-                                        if min_val.is_none() || min_val.as_ref().map(|m| v.compare(m).is_lt()).unwrap_or(false) {
-                                            min_val = Some(v.clone());
-                                        }
+                                    if v != &Value::Null
+                                        && (min_val.is_none()
+                                            || min_val
+                                                .as_ref()
+                                                .map(|m| v.compare(m).is_lt())
+                                                .unwrap_or(false))
+                                    {
+                                        min_val = Some(v.clone());
                                     }
                                 }
                             }
@@ -4674,10 +5200,14 @@ fn evaluate_window_functions(rows: &mut Vec<Row>, columns: &[String]) -> Result<
                             let mut max_val: Option<Value> = None;
                             for &idx in &p_indices {
                                 if let Some(v) = rows[idx].get_value(&w.arg) {
-                                    if v != &Value::Null {
-                                        if max_val.is_none() || max_val.as_ref().map(|m| v.compare(m).is_gt()).unwrap_or(false) {
-                                            max_val = Some(v.clone());
-                                        }
+                                    if v != &Value::Null
+                                        && (max_val.is_none()
+                                            || max_val
+                                                .as_ref()
+                                                .map(|m| v.compare(m).is_gt())
+                                                .unwrap_or(false))
+                                    {
+                                        max_val = Some(v.clone());
                                     }
                                 }
                             }
@@ -4720,6 +5250,11 @@ pub fn project_row_with_udf(
         let (expr, alias) = parse_col_and_alias(col);
         let val = if let Some(fn_val) = try_eval_scalar_expr(row, expr, udfs)? {
             fn_val
+        } else if (expr.starts_with('\'') && expr.ends_with('\''))
+            || expr.parse::<f64>().is_ok()
+            || expr.eq_ignore_ascii_case("NULL")
+        {
+            eval_func_arg(row, expr, udfs)?
         } else {
             row.get_field_or_json_path(expr)
                 .or_else(|| row.get_field_or_json_path(col))
@@ -4747,7 +5282,9 @@ fn split_func_args(inner: &str) -> Vec<&str> {
             '\'' if !in_double_quote => in_single_quote = !in_single_quote,
             '"' if !in_single_quote => in_double_quote = !in_double_quote,
             '[' if !in_single_quote && !in_double_quote => bracket_depth += 1,
-            ']' if !in_single_quote && !in_double_quote => bracket_depth = bracket_depth.saturating_sub(1),
+            ']' if !in_single_quote && !in_double_quote => {
+                bracket_depth = bracket_depth.saturating_sub(1)
+            }
             ',' if !in_single_quote && !in_double_quote && bracket_depth == 0 => {
                 args.push(inner[cur_start..idx].trim());
                 cur_start = idx + 1;
@@ -4759,7 +5296,11 @@ fn split_func_args(inner: &str) -> Vec<&str> {
     args
 }
 
-fn eval_func_arg(row: &Row, raw: &str, udfs: Option<&crate::sql::udf::UdfRegistry>) -> Result<Value> {
+fn eval_func_arg(
+    row: &Row,
+    raw: &str,
+    udfs: Option<&crate::sql::udf::UdfRegistry>,
+) -> Result<Value> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(Value::Null);
@@ -4767,7 +5308,7 @@ fn eval_func_arg(row: &Row, raw: &str, udfs: Option<&crate::sql::udf::UdfRegistr
     if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
         || (trimmed.starts_with('"') && trimmed.ends_with('"'))
     {
-        return Ok(Value::Text(strip_quotes(trimmed).to_string()));
+        return Ok(Value::Text(strip_quotes(trimmed).replace("''", "'")));
     }
     let upper = trimmed.to_ascii_uppercase();
     if upper == "NULL" {
@@ -4790,7 +5331,10 @@ fn eval_func_arg(row: &Row, raw: &str, udfs: Option<&crate::sql::udf::UdfRegistr
             return Ok(val);
         }
     }
-    if let Some(val) = row.get_field_or_json_path(trimmed).or_else(|| row.get_value(trimmed).cloned()) {
+    if let Some(val) = row
+        .get_field_or_json_path(trimmed)
+        .or_else(|| row.get_value(trimmed).cloned())
+    {
         return Ok(val);
     }
     Ok(Value::Text(trimmed.to_string()))
@@ -4881,7 +5425,9 @@ fn try_eval_tap_function(row: &Row, expr: &str) -> Result<Option<Value>> {
             '\'' if !in_double_quote => in_single_quote = !in_single_quote,
             '"' if !in_single_quote => in_double_quote = !in_double_quote,
             '[' if !in_single_quote && !in_double_quote => bracket_depth += 1,
-            ']' if !in_single_quote && !in_double_quote => bracket_depth = bracket_depth.saturating_sub(1),
+            ']' if !in_single_quote && !in_double_quote => {
+                bracket_depth = bracket_depth.saturating_sub(1)
+            }
             ',' if !in_single_quote && !in_double_quote && bracket_depth == 0 => {
                 args.push(inner[cur_start..idx].trim());
                 cur_start = idx + 1;
@@ -4894,7 +5440,10 @@ fn try_eval_tap_function(row: &Row, expr: &str) -> Result<Option<Value>> {
     let raw_arg1 = args.first().copied().unwrap_or("");
     let raw_arg2 = args.get(1).copied().unwrap_or("");
 
-    let arg1_val = if let Some(v) = row.get_field_or_json_path(raw_arg1).or_else(|| row.get_value(raw_arg1).cloned()) {
+    let arg1_val = if let Some(v) = row
+        .get_field_or_json_path(raw_arg1)
+        .or_else(|| row.get_value(raw_arg1).cloned())
+    {
         match v {
             Value::Text(s) => s.clone(),
             other => other.to_string(),
@@ -4920,14 +5469,24 @@ fn try_eval_tap_function(row: &Row, expr: &str) -> Result<Option<Value>> {
         }
         "CLASSIFY_GROUNDED" => {
             let index_name = args.get(2).map(|s| strip_quotes(s)).unwrap_or("default");
-            let top_k = args.get(3).and_then(|s| s.parse::<usize>().ok()).unwrap_or(3);
-            let label = crate::tap::sql_bridge::eval_tap_classify_grounded(&arg1_val, arg2_val, index_name, top_k)?;
+            let top_k = args
+                .get(3)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(3);
+            let label = crate::tap::sql_bridge::eval_tap_classify_grounded(
+                &arg1_val, arg2_val, index_name, top_k,
+            )?;
             Ok(Some(Value::Text(label)))
         }
         "VERIFY_GROUNDED" => {
             let index_name = args.get(2).map(|s| strip_quotes(s)).unwrap_or("default");
-            let top_k = args.get(3).and_then(|s| s.parse::<usize>().ok()).unwrap_or(3);
-            let verified = crate::tap::sql_bridge::eval_tap_verify_grounded(&arg1_val, arg2_val, index_name, top_k)?;
+            let top_k = args
+                .get(3)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(3);
+            let verified = crate::tap::sql_bridge::eval_tap_verify_grounded(
+                &arg1_val, arg2_val, index_name, top_k,
+            )?;
             Ok(Some(Value::Integer(if verified { 1 } else { 0 })))
         }
         "CLASSIFY" => {
@@ -4964,23 +5523,30 @@ fn resolve_vector_arg(row: &Row, raw_arg: &str) -> Result<Vec<f32>> {
             }
         }
         Ok(vec)
-    } else if let Some(val) = row.get_field_or_json_path(trimmed).or_else(|| row.get_value(trimmed).cloned()) {
+    } else if let Some(val) = row
+        .get_field_or_json_path(trimmed)
+        .or_else(|| row.get_value(trimmed).cloned())
+    {
         match val {
             Value::Vector(v) => Ok(v),
-            _ => Err(Error::ConstraintViolation(format!("Argument '{trimmed}' is not a vector"))),
+            _ => Err(Error::ConstraintViolation(format!(
+                "Argument '{trimmed}' is not a vector"
+            ))),
         }
     } else {
-        Err(Error::ConstraintViolation(format!("Could not resolve vector argument '{trimmed}'")))
+        Err(Error::ConstraintViolation(format!(
+            "Could not resolve vector argument '{trimmed}'"
+        )))
     }
 }
 
 fn strip_quotes(s: &str) -> &str {
     let trimmed = s.trim();
-    if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
-        || (trimmed.starts_with('"') && trimmed.ends_with('"')) {
-        if trimmed.len() >= 2 {
-            return &trimmed[1..trimmed.len() - 1];
-        }
+    if ((trimmed.starts_with('\'') && trimmed.ends_with('\''))
+        || (trimmed.starts_with('"') && trimmed.ends_with('"')))
+        && trimmed.len() >= 2
+    {
+        return &trimmed[1..trimmed.len() - 1];
     }
     trimmed
 }
@@ -5001,9 +5567,8 @@ fn is_aggregate_query(columns: &[String]) -> bool {
 }
 
 fn compute_aggregate(func: &str, arg: &str, rows: &[Row]) -> Value {
-    let is_count_all = arg == "*"
-        || arg == "1"
-        || (!arg.is_empty() && arg.chars().all(|c| c.is_ascii_digit()));
+    let is_count_all =
+        arg == "*" || arg == "1" || (!arg.is_empty() && arg.chars().all(|c| c.is_ascii_digit()));
 
     if func == "COUNT" && is_count_all {
         return Value::Integer(rows.len() as i64);
@@ -5037,7 +5602,8 @@ mod tests {
         let mut executor = SQLExecutor::new(&mut pager).expect("Init executor");
 
         // 1. CREATE TABLE
-        let create_sql = "CREATE TABLE articles (id INTEGER PRIMARY KEY, title TEXT, embedding VECTOR(3));";
+        let create_sql =
+            "CREATE TABLE articles (id INTEGER PRIMARY KEY, title TEXT, embedding VECTOR(3));";
         let res = executor
             .execute(&mut pager, parse_sql(create_sql).unwrap())
             .expect("Execute CREATE TABLE");
@@ -5060,7 +5626,10 @@ mod tests {
 
         // 3. SELECT *
         let rows = executor
-            .query(&mut pager, parse_sql("SELECT id, title FROM articles;").unwrap())
+            .query(
+                &mut pager,
+                parse_sql("SELECT id, title FROM articles;").unwrap(),
+            )
             .expect("Query all");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].get::<i64>("id").unwrap(), 1);
@@ -5068,10 +5637,16 @@ mod tests {
 
         // 4. POINT LOOKUP by Primary Key (WHERE id = 2)
         let point_rows = executor
-            .query(&mut pager, parse_sql("SELECT title FROM articles WHERE id = 2;").unwrap())
+            .query(
+                &mut pager,
+                parse_sql("SELECT title FROM articles WHERE id = 2;").unwrap(),
+            )
             .expect("Query point");
         assert_eq!(point_rows.len(), 1);
-        assert_eq!(point_rows[0].get::<String>("title").unwrap(), "AI Database Engines");
+        assert_eq!(
+            point_rows[0].get::<String>("title").unwrap(),
+            "AI Database Engines"
+        );
 
         // 5. VECTOR SIMILARITY SEARCH
         let vector_rows = executor
@@ -5081,7 +5656,10 @@ mod tests {
             )
             .expect("Vector search");
         assert_eq!(vector_rows.len(), 1);
-        assert_eq!(vector_rows[0].get::<String>("title").unwrap(), "Safe Rust Systems");
+        assert_eq!(
+            vector_rows[0].get::<String>("title").unwrap(),
+            "Safe Rust Systems"
+        );
     }
 
     #[test]
@@ -5090,32 +5668,62 @@ mod tests {
         let mut executor = SQLExecutor::new(&mut pager).expect("Init executor");
 
         executor
-            .execute(&mut pager, parse_sql("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);").unwrap())
+            .execute(
+                &mut pager,
+                parse_sql("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);").unwrap(),
+            )
             .unwrap();
         executor
-            .execute(&mut pager, parse_sql("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL);").unwrap())
+            .execute(
+                &mut pager,
+                parse_sql(
+                    "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL);",
+                )
+                .unwrap(),
+            )
             .unwrap();
 
         executor
-            .execute(&mut pager, parse_sql("INSERT INTO users (id, name) VALUES (1, 'Alice');").unwrap())
+            .execute(
+                &mut pager,
+                parse_sql("INSERT INTO users (id, name) VALUES (1, 'Alice');").unwrap(),
+            )
             .unwrap();
         executor
-            .execute(&mut pager, parse_sql("INSERT INTO users (id, name) VALUES (2, 'Bob');").unwrap())
+            .execute(
+                &mut pager,
+                parse_sql("INSERT INTO users (id, name) VALUES (2, 'Bob');").unwrap(),
+            )
             .unwrap();
 
         executor
-            .execute(&mut pager, parse_sql("INSERT INTO orders (id, user_id, amount) VALUES (10, 1, 150.0);").unwrap())
+            .execute(
+                &mut pager,
+                parse_sql("INSERT INTO orders (id, user_id, amount) VALUES (10, 1, 150.0);")
+                    .unwrap(),
+            )
             .unwrap();
         executor
-            .execute(&mut pager, parse_sql("INSERT INTO orders (id, user_id, amount) VALUES (20, 1, 50.0);").unwrap())
+            .execute(
+                &mut pager,
+                parse_sql("INSERT INTO orders (id, user_id, amount) VALUES (20, 1, 50.0);")
+                    .unwrap(),
+            )
             .unwrap();
         executor
-            .execute(&mut pager, parse_sql("INSERT INTO orders (id, user_id, amount) VALUES (30, 2, 200.0);").unwrap())
+            .execute(
+                &mut pager,
+                parse_sql("INSERT INTO orders (id, user_id, amount) VALUES (30, 2, 200.0);")
+                    .unwrap(),
+            )
             .unwrap();
 
         // 1. ORDER BY DESC
         let ordered = executor
-            .query(&mut pager, parse_sql("SELECT id, amount FROM orders ORDER BY amount DESC;").unwrap())
+            .query(
+                &mut pager,
+                parse_sql("SELECT id, amount FROM orders ORDER BY amount DESC;").unwrap(),
+            )
             .unwrap();
         assert_eq!(ordered.len(), 3);
         assert_eq!(ordered[0].get::<f64>("amount").unwrap(), 200.0);
@@ -5203,15 +5811,57 @@ mod tests {
             .execute(&mut pager, parse_sql("CREATE TABLE emp (id INTEGER PRIMARY KEY, name TEXT, dept TEXT, salary INTEGER);").unwrap())
             .unwrap();
 
-        executor.execute(&mut pager, parse_sql("INSERT INTO emp (id, name, dept, salary) VALUES (1, 'Alice', 'Eng', 9000);").unwrap()).unwrap();
-        executor.execute(&mut pager, parse_sql("INSERT INTO emp (id, name, dept, salary) VALUES (2, 'Bob', 'Eng', 8000);").unwrap()).unwrap();
-        executor.execute(&mut pager, parse_sql("INSERT INTO emp (id, name, dept, salary) VALUES (3, 'Charlie', 'Eng', 8000);").unwrap()).unwrap();
-        executor.execute(&mut pager, parse_sql("INSERT INTO emp (id, name, dept, salary) VALUES (4, 'David', 'Sales', 7000);").unwrap()).unwrap();
-        executor.execute(&mut pager, parse_sql("INSERT INTO emp (id, name, dept, salary) VALUES (5, 'Eve', 'Sales', 6000);").unwrap()).unwrap();
+        executor
+            .execute(
+                &mut pager,
+                parse_sql(
+                    "INSERT INTO emp (id, name, dept, salary) VALUES (1, 'Alice', 'Eng', 9000);",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        executor
+            .execute(
+                &mut pager,
+                parse_sql(
+                    "INSERT INTO emp (id, name, dept, salary) VALUES (2, 'Bob', 'Eng', 8000);",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        executor
+            .execute(
+                &mut pager,
+                parse_sql(
+                    "INSERT INTO emp (id, name, dept, salary) VALUES (3, 'Charlie', 'Eng', 8000);",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        executor
+            .execute(
+                &mut pager,
+                parse_sql(
+                    "INSERT INTO emp (id, name, dept, salary) VALUES (4, 'David', 'Sales', 7000);",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        executor
+            .execute(
+                &mut pager,
+                parse_sql(
+                    "INSERT INTO emp (id, name, dept, salary) VALUES (5, 'Eve', 'Sales', 6000);",
+                )
+                .unwrap(),
+            )
+            .unwrap();
 
         // 1. ROW_NUMBER with PARTITION BY and ORDER BY
         let sql_rn = "SELECT id, name, dept, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) AS rn FROM emp ORDER BY id ASC;";
-        let rows_rn = executor.query(&mut pager, parse_sql(sql_rn).unwrap()).expect("Query ROW_NUMBER");
+        let rows_rn = executor
+            .query(&mut pager, parse_sql(sql_rn).unwrap())
+            .expect("Query ROW_NUMBER");
         assert_eq!(rows_rn.len(), 5);
         // Alice is rank 1 in Eng
         assert_eq!(rows_rn[0].get::<i64>("rn").unwrap(), 1);
@@ -5222,7 +5872,9 @@ mod tests {
 
         // 2. DENSE_RANK
         let sql_dr = "SELECT id, salary, DENSE_RANK() OVER (ORDER BY salary DESC) AS drank FROM emp ORDER BY salary DESC;";
-        let rows_dr = executor.query(&mut pager, parse_sql(sql_dr).unwrap()).expect("Query DENSE_RANK");
+        let rows_dr = executor
+            .query(&mut pager, parse_sql(sql_dr).unwrap())
+            .expect("Query DENSE_RANK");
         assert_eq!(rows_dr[0].get::<i64>("drank").unwrap(), 1); // 9000
         assert_eq!(rows_dr[1].get::<i64>("drank").unwrap(), 2); // 8000
         assert_eq!(rows_dr[2].get::<i64>("drank").unwrap(), 2); // 8000 tie
@@ -5230,14 +5882,18 @@ mod tests {
 
         // 3. LAG and LEAD
         let sql_lag = "SELECT id, salary, LAG(salary, 1) OVER (ORDER BY id ASC) AS prev_sal, LEAD(salary, 1) OVER (ORDER BY id ASC) AS next_sal FROM emp ORDER BY id ASC;";
-        let rows_lag = executor.query(&mut pager, parse_sql(sql_lag).unwrap()).expect("Query LAG and LEAD");
+        let rows_lag = executor
+            .query(&mut pager, parse_sql(sql_lag).unwrap())
+            .expect("Query LAG and LEAD");
         assert_eq!(rows_lag[0].get_value("prev_sal"), Some(&Value::Null));
         assert_eq!(rows_lag[0].get::<i64>("next_sal").unwrap(), 8000);
         assert_eq!(rows_lag[1].get::<i64>("prev_sal").unwrap(), 9000);
 
         // 4. Window SUM with PARTITION BY
         let sql_sum = "SELECT id, dept, SUM(salary) OVER (PARTITION BY dept) AS total_dept FROM emp ORDER BY id ASC;";
-        let rows_sum = executor.query(&mut pager, parse_sql(sql_sum).unwrap()).expect("Query Window SUM");
+        let rows_sum = executor
+            .query(&mut pager, parse_sql(sql_sum).unwrap())
+            .expect("Query Window SUM");
         assert_eq!(rows_sum[0].get::<i64>("total_dept").unwrap(), 25000); // Eng: 9000+8000+8000
         assert_eq!(rows_sum[3].get::<i64>("total_dept").unwrap(), 13000); // Sales: 7000+6000
     }
@@ -5247,29 +5903,76 @@ mod tests {
         let mut pager = Pager::open_in_memory(4096, 128).expect("Pager open");
         let mut executor = SQLExecutor::new(&mut pager).expect("Init executor");
 
-        executor.execute(&mut pager, parse_sql("GRAPH INSERT NODE 1 LABEL \"Server\" PROPERTIES \"{}\";").unwrap()).unwrap();
-        executor.execute(&mut pager, parse_sql("GRAPH INSERT NODE 2 LABEL \"Database\" PROPERTIES \"{}\";").unwrap()).unwrap();
-        executor.execute(&mut pager, parse_sql("GRAPH INSERT NODE 3 LABEL \"Cache\" PROPERTIES \"{}\";").unwrap()).unwrap();
-        executor.execute(&mut pager, parse_sql("GRAPH INSERT EDGE 1 2 LABEL \"CONNECTS\";").unwrap()).unwrap();
-        executor.execute(&mut pager, parse_sql("GRAPH INSERT EDGE 2 3 LABEL \"CONNECTS\";").unwrap()).unwrap();
-        executor.execute(&mut pager, parse_sql("GRAPH INSERT EDGE 3 1 LABEL \"CONNECTS\";").unwrap()).unwrap();
+        executor
+            .execute(
+                &mut pager,
+                parse_sql("GRAPH INSERT NODE 1 LABEL \"Server\" PROPERTIES \"{}\";").unwrap(),
+            )
+            .unwrap();
+        executor
+            .execute(
+                &mut pager,
+                parse_sql("GRAPH INSERT NODE 2 LABEL \"Database\" PROPERTIES \"{}\";").unwrap(),
+            )
+            .unwrap();
+        executor
+            .execute(
+                &mut pager,
+                parse_sql("GRAPH INSERT NODE 3 LABEL \"Cache\" PROPERTIES \"{}\";").unwrap(),
+            )
+            .unwrap();
+        executor
+            .execute(
+                &mut pager,
+                parse_sql("GRAPH INSERT EDGE 1 2 LABEL \"CONNECTS\";").unwrap(),
+            )
+            .unwrap();
+        executor
+            .execute(
+                &mut pager,
+                parse_sql("GRAPH INSERT EDGE 2 3 LABEL \"CONNECTS\";").unwrap(),
+            )
+            .unwrap();
+        executor
+            .execute(
+                &mut pager,
+                parse_sql("GRAPH INSERT EDGE 3 1 LABEL \"CONNECTS\";").unwrap(),
+            )
+            .unwrap();
 
         // 1. GRAPH ALGORITHM PAGERANK
-        let pr_rows = executor.query(&mut pager, parse_sql("GRAPH ALGORITHM PAGERANK;").unwrap()).expect("PageRank query");
+        let pr_rows = executor
+            .query(&mut pager, parse_sql("GRAPH ALGORITHM PAGERANK;").unwrap())
+            .expect("PageRank query");
         assert_eq!(pr_rows.len(), 3);
         assert_eq!(pr_rows[0].columns(), &["node_id", "label", "pagerank"]);
 
         // 2. GRAPH ALGORITHM CONNECTED_COMPONENTS
-        let cc_rows = executor.query(&mut pager, parse_sql("GRAPH ALGORITHM CONNECTED_COMPONENTS;").unwrap()).expect("WCC query");
+        let cc_rows = executor
+            .query(
+                &mut pager,
+                parse_sql("GRAPH ALGORITHM CONNECTED_COMPONENTS;").unwrap(),
+            )
+            .expect("WCC query");
         assert_eq!(cc_rows.len(), 3);
-        assert_eq!(cc_rows[0].get::<i64>("component_id").unwrap(), cc_rows[1].get::<i64>("component_id").unwrap());
+        assert_eq!(
+            cc_rows[0].get::<i64>("component_id").unwrap(),
+            cc_rows[1].get::<i64>("component_id").unwrap()
+        );
 
         // 3. GRAPH ALGORITHM BETWEENNESS
-        let bc_rows = executor.query(&mut pager, parse_sql("GRAPH ALGORITHM BETWEENNESS;").unwrap()).expect("BC query");
+        let bc_rows = executor
+            .query(
+                &mut pager,
+                parse_sql("GRAPH ALGORITHM BETWEENNESS;").unwrap(),
+            )
+            .expect("BC query");
         assert_eq!(bc_rows.len(), 3);
 
         // 4. GRAPH ALGORITHM LOUVAIN
-        let lv_rows = executor.query(&mut pager, parse_sql("GRAPH ALGORITHM LOUVAIN;").unwrap()).expect("Louvain query");
+        let lv_rows = executor
+            .query(&mut pager, parse_sql("GRAPH ALGORITHM LOUVAIN;").unwrap())
+            .expect("Louvain query");
         assert_eq!(lv_rows.len(), 3);
     }
 
@@ -5278,7 +5981,15 @@ mod tests {
         let mut pager = Pager::open_in_memory(4096, 128).expect("Pager open");
         let mut executor = SQLExecutor::new(&mut pager).expect("Init executor");
 
-        executor.execute(&mut pager, parse_sql("CREATE TABLE tickets (id INTEGER PRIMARY KEY, content TEXT, category TEXT);").unwrap()).unwrap();
+        executor
+            .execute(
+                &mut pager,
+                parse_sql(
+                    "CREATE TABLE tickets (id INTEGER PRIMARY KEY, content TEXT, category TEXT);",
+                )
+                .unwrap(),
+            )
+            .unwrap();
         executor.execute(&mut pager, parse_sql("INSERT INTO tickets VALUES (1, 'Urgent billing payment failed during checkout', 'billing');").unwrap()).unwrap();
         executor.execute(&mut pager, parse_sql("INSERT INTO tickets VALUES (2, 'Cannot connect to wifi router hardware', 'hardware');").unwrap()).unwrap();
 
@@ -5293,14 +6004,25 @@ mod tests {
         assert_eq!(rows_v[0].get::<i64>("is_payment_issue").unwrap(), 1);
 
         // 3. SELECT with TAP_SCORE in projection
-        let rows_s = executor.query(&mut pager, parse_sql("SELECT id, TAP_SCORE(content, 'urgent priority') AS urgency FROM tickets;").unwrap()).unwrap();
+        let rows_s = executor
+            .query(
+                &mut pager,
+                parse_sql(
+                    "SELECT id, TAP_SCORE(content, 'urgent priority') AS urgency FROM tickets;",
+                )
+                .unwrap(),
+            )
+            .unwrap();
         assert_eq!(rows_s.len(), 2);
         assert!(rows_s[0].get::<f64>("urgency").unwrap() > 0.4);
 
         // 4. SELECT with TAP_ROUTE in projection
         let rows_r = executor.query(&mut pager, parse_sql("SELECT id, TAP_ROUTE(content, 'escalate_billing, triage, hardware_team') AS next_step FROM tickets;").unwrap()).unwrap();
         assert_eq!(rows_r.len(), 2);
-        assert_eq!(rows_r[0].get::<String>("next_step").unwrap(), "escalate_billing");
+        assert_eq!(
+            rows_r[0].get::<String>("next_step").unwrap(),
+            "escalate_billing"
+        );
 
         // 5. WHERE clause filtering with TAP_VERIFY
         let rows_where = executor.query(&mut pager, parse_sql("SELECT id, category FROM tickets WHERE TAP_VERIFY(content, 'wifi router hardware connection failure') = 1;").unwrap()).unwrap();
@@ -5332,4 +6054,3 @@ mod tests {
         assert_eq!(rows_l2[0].get::<f64>("dist").unwrap(), 0.0);
     }
 }
-

@@ -4,6 +4,13 @@
   "description": "Official Node.js & TypeScript SDK for TapirusDB — Embedded Safe-Rust Quad-Model Database",
   "main": "index.js",
   "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "CORE_LICENSE",
+    "NOTICE",
+    "*.node"
+  ],
   "napi": {
     "name": "tapirus",
     "triples": {
@@ -18,9 +25,11 @@
     }
   },
   "scripts": {
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
-    "test": "node test.js"
+    "build": "node ../../scripts/build-node-sdk.js",
+    "build:debug": "node ../../scripts/build-node-sdk.js --debug",
+    "test": "node test.js",
+    "test:package": "node ../../scripts/test-node-package.js",
+    "prepack": "node verify-native.js"
   },
   "devDependencies": {
     "@napi-rs/cli": "^2.18.3"
@@ -37,7 +46,7 @@
     "graph"
   ],
   "author": "TapirusDB Contributors <contact@tapirusdb.com>",
-  "license": "MIT",
+  "license": "MIT AND BUSL-1.1",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tapiruslab/TapirusDB.git"

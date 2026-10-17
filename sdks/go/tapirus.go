@@ -161,12 +161,14 @@ func (c *Client) Query(ctx context.Context, sql string, params ...interface{}) (
 		"params": params,
 	}
 
-	var result []map[string]interface{}
+	var result struct {
+		Rows []map[string]interface{} `json:"rows"`
+	}
 	err := c.request(ctx, http.MethodPost, "/api/sql", payload, &result)
 	if err != nil {
 		return nil, err
 	}
-	return result, nil
+	return result.Rows, nil
 }
 
 // Execute executes a non-query SQL command and returns the affected rows count.

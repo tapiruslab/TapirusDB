@@ -1,9 +1,9 @@
-use tapirus::{
-    reciprocal_rank_fusion, ChangeOp, Connection, DeterministicHashEmbedder, EmbeddingEngine,
-    ProductQuantizer,
-};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tapirus::{
+    ChangeOp, Connection, DeterministicHashEmbedder, EmbeddingEngine, ProductQuantizer,
+    reciprocal_rank_fusion,
+};
 
 #[test]
 fn test_product_quantizer_subspace_compression() {

@@ -7,8 +7,8 @@
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Type of database mutation operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +38,7 @@ pub struct ChangeEvent {
     pub op: ChangeOp,
     /// Name of affected table
     pub table: String,
-    /// Unique Row ID
+    /// Row ID for a single-row INSERT when known; zero means the operation has no single known row ID.
     pub row_id: u64,
     /// Mutation timestamp (Unix epoch seconds)
     pub timestamp: u64,

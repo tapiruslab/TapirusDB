@@ -5,8 +5,8 @@
 //! - Logarithmic random level distribution scaling
 //! - Vector nearest neighbor lookups and metric validation
 
-use tapirus::vector::{DistanceMetric, HnswIndex};
 use tapirus::VectorIndexEngine;
+use tapirus::vector::{DistanceMetric, HnswIndex};
 
 #[test]
 fn test_hnsw_random_levels_distribution() {

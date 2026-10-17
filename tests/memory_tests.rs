@@ -148,13 +148,7 @@ fn test_memory_exponential_temporal_decay() {
         .with_weights(0.0, 0.3, 0.7, 0.0)
         .with_half_life(2 * 86400);
 
-    let results = conn.memory_recall_at(
-        Some("run today"),
-        None,
-        2,
-        &filter,
-        t_current,
-    );
+    let results = conn.memory_recall_at(Some("run today"), None, 2, &filter, t_current);
 
     assert_eq!(results.len(), 2);
     // Recent memory must rank higher than old memory due to e^-lambda*dt
@@ -243,19 +237,29 @@ fn test_memory_multi_agent_namespace_isolation() {
     assert_eq!(conn.memory_count(), 2);
 
     // Recall scoped to Agent Alpha
-    let mut filter_alpha = MemoryRecallFilter::default();
-    filter_alpha.namespace = Some("agent_alpha".to_string());
+    let filter_alpha = MemoryRecallFilter {
+        namespace: Some("agent_alpha".to_string()),
+        ..Default::default()
+    };
     let results_alpha = conn.memory_recall(Some("telemetry"), None, 5, &filter_alpha);
     assert_eq!(results_alpha.len(), 1);
-    assert_eq!(results_alpha[0].entry.namespace.as_deref(), Some("agent_alpha"));
+    assert_eq!(
+        results_alpha[0].entry.namespace.as_deref(),
+        Some("agent_alpha")
+    );
     assert!(results_alpha[0].entry.content.contains("reactor core"));
 
     // Recall scoped to Agent Beta
-    let mut filter_beta = MemoryRecallFilter::default();
-    filter_beta.namespace = Some("agent_beta".to_string());
+    let filter_beta = MemoryRecallFilter {
+        namespace: Some("agent_beta".to_string()),
+        ..Default::default()
+    };
     let results_beta = conn.memory_recall(Some("telemetry"), None, 5, &filter_beta);
     assert_eq!(results_beta.len(), 1);
-    assert_eq!(results_beta[0].entry.namespace.as_deref(), Some("agent_beta"));
+    assert_eq!(
+        results_beta[0].entry.namespace.as_deref(),
+        Some("agent_beta")
+    );
     assert!(results_beta[0].entry.content.contains("solar panel"));
 
     // Recall without namespace returns both
@@ -301,7 +305,11 @@ fn test_memory_disk_persistence() -> Result<()> {
     // Session 2: Reopen and verify memories and associations are restored
     {
         let db = Connection::open(&path)?;
-        assert_eq!(db.memory_count(), 2, "Both memories must be restored from disk");
+        assert_eq!(
+            db.memory_count(),
+            2,
+            "Both memories must be restored from disk"
+        );
 
         let m1 = db.memory_get(id1).expect("Memory 1 exists");
         assert_eq!(m1.namespace.as_deref(), Some("agent_engineering"));
@@ -312,7 +320,10 @@ fn test_memory_disk_persistence() -> Result<()> {
         // Recall via BM25 keyword matching on restored index
         let filter = MemoryRecallFilter::default();
         let recalled = db.memory_recall(Some("pure safe Rust"), None, 5, &filter);
-        assert!(!recalled.is_empty(), "Lexical BM25 must recall restored memory");
+        assert!(
+            !recalled.is_empty(),
+            "Lexical BM25 must recall restored memory"
+        );
         assert_eq!(recalled[0].entry.id, id1);
 
         // Delete memory id1 and verify persistence of deletion
@@ -331,4 +342,3 @@ fn test_memory_disk_persistence() -> Result<()> {
 
     Ok(())
 }
-

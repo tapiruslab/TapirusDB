@@ -1,11 +1,10 @@
 //! Hierarchical Navigable Small World (HNSW) Vector Index.
 //!
-//! Provides sub-millisecond approximate nearest neighbor (ANN) search directly
-//! inside TapirusDB.
+//! Approximate nearest neighbor search with explicit construction/search budgets.
 
 use crate::error::{Error, Result};
 use crate::traits::VectorIndexEngine;
-use crate::vector::{cosine_distance, euclidean_distance, DistanceMetric};
+use crate::vector::{DistanceMetric, cosine_distance, euclidean_distance};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
 
@@ -20,7 +19,10 @@ impl Eq for MinCandidate {}
 
 impl Ord for MinCandidate {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.distance.partial_cmp(&self.distance).unwrap_or(Ordering::Equal)
+        other
+            .distance
+            .partial_cmp(&self.distance)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -41,7 +43,9 @@ impl Eq for MaxCandidate {}
 
 impl Ord for MaxCandidate {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.distance.partial_cmp(&other.distance).unwrap_or(Ordering::Equal)
+        self.distance
+            .partial_cmp(&other.distance)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -147,8 +151,8 @@ pub struct HnswIndex {
 impl HnswIndex {
     /// Create a new HNSW index with target dimensions and distance metric
     pub fn new(dimensions: usize, metric: DistanceMetric) -> Self {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let seed = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0x9e3779b97f4a7c15);
         Self::with_config_and_seed(dimensions, metric, HnswConfig::default(), seed)
@@ -161,15 +165,20 @@ impl HnswIndex {
 
     /// Create a new HNSW index with custom configuration
     pub fn with_config(dimensions: usize, metric: DistanceMetric, config: HnswConfig) -> Self {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let seed = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0x9e3779b97f4a7c15);
         Self::with_config_and_seed(dimensions, metric, config, seed)
     }
 
     /// Create a new HNSW index with custom configuration and random seed
-    pub fn with_config_and_seed(dimensions: usize, metric: DistanceMetric, config: HnswConfig, seed: u64) -> Self {
+    pub fn with_config_and_seed(
+        dimensions: usize,
+        metric: DistanceMetric,
+        config: HnswConfig,
+        seed: u64,
+    ) -> Self {
         let m = config.m.max(2);
         let m0 = config.m0.max(2);
         let ef_construction = config.ef_construction.max(m);
@@ -255,7 +264,12 @@ impl HnswIndex {
 
     /// Compute distance between query and node, utilizing 8-bit scalar quantization if enabled
     #[inline]
-    pub fn compute_node_distance(&self, query: &[f32], node: &HnswNode, metric: DistanceMetric) -> f32 {
+    pub fn compute_node_distance(
+        &self,
+        query: &[f32],
+        node: &HnswNode,
+        metric: DistanceMetric,
+    ) -> f32 {
         if let Some(ref q) = node.quantized {
             match metric {
                 DistanceMetric::Cosine => q.asymmetric_cosine_distance(query),
@@ -313,19 +327,43 @@ impl HnswIndex {
         self.tombstones.contains(&id)
     }
 
-    /// Purge all tombstoned nodes and re-wire graph connections (vacuum)
-    pub fn vacuum(&mut self) -> usize {
-        let dead_ids: Vec<u64> = self.tombstones.drain().collect();
-        let count = dead_ids.len();
-        for id in dead_ids {
-            self.remove_vector(id);
+    /// Rebuild active topology and remove tombstones. Failure preserves this index.
+    pub fn rebuild(&mut self) -> Result<usize> {
+        let removed = self.tombstones.len();
+        let config = HnswConfig {
+            m: self.m,
+            m0: self.m0,
+            ef_construction: self.ef_construction,
+            ef_search: self.ef_search,
+            ..self.config.clone()
+        };
+        let mut rebuilt =
+            Self::with_config_and_seed(self.dimensions, self.metric, config, self.rng_state);
+        let mut active: Vec<_> = self
+            .nodes
+            .values()
+            .filter(|node| !self.tombstones.contains(&node.id))
+            .collect();
+        active.sort_by_key(|node| node.id);
+        for node in active {
+            rebuilt.insert_vector(node.id, &node.vector)?;
         }
-        count
+        *self = rebuilt;
+        Ok(removed)
+    }
+
+    /// Purge tombstones and rebuild graph connections. Use `rebuild` to report errors.
+    pub fn vacuum(&mut self) -> usize {
+        if self.tombstones.is_empty() {
+            return 0;
+        }
+        self.rebuild().unwrap_or(0)
     }
 
     /// Remove a vector node from HNSW index by ID
     pub fn remove_vector(&mut self, id: u64) -> bool {
         if self.nodes.remove(&id).is_some() {
+            self.tombstones.remove(&id);
             for node in self.nodes.values_mut() {
                 for neighbors in node.layer_neighbors.iter_mut() {
                     neighbors.retain(|&nid| nid != id);
@@ -394,8 +432,14 @@ impl HnswIndex {
         for &ep in entry_points {
             if let Some(node) = self.nodes.get(&ep) {
                 let dist = self.compute_node_distance(query, node, metric);
-                candidates.push(MinCandidate { id: ep, distance: dist });
-                nearest.push(MaxCandidate { id: ep, distance: dist });
+                candidates.push(MinCandidate {
+                    id: ep,
+                    distance: dist,
+                });
+                nearest.push(MaxCandidate {
+                    id: ep,
+                    distance: dist,
+                });
             }
         }
 
@@ -432,12 +476,53 @@ impl HnswIndex {
             }
         }
 
-        let mut sorted: Vec<(u64, f32)> = nearest
-            .into_iter()
-            .map(|c| (c.id, c.distance))
-            .collect();
+        let mut sorted: Vec<(u64, f32)> = nearest.into_iter().map(|c| (c.id, c.distance)).collect();
         sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
         sorted
+    }
+
+    // Keep neighbors in different directions. Taking only the closest candidates
+    // creates redundant local links and poor high-dimensional recall.
+    fn diverse_neighbors(
+        &self,
+        candidates: &[(u64, f32)],
+        limit: usize,
+        inserted: Option<(u64, &[f32])>,
+    ) -> Vec<u64> {
+        if candidates.len() <= limit {
+            return candidates.iter().map(|(id, _)| *id).collect();
+        }
+        let vector = |id: u64| -> Option<&[f32]> {
+            if let Some((new_id, new_vector)) = inserted {
+                if new_id == id {
+                    return Some(new_vector);
+                }
+            }
+            self.nodes.get(&id).map(|node| node.vector.as_slice())
+        };
+        let mut selected = Vec::with_capacity(limit);
+        let mut pruned = Vec::new();
+        for &(id, anchor_distance) in candidates {
+            let Some(candidate) = vector(id) else {
+                continue;
+            };
+            let redundant = selected.iter().any(|neighbor| {
+                vector(*neighbor)
+                    .is_some_and(|other| self.distance(candidate, other) < anchor_distance)
+            });
+            if !redundant {
+                selected.push(id);
+                if selected.len() == limit {
+                    break;
+                }
+            } else {
+                pruned.push(id);
+            }
+        }
+        // Keep the requested graph degree when geometric pruning is too
+        // aggressive. Sparse reciprocal links make distant regions unreachable.
+        selected.extend(pruned.into_iter().take(limit - selected.len()));
+        selected
     }
 
     /// Search K-nearest neighbors for a query vector with optional candidate ID pre-filtering
@@ -448,12 +533,56 @@ impl HnswIndex {
         metric: DistanceMetric,
         filter: Option<&std::collections::HashSet<u64>>,
     ) -> Result<Vec<(u64, f32)>> {
+        self.search_knn_where(
+            query,
+            k,
+            metric,
+            (filter, false),
+            |_| true,
+            self.nodes.len(),
+        )
+    }
+
+    pub(crate) fn search_knn_where(
+        &self,
+        query: &[f32],
+        k: usize,
+        metric: DistanceMetric,
+        filter_options: (Option<&HashSet<u64>>, bool),
+        accept: impl Fn(u64) -> bool,
+        max_ef: usize,
+    ) -> Result<Vec<(u64, f32)>> {
+        let (filter, filter_active) = filter_options;
         if query.len() != self.dimensions {
             return Err(Error::DimensionMismatch(self.dimensions, query.len()));
+        }
+        if query.iter().any(|value| !value.is_finite()) {
+            return Err(Error::ConstraintViolation(
+                "Query vector components must be finite".into(),
+            ));
         }
 
         if k == 0 || self.nodes.is_empty() {
             return Ok(Vec::new());
+        }
+
+        // Small allow-lists are cheaper and more accurate to score directly.
+        if let Some(allowed) = filter {
+            if allowed.len() <= self.ef_search.max(k) {
+                let mut matches: Vec<_> = allowed
+                    .iter()
+                    .filter(|id| !self.tombstones.contains(id))
+                    .filter(|id| accept(**id))
+                    .filter_map(|id| {
+                        self.nodes
+                            .get(id)
+                            .map(|node| (*id, self.compute_node_distance(query, node, metric)))
+                    })
+                    .collect();
+                matches.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+                matches.truncate(k);
+                return Ok(matches);
+            }
         }
 
         let mut curr_entry = match self.entry_point {
@@ -486,26 +615,33 @@ impl HnswIndex {
         }
 
         // 2. Search bottom layer 0 with ef_search (expanded if filtering is active)
-        let ef_multiplier = if filter.is_some() { 4 } else { 1 };
-        let ef = (self.ef_search.max(k)) * ef_multiplier;
-        let candidates = self.search_layer_with_metric(query, &[curr_entry], ef, 0, metric);
-
-        let mut results = Vec::with_capacity(k);
-        for (id, dist) in candidates.into_iter() {
-            if !self.tombstones.contains(&id) {
-                if let Some(allowed) = filter {
-                    if !allowed.contains(&id) {
-                        continue;
-                    }
-                }
-                results.push((id, dist));
-                if results.len() >= k {
-                    break;
-                }
+        let ef_multiplier = if filter.is_some() || filter_active {
+            4
+        } else {
+            1
+        };
+        let ef_cap = max_ef.max(k).min(self.nodes.len());
+        let mut ef = self
+            .ef_search
+            .max(k)
+            .saturating_mul(ef_multiplier)
+            .min(ef_cap);
+        loop {
+            let candidates = self.search_layer_with_metric(query, &[curr_entry], ef, 0, metric);
+            let results: Vec<_> = candidates
+                .into_iter()
+                .filter(|(id, _)| {
+                    !self.tombstones.contains(id)
+                        && filter.is_none_or(|allowed| allowed.contains(id))
+                        && accept(*id)
+                })
+                .take(k)
+                .collect();
+            if results.len() >= k.min(self.len()) || ef >= ef_cap {
+                return Ok(results);
             }
+            ef = ef.saturating_mul(2).min(ef_cap);
         }
-
-        Ok(results)
     }
 
     /// Search K-nearest neighbors for a query vector
@@ -523,6 +659,11 @@ impl VectorIndexEngine for HnswIndex {
     fn insert_vector(&mut self, id: u64, vector: &[f32]) -> Result<()> {
         if vector.len() != self.dimensions {
             return Err(Error::DimensionMismatch(self.dimensions, vector.len()));
+        }
+        if vector.iter().any(|value| !value.is_finite()) {
+            return Err(Error::ConstraintViolation(
+                "Vector components must be finite".into(),
+            ));
         }
 
         // Clean up previous connections if ID already exists
@@ -543,11 +684,16 @@ impl VectorIndexEngine for HnswIndex {
                     while changed {
                         changed = false;
                         if let Some(curr_node) = self.nodes.get(&curr_entry) {
-                            let curr_dist = self.compute_node_distance(vector, curr_node, self.metric);
+                            let curr_dist =
+                                self.compute_node_distance(vector, curr_node, self.metric);
                             if l < curr_node.layer_neighbors.len() {
                                 for &neighbor_id in &curr_node.layer_neighbors[l] {
                                     if let Some(neighbor) = self.nodes.get(&neighbor_id) {
-                                        let dist = self.compute_node_distance(vector, neighbor, self.metric);
+                                        let dist = self.compute_node_distance(
+                                            vector,
+                                            neighbor,
+                                            self.metric,
+                                        );
                                         if dist < curr_dist {
                                             curr_entry = neighbor_id;
                                             changed = true;
@@ -567,27 +713,51 @@ impl VectorIndexEngine for HnswIndex {
                 let candidates = self.search_layer(vector, &ep, self.ef_construction, l);
                 let max_neighbors = if l == 0 { self.m0 } else { self.m };
 
-                let neighbor_ids: Vec<u64> = candidates
-                    .iter()
-                    .take(max_neighbors)
-                    .map(|(nid, _)| *nid)
-                    .collect();
+                let neighbor_ids = self.diverse_neighbors(&candidates, max_neighbors, None);
 
                 layer_neighbors[l] = neighbor_ids.clone();
 
                 // Connect bidirectionally
                 for &nid in &neighbor_ids {
-                    if let Some(neighbor_node) = self.nodes.get_mut(&nid) {
-                        if l < neighbor_node.layer_neighbors.len() {
-                            neighbor_node.layer_neighbors[l].push(id);
-                            if neighbor_node.layer_neighbors[l].len() > max_neighbors {
-                                neighbor_node.layer_neighbors[l].truncate(max_neighbors);
-                            }
-                        }
+                    let Some(neighbor_node) = self.nodes.get(&nid) else {
+                        continue;
+                    };
+                    if l >= neighbor_node.layer_neighbors.len() {
+                        continue;
                     }
+                    let mut connections = neighbor_node.layer_neighbors[l].clone();
+                    connections.push(id);
+                    if connections.len() > max_neighbors {
+                        // Prune by geometric diversity, including the new reverse
+                        // edge, rather than retaining a cluster of redundant links.
+                        let anchor = &neighbor_node.vector;
+                        let mut ranked: Vec<_> = connections
+                            .into_iter()
+                            .filter_map(|candidate| {
+                                let candidate_vector = if candidate == id {
+                                    vector
+                                } else {
+                                    &self.nodes.get(&candidate)?.vector
+                                };
+                                Some((candidate, self.distance(anchor, candidate_vector)))
+                            })
+                            .collect();
+                        ranked.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+                        connections =
+                            self.diverse_neighbors(&ranked, max_neighbors, Some((id, vector)));
+                    }
+                    self.nodes
+                        .get_mut(&nid)
+                        .expect("existing neighbor")
+                        .layer_neighbors[l] = connections;
                 }
 
-                ep = neighbor_ids;
+                // All construction candidates remain entry points for the next
+                // layer; selected outgoing links are a separate bounded subset.
+                ep = candidates
+                    .into_iter()
+                    .map(|(candidate, _)| candidate)
+                    .collect();
             }
 
             if node_level > self.max_level {
@@ -650,11 +820,17 @@ mod tests {
 
         // Search for vector closest to v1
         let query = vec![0.98, 0.02, 0.0];
-        let neighbors = index.search_knn(&query, 2, DistanceMetric::Cosine).expect("KNN search");
+        let neighbors = index
+            .search_knn(&query, 2, DistanceMetric::Cosine)
+            .expect("KNN search");
 
         assert_eq!(neighbors.len(), 2);
         let top_ids: Vec<u64> = neighbors.iter().map(|(id, _)| *id).collect();
-        assert!(top_ids.contains(&1) && top_ids.contains(&4), "Expected [1, 4] in top 2, got {:?}", top_ids);
+        assert!(
+            top_ids.contains(&1) && top_ids.contains(&4),
+            "Expected [1, 4] in top 2, got {:?}",
+            top_ids
+        );
     }
 
     #[test]
@@ -678,7 +854,9 @@ mod tests {
 
         // Search for vector closest to v1: v1 must NOT be returned
         let query = vec![1.0, 0.0, 0.0];
-        let results = index.search_knn(&query, 2, DistanceMetric::Cosine).expect("KNN search");
+        let results = index
+            .search_knn(&query, 2, DistanceMetric::Cosine)
+            .expect("KNN search");
         assert_eq!(results[0].0, 2); // v2 is closest non-deleted node
         assert!(!results.iter().any(|(id, _)| *id == 1));
 

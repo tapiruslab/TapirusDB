@@ -1,63 +1,18 @@
-# tapirus-wasm 🦛
+﻿# TapirusDB WASM Crate
 
-> **"One Engine. Four Models. Zero Data Sprawl."**  
-> **TapirusDB in WebAssembly** — The Pure Safe-Rust Multi-Model Database & AI Agent Memory Engine for Web Browsers, Node.js, and Cloudflare Workers.  
-> *Architected by **Ahmad Faiz***
+This crate exposes TapirusDB functionality through `wasm-bindgen`. A generated package includes JavaScript glue and the compiled WebAssembly module; the raw `.wasm` file is not a drop-in replacement for that package.
 
-[![npm version](https://img.shields.io/npm/v/tapirus-wasm.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/tapirus-wasm)
-[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-purple.svg?style=flat-square)](https://github.com/tapiruslab/TapirusDB/blob/main/LICENSE)
-[![Wasm](https://img.shields.io/badge/WebAssembly-wasm32-blue.svg?style=flat-square&logo=webassembly)](https://webassembly.org/)
-[![Docs](https://img.shields.io/badge/docs-tapirusdb.com-2b3a7e.svg?style=flat-square)](https://tapirusdb.com/docs.html)
+The standalone Rust workspace runs SQL and AI memory through this package. It saves committed snapshots in IndexedDB and opens/exports the native `.tapir` format. The larger React Studio also contains a separate TypeScript demo; use its Rust workspace link for the actual native-format engine.
 
-## Features
-- **Runs Client-Side in the Browser:** Zero server setup, zero backend database costs.
-- **Quad-Model Architecture:** Embedded SQL relational tables, JSON collections, native vector similarity search, and property graphs.
-- **AI Agent Memory & GraphRAG:** Built-in BM25 full-text indexing, associative memory, and Reciprocal Rank Fusion (RRF).
-- **Ultra-Lightweight:** Loads fast and runs with `< 4 MB RAM` consumption.
-
-## Quick Start (Browser / WebAssembly)
-
-```javascript
-import init, { TapirusWasm } from 'tapirus-wasm';
-
-async function run() {
-  // Initialize Wasm module
-  await init();
-
-  // Create in-memory database
-  const db = new TapirusWasm();
-
-  // Execute SQL
-  db.execute("CREATE TABLE concepts (id INTEGER PRIMARY KEY, title TEXT);");
-  db.execute("INSERT INTO concepts (id, title) VALUES (1, 'Neural Networks');");
-
-  // Query SQL returning JSON
-  const jsonResults = db.query_json("SELECT * FROM concepts;");
-  console.log(JSON.parse(jsonResults));
-
-  // Store in AI Agent Memory
-  db.memory_remember("User prefers concise technical answers", 0.9, "preferences,tech");
-  const memories = db.memory_recall_json("technical answers", 3);
-  console.log("Recalled:", JSON.parse(memories));
-}
-
-run();
+```sh
+rustup target add wasm32-unknown-unknown
+# Install wasm-bindgen-cli matching Cargo.lock, then run from the repo root:
+node scripts/build-wasm.js
+node scripts/build-node-sdk.js --debug
+node scripts/test-wasm.mjs
+node scripts/test-browser-workspace.mjs
 ```
 
-## Building from Source
+`scripts/build-wasm.js` enforces matching wasm-bindgen versions and generates both JavaScript glue and WASM. `WASM_BINDGEN_BIN` can name a local CLI executable. `scripts/package-browser-workspace.js` prepares Studio's standalone Rust workspace; `--site` prepares the local website's Studio entry.
 
-To compile the WebAssembly package locally:
-
-```bash
-# Build for web browsers
-wasm-pack build --target web --out-dir pkg
-
-# Build for Node.js
-wasm-pack build --target nodejs --out-dir pkg
-
-# Build for bundlers (Webpack, Vite, Rollup)
-wasm-pack build --target bundler --out-dir pkg
-```
-
-## License
-Business Source License 1.1 (BUSL-1.1). See the root [LICENSE](https://github.com/tapiruslab/TapirusDB/blob/main/LICENSE) for details.
+The runtime test checks typed SQL parameters, AI retrieval, WASM reopen, and native SDK → WASM → native file compatibility. The browser test checks bound SQL, rollback, text escaping, IndexedDB reload and persisted source retrieval. Browser copies are unencrypted; use downloaded backups and the native SDK for encrypted files. Resource and performance measurements are workload specific.

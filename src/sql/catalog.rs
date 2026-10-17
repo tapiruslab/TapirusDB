@@ -2,7 +2,7 @@
 //!
 //! Master schema records are persisted in the B+Tree rooted at Page 1 (after the 100-byte DatabaseHeader).
 
-use crate::btree::{engine, BTreeStorage};
+use crate::btree::{BTreeStorage, engine};
 use crate::error::{Error, Result};
 use crate::pager::{PageId, Pager};
 use crate::traits::Value;
@@ -163,7 +163,6 @@ impl ColumnDef {
     }
 }
 
-
 /// Complete definition of a table stored in TapirusDB
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableDef {
@@ -322,7 +321,9 @@ impl Catalog {
                 if cell.row_id >= catalog.next_table_id {
                     catalog.next_table_id = cell.row_id + 1;
                 }
-                catalog.tables.insert(table_def.name.to_lowercase(), table_def);
+                catalog
+                    .tables
+                    .insert(table_def.name.to_lowercase(), table_def);
             } else if let Ok(view_def) = serde_json::from_slice::<ViewDef>(&cell.payload) {
                 if cell.row_id >= catalog.next_table_id {
                     catalog.next_table_id = cell.row_id + 1;
@@ -332,7 +333,9 @@ impl Catalog {
                 if cell.row_id >= catalog.next_table_id {
                     catalog.next_table_id = cell.row_id + 1;
                 }
-                catalog.indexes.insert(index_def.name.to_lowercase(), index_def);
+                catalog
+                    .indexes
+                    .insert(index_def.name.to_lowercase(), index_def);
             }
         }
 
@@ -395,7 +398,12 @@ impl Catalog {
     }
 
     /// Add a column to an existing table (ALTER TABLE ADD COLUMN) and persist update to Page 1
-    pub fn add_column(&mut self, pager: &mut Pager, table_name: &str, col_def: ColumnDef) -> Result<()> {
+    pub fn add_column(
+        &mut self,
+        pager: &mut Pager,
+        table_name: &str,
+        col_def: ColumnDef,
+    ) -> Result<()> {
         let name_lower = table_name.to_lowercase();
         let table_def = self
             .tables
@@ -418,8 +426,9 @@ impl Catalog {
         for cell in cells {
             if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload) {
                 if td.name.eq_ignore_ascii_case(table_name) {
-                    let payload = serde_json::to_vec(&updated_def)
-                        .map_err(|e| Error::Corrupted(format!("Failed to serialize updated table def: {e}")))?;
+                    let payload = serde_json::to_vec(&updated_def).map_err(|e| {
+                        Error::Corrupted(format!("Failed to serialize updated table def: {e}"))
+                    })?;
                     btree.delete(pager, 1, cell.row_id)?;
                     btree.insert(pager, 1, cell.row_id, &payload)?;
                     break;
@@ -438,7 +447,12 @@ impl Catalog {
     }
 
     /// Rename an existing table (ALTER TABLE RENAME TO) and persist update to Page 1
-    pub fn rename_table(&mut self, pager: &mut Pager, old_name: &str, new_name: &str) -> Result<()> {
+    pub fn rename_table(
+        &mut self,
+        pager: &mut Pager,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<()> {
         let old_lower = old_name.to_lowercase();
         let new_lower = new_name.to_lowercase();
 
@@ -446,7 +460,9 @@ impl Catalog {
             return Err(Error::TableNotFound(old_name.to_string()));
         }
         if self.tables.contains_key(&new_lower) || self.views.contains_key(&new_lower) {
-            return Err(Error::TableExists(format!("Table or view '{new_name}' already exists")));
+            return Err(Error::TableExists(format!(
+                "Table or view '{new_name}' already exists"
+            )));
         }
 
         let mut table_def = self.tables.remove(&old_lower).unwrap();
@@ -459,8 +475,9 @@ impl Catalog {
         for cell in cells {
             if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload) {
                 if td.name.eq_ignore_ascii_case(old_name) {
-                    let payload = serde_json::to_vec(&updated_def)
-                        .map_err(|e| Error::Corrupted(format!("Failed to serialize updated table def: {e}")))?;
+                    let payload = serde_json::to_vec(&updated_def).map_err(|e| {
+                        Error::Corrupted(format!("Failed to serialize updated table def: {e}"))
+                    })?;
                     btree.delete(pager, 1, cell.row_id)?;
                     btree.insert(pager, 1, cell.row_id, &payload)?;
                     break;
@@ -480,7 +497,13 @@ impl Catalog {
     }
 
     /// Rename a column in an existing table (ALTER TABLE RENAME COLUMN) and persist update to Page 1
-    pub fn rename_column(&mut self, pager: &mut Pager, table_name: &str, old_col: &str, new_col: &str) -> Result<()> {
+    pub fn rename_column(
+        &mut self,
+        pager: &mut Pager,
+        table_name: &str,
+        old_col: &str,
+        new_col: &str,
+    ) -> Result<()> {
         let name_lower = table_name.to_lowercase();
         let table_def = self
             .tables
@@ -506,8 +529,9 @@ impl Catalog {
         for cell in cells {
             if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload) {
                 if td.name.eq_ignore_ascii_case(table_name) {
-                    let payload = serde_json::to_vec(&updated_def)
-                        .map_err(|e| Error::Corrupted(format!("Failed to serialize updated table def: {e}")))?;
+                    let payload = serde_json::to_vec(&updated_def).map_err(|e| {
+                        Error::Corrupted(format!("Failed to serialize updated table def: {e}"))
+                    })?;
                     btree.delete(pager, 1, cell.row_id)?;
                     btree.insert(pager, 1, cell.row_id, &payload)?;
                     break;
@@ -526,7 +550,12 @@ impl Catalog {
     }
 
     /// Drop a column from an existing table (ALTER TABLE DROP COLUMN) and persist update to Page 1
-    pub fn drop_column(&mut self, pager: &mut Pager, table_name: &str, col_name: &str) -> Result<()> {
+    pub fn drop_column(
+        &mut self,
+        pager: &mut Pager,
+        table_name: &str,
+        col_name: &str,
+    ) -> Result<()> {
         let name_lower = table_name.to_lowercase();
         let table_def = self
             .tables
@@ -574,8 +603,9 @@ impl Catalog {
         for cell in cells {
             if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload) {
                 if td.name.eq_ignore_ascii_case(table_name) {
-                    let payload = serde_json::to_vec(&updated_def)
-                        .map_err(|e| Error::Corrupted(format!("Failed to serialize updated table def: {e}")))?;
+                    let payload = serde_json::to_vec(&updated_def).map_err(|e| {
+                        Error::Corrupted(format!("Failed to serialize updated table def: {e}"))
+                    })?;
                     btree.delete(pager, 1, cell.row_id)?;
                     btree.insert(pager, 1, cell.row_id, &payload)?;
                     break;
@@ -626,10 +656,16 @@ impl Catalog {
     pub fn create_view(&mut self, pager: &mut Pager, view_def: ViewDef) -> Result<()> {
         let name_lower = view_def.name.to_lowercase();
         if self.tables.contains_key(&name_lower) {
-            return Err(Error::TableExists(format!("Table with name '{}' already exists", view_def.name)));
+            return Err(Error::TableExists(format!(
+                "Table with name '{}' already exists",
+                view_def.name
+            )));
         }
         if self.views.contains_key(&name_lower) {
-            return Err(Error::TableExists(format!("View '{}' already exists", view_def.name)));
+            return Err(Error::TableExists(format!(
+                "View '{}' already exists",
+                view_def.name
+            )));
         }
 
         let entry_id = self.next_table_id;
@@ -714,7 +750,9 @@ impl Catalog {
 
     /// Check whether a table has any secondary indexes without allocating
     pub fn has_table_indexes(&self, table: &str) -> bool {
-        self.indexes.values().any(|idx| idx.table.eq_ignore_ascii_case(table))
+        self.indexes
+            .values()
+            .any(|idx| idx.table.eq_ignore_ascii_case(table))
     }
 
     /// Get all index definitions
@@ -736,7 +774,10 @@ impl Catalog {
     pub fn create_index(&mut self, pager: &mut Pager, index_def: IndexDef) -> Result<()> {
         let name_lower = index_def.name.to_lowercase();
         if self.indexes.contains_key(&name_lower) {
-            return Err(Error::TableExists(format!("Index '{}' already exists", index_def.name)));
+            return Err(Error::TableExists(format!(
+                "Index '{}' already exists",
+                index_def.name
+            )));
         }
 
         let entry_id = self.next_table_id;
@@ -821,10 +862,14 @@ mod tests {
         let table_root = pager.allocate_page().expect("Alloc table root");
         let mut root_buf = vec![0u8; 4096];
         engine::init_leaf_page(&mut root_buf, table_root);
-        pager.write_page(table_root, &root_buf).expect("Init table root");
+        pager
+            .write_page(table_root, &root_buf)
+            .expect("Init table root");
 
         let table_def = TableDef::new("documents".to_string(), table_root, cols);
-        catalog.create_table(&mut pager, table_def.clone()).expect("Create table");
+        catalog
+            .create_table(&mut pager, table_def.clone())
+            .expect("Create table");
 
         assert!(catalog.table_exists("DOCUMENTS"));
         let retrieved = catalog.get_table("documents").unwrap();

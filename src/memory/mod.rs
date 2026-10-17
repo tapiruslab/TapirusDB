@@ -5,15 +5,23 @@
 //! - **Hybrid Retrieval**: Dense Vector Similarity + Pure Safe-Rust BM25 Lexical Keyword Search.
 //! - **Temporal Recency Decay**: Time-decay scoring ($e^{-\lambda \Delta t}$) with customizable half-life.
 //! - **Graph Memory Association**: Associative links connecting related memories and entities.
-//! - **Edge Microprocessor Optimization**: Ultra-low memory footprint (< 4 MB) for low-end CPUs and WASM.
+//! - Configurable admission limits and indexed retrieval for native/edge workloads.
 
 pub mod bm25;
 pub mod embedder;
 
-pub use bm25::{reciprocal_rank_fusion, Bm25Index, Bm25Params};
-pub use embedder::{DeterministicHashEmbedder, EmbeddingEngine, HttpEmbeddingEngine};
+pub use bm25::{Bm25Index, Bm25Params, reciprocal_rank_fusion};
+pub use embedder::{
+    DeterministicHashEmbedder, EmbeddingEngine, EmbeddingProvider, HttpEmbeddingEngine,
+};
 
 use crate::error::{Error, Result};
+
+pub mod api;
+mod config;
+mod indexed;
+pub use api::*;
+pub use config::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -44,6 +52,27 @@ pub struct MemoryEntry {
     /// Session or thread conversation identifier (e.g. "chat_123")
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Application document identifier, unique within namespace and session.
+    #[serde(default)]
+    pub external_id: Option<String>,
+    /// Application's source revision, independent of the database revision.
+    #[serde(default)]
+    pub source_version: Option<String>,
+    /// Stable embedding model identifier; absent denotes the legacy vector space.
+    #[serde(default)]
+    pub embedding_model: Option<String>,
+    /// Absolute Unix expiry time; expired sources are excluded from retrieval.
+    #[serde(default)]
+    pub expires_at: Option<u64>,
+    /// Monotonic document revision for conditional updates.
+    #[serde(default)]
+    pub revision: u64,
+    /// Last source update time in Unix seconds.
+    #[serde(default)]
+    pub updated_at: u64,
+    /// SHA-256 of the original UTF-8 content.
+    #[serde(default)]
+    pub content_hash: String,
 }
 
 /// Parameters and weights controlling multi-modal memory recall
@@ -92,13 +121,7 @@ impl Default for MemoryRecallFilter {
 
 impl MemoryRecallFilter {
     /// Configure custom weights for vector, bm25, recency, and importance
-    pub fn with_weights(
-        mut self,
-        vector: f32,
-        bm25: f32,
-        recency: f32,
-        importance: f32,
-    ) -> Self {
+    pub fn with_weights(mut self, vector: f32, bm25: f32, recency: f32, importance: f32) -> Self {
         self.vector_weight = vector;
         self.bm25_weight = bm25;
         self.recency_weight = recency;
@@ -134,7 +157,7 @@ pub struct MemoryRecallResult {
     pub combined_score: f32,
     /// Semantic vector similarity component $[0.0, 1.0]$
     pub semantic_score: f32,
-    /// BM25 lexical keyword component $[0.0, 1.0]$
+    /// Raw BM25 lexical keyword score (not a probability or bounded to one).
     pub lexical_score: f32,
     /// Temporal recency decay score $[0.0, 1.0]$
     pub recency_score: f32,
@@ -143,11 +166,19 @@ pub struct MemoryRecallResult {
 }
 
 /// The embedded AI Agent Memory Engine
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEngine {
     entries: HashMap<u64, MemoryEntry>,
     bm25: Bm25Index,
     next_id: u64,
+    #[serde(skip)]
+    runtime: indexed::MemoryRuntime,
+}
+
+impl Default for MemoryEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MemoryEngine {
@@ -157,10 +188,15 @@ impl MemoryEngine {
             entries: HashMap::new(),
             bm25: Bm25Index::new(),
             next_id: 1,
+            runtime: indexed::MemoryRuntime::default(),
         }
     }
 
     /// Store a new memory into the engine with optional multi-agent namespace and session scope
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the public scoped-memory API"
+    )]
     pub fn remember_scoped(
         &mut self,
         content: &str,
@@ -186,22 +222,45 @@ impl MemoryEngine {
             associations: Vec::new(),
             namespace: namespace.map(|s| s.to_string()),
             session_id: session_id.map(|s| s.to_string()),
+            external_id: None,
+            source_version: None,
+            embedding_model: None,
+            expires_at: None,
+            revision: 1,
+            updated_at: now_ts,
+            content_hash: indexed::content_hash(content),
         };
 
         // Index in BM25
         self.bm25.index_document(id, content);
         self.entries.insert(id, entry);
+        self.runtime.changed(id, self.entries.get(&id));
 
         id
     }
 
     /// Restore a persisted memory entry from disk storage
-    pub fn restore_entry(&mut self, entry: MemoryEntry) {
+    pub fn restore_entry(&mut self, mut entry: MemoryEntry) -> Result<()> {
+        if entry.id == 0 || entry.id == u64::MAX {
+            return Err(Error::Corrupted("Invalid persisted memory ID".into()));
+        }
+        if entry.content_hash.is_empty() {
+            entry.content_hash = indexed::content_hash(&entry.content);
+        }
+        if entry.revision == 0 {
+            entry.revision = 1;
+        }
+        if entry.updated_at == 0 {
+            entry.updated_at = entry.timestamp;
+        }
+        self.validate_entry(&entry)?;
         if entry.id >= self.next_id {
             self.next_id = entry.id + 1;
         }
         self.bm25.index_document(entry.id, &entry.content);
+        self.runtime.changed(entry.id, Some(&entry));
         self.entries.insert(entry.id, entry);
+        Ok(())
     }
 
     /// Store a new memory into the engine (default namespace)
@@ -242,6 +301,9 @@ impl MemoryEngine {
     /// Retrieve a single memory by ID and increment its access count
     pub fn get_memory_mut(&mut self, id: u64, now_ts: u64) -> Option<&mut MemoryEntry> {
         if let Some(entry) = self.entries.get_mut(&id) {
+            if entry.expires_at.is_some_and(|expiry| now_ts >= expiry) {
+                return None;
+            }
             entry.last_accessed = now_ts;
             entry.access_count += 1;
             Some(entry)
@@ -292,6 +354,9 @@ impl MemoryEngine {
 
         // 2. Score candidate memories
         for entry in self.entries.values() {
+            if entry.expires_at.is_some_and(|expiry| now_ts >= expiry) {
+                continue;
+            }
             // Check namespace filter
             if let Some(ref req_ns) = filter.namespace {
                 match &entry.namespace {
@@ -359,9 +424,8 @@ impl MemoryEngine {
         }
 
         // Sort descending by combined score
-        scored_candidates.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        scored_candidates
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // 3. Graph Associative Expansion
         if filter.graph_expansion_hops > 0 && !scored_candidates.is_empty() {
@@ -370,13 +434,17 @@ impl MemoryEngine {
 
             // Take the top candidate memories and expand their associations
             let base_count = scored_candidates.len().min(limit);
-            for i in 0..base_count {
-                let parent_id = scored_candidates[i].0;
-                let parent_score = scored_candidates[i].1;
+            for &(parent_id, parent_score, ..) in scored_candidates.iter().take(base_count) {
                 if let Some(parent_entry) = self.entries.get(&parent_id) {
                     for &assoc_id in &parent_entry.associations {
                         if !existing_ids.contains(&assoc_id) {
                             if let Some(assoc_entry) = self.entries.get(&assoc_id) {
+                                if assoc_entry
+                                    .expires_at
+                                    .is_some_and(|expiry| now_ts >= expiry)
+                                {
+                                    continue;
+                                }
                                 if let Some(ref req_ns) = filter.namespace {
                                     match &assoc_entry.namespace {
                                         Some(ns) if ns.eq_ignore_ascii_case(req_ns) => {}
@@ -407,19 +475,20 @@ impl MemoryEngine {
             }
 
             scored_candidates.extend(associative_candidates);
-            scored_candidates.sort_by(|a, b| {
-                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            scored_candidates
+                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         }
 
         scored_candidates.truncate(limit);
 
         // Hydrate and update access metrics only for the winning top-K memories
         let mut final_results = Vec::with_capacity(scored_candidates.len());
-        for (id, combined_score, semantic_score, lexical_score, recency_score, is_associative) in scored_candidates {
+        for (id, combined_score, semantic_score, lexical_score, recency_score, is_associative) in
+            scored_candidates
+        {
             if let Some(entry) = self.entries.get_mut(&id) {
                 entry.last_accessed = now_ts;
-                entry.access_count += 1;
+                entry.access_count = entry.access_count.saturating_add(1);
                 final_results.push(MemoryRecallResult {
                     entry: entry.clone(),
                     combined_score,
@@ -524,6 +593,7 @@ impl MemoryEngine {
         for &id in &to_remove {
             self.entries.remove(&id);
             self.bm25.remove_document(id);
+            self.runtime.changed(id, None);
         }
 
         // Clean up associations in remaining entries
@@ -541,24 +611,20 @@ impl MemoryEngine {
         half_life_seconds: u64,
         now_ts: u64,
     ) -> usize {
-        self.prune_decayed_ids_at(decay_threshold, half_life_seconds, now_ts).len()
+        self.prune_decayed_ids_at(decay_threshold, half_life_seconds, now_ts)
+            .len()
     }
 
     /// Prune memories whose retention score falls below `decay_threshold` (alias for prune_decayed_at)
-    pub fn prune(
-        &mut self,
-        decay_threshold: f32,
-        half_life_seconds: u64,
-        now_ts: u64,
-    ) -> usize {
+    pub fn prune(&mut self, decay_threshold: f32, half_life_seconds: u64, now_ts: u64) -> usize {
         self.prune_decayed_at(decay_threshold, half_life_seconds, now_ts)
     }
-
 
     /// Explicitly remove and forget a memory by ID, purging it from BM25 and associative links
     pub fn forget(&mut self, id: u64) -> bool {
         if self.entries.remove(&id).is_some() {
             self.bm25.remove_document(id);
+            self.runtime.changed(id, None);
             for entry in self.entries.values_mut() {
                 entry.associations.retain(|&assoc_id| assoc_id != id);
             }
@@ -585,19 +651,19 @@ pub fn cosine_similarity(u: &[f32], v: &[f32]) -> f32 {
         return 0.0;
     }
 
-    let mut dot = 0.0f32;
-    let mut norm_u = 0.0f32;
-    let mut norm_v = 0.0f32;
+    let mut dot = 0.0f64;
+    let mut norm_u = 0.0f64;
+    let mut norm_v = 0.0f64;
 
     for i in 0..u.len() {
-        dot += u[i] * v[i];
-        norm_u += u[i] * u[i];
-        norm_v += v[i] * v[i];
+        dot += f64::from(u[i]) * f64::from(v[i]);
+        norm_u += f64::from(u[i]).powi(2);
+        norm_v += f64::from(v[i]).powi(2);
     }
 
     let denom = norm_u.sqrt() * norm_v.sqrt();
     if denom > 1e-8 {
-        (dot / denom).clamp(-1.0, 1.0)
+        (dot / denom).clamp(-1.0, 1.0) as f32
     } else {
         0.0
     }
@@ -653,11 +719,23 @@ mod tests {
         let half_life = 86400; // 1 day half life
 
         // Store old memory (7 days ago) with medium importance
-        let _id_old = engine.remember("Saw an interesting article on databases", None, 0.5, &[], t0);
+        let _id_old = engine.remember(
+            "Saw an interesting article on databases",
+            None,
+            0.5,
+            &[],
+            t0,
+        );
 
         // Store new memory (just now) with same importance
         let t_now = t0 + 7 * 86400;
-        let id_new = engine.remember("Saw an interesting article on databases", None, 0.5, &[], t_now);
+        let id_new = engine.remember(
+            "Saw an interesting article on databases",
+            None,
+            0.5,
+            &[],
+            t_now,
+        );
 
         let filter = MemoryRecallFilter::default()
             .with_weights(0.0, 0.4, 0.6, 0.0) // Give high weight to recency
@@ -675,8 +753,20 @@ mod tests {
         let mut engine = MemoryEngine::new();
         let now = 1_000_000;
 
-        let id1 = engine.remember("Alex Chen is the architect of TapirusDB", None, 0.9, &[], now);
-        let id2 = engine.remember("TapirusDB uses ChaCha20-Poly1305 AEAD page encryption", None, 0.8, &[], now);
+        let id1 = engine.remember(
+            "Alex Chen is the architect of TapirusDB",
+            None,
+            0.9,
+            &[],
+            now,
+        );
+        let id2 = engine.remember(
+            "TapirusDB uses ChaCha20-Poly1305 AEAD page encryption",
+            None,
+            0.8,
+            &[],
+            now,
+        );
 
         engine.associate(id1, id2).expect("Associate memories");
 

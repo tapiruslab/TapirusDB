@@ -16,6 +16,10 @@ pub enum Error {
     #[error("Invalid magic bytes: file is not a valid TapirusDB database")]
     InvalidMagic,
 
+    /// File format requires a newer/different engine.
+    #[error("Unsupported TapirusDB file format version {0}")]
+    UnsupportedFormat(u16),
+
     /// Page size is invalid (must be power of 2 between 512 and 65536)
     #[error("Invalid page size {0}: must be power of 2 between 512 and 65536")]
     InvalidPageSize(u16),

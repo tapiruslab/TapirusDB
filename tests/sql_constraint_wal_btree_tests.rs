@@ -35,7 +35,10 @@ fn test_not_like_operator_evaluation() {
         .expect("Query NOT LIKE");
 
     assert_eq!(rows.len(), 1, "Only Bob should match NOT LIKE 'active%'");
-    assert_eq!(rows[0].get_value("name").unwrap(), &Value::Text("Bob".into()));
+    assert_eq!(
+        rows[0].get_value("name").unwrap(),
+        &Value::Text("Bob".into())
+    );
 
     // 2. Query WHERE name NOT LIKE 'C%'
     let rows_c = conn
@@ -97,7 +100,10 @@ fn test_primary_key_duplicate_constraint_violation() {
         .query("SELECT owner FROM accounts WHERE id = 10;")
         .expect("Query account");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get_value("owner").unwrap(), &Value::Text("Alice".into()));
+    assert_eq!(
+        rows[0].get_value("owner").unwrap(),
+        &Value::Text("Alice".into())
+    );
 }
 
 #[test]
@@ -125,7 +131,10 @@ fn test_auto_increment_sync_after_explicit_pk_insert() {
         Value::Integer(i) => *i as u64,
         other => panic!("Expected Integer id, got: {other:?}"),
     };
-    assert_eq!(assigned_id, 101, "Auto-increment should continue after highest explicit PK");
+    assert_eq!(
+        assigned_id, 101,
+        "Auto-increment should continue after highest explicit PK"
+    );
 }
 
 #[test]
@@ -141,7 +150,11 @@ fn test_sum_aggregate_null_on_empty_and_null_set() {
         .expect("Query SUM on empty table");
     assert_eq!(rows_empty.len(), 1);
     let val_empty = rows_empty[0].get_value("SUM(amount)").unwrap();
-    assert_eq!(val_empty, &Value::Null, "SUM on empty dataset must return NULL");
+    assert_eq!(
+        val_empty,
+        &Value::Null,
+        "SUM on empty dataset must return NULL"
+    );
 
     // 2. Table with only NULL amounts
     conn.execute("INSERT INTO orders VALUES (1, NULL);")
@@ -154,7 +167,11 @@ fn test_sum_aggregate_null_on_empty_and_null_set() {
         .expect("Query SUM on all-NULL dataset");
     assert_eq!(rows_nulls.len(), 1);
     let val_nulls = rows_nulls[0].get_value("SUM(amount)").unwrap();
-    assert_eq!(val_nulls, &Value::Null, "SUM on all-NULL dataset must return NULL");
+    assert_eq!(
+        val_nulls,
+        &Value::Null,
+        "SUM on all-NULL dataset must return NULL"
+    );
 
     // 3. Table with valid numbers + NULL
     conn.execute("INSERT INTO orders VALUES (3, 50.5);")
@@ -249,8 +266,13 @@ fn test_btree_interior_page_split_massive_insert() {
     }
 
     // Verify total count
-    let count_rows = conn.query("SELECT COUNT(*) FROM logs;").expect("Count logs");
-    assert_eq!(count_rows[0].get_value("COUNT(*)").unwrap(), &Value::Integer(1200));
+    let count_rows = conn
+        .query("SELECT COUNT(*) FROM logs;")
+        .expect("Count logs");
+    assert_eq!(
+        count_rows[0].get_value("COUNT(*)").unwrap(),
+        &Value::Integer(1200)
+    );
 }
 
 #[test]
@@ -280,7 +302,9 @@ fn test_wal_checkpoint_isolation_during_active_transaction() {
         // Commit transaction
         conn.commit().expect("Commit transaction");
 
-        let rows = conn.query("SELECT COUNT(*) FROM ledger;").expect("Count ledger");
+        let rows = conn
+            .query("SELECT COUNT(*) FROM ledger;")
+            .expect("Count ledger");
         assert_eq!(rows[0].get_value("COUNT(*)").unwrap(), &Value::Integer(50));
     }
 

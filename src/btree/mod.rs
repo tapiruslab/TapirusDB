@@ -76,11 +76,7 @@ pub struct PageHeader {
 impl PageHeader {
     /// Standard header size in bytes (8 for Leaf, 12 for Interior)
     pub fn header_size(&self) -> usize {
-        if self.page_type.is_interior() {
-            12
-        } else {
-            8
-        }
+        if self.page_type.is_interior() { 12 } else { 8 }
     }
 
     /// Serialize header to byte vector
@@ -103,7 +99,9 @@ impl PageHeader {
     /// Parse header from byte slice
     pub fn from_bytes(slice: &[u8]) -> Result<Self> {
         if slice.len() < 8 {
-            return Err(Error::Corrupted("Page header slice too short (<8 bytes)".into()));
+            return Err(Error::Corrupted(
+                "Page header slice too short (<8 bytes)".into(),
+            ));
         }
 
         let page_type = PageType::from_u8(slice[0])?;
@@ -114,7 +112,9 @@ impl PageHeader {
 
         let right_child = if page_type.is_interior() {
             if slice.len() < 12 {
-                return Err(Error::Corrupted("Interior page header too short (<12 bytes)".into()));
+                return Err(Error::Corrupted(
+                    "Interior page header too short (<12 bytes)".into(),
+                ));
             }
             let child = u32::from_le_bytes([slice[8], slice[9], slice[10], slice[11]]);
             Some(child)
@@ -192,7 +192,9 @@ impl TableLeafCell {
 
         let payload_len = payload_size as usize;
         if slice.len() < offset + payload_len + 4 {
-            return Err(Error::Corrupted("Truncated cell payload or overflow pointer".into()));
+            return Err(Error::Corrupted(
+                "Truncated cell payload or overflow pointer".into(),
+            ));
         }
 
         let payload = slice[offset..offset + payload_len].to_vec();
@@ -236,7 +238,9 @@ impl TableInteriorCell {
     /// Parse cell from byte slice
     pub fn from_bytes(slice: &[u8]) -> Result<Self> {
         if slice.len() < 4 {
-            return Err(Error::Corrupted("Interior cell slice too short (<4 bytes)".into()));
+            return Err(Error::Corrupted(
+                "Interior cell slice too short (<4 bytes)".into(),
+            ));
         }
         let left_child = u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]);
         let (row_id, _) = decode_varint(&slice[4..])?;
@@ -349,20 +353,31 @@ mod tests {
 
         // Insert 100 rows to force multiple page splits (a 4KB page holds ~35-40 records of 100B)
         for i in 1..=100u64 {
-            let payload = format!("Record #{i} with payload padding to test page split threshold").into_bytes();
-            btree.insert(&mut pager, table_root, i, &payload).expect("Insert record");
+            let payload = format!("Record #{i} with payload padding to test page split threshold")
+                .into_bytes();
+            btree
+                .insert(&mut pager, table_root, i, &payload)
+                .expect("Insert record");
         }
 
         // Search each inserted record
         for i in 1..=100u64 {
-            let res = btree.search(&mut pager, table_root, i).expect("Search record");
+            let res = btree
+                .search(&mut pager, table_root, i)
+                .expect("Search record");
             assert!(res.is_some(), "Record {i} must be found");
-            let expected = format!("Record #{i} with payload padding to test page split threshold").into_bytes();
+            let expected = format!("Record #{i} with payload padding to test page split threshold")
+                .into_bytes();
             assert_eq!(res.unwrap(), expected);
         }
 
         // Search non-existent record
-        assert!(btree.search(&mut pager, table_root, 9999).unwrap().is_none());
+        assert!(
+            btree
+                .search(&mut pager, table_root, 9999)
+                .unwrap()
+                .is_none()
+        );
 
         // Full sequential scan
         let scanned = btree.scan(&mut pager, table_root).expect("Scan table");
@@ -385,7 +400,9 @@ mod tests {
 
         for i in 1..=10u64 {
             let payload = format!("Payload {i}").into_bytes();
-            btree.insert(&mut pager, table_root, i, &payload).expect("Insert");
+            btree
+                .insert(&mut pager, table_root, i, &payload)
+                .expect("Insert");
         }
 
         // Verify initial state
@@ -402,7 +419,9 @@ mod tests {
         assert!(!scanned_after.iter().any(|c| c.row_id == 5));
 
         // Re-delete 5: should return false
-        let re_del = btree.delete(&mut pager, table_root, 5).expect("Re-delete 5");
+        let re_del = btree
+            .delete(&mut pager, table_root, 5)
+            .expect("Re-delete 5");
         assert!(!re_del, "Deleting already deleted key should return false");
 
         // Verify other keys intact

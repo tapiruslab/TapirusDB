@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tapirus::pager::remote::{MockRemoteRangeStorage, RemotePager, S3StorageConfig};
-use tapirus::pager::{DatabaseHeader, DATABASE_HEADER_SIZE};
+use tapirus::pager::{DATABASE_HEADER_SIZE, DatabaseHeader};
 use tapirus::{Connection, GraphRagConfig, Result};
 
 #[test]
@@ -49,11 +49,15 @@ fn test_graph_rag_pq_seed_and_micro_hop_traversal() -> Result<()> {
         .with_limit(4)
         .with_weights(0.5, 0.3, 0.2);
 
-    let rag_context = conn.graph_rag_query("Relativity and Physics", Some(&query_vector), &config)?;
+    let rag_context =
+        conn.graph_rag_query("Relativity and Physics", Some(&query_vector), &config)?;
 
     // Verify seed discovery & retrieval
     assert_eq!(rag_context.query, "Relativity and Physics");
-    assert!(!rag_context.results.is_empty(), "GraphRAG should return matched entities");
+    assert!(
+        !rag_context.results.is_empty(),
+        "GraphRAG should return matched entities"
+    );
 
     // The top seed should be Node 1 or Node 2 (closest to query vector)
     let top_match = &rag_context.results[0];
@@ -61,15 +65,23 @@ fn test_graph_rag_pq_seed_and_micro_hop_traversal() -> Result<()> {
         top_match.entity_id == 1 || top_match.entity_id == 2,
         "Top entity should be Einstein or Relativity"
     );
-    assert_eq!(top_match.hop_distance, 0, "Seed node should have 0 hop distance");
+    assert_eq!(
+        top_match.hop_distance, 0,
+        "Seed node should have 0 hop distance"
+    );
 
     // Verify micro-hop expansion reached connected entities (hop distance 1)
     let has_connected_hop = rag_context.results.iter().any(|r| r.hop_distance == 1);
-    assert!(has_connected_hop, "Micro-hop traversal should discover 1st degree neighbors");
+    assert!(
+        has_connected_hop,
+        "Micro-hop traversal should discover 1st degree neighbors"
+    );
 
     // Verify prompt synthesis
     assert!(
-        rag_context.prompt_context.contains("Verified Knowledge Graph Context"),
+        rag_context
+            .prompt_context
+            .contains("Verified Knowledge Graph Context"),
         "Context must include header"
     );
     assert!(
@@ -190,20 +202,39 @@ fn test_graph_rag_tenant_and_acl_filtering() -> Result<()> {
         .with_tenant("cyberdyne")
         .with_roles(["admin", "analyst"]);
 
-    let res_cyberdyne = conn.graph_rag_query("Genesis project", Some(&query_vector), &config_cyberdyne)?;
+    let res_cyberdyne =
+        conn.graph_rag_query("Genesis project", Some(&query_vector), &config_cyberdyne)?;
     let retrieved_ids: Vec<u64> = res_cyberdyne.results.iter().map(|r| r.entity_id).collect();
 
     // Node 4 (Weyland) has highest cosine similarity (0.95 vs 0.93), but MUST be strictly blocked!
-    assert!(!retrieved_ids.contains(&4), "Tenant Weyland Node 4 must not leak into Cyberdyne context");
-    assert!(!retrieved_ids.contains(&5), "Tenant Weyland Node 5 must not leak into Cyberdyne context");
-    assert!(retrieved_ids.contains(&1), "Cyberdyne Node 1 should be retrieved");
-    assert!(retrieved_ids.contains(&2), "Cyberdyne Node 2 should be retrieved");
+    assert!(
+        !retrieved_ids.contains(&4),
+        "Tenant Weyland Node 4 must not leak into Cyberdyne context"
+    );
+    assert!(
+        !retrieved_ids.contains(&5),
+        "Tenant Weyland Node 5 must not leak into Cyberdyne context"
+    );
+    assert!(
+        retrieved_ids.contains(&1),
+        "Cyberdyne Node 1 should be retrieved"
+    );
+    assert!(
+        retrieved_ids.contains(&2),
+        "Cyberdyne Node 2 should be retrieved"
+    );
 
     // Traversal must NOT follow edge (1) -> (4) into unauthorized tenant
     for r in &res_cyberdyne.results {
         for e in &r.related_edges {
-            assert_ne!(e.to_id, 4, "Traversal must not leak cross-tenant edge to node 4");
-            assert_ne!(e.from_id, 4, "Traversal must not leak cross-tenant edge from node 4");
+            assert_ne!(
+                e.to_id, 4,
+                "Traversal must not leak cross-tenant edge to node 4"
+            );
+            assert_ne!(
+                e.from_id, 4,
+                "Traversal must not leak cross-tenant edge from node 4"
+            );
         }
     }
     assert!(res_cyberdyne.prompt_context.contains("Tenant: `cyberdyne`"));
@@ -216,12 +247,25 @@ fn test_graph_rag_tenant_and_acl_filtering() -> Result<()> {
         .with_tenant("weyland")
         .with_roles(["admin", "analyst"]);
 
-    let res_weyland = conn.graph_rag_query("Prometheus mission", Some(&query_vector), &config_weyland)?;
+    let res_weyland =
+        conn.graph_rag_query("Prometheus mission", Some(&query_vector), &config_weyland)?;
     let weyland_ids: Vec<u64> = res_weyland.results.iter().map(|r| r.entity_id).collect();
-    assert!(weyland_ids.contains(&4), "Weyland Node 4 should be retrieved");
-    assert!(weyland_ids.contains(&5), "Weyland Node 5 should be retrieved");
-    assert!(!weyland_ids.contains(&1), "Cyberdyne Node 1 must not appear in Weyland query");
-    assert!(!weyland_ids.contains(&2), "Cyberdyne Node 2 must not appear in Weyland query");
+    assert!(
+        weyland_ids.contains(&4),
+        "Weyland Node 4 should be retrieved"
+    );
+    assert!(
+        weyland_ids.contains(&5),
+        "Weyland Node 5 should be retrieved"
+    );
+    assert!(
+        !weyland_ids.contains(&1),
+        "Cyberdyne Node 1 must not appear in Weyland query"
+    );
+    assert!(
+        !weyland_ids.contains(&2),
+        "Cyberdyne Node 2 must not appear in Weyland query"
+    );
 
     // --- Scenario 3: Role-Based Access Control (Analyst vs Admin) ---
     // User only has "analyst" role. Node 1 requires "admin", so it must be filtered out.
@@ -234,7 +278,10 @@ fn test_graph_rag_tenant_and_acl_filtering() -> Result<()> {
 
     let res_analyst = conn.graph_rag_query("Genesis AI", Some(&query_vector), &config_analyst)?;
     let analyst_ids: Vec<u64> = res_analyst.results.iter().map(|r| r.entity_id).collect();
-    assert!(!analyst_ids.contains(&1), "Admin-only Node 1 must be invisible to analyst role");
+    assert!(
+        !analyst_ids.contains(&1),
+        "Admin-only Node 1 must be invisible to analyst role"
+    );
     assert!(analyst_ids.contains(&2), "Node 2 permits analyst role");
     assert!(analyst_ids.contains(&3), "Node 3 has public visibility");
 
@@ -249,7 +296,10 @@ fn test_graph_rag_tenant_and_acl_filtering() -> Result<()> {
 
     let res_meta = conn.graph_rag_query("space mission", Some(&query_vector), &config_meta)?;
     for r in &res_meta.results {
-        assert!(r.properties.contains("deep_space"), "All results must match metadata filter");
+        assert!(
+            r.properties.contains("deep_space"),
+            "All results must match metadata filter"
+        );
     }
 
     Ok(())

@@ -4,8 +4,8 @@
 //! Primary Key Point Lookup, HNSW Vector Scan, and Join strategies) using I/O page cost,
 //! CPU instruction cost, and table cardinality statistics to pick the optimal execution path.
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Statistical profile of a database table used for cost-based optimization
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,11 +29,10 @@ pub struct TableStats {
 impl TableStats {
     /// Create a new statistical profile with default assumptions
     pub fn new(table_name: &str, total_rows: usize, page_count: usize) -> Self {
-        let avg_size = if total_rows > 0 {
-            (page_count * 4096) / total_rows
-        } else {
-            128
-        };
+        let avg_size = page_count
+            .saturating_mul(4096)
+            .checked_div(total_rows)
+            .unwrap_or(128);
         Self {
             table_name: table_name.to_string(),
             total_rows,
@@ -41,8 +40,8 @@ impl TableStats {
             column_distinct: HashMap::new(),
             column_nulls: HashMap::new(),
             avg_row_size: avg_size.max(16),
-            last_analyzed_epoch_secs: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            last_analyzed_epoch_secs: web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
         }
@@ -160,7 +159,16 @@ impl CostOptimizer {
             startup_cost,
             total_cost,
             estimated_rows: estimated_rows.max(1),
-            plan_detail: format!("SeqScan on {} {}", stats.table_name, CostEstimate { startup_cost, total_cost, estimated_rows: estimated_rows.max(1), plan_detail: String::new() }),
+            plan_detail: format!(
+                "SeqScan on {} {}",
+                stats.table_name,
+                CostEstimate {
+                    startup_cost,
+                    total_cost,
+                    estimated_rows: estimated_rows.max(1),
+                    plan_detail: String::new()
+                }
+            ),
         }
     }
 
@@ -173,7 +181,10 @@ impl CostOptimizer {
             startup_cost,
             total_cost,
             estimated_rows: 1,
-            plan_detail: format!("PkLookup on {} (cost={:.2}..{:.2} rows=1)", stats.table_name, startup_cost, total_cost),
+            plan_detail: format!(
+                "PkLookup on {} (cost={:.2}..{:.2} rows=1)",
+                stats.table_name, startup_cost, total_cost
+            ),
         }
     }
 
@@ -223,13 +234,17 @@ impl CostOptimizer {
                 estimated_rows: top_k.min(stats.total_rows.max(1)),
                 plan_detail: format!(
                     "HnswVectorScan on {} [k={top_k}, d={dimensions}] (cost={:.2}..{:.2} rows={})",
-                    stats.table_name, startup_cost, total_cost, top_k.min(stats.total_rows.max(1))
+                    stats.table_name,
+                    startup_cost,
+                    total_cost,
+                    top_k.min(stats.total_rows.max(1))
                 ),
             }
         } else {
             let startup_cost = 0.0;
             let io_cost = (stats.page_count as f64) * self.seq_page_cost;
-            let compute_cost = (stats.total_rows as f64) * (dimensions as f64 / 8.0) * self.vector_chunk_cost;
+            let compute_cost =
+                (stats.total_rows as f64) * (dimensions as f64 / 8.0) * self.vector_chunk_cost;
             let total_cost = startup_cost + io_cost + compute_cost;
             CostEstimate {
                 startup_cost,
@@ -237,7 +252,10 @@ impl CostOptimizer {
                 estimated_rows: top_k.min(stats.total_rows.max(1)),
                 plan_detail: format!(
                     "BruteForceVectorScan on {} [k={top_k}, d={dimensions}] (cost={:.2}..{:.2} rows={})",
-                    stats.table_name, startup_cost, total_cost, top_k.min(stats.total_rows.max(1))
+                    stats.table_name,
+                    startup_cost,
+                    total_cost,
+                    top_k.min(stats.total_rows.max(1))
                 ),
             }
         }

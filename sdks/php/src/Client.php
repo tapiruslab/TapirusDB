@@ -32,18 +32,19 @@ class Client
      */
     public function query(string $sql, array $params = []): array
     {
-        return $this->request('/api/sql', [
+        $response = $this->request('/api/sql', [
             'sql' => $sql,
             'params' => $params
         ]);
+        return isset($response['rows']) && is_array($response['rows']) ? $response['rows'] : $response;
     }
 
     /**
      * Execute a SQL command (alias for query).
      */
-    public function execute(string $sql): array
+    public function execute(string $sql, array $params = []): array
     {
-        return $this->query($sql);
+        return $this->query($sql, $params);
     }
 
     /**

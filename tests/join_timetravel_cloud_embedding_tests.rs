@@ -4,13 +4,13 @@
 //! 1. Full SQL JOIN engine: INNER JOIN, LEFT OUTER JOIN, RIGHT OUTER JOIN, FULL OUTER JOIN.
 //! 2. True SQL:2011 temporal Time-Travel queries (`SELECT ... AS OF TIMESTAMP <ts>`).
 //! 3. Bidirectional Remote Storage Adapter (`open_remote_writable` and `push_remote`).
-//! 4. Pluggable HTTP Neural Embeddings with seamless deterministic fallback.
+//! 4. Pluggable HTTP Neural Embeddings with explicit provider errors.
 
 use std::sync::Arc;
+use tapirus::Connection;
 use tapirus::memory::embedder::{EmbeddingEngine, HttpEmbeddingEngine};
 use tapirus::pager::remote::MockRemoteRangeStorage;
 use tapirus::traits::Value;
-use tapirus::Connection;
 
 #[test]
 fn test_sql_joins_inner_left_right_full() {
@@ -21,14 +21,21 @@ fn test_sql_joins_inner_left_right_full() {
     conn.execute("CREATE TABLE emps (emp_id INTEGER PRIMARY KEY, emp_name TEXT, d_id INTEGER)")
         .expect("Create emps");
 
-    conn.execute("INSERT INTO depts (dept_id, dept_name) VALUES (1, 'Engineering')").unwrap();
-    conn.execute("INSERT INTO depts (dept_id, dept_name) VALUES (2, 'Marketing')").unwrap();
-    conn.execute("INSERT INTO depts (dept_id, dept_name) VALUES (3, 'Research')").unwrap();
+    conn.execute("INSERT INTO depts (dept_id, dept_name) VALUES (1, 'Engineering')")
+        .unwrap();
+    conn.execute("INSERT INTO depts (dept_id, dept_name) VALUES (2, 'Marketing')")
+        .unwrap();
+    conn.execute("INSERT INTO depts (dept_id, dept_name) VALUES (3, 'Research')")
+        .unwrap();
 
-    conn.execute("INSERT INTO emps (emp_id, emp_name, d_id) VALUES (101, 'Alice', 1)").unwrap();
-    conn.execute("INSERT INTO emps (emp_id, emp_name, d_id) VALUES (102, 'Bob', 1)").unwrap();
-    conn.execute("INSERT INTO emps (emp_id, emp_name, d_id) VALUES (103, 'Charlie', 2)").unwrap();
-    conn.execute("INSERT INTO emps (emp_id, emp_name, d_id) VALUES (104, 'Dave', 999)").unwrap();
+    conn.execute("INSERT INTO emps (emp_id, emp_name, d_id) VALUES (101, 'Alice', 1)")
+        .unwrap();
+    conn.execute("INSERT INTO emps (emp_id, emp_name, d_id) VALUES (102, 'Bob', 1)")
+        .unwrap();
+    conn.execute("INSERT INTO emps (emp_id, emp_name, d_id) VALUES (103, 'Charlie', 2)")
+        .unwrap();
+    conn.execute("INSERT INTO emps (emp_id, emp_name, d_id) VALUES (104, 'Dave', 999)")
+        .unwrap();
 
     // 1. INNER JOIN (Alice-Eng, Bob-Eng, Charlie-Mkt = 3 rows)
     let inner_rows = conn
@@ -73,13 +80,17 @@ fn test_sql_joins_inner_left_right_full() {
             && r.get_value("depts.dept_name") == Some(&Value::Text("Research".into()))
     });
     assert!(has_dave_null, "FULL JOIN must contain left unmatched row");
-    assert!(has_null_research, "FULL JOIN must contain right unmatched row");
+    assert!(
+        has_null_research,
+        "FULL JOIN must contain right unmatched row"
+    );
 }
 
 #[test]
 fn test_point_in_time_time_travel_queries() {
     let conn = Connection::open_in_memory().expect("Open in-memory DB");
-    conn.execute("PRAGMA time_travel = ON;").expect("Enable time travel");
+    conn.execute("PRAGMA time_travel = ON;")
+        .expect("Enable time travel");
 
     conn.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, holder TEXT, balance INTEGER)")
         .expect("Create accounts");
@@ -115,26 +126,34 @@ fn test_point_in_time_time_travel_queries() {
         .as_secs();
 
     // 1. Current state: row is deleted
-    let live_rows = conn.query("SELECT id, balance FROM accounts").expect("Live query");
+    let live_rows = conn
+        .query("SELECT id, balance FROM accounts")
+        .expect("Live query");
     assert_eq!(live_rows.len(), 0);
 
     // 2. Query AS OF TIMESTAMP T1: balance was 1000
     let rows_t1 = conn
-        .query(&format!("SELECT id, balance FROM accounts AS OF TIMESTAMP {t1}"))
+        .query(&format!(
+            "SELECT id, balance FROM accounts AS OF TIMESTAMP {t1}"
+        ))
         .expect("Time travel T1");
     assert_eq!(rows_t1.len(), 1);
     assert_eq!(rows_t1[0].get_idx::<i64>(1).unwrap(), 1000);
 
     // 3. Query AS OF TIMESTAMP T2: balance was 2500
     let rows_t2 = conn
-        .query(&format!("SELECT id, balance FROM accounts AS OF TIMESTAMP {t2}"))
+        .query(&format!(
+            "SELECT id, balance FROM accounts AS OF TIMESTAMP {t2}"
+        ))
         .expect("Time travel T2");
     assert_eq!(rows_t2.len(), 1);
     assert_eq!(rows_t2[0].get_idx::<i64>(1).unwrap(), 2500);
 
     // 4. Query AS OF TIMESTAMP T3 (or later): record is deleted
     let rows_t3 = conn
-        .query(&format!("SELECT id, balance FROM accounts AS OF TIMESTAMP {t3}"))
+        .query(&format!(
+            "SELECT id, balance FROM accounts AS OF TIMESTAMP {t3}"
+        ))
         .expect("Time travel T3");
     assert_eq!(rows_t3.len(), 0);
 }
@@ -144,8 +163,8 @@ fn test_bidirectional_remote_cloud_storage_sync() {
     let mock_cloud = Arc::new(MockRemoteRangeStorage::empty());
 
     // 1. Open writable remote connection
-    let writable_conn = Connection::open_remote_writable(mock_cloud.clone())
-        .expect("Open remote writable");
+    let writable_conn =
+        Connection::open_remote_writable(mock_cloud.clone()).expect("Open remote writable");
 
     writable_conn
         .execute("CREATE TABLE cloud_ledger (entry_id INTEGER PRIMARY KEY, note TEXT)")
@@ -159,7 +178,10 @@ fn test_bidirectional_remote_cloud_storage_sync() {
     writable_conn.push_remote().expect("Push remote sync");
 
     // 3. Verify cloud storage now has data
-    assert!(mock_cloud.bytes_len() > 0, "Remote storage should contain pushed bytes");
+    assert!(
+        mock_cloud.bytes_len() > 0,
+        "Remote storage should contain pushed bytes"
+    );
 
     // 4. Open independent read-only connection against the same remote store
     let ro_conn = Connection::open_remote(mock_cloud).expect("Open remote read-only");
@@ -167,25 +189,25 @@ fn test_bidirectional_remote_cloud_storage_sync() {
         .query("SELECT entry_id, note FROM cloud_ledger WHERE entry_id = 1")
         .expect("Query from remote cloud");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get::<String>("note").unwrap(), "reconciled_batch_99");
+    assert_eq!(
+        rows[0].get::<String>("note").unwrap(),
+        "reconciled_batch_99"
+    );
 }
 
 #[test]
-fn test_http_embedding_engine_with_fallback() {
-    // Instantiate HTTP engine pointing to mock/unreachable endpoint
-    let engine = HttpEmbeddingEngine::new("http://127.0.0.1:11434/api/embeddings", "nomic-embed-text", 64);
+fn test_http_embedding_engine_failure_does_not_change_models() {
+    let engine =
+        HttpEmbeddingEngine::new("http://127.0.0.1:1/api/embed", "unavailable-model-v1", 64);
     assert_eq!(engine.dimensions(), 64);
-
-    // Should fall back seamlessly without panicking
-    let vec1 = engine.embed_text("Hukum maqasid syariah dalam kewangan");
-    let vec2 = engine.embed_text("Hukum maqasid syariah dalam kewangan");
-    let vec3 = engine.embed_text("Prinsip integriti perisian pangkalan data");
-
-    assert_eq!(vec1.len(), 64);
-    assert_eq!(vec1, vec2, "Embeddings must be consistent and deterministic");
-    assert_ne!(vec1, vec3, "Different text must produce different embeddings");
-
-    // Must be L2 unit normalized
-    let norm: f32 = vec1.iter().map(|x| x * x).sum::<f32>().sqrt();
-    assert!((norm - 1.0).abs() < 1e-4, "Fallback embedding must be L2 normalized");
+    assert!(
+        engine
+            .try_embed_text("Hukum maqasid syariah dalam kewangan")
+            .is_err()
+    );
+    assert!(
+        engine
+            .embed_text("Hukum maqasid syariah dalam kewangan")
+            .is_empty()
+    );
 }

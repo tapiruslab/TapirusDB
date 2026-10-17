@@ -46,11 +46,7 @@ impl QuantizedVector8 {
         }
 
         let range = max_val - min_val;
-        let step = if range > 1e-9 {
-            range / 255.0
-        } else {
-            1.0
-        };
+        let step = if range > 1e-9 { range / 255.0 } else { 1.0 };
 
         let mut quantized = Vec::with_capacity(vector.len());
         for &val in vector {
@@ -193,7 +189,10 @@ pub struct ProductQuantizer {
 impl ProductQuantizer {
     /// Initialize a ProductQuantizer with uniform grid centroids
     pub fn new_uniform(dim: usize, num_subspaces: usize, centroids_per_subspace: usize) -> Self {
-        assert!(dim % num_subspaces == 0, "Dimension must be divisible by num_subspaces");
+        assert!(
+            dim % num_subspaces == 0,
+            "Dimension must be divisible by num_subspaces"
+        );
         let sub_dim = dim / num_subspaces;
         let k = centroids_per_subspace.min(256);
 
@@ -221,7 +220,10 @@ impl ProductQuantizer {
             return Self::new_uniform(128, num_subspaces, k);
         }
         let dim = vectors[0].len();
-        assert!(dim % num_subspaces == 0, "Dimension must be divisible by num_subspaces");
+        assert!(
+            dim % num_subspaces == 0,
+            "Dimension must be divisible by num_subspaces"
+        );
         let sub_dim = dim / num_subspaces;
         let k = k.min(256);
 
@@ -248,7 +250,11 @@ impl ProductQuantizer {
                     let mut best_dist = f32::MAX;
                     let mut best_c = 0;
                     for (c_idx, c) in centroids.iter().enumerate() {
-                        let d: f32 = sv.iter().zip(c.iter()).map(|(x, y)| (x - y) * (x - y)).sum();
+                        let d: f32 = sv
+                            .iter()
+                            .zip(c.iter())
+                            .map(|(x, y)| (x - y) * (x - y))
+                            .sum();
                         if d < best_dist {
                             best_dist = d;
                             best_c = c_idx;
@@ -380,17 +386,17 @@ impl RaBitQuantizedVector {
 
     /// Return the number of bits per dimension (1 or 2)
     pub fn num_bits(&self) -> usize {
-        if self.bits_secondary.is_some() {
-            2
-        } else {
-            1
-        }
+        if self.bits_secondary.is_some() { 2 } else { 1 }
     }
 
     /// Compression factor compared to 32-bit floats
     pub fn compression_ratio(&self) -> f32 {
         let total_bytes = (self.bits.len() * 8)
-            + self.bits_secondary.as_ref().map(|b| b.len() * 8).unwrap_or(0)
+            + self
+                .bits_secondary
+                .as_ref()
+                .map(|b| b.len() * 8)
+                .unwrap_or(0)
             + 4; // norm f32
         if total_bytes == 0 {
             1.0
@@ -420,10 +426,13 @@ impl RaBitQuantizedVector {
         for (word_idx, &word) in self.bits.iter().enumerate() {
             let start = word_idx * 64;
             let end = (start + 64).min(d);
-            for i in start..end {
-                let bit_pos = i - start;
-                let sign = if (word & (1u64 << bit_pos)) != 0 { 1.0f32 } else { -1.0f32 };
-                dot += query_rotated[i] * sign;
+            for (bit_pos, &component) in query_rotated.iter().take(end).skip(start).enumerate() {
+                let sign = if (word & (1u64 << bit_pos)) != 0 {
+                    1.0f32
+                } else {
+                    -1.0f32
+                };
+                dot += component * sign;
             }
         }
 
@@ -526,7 +535,7 @@ impl RaBitQuantizer {
         let norm = norm_sq.sqrt();
 
         let rotated = self.rotate(vector);
-        let num_words = (self.dimensions + 63) / 64;
+        let num_words = self.dimensions.div_ceil(64);
         let mut bits = vec![0u64; num_words];
 
         for (i, &val) in rotated.iter().enumerate() {
@@ -540,7 +549,8 @@ impl RaBitQuantizer {
         let bits_secondary = if self.num_bits >= 2 {
             let mut sec_words = vec![0u64; num_words];
             // 2-bit threshold: check if absolute rotated magnitude is greater than average
-            let avg_mag: f32 = rotated.iter().map(|x| x.abs()).sum::<f32>() / self.dimensions as f32;
+            let avg_mag: f32 =
+                rotated.iter().map(|x| x.abs()).sum::<f32>() / self.dimensions as f32;
             for (i, &val) in rotated.iter().enumerate() {
                 if val.abs() >= avg_mag {
                     let word_idx = i / 64;
@@ -569,7 +579,11 @@ mod tests {
     #[test]
     fn test_pq_quantize_and_asymmetric_distance() {
         let vectors: Vec<Vec<f32>> = (0..16)
-            .map(|i| (0..32).map(|j| ((i * 32 + j) as f32 * 0.05).sin()).collect())
+            .map(|i| {
+                (0..32)
+                    .map(|j| ((i * 32 + j) as f32 * 0.05).sin())
+                    .collect()
+            })
             .collect();
 
         // 32-dim vector into 4 subspaces of 8-dim each, 8 centroids each

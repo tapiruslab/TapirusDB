@@ -7,13 +7,13 @@
 //! 4. Declarative openCypher pattern matching runtime (`MATCH (a)-[r]->(b) WHERE ... RETURN ...`).
 //! 5. Variable-length path expansion (`*1..3`) and seamless transparent routing via `conn.query()`.
 
+use tapirus::Connection;
+use tapirus::graph::GraphEngine;
 use tapirus::graph::csr::CsrGraph;
 use tapirus::graph::cypher::CypherExecutor;
-use tapirus::graph::GraphEngine;
+use tapirus::vector::DistanceMetric;
 use tapirus::vector::ivf::{IvfConfig, IvfIndex};
 use tapirus::vector::quantization::RaBitQuantizer;
-use tapirus::vector::DistanceMetric;
-use tapirus::Connection;
 
 // =========================================================================
 // SECTION 1: Compressed Sparse Row (CSR) Contiguous Graph Topology
@@ -44,7 +44,11 @@ fn test_csr_topology_contiguous_slices_and_bidirectional_traversal() {
 
     // 1. Contiguous outgoing slice checks
     let out_1 = csr.outgoing_neighbors(1);
-    assert_eq!(out_1, &[2, 3], "Outgoing neighbors of 1 must be contiguous slice [2, 3]");
+    assert_eq!(
+        out_1,
+        &[2, 3],
+        "Outgoing neighbors of 1 must be contiguous slice [2, 3]"
+    );
     assert_eq!(csr.outgoing_degree(1), 2);
 
     let out_4 = csr.outgoing_neighbors(4);
@@ -56,7 +60,11 @@ fn test_csr_topology_contiguous_slices_and_bidirectional_traversal() {
 
     // 2. Contiguous incoming slice checks (CSC)
     let in_4 = csr.incoming_neighbors(4);
-    assert_eq!(in_4, &[2, 3], "Incoming neighbors of 4 must be contiguous slice [2, 3]");
+    assert_eq!(
+        in_4,
+        &[2, 3],
+        "Incoming neighbors of 4 must be contiguous slice [2, 3]"
+    );
     assert_eq!(csr.incoming_degree(4), 2);
 
     let in_1 = csr.incoming_neighbors(1);
@@ -96,11 +104,16 @@ fn test_csr_triangle_counting_and_clique_intersection() {
 
     // Bidirectional edges to form undirected triangles
     let edges = [
-        (1, 2), (2, 1),
-        (2, 3), (3, 2),
-        (3, 1), (1, 3),
-        (2, 4), (4, 2),
-        (3, 4), (4, 3),
+        (1, 2),
+        (2, 1),
+        (2, 3),
+        (3, 2),
+        (3, 1),
+        (1, 3),
+        (2, 4),
+        (4, 2),
+        (3, 4),
+        (4, 3),
     ];
 
     for (u, v) in edges {
@@ -111,7 +124,10 @@ fn test_csr_triangle_counting_and_clique_intersection() {
 
     // Verify common neighbors between 2 and 3 (should be 1 and 4)
     let common = csr.common_neighbors_count(2, 3);
-    assert_eq!(common, 2, "Nodes 2 and 3 must share common neighbors 1 and 4");
+    assert_eq!(
+        common, 2,
+        "Nodes 2 and 3 must share common neighbors 1 and 4"
+    );
 
     // Total triangles in graph should be 2
     let triangles = csr.triangle_count();
@@ -189,7 +205,10 @@ fn test_ivf_rabitq_quantized_extreme_compression_search() {
     // Verify clusters contain quantized RaBitQ vectors
     for cluster in &index.clusters {
         assert_eq!(cluster.vector_ids.len(), cluster.rabit_vectors.len());
-        assert!(cluster.raw_vectors.is_empty(), "Raw vectors should not be kept when quantizer is active");
+        assert!(
+            cluster.raw_vectors.is_empty(),
+            "Raw vectors should not be kept when quantizer is active"
+        );
     }
 
     // Search with vector 42
@@ -197,7 +216,10 @@ fn test_ivf_rabitq_quantized_extreme_compression_search() {
     assert!(!results.is_empty());
     // Candidate 42 should rank high in top candidates
     let found_42 = results.iter().any(|r| r.0 == 42);
-    assert!(found_42, "Target vector 42 must be retrieved in IVF-RaBitQ search results");
+    assert!(
+        found_42,
+        "Target vector 42 must be retrieved in IVF-RaBitQ search results"
+    );
 }
 
 // =========================================================================
@@ -209,10 +231,14 @@ fn test_opencypher_match_and_where_and_return() {
     let conn = Connection::open_in_memory().expect("Failed to open connection");
 
     // Setup graph
-    conn.execute("GRAPH INSERT NODE 1 LABEL 'Person' PROPERTIES '{\"name\": \"Alice\", \"age\": 30}';")
-        .expect("Insert Alice failed");
-    conn.execute("GRAPH INSERT NODE 2 LABEL 'Person' PROPERTIES '{\"name\": \"Bob\", \"age\": 25}';")
-        .expect("Insert Bob failed");
+    conn.execute(
+        "GRAPH INSERT NODE 1 LABEL 'Person' PROPERTIES '{\"name\": \"Alice\", \"age\": 30}';",
+    )
+    .expect("Insert Alice failed");
+    conn.execute(
+        "GRAPH INSERT NODE 2 LABEL 'Person' PROPERTIES '{\"name\": \"Bob\", \"age\": 25}';",
+    )
+    .expect("Insert Bob failed");
     conn.execute("GRAPH INSERT NODE 3 LABEL 'Company' PROPERTIES '{\"name\": \"TapirusTech\"}';")
         .expect("Insert Company failed");
 
@@ -231,13 +257,16 @@ fn test_opencypher_match_and_where_and_return() {
 
     // 2. MATCH with WHERE clause
     let cypher_where = "MATCH (a:Person)-[r]->(b) WHERE b.name = 'Bob' RETURN a.name, b.name";
-    let rows_where = conn.query_cypher(cypher_where).expect("Cypher WHERE failed");
+    let rows_where = conn
+        .query_cypher(cypher_where)
+        .expect("Cypher WHERE failed");
     assert_eq!(rows_where.len(), 1);
     assert_eq!(rows_where[0].get::<String>("a.name").unwrap(), "Alice");
     assert_eq!(rows_where[0].get::<String>("b.name").unwrap(), "Bob");
 
     // 3. Transparent execution via standard `conn.query()`
-    let rows_transparent = conn.query("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN b.name")
+    let rows_transparent = conn
+        .query("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN b.name")
         .expect("Transparent query routing failed");
     assert_eq!(rows_transparent.len(), 1);
     assert_eq!(rows_transparent[0].get::<String>("b.name").unwrap(), "Bob");
@@ -249,7 +278,7 @@ fn test_opencypher_multihop_path_expansion() {
 
     // Linear chain: 1 -> 2 -> 3 -> 4
     for i in 1..=4 {
-        let _ = engine.add_node(i, "Item", &format!(r#"{{"val": {i}}}"#));
+        let _ = engine.add_node(i, "Item", format!(r#"{{"val": {i}}}"#));
     }
     let _ = engine.add_edge(1, 2, "NEXT", 1.0, "");
     let _ = engine.add_edge(2, 3, "NEXT", 1.0, "");
@@ -259,7 +288,11 @@ fn test_opencypher_multihop_path_expansion() {
     let query = "MATCH (a:Item)-[:NEXT*1..3]->(b:Item) WHERE a.id = 1 RETURN b.id";
     let rows = CypherExecutor::execute_query(&engine, query).expect("Multihop execution failed");
 
-    assert_eq!(rows.len(), 3, "Should reach nodes 2, 3, and 4 within 1..3 hops");
+    assert_eq!(
+        rows.len(),
+        3,
+        "Should reach nodes 2, 3, and 4 within 1..3 hops"
+    );
     let target_ids: Vec<i64> = rows.iter().map(|r| r.get::<i64>("b.id").unwrap()).collect();
     assert!(target_ids.contains(&2));
     assert!(target_ids.contains(&3));
@@ -271,7 +304,8 @@ fn test_opencypher_create_statement() {
     let conn = Connection::open_in_memory().expect("Failed to open connection");
 
     // Execute Cypher CREATE via conn.execute
-    let affected = conn.execute("CREATE (x:Developer {name: 'Alex', specialty: 'Databases'})")
+    let affected = conn
+        .execute("CREATE (x:Developer {name: 'Alex', specialty: 'Databases'})")
         .expect("CREATE statement failed");
     assert_eq!(affected, 1);
 

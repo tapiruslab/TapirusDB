@@ -1,20 +1,5 @@
-# 🦛 TapirusDB on Bun
+# Bun FFI example
 
-Blazing fast embedded multi-model AI database running in **Bun** via zero-overhead native `bun:ffi` without any npm packages!
+This is an experimental example of calling the Tapirus C FFI from Bun. It is not a supported Bun package or a performance, persistence, or safety guarantee.
 
-## ⚡ Why Bun + TapirusDB?
-- **Zero npm Dependencies:** Uses Bun's native FFI engine directly.
-- **Microsecond Execution:** Direct pointer communication with TapirusDB's 100% Safe Rust core.
-- **Full Quad-Model Persistence:** SQL, JSON documents, vectors, and property graph inside a single `.tapir` container.
-
-## 🛠️ Build & Run
-
-Ensure the native shared library is compiled:
-```bash
-cargo build --release -p tapirus-ffi
-```
-
-Run with Bun:
-```bash
-bun run index.ts
-```
+Build instructions and API details can change with the FFI. Read the example source, the current FFI declarations, and the root [project limitations](../../README.md) before using it. Test against disposable data and verify the exact shared library path for your platform.

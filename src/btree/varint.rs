@@ -85,15 +85,7 @@ mod tests {
 
     #[test]
     fn test_varint_multi_byte_roundtrip() {
-        let test_cases: [u64; 7] = [
-            0,
-            127,
-            128,
-            16383,
-            16384,
-            1_000_000,
-            u64::MAX,
-        ];
+        let test_cases: [u64; 7] = [0, 127, 128, 16383, 16384, 1_000_000, u64::MAX];
 
         let mut buf = [0u8; 9];
         for &tc in &test_cases {

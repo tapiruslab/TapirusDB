@@ -39,7 +39,12 @@ pub fn simd_cosine_distance(a: &[f32], b: &[f32]) -> f32 {
         norm_b += y * y;
     }
 
-    if norm_a <= 0.0 || norm_b <= 0.0 || !norm_a.is_finite() || !norm_b.is_finite() || !dot.is_finite() {
+    if norm_a <= 0.0
+        || norm_b <= 0.0
+        || !norm_a.is_finite()
+        || !norm_b.is_finite()
+        || !dot.is_finite()
+    {
         return 1.0;
     }
 
@@ -143,7 +148,12 @@ pub fn simd_cosine_distance(a: &[f32], b: &[f32]) -> f32 {
         norm_b += y * y;
     }
 
-    if norm_a <= 0.0 || norm_b <= 0.0 || !norm_a.is_finite() || !norm_b.is_finite() || !dot.is_finite() {
+    if norm_a <= 0.0
+        || norm_b <= 0.0
+        || !norm_a.is_finite()
+        || !norm_b.is_finite()
+        || !dot.is_finite()
+    {
         return 1.0;
     }
 
@@ -281,11 +291,7 @@ pub fn simd_euclidean_distance_squared(a: &[f32], b: &[f32]) -> f32 {
 #[inline]
 pub fn simd_euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
     let sq = simd_euclidean_distance_squared(a, b);
-    if sq.is_finite() {
-        sq.sqrt()
-    } else {
-        f32::MAX
-    }
+    if sq.is_finite() { sq.sqrt() } else { f32::MAX }
 }
 
 #[cfg(feature = "simd")]

@@ -41,7 +41,6 @@ pub fn encode_row_into(values: &[Value], out: &mut Vec<u8>) {
     // Reserve tag bytes (one per column), will fill in below
     out.resize(tags_start + values.len(), 0);
 
-
     for (col_idx, val) in values.iter().enumerate() {
         match val {
             Value::Null => {
@@ -275,7 +274,7 @@ pub fn decode_row_values_into_projected(
             other => {
                 return Err(Error::Corrupted(format!(
                     "Unknown type tag in record header: {other:#x}"
-                )))
+                )));
             }
         }
     }

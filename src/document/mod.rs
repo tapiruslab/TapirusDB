@@ -3,9 +3,9 @@
 //! Provides flexible, schema-less MongoDB-style document storage and retrieval
 //! seamlessly stored inside the same single `.tapir` database file.
 
+use crate::Connection;
 use crate::error::{Error, Result};
 use crate::traits::Value;
-use crate::Connection;
 use serde_json::Value as JsonValue;
 
 /// A schema-less JSON Document Collection (analogous to a MongoDB collection)
@@ -23,9 +23,8 @@ impl<'a> Collection<'a> {
             )));
         }
         let table_name = format!("__doc_{name}");
-        let sql = format!(
-            "CREATE TABLE IF NOT EXISTS {table_name} (id INTEGER PRIMARY KEY, doc TEXT);"
-        );
+        let sql =
+            format!("CREATE TABLE IF NOT EXISTS {table_name} (id INTEGER PRIMARY KEY, doc TEXT);");
         conn.execute(&sql)?;
         Ok(Self { table_name, conn })
     }
@@ -38,15 +37,16 @@ impl<'a> Collection<'a> {
             "INSERT INTO {} (doc) VALUES (?) RETURNING id;",
             self.table_name
         );
-        let rows = self.conn.query_with_params(
-            &sql,
-            &[Value::Text(json_str)],
-        )?;
+        let rows = self
+            .conn
+            .query_with_params(&sql, &[Value::Text(json_str)])?;
         if let Some(first) = rows.first() {
             let id: i64 = first.get("id")?;
             Ok(id as u64)
         } else {
-            Err(Error::Internal("Failed to retrieve auto-generated ID from document insert".into()))
+            Err(Error::Internal(
+                "Failed to retrieve auto-generated ID from document insert".into(),
+            ))
         }
     }
 
@@ -54,24 +54,18 @@ impl<'a> Collection<'a> {
     pub fn insert_with_id(&self, id: u64, doc: &JsonValue) -> Result<()> {
         let json_str = serde_json::to_string(doc)
             .map_err(|e| Error::Corrupted(format!("Failed to serialize JSON document: {e}")))?;
-        let sql = format!(
-            "INSERT INTO {} (id, doc) VALUES (?, ?);",
-            self.table_name
-        );
-        self.conn.execute_with_params(
-            &sql,
-            &[Value::Integer(id as i64), Value::Text(json_str)],
-        )?;
+        let sql = format!("INSERT INTO {} (id, doc) VALUES (?, ?);", self.table_name);
+        self.conn
+            .execute_with_params(&sql, &[Value::Integer(id as i64), Value::Text(json_str)])?;
         Ok(())
     }
 
     /// Find a JSON document by its ID
     pub fn find_by_id(&self, id: u64) -> Result<Option<JsonValue>> {
         let sql = format!("SELECT doc FROM {} WHERE id = ?;", self.table_name);
-        let rows = self.conn.query_with_params(
-            &sql,
-            &[Value::Integer(id as i64)],
-        )?;
+        let rows = self
+            .conn
+            .query_with_params(&sql, &[Value::Integer(id as i64)])?;
         if rows.is_empty() {
             return Ok(None);
         }
@@ -101,10 +95,9 @@ impl<'a> Collection<'a> {
     /// Delete a JSON document by its ID
     pub fn delete(&self, id: u64) -> Result<bool> {
         let sql = format!("DELETE FROM {} WHERE id = ?;", self.table_name);
-        let rows_affected = self.conn.execute_with_params(
-            &sql,
-            &[Value::Integer(id as i64)],
-        )?;
+        let rows_affected = self
+            .conn
+            .execute_with_params(&sql, &[Value::Integer(id as i64)])?;
         Ok(rows_affected > 0)
     }
 
@@ -113,10 +106,9 @@ impl<'a> Collection<'a> {
         let serialized = serde_json::to_string(doc)
             .map_err(|e| Error::Corrupted(format!("Failed to serialize document: {e}")))?;
         let sql = format!("UPDATE {} SET doc = ? WHERE id = ?;", self.table_name);
-        let rows_affected = self.conn.execute_with_params(
-            &sql,
-            &[Value::Text(serialized), Value::Integer(id as i64)],
-        )?;
+        let rows_affected = self
+            .conn
+            .execute_with_params(&sql, &[Value::Text(serialized), Value::Integer(id as i64)])?;
         Ok(rows_affected > 0)
     }
 
@@ -194,7 +186,9 @@ mod tests {
         assert_eq!(collection.count().unwrap(), 1);
 
         // Insert new document: MUST get id 3 without colliding with id 2!
-        let id3 = collection.insert_one(&doc).expect("Insert 3 without collision");
+        let id3 = collection
+            .insert_one(&doc)
+            .expect("Insert 3 without collision");
         assert_eq!(id3, 3);
         assert_eq!(collection.count().unwrap(), 2);
 

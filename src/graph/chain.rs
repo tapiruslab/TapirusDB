@@ -11,7 +11,7 @@
 
 use crate::error::Result;
 use crate::graph::{Direction, Edge, GraphEngine, Node};
-use crate::vector::{cosine_similarity, euclidean_distance, DistanceMetric};
+use crate::vector::{DistanceMetric, cosine_similarity, euclidean_distance};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 /// Traversal step configuration
@@ -60,7 +60,7 @@ struct ScoredCandidate<'b> {
 
 impl<'b> PartialEq for ScoredCandidate<'b> {
     fn eq(&self, other: &Self) -> bool {
-        self.score == other.score
+        self.cmp(other).is_eq()
     }
 }
 
@@ -68,14 +68,17 @@ impl<'b> Eq for ScoredCandidate<'b> {}
 
 impl<'b> PartialOrd for ScoredCandidate<'b> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        // Reverse ordering: lowest score at top of heap so it can be evicted
-        other.score.partial_cmp(&self.score)
+        Some(self.cmp(other))
     }
 }
 
 impl<'b> Ord for ScoredCandidate<'b> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.partial_cmp(other).unwrap_or(std::cmp::Ordering::Equal)
+        // Reverse ordering keeps the lowest score at the top for eviction.
+        other
+            .score
+            .total_cmp(&self.score)
+            .then_with(|| other.node.id.cmp(&self.node.id))
     }
 }
 
@@ -111,10 +114,7 @@ impl<'a> GraphChain<'a> {
     }
 
     /// Provide on-demand lazy vector resolver (e.g. from memory engine)
-    pub fn with_vector_resolver(
-        mut self,
-        resolver: &'a dyn Fn(u64) -> Option<Vec<f32>>,
-    ) -> Self {
+    pub fn with_vector_resolver(mut self, resolver: &'a dyn Fn(u64) -> Option<Vec<f32>>) -> Self {
         self.external_resolver = Some(resolver);
         self
     }
@@ -164,11 +164,7 @@ impl<'a> GraphChain<'a> {
     }
 
     /// Filter candidate nodes by property presence
-    pub fn filter_property<S1: Into<String>, S2: Into<String>>(
-        mut self,
-        key: S1,
-        val: S2,
-    ) -> Self {
+    pub fn filter_property<S1: Into<String>, S2: Into<String>>(mut self, key: S1, val: S2) -> Self {
         self.node_filters.push(NodeFilter::PropertyContains {
             key: key.into(),
             val: val.into(),
@@ -321,7 +317,11 @@ impl<'a> GraphChain<'a> {
             })
             .collect();
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(results)
     }
 
@@ -372,7 +372,8 @@ impl<'a> GraphChain<'a> {
                         .count() as f32;
 
                     let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln().max(0.0);
-                    let tf_norm = (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * (doc_len / avgdl.max(1.0))));
+                    let tf_norm =
+                        (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * (doc_len / avgdl.max(1.0))));
                     score += idf * tf_norm;
                 }
             }
@@ -394,7 +395,11 @@ impl<'a> GraphChain<'a> {
             })
             .collect();
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(results)
     }
 
@@ -451,7 +456,8 @@ impl<'a> GraphChain<'a> {
                             .count() as f32;
 
                         let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln().max(0.0);
-                        let tf_norm = (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * (doc_len / avgdl.max(1.0))));
+                        let tf_norm = (tf * (k1 + 1.0))
+                            / (tf + k1 * (1.0 - b + b * (doc_len / avgdl.max(1.0))));
                         bm25_raw += idf * tf_norm;
                     }
                 }
@@ -495,7 +501,11 @@ impl<'a> GraphChain<'a> {
             })
             .collect();
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(results)
     }
 

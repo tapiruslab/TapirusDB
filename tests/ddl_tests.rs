@@ -52,7 +52,9 @@ fn test_alter_table_add_column_with_lazy_null_padding() {
         conn.execute("INSERT INTO products (id, name, price) VALUES (3, 'Keyboard', 75.0);")
             .expect("Insert 3");
 
-        let rows = conn.query("SELECT * FROM products;").expect("Select initial");
+        let rows = conn
+            .query("SELECT * FROM products;")
+            .expect("Select initial");
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].columns().len(), 3);
     }
@@ -85,7 +87,10 @@ fn test_alter_table_add_column_with_lazy_null_padding() {
             .query("SELECT * FROM products WHERE id = 4;")
             .expect("Select row 4");
         assert_eq!(row4.len(), 1);
-        assert_eq!(row4[0].get_value("category"), Some(&Value::Text("Hardware".into())));
+        assert_eq!(
+            row4[0].get_value("category"),
+            Some(&Value::Text("Hardware".into()))
+        );
 
         // Update an existing row to populate the new column
         conn.execute("UPDATE products SET category = 'Peripherals' WHERE id = 2;")
@@ -95,13 +100,18 @@ fn test_alter_table_add_column_with_lazy_null_padding() {
             .query("SELECT category FROM products WHERE id = 2;")
             .expect("Select updated row 2");
         assert_eq!(row2.len(), 1);
-        assert_eq!(row2[0].get_value("category"), Some(&Value::Text("Peripherals".into())));
+        assert_eq!(
+            row2[0].get_value("category"),
+            Some(&Value::Text("Peripherals".into()))
+        );
 
         // Add yet another column 'stock' of type INTEGER
         conn.execute("ALTER TABLE products ADD stock INTEGER;")
             .expect("Alter table add stock without COLUMN keyword");
 
-        let rows_all = conn.query("SELECT * FROM products;").expect("Select with 5 columns");
+        let rows_all = conn
+            .query("SELECT * FROM products;")
+            .expect("Select with 5 columns");
         assert_eq!(rows_all.len(), 4);
         assert_eq!(rows_all[0].columns().len(), 5);
         assert_eq!(rows_all[0].get_value("stock"), Some(&Value::Null));
@@ -115,11 +125,18 @@ fn test_alter_table_add_column_with_lazy_null_padding() {
         assert_eq!(table.columns[3].name, "category");
         assert_eq!(table.columns[4].name, "stock");
 
-        let rows = conn.query("SELECT id, name, category FROM products ORDER BY id ASC;")
+        let rows = conn
+            .query("SELECT id, name, category FROM products ORDER BY id ASC;")
             .expect("Query ordered");
         assert_eq!(rows.len(), 4);
-        assert_eq!(rows[1].get_value("category"), Some(&Value::Text("Peripherals".into())));
-        assert_eq!(rows[3].get_value("category"), Some(&Value::Text("Hardware".into())));
+        assert_eq!(
+            rows[1].get_value("category"),
+            Some(&Value::Text("Peripherals".into()))
+        );
+        assert_eq!(
+            rows[3].get_value("category"),
+            Some(&Value::Text("Hardware".into()))
+        );
     }
 }
 
@@ -137,7 +154,10 @@ fn test_alter_table_validation_errors() {
 
     // Table not found error
     let err_not_found = conn.execute("ALTER TABLE ghosts ADD COLUMN ectoplasm TEXT;");
-    assert!(err_not_found.is_err(), "Altering non-existent table should return error");
+    assert!(
+        err_not_found.is_err(),
+        "Altering non-existent table should return error"
+    );
 }
 
 #[test]
@@ -149,11 +169,15 @@ fn test_create_and_query_persistent_views() {
     {
         let conn = Connection::open(db_path).expect("Open database");
         conn.execute(
-            "CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, dept TEXT, salary REAL);"
-        ).expect("Create employees table");
+            "CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, dept TEXT, salary REAL);",
+        )
+        .expect("Create employees table");
 
         conn.execute("INSERT INTO employees (id, name, dept, salary) VALUES (1, 'Alice', 'Engineering', 95000.0);").unwrap();
-        conn.execute("INSERT INTO employees (id, name, dept, salary) VALUES (2, 'Bob', 'Sales', 65000.0);").unwrap();
+        conn.execute(
+            "INSERT INTO employees (id, name, dept, salary) VALUES (2, 'Bob', 'Sales', 65000.0);",
+        )
+        .unwrap();
         conn.execute("INSERT INTO employees (id, name, dept, salary) VALUES (3, 'Charlie', 'Engineering', 110000.0);").unwrap();
         conn.execute("INSERT INTO employees (id, name, dept, salary) VALUES (4, 'Diana', 'Marketing', 70000.0);").unwrap();
         conn.execute("INSERT INTO employees (id, name, dept, salary) VALUES (5, 'Eve', 'Engineering', 85000.0);").unwrap();
@@ -167,7 +191,9 @@ fn test_create_and_query_persistent_views() {
         assert_eq!(views, vec!["high_engineers"]);
 
         // Step 3: Query the View directly
-        let eng_rows = conn.query("SELECT * FROM high_engineers;").expect("Query VIEW");
+        let eng_rows = conn
+            .query("SELECT * FROM high_engineers;")
+            .expect("Query VIEW");
         assert_eq!(eng_rows.len(), 3);
         for row in &eng_rows {
             assert!(row.get_value("name").is_some());
@@ -179,13 +205,18 @@ fn test_create_and_query_persistent_views() {
             "SELECT name, salary FROM high_engineers WHERE salary > 90000.0 ORDER BY salary DESC;"
         ).expect("Query VIEW with filter");
         assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].get_value("name"), Some(&Value::Text("Charlie".into())));
-        assert_eq!(filtered[1].get_value("name"), Some(&Value::Text("Alice".into())));
+        assert_eq!(
+            filtered[0].get_value("name"),
+            Some(&Value::Text("Charlie".into()))
+        );
+        assert_eq!(
+            filtered[1].get_value("name"),
+            Some(&Value::Text("Alice".into()))
+        );
 
         // Step 5: CREATE VIEW IF NOT EXISTS idempotence
-        conn.execute(
-            "CREATE VIEW IF NOT EXISTS high_engineers AS SELECT id FROM employees;"
-        ).expect("Create view if not exists");
+        conn.execute("CREATE VIEW IF NOT EXISTS high_engineers AS SELECT id FROM employees;")
+            .expect("Create view if not exists");
     }
 
     // Step 6: Reopen database and verify View persistence across process restart
@@ -193,17 +224,21 @@ fn test_create_and_query_persistent_views() {
         let conn = Connection::open(db_path).expect("Reopen database");
         assert_eq!(conn.views(), vec!["high_engineers"]);
 
-        let rows = conn.query("SELECT * FROM high_engineers;").expect("Query persistent view");
+        let rows = conn
+            .query("SELECT * FROM high_engineers;")
+            .expect("Query persistent view");
         assert_eq!(rows.len(), 3);
 
         // Step 7: Drop View
-        conn.execute("DROP VIEW high_engineers;").expect("Drop view");
+        conn.execute("DROP VIEW high_engineers;")
+            .expect("Drop view");
         assert!(conn.views().is_empty());
 
         let err = conn.query("SELECT * FROM high_engineers;");
         assert!(err.is_err(), "Querying dropped view should fail");
 
         // DROP VIEW IF EXISTS
-        conn.execute("DROP VIEW IF EXISTS high_engineers;").expect("Drop view if exists");
+        conn.execute("DROP VIEW IF EXISTS high_engineers;")
+            .expect("Drop view if exists");
     }
 }

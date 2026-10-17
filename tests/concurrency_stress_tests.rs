@@ -53,7 +53,9 @@ fn test_concurrent_multi_threaded_readers_and_writers() -> Result<()> {
 
                 // Vector search query
                 let vec_rows = db
-                    .query("SELECT id FROM sensor_feed VECTOR NEAR vec = [0.5, 0.5, 0.0, 0.0] TOP 2;")
+                    .query(
+                        "SELECT id FROM sensor_feed VECTOR NEAR vec = [0.5, 0.5, 0.0, 0.0] TOP 2;",
+                    )
                     .expect("Concurrent vector search should succeed");
                 assert_eq!(vec_rows.len(), 2);
 
@@ -88,13 +90,19 @@ fn test_concurrent_multi_threaded_readers_and_writers() -> Result<()> {
 
     // Wait for all 8 concurrent threads to complete cleanly
     for handle in handles {
-        handle.join().expect("Thread should finish without panicking");
+        handle
+            .join()
+            .expect("Thread should finish without panicking");
     }
 
     // 3. Verify final state and consistency
     let final_rows = conn.query("SELECT id FROM sensor_feed;")?;
     // Initial 10 rows + (4 writers * 5 writes = 20 rows) = 30 rows
-    assert_eq!(final_rows.len(), 30, "All concurrent writes must be safely committed");
+    assert_eq!(
+        final_rows.len(),
+        30,
+        "All concurrent writes must be safely committed"
+    );
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("tapir-wal"));

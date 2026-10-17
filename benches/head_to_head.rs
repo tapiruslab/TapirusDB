@@ -1,7 +1,9 @@
-//! # Head-to-Head Benchmark: TapirusDB vs SQLite (rusqlite)
+//! # Exploratory local timing harness: TapirusDB and SQLite (rusqlite)
 //!
-//! Evaluates reproducible, side-by-side performance on the exact same host hardware:
-//! 1. Bulk Batch Insert (5,000 rows inside a single ACID WAL transaction)
+//! Runs selected operations on the same host. This harness is not release
+//! performance evidence; validate query correctness and durability equivalence
+//! before interpreting any result.
+//! 1. Bulk Batch Insert (5,000 rows inside a WAL transaction)
 //! 2. Primary Key Point Lookup (5,000 point queries)
 //! 3. Aggregation (COUNT, SUM, AVG across 5,000 rows)
 //! 4. Hash Join (1,000 users x 1,000 orders)
@@ -28,12 +30,20 @@ fn format_ops(count: usize, duration_secs: f64) -> String {
 
 fn main() {
     println!("===============================================================================");
-    println!("     TAPIRUSDB vs SQLITE: SCIENTIFIC HEAD-TO-HEAD BENCHMARK SUITE             ");
+    println!("     LOCAL TIMING HARNESS (NOT RELEASE PERFORMANCE EVIDENCE)                   ");
     println!("===============================================================================");
     println!("Hardware: {}", std::env::consts::ARCH);
     println!("OS:       {}", std::env::consts::OS);
-    println!("Rust:     Safe Rust (#![forbid(unsafe_code)]) vs C SQLite 3.x");
-    println!("Mode:     Persistent Disk Storage with Write-Ahead Logging (WAL)");
+    println!(
+        "Build:    {}",
+        if cfg!(debug_assertions) {
+            "debug/test"
+        } else {
+            "release"
+        }
+    );
+    println!("Storage:  WAL enabled; verify durability settings before comparison");
+    println!("Scope:    exploratory local timings; not a validated comparison");
     println!("-------------------------------------------------------------------------------\n");
 
     const ROW_COUNT: usize = 5000;
@@ -80,14 +90,23 @@ fn main() {
 
     // SQLite
     let sqlite_conn = rusqlite::Connection::open(sqlite_path).expect("Open SQLite");
-    sqlite_conn.pragma_update(None, "journal_mode", "WAL").expect("WAL mode");
-    sqlite_conn.pragma_update(None, "synchronous", "NORMAL").expect("Synchronous NORMAL");
     sqlite_conn
-        .execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, score REAL);", [])
+        .pragma_update(None, "journal_mode", "WAL")
+        .expect("WAL mode");
+    sqlite_conn
+        .pragma_update(None, "synchronous", "FULL")
+        .expect("Synchronous FULL");
+    sqlite_conn
+        .execute(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, score REAL);",
+            [],
+        )
         .expect("Create table");
 
     let start_sqlite_insert = Instant::now();
-    sqlite_conn.execute("BEGIN TRANSACTION;", []).expect("Begin");
+    sqlite_conn
+        .execute("BEGIN TRANSACTION;", [])
+        .expect("Begin");
     {
         let mut stmt = sqlite_conn
             .prepare("INSERT INTO users VALUES (?1, ?2, ?3);")
@@ -95,7 +114,8 @@ fn main() {
         for i in 1..=ROW_COUNT {
             let name = format!("User_{i}");
             let score = (i * 7) as f64 * 0.1;
-            stmt.execute(rusqlite::params![i as i64, name, score]).expect("Insert");
+            stmt.execute(rusqlite::params![i as i64, name, score])
+                .expect("Insert");
         }
     }
     sqlite_conn.execute("COMMIT;", []).expect("Commit");
@@ -192,15 +212,21 @@ fn main() {
     tapir_conn.execute("COMMIT;").expect("Commit");
 
     sqlite_conn
-        .execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL);", [])
+        .execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL);",
+            [],
+        )
         .expect("Create orders");
-    sqlite_conn.execute("BEGIN TRANSACTION;", []).expect("Begin");
+    sqlite_conn
+        .execute("BEGIN TRANSACTION;", [])
+        .expect("Begin");
     {
         let mut stmt = sqlite_conn
             .prepare("INSERT INTO orders VALUES (?1, ?2, ?3);")
             .expect("Prepare");
         for i in 1..=JOIN_ROWS {
-            stmt.execute(rusqlite::params![i as i64, i as i64, i as f64 * 10.5]).expect("Insert");
+            stmt.execute(rusqlite::params![i as i64, i as i64, i as f64 * 10.5])
+                .expect("Insert");
         }
     }
     sqlite_conn.execute("COMMIT;", []).expect("Commit");
@@ -227,7 +253,7 @@ fn main() {
         for _ in 0..JOIN_ITERATIONS {
             let mut rows = stmt.query([]).expect("Query");
             let mut count = 0;
-            while let Some(_) = rows.next().expect("Row") {
+            while rows.next().expect("Row").is_some() {
                 count += 1;
             }
             assert_eq!(count, JOIN_ROWS);
@@ -255,7 +281,11 @@ fn main() {
     }
     tapir_conn.execute("COMMIT;").expect("Commit");
 
-    let q_str = query_vec.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(", ");
+    let q_str = query_vec
+        .iter()
+        .map(|f| f.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
     let start_tapir_vec = Instant::now();
     const VEC_QUERIES: usize = 50;
     for _ in 0..VEC_QUERIES {
@@ -269,44 +299,82 @@ fn main() {
     // SUMMARY RESULTS TABLE
     // -------------------------------------------------------------------------
     println!("\n===============================================================================");
-    println!("                        FINAL BENCHMARK COMPARISON TABLE                       ");
+    println!("                   EXPLORATORY LOCAL HARNESS OUTPUT                             ");
     println!("===============================================================================");
     println!(
         "| {:<28} | {:<20} | {:<20} |",
-        "Workload Benchmark", "TapirusDB (Safe Rust)", "SQLite 3.x (C WAL)"
+        "Workload", "TapirusDB", "SQLite 3.x (WAL/FULL)"
     );
     println!("|:-----------------------------|:---------------------|:---------------------|");
 
     println!(
         "| Bulk Insert ({ROW_COUNT} rows)        | {:<20} | {:<20} |",
-        format!("{:.1}ms ({})", dur_tapir_insert.as_secs_f64() * 1000.0, format_ops(ROW_COUNT, dur_tapir_insert.as_secs_f64())),
-        format!("{:.1}ms ({})", dur_sqlite_insert.as_secs_f64() * 1000.0, format_ops(ROW_COUNT, dur_sqlite_insert.as_secs_f64()))
+        format!(
+            "{:.1}ms ({})",
+            dur_tapir_insert.as_secs_f64() * 1000.0,
+            format_ops(ROW_COUNT, dur_tapir_insert.as_secs_f64())
+        ),
+        format!(
+            "{:.1}ms ({})",
+            dur_sqlite_insert.as_secs_f64() * 1000.0,
+            format_ops(ROW_COUNT, dur_sqlite_insert.as_secs_f64())
+        )
     );
 
     println!(
         "| PK Point Lookup ({POINT_QUERIES} queries) | {:<20} | {:<20} |",
-        format!("{:.1}ms ({})", dur_tapir_pk.as_secs_f64() * 1000.0, format_ops(POINT_QUERIES, dur_tapir_pk.as_secs_f64())),
-        format!("{:.1}ms ({})", dur_sqlite_pk.as_secs_f64() * 1000.0, format_ops(POINT_QUERIES, dur_sqlite_pk.as_secs_f64()))
+        format!(
+            "{:.1}ms ({})",
+            dur_tapir_pk.as_secs_f64() * 1000.0,
+            format_ops(POINT_QUERIES, dur_tapir_pk.as_secs_f64())
+        ),
+        format!(
+            "{:.1}ms ({})",
+            dur_sqlite_pk.as_secs_f64() * 1000.0,
+            format_ops(POINT_QUERIES, dur_sqlite_pk.as_secs_f64())
+        )
     );
 
     println!(
         "| Aggregate Scan (x{AGG_ITERATIONS} passes)     | {:<20} | {:<20} |",
-        format!("{:.1}ms ({})", dur_tapir_agg.as_secs_f64() * 1000.0, format_ops(AGG_ITERATIONS, dur_tapir_agg.as_secs_f64())),
-        format!("{:.1}ms ({})", dur_sqlite_agg.as_secs_f64() * 1000.0, format_ops(AGG_ITERATIONS, dur_sqlite_agg.as_secs_f64()))
+        format!(
+            "{:.1}ms ({})",
+            dur_tapir_agg.as_secs_f64() * 1000.0,
+            format_ops(AGG_ITERATIONS, dur_tapir_agg.as_secs_f64())
+        ),
+        format!(
+            "{:.1}ms ({})",
+            dur_sqlite_agg.as_secs_f64() * 1000.0,
+            format_ops(AGG_ITERATIONS, dur_sqlite_agg.as_secs_f64())
+        )
     );
 
     println!(
         "| Hash Join ({JOIN_ROWS} x {JOIN_ROWS} x{JOIN_ITERATIONS})    | {:<20} | {:<20} |",
-        format!("{:.1}ms ({})", dur_tapir_join.as_secs_f64() * 1000.0, format_ops(JOIN_ITERATIONS, dur_tapir_join.as_secs_f64())),
-        format!("{:.1}ms ({})", dur_sqlite_join.as_secs_f64() * 1000.0, format_ops(JOIN_ITERATIONS, dur_sqlite_join.as_secs_f64()))
+        format!(
+            "{:.1}ms ({})",
+            dur_tapir_join.as_secs_f64() * 1000.0,
+            format_ops(JOIN_ITERATIONS, dur_tapir_join.as_secs_f64())
+        ),
+        format!(
+            "{:.1}ms ({})",
+            dur_sqlite_join.as_secs_f64() * 1000.0,
+            format_ops(JOIN_ITERATIONS, dur_sqlite_join.as_secs_f64())
+        )
     );
 
     println!(
         "| AI Vector Search (128-D KNN) | {:<20} | {:<20} |",
-        format!("{:.1}ms ({})", dur_tapir_vec.as_secs_f64() * 1000.0, format_ops(VEC_QUERIES, dur_tapir_vec.as_secs_f64())),
+        format!(
+            "{:.1}ms ({})",
+            dur_tapir_vec.as_secs_f64() * 1000.0,
+            format_ops(VEC_QUERIES, dur_tapir_vec.as_secs_f64())
+        ),
         "N/A (Requires ext/C)"
     );
 
     println!("===============================================================================");
-    println!("Benchmark completed cleanly with zero errors.\n");
+    println!(
+        "These local timings are not release claims; verify correctness and settings independently.\n"
+    );
 }

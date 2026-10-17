@@ -4,20 +4,31 @@ use tapirus::{Connection, Result, Value};
 fn test_dynamic_scalar_udf_registry_builtins() -> Result<()> {
     let conn = Connection::open_in_memory()?;
 
-    conn.execute("CREATE TABLE devs (id INT PRIMARY KEY, name TEXT, delta INT, score REAL, phone TEXT);")?;
+    conn.execute(
+        "CREATE TABLE devs (id INT PRIMARY KEY, name TEXT, delta INT, score REAL, phone TEXT);",
+    )?;
 
-    conn.execute("INSERT INTO devs (id, name, delta, score, phone) VALUES (1, 'alice', -15, 9.876, NULL);")?;
+    conn.execute(
+        "INSERT INTO devs (id, name, delta, score, phone) VALUES (1, 'alice', -15, 9.876, NULL);",
+    )?;
     conn.execute("INSERT INTO devs (id, name, delta, score, phone) VALUES (2, 'bob', 42, 3.1415, '555-0199');")?;
 
     // Built-in string functions
     let rows = conn.query("SELECT UPPER(name) AS u_name, LOWER('MIXED') AS l_str, LENGTH(name) AS n_len FROM devs WHERE id = 1;")?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get_value("u_name"), Some(&Value::Text("ALICE".to_string())));
-    assert_eq!(rows[0].get_value("l_str"), Some(&Value::Text("mixed".to_string())));
+    assert_eq!(
+        rows[0].get_value("u_name"),
+        Some(&Value::Text("ALICE".to_string()))
+    );
+    assert_eq!(
+        rows[0].get_value("l_str"),
+        Some(&Value::Text("mixed".to_string()))
+    );
     assert_eq!(rows[0].get_value("n_len"), Some(&Value::Integer(5)));
 
     // Built-in math functions: ABS, ROUND
-    let rows = conn.query("SELECT ABS(delta) AS abs_d, ROUND(score, 2) AS r_sc FROM devs WHERE id = 1;")?;
+    let rows =
+        conn.query("SELECT ABS(delta) AS abs_d, ROUND(score, 2) AS r_sc FROM devs WHERE id = 1;")?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get_value("abs_d"), Some(&Value::Integer(15)));
     assert_eq!(rows[0].get_value("r_sc"), Some(&Value::Real(9.88)));
@@ -25,17 +36,29 @@ fn test_dynamic_scalar_udf_registry_builtins() -> Result<()> {
     // Built-in COALESCE and CONCAT
     let rows = conn.query("SELECT COALESCE(phone, 'N/A') AS contact, CONCAT(name, ' ', 'rocks') AS phrase FROM devs WHERE id = 1;")?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get_value("contact"), Some(&Value::Text("N/A".to_string())));
-    assert_eq!(rows[0].get_value("phrase"), Some(&Value::Text("alice rocks".to_string())));
+    assert_eq!(
+        rows[0].get_value("contact"),
+        Some(&Value::Text("N/A".to_string()))
+    );
+    assert_eq!(
+        rows[0].get_value("phrase"),
+        Some(&Value::Text("alice rocks".to_string()))
+    );
 
     // Built-in UDF inside WHERE clause
     let rows = conn.query("SELECT name FROM devs WHERE LENGTH(name) > 3;")?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get_value("name"), Some(&Value::Text("alice".to_string())));
+    assert_eq!(
+        rows[0].get_value("name"),
+        Some(&Value::Text("alice".to_string()))
+    );
 
     let rows = conn.query("SELECT name FROM devs WHERE ABS(delta) > 20;")?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get_value("name"), Some(&Value::Text("bob".to_string())));
+    assert_eq!(
+        rows[0].get_value("name"),
+        Some(&Value::Text("bob".to_string()))
+    );
 
     Ok(())
 }
@@ -82,15 +105,19 @@ fn test_advanced_sql_exists_subqueries() -> Result<()> {
     conn.execute("INSERT INTO emps (id, dept_id, name) VALUES (10, 1, 'Grace');")?;
 
     // EXISTS when subquery returns rows -> true
-    let rows = conn.query("SELECT name FROM depts WHERE EXISTS (SELECT * FROM emps WHERE dept_id = 1);")?;
+    let rows =
+        conn.query("SELECT name FROM depts WHERE EXISTS (SELECT * FROM emps WHERE dept_id = 1);")?;
     assert_eq!(rows.len(), 2);
 
     // NOT EXISTS when subquery returns rows -> false
-    let rows = conn.query("SELECT name FROM depts WHERE NOT EXISTS (SELECT * FROM emps WHERE dept_id = 1);")?;
+    let rows = conn
+        .query("SELECT name FROM depts WHERE NOT EXISTS (SELECT * FROM emps WHERE dept_id = 1);")?;
     assert_eq!(rows.len(), 0);
 
     // NOT EXISTS when subquery returns no rows -> true
-    let rows = conn.query("SELECT name FROM depts WHERE NOT EXISTS (SELECT * FROM emps WHERE dept_id = 999);")?;
+    let rows = conn.query(
+        "SELECT name FROM depts WHERE NOT EXISTS (SELECT * FROM emps WHERE dept_id = 999);",
+    )?;
     assert_eq!(rows.len(), 2);
 
     Ok(())
@@ -110,7 +137,10 @@ fn test_advanced_sql_derived_tables() -> Result<()> {
         "SELECT d.name, d.price FROM (SELECT * FROM products WHERE price >= 100) AS d WHERE d.price < 250;",
     )?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get_value("name"), Some(&Value::Text("Keyboard".to_string())));
+    assert_eq!(
+        rows[0].get_value("name"),
+        Some(&Value::Text("Keyboard".to_string()))
+    );
     assert_eq!(rows[0].get_value("price"), Some(&Value::Integer(150)));
 
     Ok(())
@@ -121,15 +151,25 @@ fn test_alter_table_mutations() -> Result<()> {
     let conn = Connection::open_in_memory()?;
 
     conn.execute("CREATE TABLE staff (id INT PRIMARY KEY, name TEXT, salary INT, notes TEXT);")?;
-    conn.execute("INSERT INTO staff (id, name, salary, notes) VALUES (1, 'Alan', 8000, 'Senior');")?;
-    conn.execute("INSERT INTO staff (id, name, salary, notes) VALUES (2, 'Ada', 9500, 'Principal');")?;
+    conn.execute(
+        "INSERT INTO staff (id, name, salary, notes) VALUES (1, 'Alan', 8000, 'Senior');",
+    )?;
+    conn.execute(
+        "INSERT INTO staff (id, name, salary, notes) VALUES (2, 'Ada', 9500, 'Principal');",
+    )?;
 
     // 1. RENAME TABLE
     conn.execute("ALTER TABLE staff RENAME TO engineers;")?;
     let rows = conn.query("SELECT name, salary FROM engineers ORDER BY id ASC;")?;
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].get_value("name"), Some(&Value::Text("Alan".to_string())));
-    assert_eq!(rows[1].get_value("name"), Some(&Value::Text("Ada".to_string())));
+    assert_eq!(
+        rows[0].get_value("name"),
+        Some(&Value::Text("Alan".to_string()))
+    );
+    assert_eq!(
+        rows[1].get_value("name"),
+        Some(&Value::Text("Ada".to_string()))
+    );
 
     // Verify old table name no longer exists
     assert!(conn.query("SELECT * FROM staff;").is_err());
@@ -138,14 +178,23 @@ fn test_alter_table_mutations() -> Result<()> {
     conn.execute("ALTER TABLE engineers RENAME COLUMN notes TO remarks;")?;
     let rows = conn.query("SELECT id, remarks FROM engineers WHERE id = 2;")?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get_value("remarks"), Some(&Value::Text("Principal".to_string())));
+    assert_eq!(
+        rows[0].get_value("remarks"),
+        Some(&Value::Text("Principal".to_string()))
+    );
 
     // 3. DROP COLUMN
     conn.execute("ALTER TABLE engineers DROP COLUMN salary;")?;
     let rows = conn.query("SELECT * FROM engineers WHERE id = 1;")?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get_value("name"), Some(&Value::Text("Alan".to_string())));
-    assert_eq!(rows[0].get_value("remarks"), Some(&Value::Text("Senior".to_string())));
+    assert_eq!(
+        rows[0].get_value("name"),
+        Some(&Value::Text("Alan".to_string()))
+    );
+    assert_eq!(
+        rows[0].get_value("remarks"),
+        Some(&Value::Text("Senior".to_string()))
+    );
     // Dropped column should no longer be present
     assert_eq!(rows[0].get_value("salary"), None);
 
@@ -181,8 +230,14 @@ fn test_transaction_savepoints() -> Result<()> {
 
     let rows = conn.query("SELECT id, action FROM audit_log ORDER BY id ASC;")?;
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].get_value("action"), Some(&Value::Text("BOOT".to_string())));
-    assert_eq!(rows[1].get_value("action"), Some(&Value::Text("STEP_A".to_string())));
+    assert_eq!(
+        rows[0].get_value("action"),
+        Some(&Value::Text("BOOT".to_string()))
+    );
+    assert_eq!(
+        rows[1].get_value("action"),
+        Some(&Value::Text("STEP_A".to_string()))
+    );
 
     Ok(())
 }
@@ -196,14 +251,23 @@ fn test_graph_relational_projection() -> Result<()> {
     conn.execute("INSERT INTO people (id, name, role) VALUES (102, 'Ken', 'Architect');")?;
 
     conn.execute("CREATE TABLE follows (from_id INT, to_id INT, rel TEXT, weight REAL);")?;
-    conn.execute("INSERT INTO follows (from_id, to_id, rel, weight) VALUES (101, 102, 'COLLABORATES', 2.5);")?;
+    conn.execute(
+        "INSERT INTO follows (from_id, to_id, rel, weight) VALUES (101, 102, 'COLLABORATES', 2.5);",
+    )?;
 
     // Project people as graph nodes
     let node_count = conn.project_table_as_nodes("people", "id", Some("name"), None)?;
     assert_eq!(node_count, 2);
 
     // Project follows as graph edges
-    let edge_count = conn.project_table_as_edges("follows", "from_id", "to_id", Some("rel"), Some("weight"), None)?;
+    let edge_count = conn.project_table_as_edges(
+        "follows",
+        "from_id",
+        "to_id",
+        Some("rel"),
+        Some("weight"),
+        None,
+    )?;
     assert_eq!(edge_count, 1);
 
     // Query projected graph using Graph Engine
@@ -221,9 +285,12 @@ fn test_graph_relational_projection() -> Result<()> {
 fn test_continuous_streaming_wal_replication() -> Result<()> {
     // 1. Primary node writes data
     let primary = Connection::open_in_memory()?;
-    primary.execute("CREATE TABLE cluster_state (id INT PRIMARY KEY, node_name TEXT, term INT);")?;
-    primary.execute("INSERT INTO cluster_state (id, node_name, term) VALUES (1, 'node-alpha', 10);")?;
-    primary.execute("INSERT INTO cluster_state (id, node_name, term) VALUES (2, 'node-beta', 10);")?;
+    primary
+        .execute("CREATE TABLE cluster_state (id INT PRIMARY KEY, node_name TEXT, term INT);")?;
+    primary
+        .execute("INSERT INTO cluster_state (id, node_name, term) VALUES (1, 'node-alpha', 10);")?;
+    primary
+        .execute("INSERT INTO cluster_state (id, node_name, term) VALUES (2, 'node-beta', 10);")?;
 
     // 2. Export replication chunk with hardware CRC32
     let chunk = primary.export_replication_chunk()?;
@@ -243,9 +310,15 @@ fn test_continuous_streaming_wal_replication() -> Result<()> {
     // 4. Verify standby replica can query the exact same data immediately
     let rows = standby.query("SELECT id, node_name, term FROM cluster_state ORDER BY id ASC;")?;
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].get_value("node_name"), Some(&Value::Text("node-alpha".to_string())));
+    assert_eq!(
+        rows[0].get_value("node_name"),
+        Some(&Value::Text("node-alpha".to_string()))
+    );
     assert_eq!(rows[0].get_value("term"), Some(&Value::Integer(10)));
-    assert_eq!(rows[1].get_value("node_name"), Some(&Value::Text("node-beta".to_string())));
+    assert_eq!(
+        rows[1].get_value("node_name"),
+        Some(&Value::Text("node-beta".to_string()))
+    );
 
     Ok(())
 }

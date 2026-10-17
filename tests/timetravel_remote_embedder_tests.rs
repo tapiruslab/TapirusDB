@@ -16,7 +16,8 @@ use tapirus::{Connection, Error};
 #[test]
 fn test_as_of_timestamp_time_travel_snapshot() {
     let conn = Connection::open_in_memory().expect("Open in-memory DB");
-    conn.execute("PRAGMA time_travel = ON;").expect("Enable time travel");
+    conn.execute("PRAGMA time_travel = ON;")
+        .expect("Enable time travel");
     conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
         .expect("Create table");
     conn.execute("INSERT INTO users (id, name) VALUES (1, 'Alice')")
@@ -36,12 +37,16 @@ fn test_as_of_timestamp_time_travel_snapshot() {
     conn.execute("UPDATE users SET name = 'Alice_Updated' WHERE id = 1")
         .expect("Update");
 
-    let rows_now = conn.query("SELECT id, name FROM users").expect("Query current");
+    let rows_now = conn
+        .query("SELECT id, name FROM users")
+        .expect("Query current");
     assert_eq!(rows_now[0].get::<String>("name").unwrap(), "Alice_Updated");
 
     // Query historical snapshot as of ts_insert
     let rows_historical = conn
-        .query(&format!("SELECT id, name FROM users AS OF TIMESTAMP {ts_insert}"))
+        .query(&format!(
+            "SELECT id, name FROM users AS OF TIMESTAMP {ts_insert}"
+        ))
         .expect("Historical query");
     assert_eq!(rows_historical.len(), 1);
     assert_eq!(rows_historical[0].get::<String>("name").unwrap(), "Alice");
@@ -138,7 +143,8 @@ fn test_remote_connection_strictly_rejects_mutation_attempts() {
     assert_eq!(rows[0].get::<String>("info").unwrap(), "read_only_fact");
 
     // Writing or mutating MUST fail with a clear Read-Only error (no silent bypass success)
-    let write_res = remote_conn.execute("INSERT INTO public_data (id, info) VALUES (2, 'tampered')");
+    let write_res =
+        remote_conn.execute("INSERT INTO public_data (id, info) VALUES (2, 'tampered')");
     match write_res {
         Err(Error::Corrupted(msg)) => {
             assert!(
@@ -152,7 +158,10 @@ fn test_remote_connection_strictly_rejects_mutation_attempts() {
 
     // Creating a table must also fail
     let create_res = remote_conn.execute("CREATE TABLE unauthorized (id INT)");
-    assert!(create_res.is_err(), "CREATE TABLE on remote connection must fail");
+    assert!(
+        create_res.is_err(),
+        "CREATE TABLE on remote connection must fail"
+    );
 }
 
 #[test]
@@ -169,7 +178,10 @@ fn test_embedder_deterministic_output() {
 
     // L2 unit normalization check
     let norm: f32 = v1.iter().map(|x| x * x).sum::<f32>().sqrt();
-    assert!((norm - 1.0).abs() < 1e-4, "Vector must be L2 normalized to unit sphere");
+    assert!(
+        (norm - 1.0).abs() < 1e-4,
+        "Vector must be L2 normalized to unit sphere"
+    );
 }
 
 #[test]

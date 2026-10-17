@@ -121,7 +121,9 @@ impl MicroHeader {
         let mut magic = [0u8; 8];
         magic.copy_from_slice(&buf[0..8]);
         if magic != MICRO_DATABASE_MAGIC {
-            return Err(Error::Corrupted("Invalid MicroDatabase magic header".into()));
+            return Err(Error::Corrupted(
+                "Invalid MicroDatabase magic header".into(),
+            ));
         }
         let version = u16::from_le_bytes([buf[8], buf[9]]);
         let block_size = u16::from_le_bytes([buf[10], buf[11]]);
@@ -198,7 +200,7 @@ pub struct MicroDatabase<D: FlashBlockDevice> {
     pager: MicroPager<D>,
     records: Vec<(u32, u64, f32, String)>, // (sensor_id, timestamp, val, label)
     vectors: HashMap<u32, QuantizedVector8>, // id -> 8-bit quantized vector
-    edges: Vec<(u32, u32, String)>,         // (from, to, relation)
+    edges: Vec<(u32, u32, String)>,        // (from, to, relation)
 }
 
 impl MicroDatabase<RamBlockDevice> {
@@ -229,7 +231,8 @@ impl<D: FlashBlockDevice> MicroDatabase<D> {
         value: f32,
         label: &str,
     ) -> Result<()> {
-        self.records.push((sensor_id, timestamp, value, label.to_string()));
+        self.records
+            .push((sensor_id, timestamp, value, label.to_string()));
 
         // Flush checkpoint to Block 1 periodically
         if self.records.len() % 10 == 0 {

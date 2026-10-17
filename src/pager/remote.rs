@@ -12,12 +12,12 @@
 
 use crate::crypto::DatabaseCipher;
 use crate::error::{Error, Result};
-use crate::pager::{DatabaseHeader, PageId, DATABASE_HEADER_SIZE};
+use crate::pager::{DATABASE_HEADER_SIZE, DatabaseHeader, PageId};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Trait for fetching byte slices from remote cloud object stores
 pub trait RemoteRangeReader: Send + Sync {
@@ -106,7 +106,8 @@ impl RemoteRangeReader for MockRemoteRangeStorage {
         let slice = guard[start..actual_end].to_vec();
 
         self.fetch_count.fetch_add(1, Ordering::Relaxed);
-        self.bytes_read.fetch_add(slice.len() as u64, Ordering::Relaxed);
+        self.bytes_read
+            .fetch_add(slice.len() as u64, Ordering::Relaxed);
 
         Ok(slice)
     }
@@ -288,8 +289,8 @@ impl CloudS3RemoteStorage {
     /// Construct a new Cloud S3 / R2 storage adapter from configuration
     pub fn new(config: S3StorageConfig) -> Self {
         let agent = ureq::AgentBuilder::new()
-            .timeout_read(std::time::Duration::from_secs(30))
-            .timeout_write(std::time::Duration::from_secs(30))
+            .timeout_read(web_time::Duration::from_secs(30))
+            .timeout_write(web_time::Duration::from_secs(30))
             .build();
         Self { config, agent }
     }
@@ -323,10 +324,9 @@ impl RemoteRangeReader for CloudS3RemoteStorage {
         }
 
         let resp = req.call().map_err(|e| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Cloud S3 range request failed for {url} [Range: {range_header}]: {e}"),
-            ))
+            Error::Io(std::io::Error::other(format!(
+                "Cloud S3 range request failed for {url} [Range: {range_header}]: {e}"
+            )))
         })?;
 
         let mut reader = resp.into_reader();
@@ -366,10 +366,9 @@ impl RemoteRangeReader for CloudS3RemoteStorage {
         }
 
         let resp = req_range.call().map_err(|e| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to determine S3 object size for {url}: {e}"),
-            ))
+            Error::Io(std::io::Error::other(format!(
+                "Failed to determine S3 object size for {url}: {e}"
+            )))
         })?;
 
         if let Some(cr) = resp.header("content-range") {
@@ -397,7 +396,10 @@ impl RemoteRangeReader for CloudS3RemoteStorage {
 impl RemoteStorageAdapter for CloudS3RemoteStorage {
     fn put_object(&self, data: &[u8]) -> Result<()> {
         let url = self.object_url();
-        let mut req = self.agent.put(&url).set("Content-Type", "application/octet-stream");
+        let mut req = self
+            .agent
+            .put(&url)
+            .set("Content-Type", "application/octet-stream");
 
         if let Some(ref token) = self.config.auth_token {
             if token.starts_with("Bearer ") || token.starts_with("AWS ") {
@@ -408,10 +410,9 @@ impl RemoteStorageAdapter for CloudS3RemoteStorage {
         }
 
         req.send_bytes(data).map_err(|e| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Cloud S3 PUT request failed for {url}: {e}"),
-            ))
+            Error::Io(std::io::Error::other(format!(
+                "Cloud S3 PUT request failed for {url}: {e}"
+            )))
         })?;
         Ok(())
     }
@@ -426,8 +427,8 @@ mod tests {
     fn test_cloud_s3_http_range_streaming_live() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind test HTTP server");
         let port = listener.local_addr().unwrap().port();
@@ -505,11 +506,12 @@ mod tests {
                         }
 
                         *server_payload.write() = body_bytes;
-                        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        let resp =
+                            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                         let _ = stream.write_all(resp.as_bytes());
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(web_time::Duration::from_millis(5));
             }
         });
 
@@ -528,13 +530,17 @@ mod tests {
         assert_eq!(size, 8192);
 
         // 2. Test fetch_range [0..4096]
-        let page1 = storage.fetch_range(0, 4096).expect("Failed to fetch page 1");
+        let page1 = storage
+            .fetch_range(0, 4096)
+            .expect("Failed to fetch page 1");
         assert_eq!(page1.len(), 4096);
         assert_eq!(page1[0], 0);
         assert_eq!(page1[1], 1);
 
         // 3. Test fetch_range [4096..8192]
-        let page2 = storage.fetch_range(4096, 4096).expect("Failed to fetch page 2");
+        let page2 = storage
+            .fetch_range(4096, 4096)
+            .expect("Failed to fetch page 2");
         assert_eq!(page2.len(), 4096);
 
         // 4. Test put_object
@@ -543,11 +549,12 @@ mod tests {
         let new_size = storage.total_size().expect("Failed to get updated size");
         assert_eq!(new_size, 1024);
 
-        let fetched_new = storage.fetch_range(0, 1024).expect("Failed to fetch updated data");
+        let fetched_new = storage
+            .fetch_range(0, 1024)
+            .expect("Failed to fetch updated data");
         assert_eq!(fetched_new, new_data);
 
         running.store(false, Ordering::Relaxed);
         let _ = server_thread.join();
     }
 }
-

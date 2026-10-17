@@ -4,11 +4,11 @@
 //! node splitting, and hierarchical tree traversal.
 
 use crate::btree::{
-    decode_varint, encode_varint, PageHeader, PageType, TableInteriorCell, TableLeafCell,
-    PAGE_RESERVED_TRAILER,
+    PAGE_RESERVED_TRAILER, PageHeader, PageType, TableInteriorCell, TableLeafCell, decode_varint,
+    encode_varint,
 };
 use crate::error::{Error, Result};
-use crate::pager::{PageId, Pager, DATABASE_HEADER_SIZE};
+use crate::pager::{DATABASE_HEADER_SIZE, PageId, Pager};
 
 /// Returns the byte offset within a page where the B+Tree PageHeader begins.
 /// Page 1 reserves bytes 0..99 for the DatabaseHeader.
@@ -61,15 +61,13 @@ pub fn read_page_header(page_buf: &[u8], page_id: PageId) -> Result<PageHeader> 
 }
 
 /// Write the PageHeader into a raw page buffer
-pub fn write_page_header(
-    page_buf: &mut [u8],
-    page_id: PageId,
-    header: &PageHeader,
-) -> Result<()> {
+pub fn write_page_header(page_buf: &mut [u8], page_id: PageId, header: &PageHeader) -> Result<()> {
     let offset = page_header_offset(page_id);
     let bytes = header.to_bytes();
     if page_buf.len() < offset + bytes.len() {
-        return Err(Error::Corrupted("Page buffer too small to write header".into()));
+        return Err(Error::Corrupted(
+            "Page buffer too small to write header".into(),
+        ));
     }
     page_buf[offset..offset + bytes.len()].copy_from_slice(&bytes);
     Ok(())
@@ -96,7 +94,9 @@ pub fn read_cell_pointer(page_buf: &[u8], page_id: PageId, cell_idx: usize) -> R
 pub fn read_leaf_cell(page_buf: &[u8], page_id: PageId, cell_idx: usize) -> Result<TableLeafCell> {
     let ptr = read_cell_pointer(page_buf, page_id, cell_idx)? as usize;
     if ptr >= page_buf.len() {
-        return Err(Error::Corrupted("Cell pointer points past end of page".into()));
+        return Err(Error::Corrupted(
+            "Cell pointer points past end of page".into(),
+        ));
     }
     TableLeafCell::from_bytes(&page_buf[ptr..])
 }
@@ -109,7 +109,9 @@ pub fn read_interior_cell(
 ) -> Result<TableInteriorCell> {
     let ptr = read_cell_pointer(page_buf, page_id, cell_idx)? as usize;
     if ptr >= page_buf.len() {
-        return Err(Error::Corrupted("Cell pointer points past end of page".into()));
+        return Err(Error::Corrupted(
+            "Cell pointer points past end of page".into(),
+        ));
     }
     TableInteriorCell::from_bytes(&page_buf[ptr..])
 }
@@ -119,7 +121,9 @@ pub fn read_interior_cell(
 pub fn read_leaf_cell_row_id(page_buf: &[u8], page_id: PageId, cell_idx: usize) -> Result<u64> {
     let ptr = read_cell_pointer(page_buf, page_id, cell_idx)? as usize;
     if ptr >= page_buf.len() {
-        return Err(Error::Corrupted("Cell pointer points past end of page".into()));
+        return Err(Error::Corrupted(
+            "Cell pointer points past end of page".into(),
+        ));
     }
     let slice = &page_buf[ptr..];
     let (_payload_size, n1) = decode_varint(slice)?;
@@ -309,7 +313,9 @@ pub fn defragment_leaf_page(page_buf: &mut [u8], page_id: PageId) -> Result<()> 
         let bytes = cell.to_bytes();
         content_offset = content_offset
             .checked_sub(bytes.len() as u16)
-            .ok_or_else(|| Error::Corrupted("Cell offset underflow during defragmentation".into()))?;
+            .ok_or_else(|| {
+                Error::Corrupted("Cell offset underflow during defragmentation".into())
+            })?;
         let c_start = content_offset as usize;
         page_buf[c_start..c_start + bytes.len()].copy_from_slice(&bytes);
         let p_loc = ptr_start + i * 2;
@@ -324,11 +330,7 @@ pub fn defragment_leaf_page(page_buf: &mut [u8], page_id: PageId) -> Result<()> 
 
 /// Remove a leaf cell matching `key` from a leaf page buffer.
 /// Returns Ok(true) if deleted, Ok(false) if key was not found in page.
-pub fn delete_leaf_cell_from_page(
-    page_buf: &mut [u8],
-    page_id: PageId,
-    key: u64,
-) -> Result<bool> {
+pub fn delete_leaf_cell_from_page(page_buf: &mut [u8], page_id: PageId, key: u64) -> Result<bool> {
     let mut header = read_page_header(page_buf, page_id)?;
     let search_res = find_leaf_cell_index_by_key(page_buf, page_id, key)?;
     match search_res {
@@ -420,14 +422,13 @@ pub fn insert_interior_cell_into_page(
 pub const MAX_INLINE_PAYLOAD: usize = 1024;
 
 /// Write an overflow chain for payload bytes exceeding MAX_INLINE_PAYLOAD
-pub fn write_overflow_chain(
-    pager: &mut Pager,
-    mut remaining_bytes: &[u8],
-) -> Result<PageId> {
+pub fn write_overflow_chain(pager: &mut Pager, mut remaining_bytes: &[u8]) -> Result<PageId> {
     let page_size = pager.page_size();
     let max_chunk = page_size.saturating_sub(6 + PAGE_RESERVED_TRAILER);
     if max_chunk == 0 {
-        return Err(Error::Corrupted("Page size too small for overflow chaining".into()));
+        return Err(Error::Corrupted(
+            "Page size too small for overflow chaining".into(),
+        ));
     }
     let mut head_page: Option<PageId> = None;
     let mut prev_page: Option<PageId> = None;
@@ -462,10 +463,7 @@ pub fn write_overflow_chain(
 }
 
 /// Read all chained overflow pages starting from first_page_id
-pub fn read_overflow_chain(
-    pager: &mut Pager,
-    first_page_id: PageId,
-) -> Result<Vec<u8>> {
+pub fn read_overflow_chain(pager: &mut Pager, first_page_id: PageId) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut curr = first_page_id;
     let page_size = pager.page_size();
@@ -488,10 +486,7 @@ pub fn read_overflow_chain(
 }
 
 /// Release and zero out chained overflow pages starting from first_page_id, returning them to the freelist
-pub fn free_overflow_chain(
-    pager: &mut Pager,
-    first_page_id: PageId,
-) -> Result<()> {
+pub fn free_overflow_chain(pager: &mut Pager, first_page_id: PageId) -> Result<()> {
     let mut curr = first_page_id;
     let page_size = pager.page_size();
     let zero_page = vec![0u8; page_size];
@@ -518,7 +513,12 @@ impl BTreeStorage {
     }
 
     /// Search for a row by `key` starting at `root_page`
-    pub fn search(&self, pager: &mut Pager, root_page: PageId, key: u64) -> Result<Option<Vec<u8>>> {
+    pub fn search(
+        &self,
+        pager: &mut Pager,
+        root_page: PageId,
+        key: u64,
+    ) -> Result<Option<Vec<u8>>> {
         let mut curr_page_id = root_page;
 
         loop {
@@ -541,9 +541,9 @@ impl BTreeStorage {
                         }
                     }
                     PageType::TableInterior => {
-                        let mut next_page = header
-                            .right_child
-                            .ok_or_else(|| Error::Corrupted("Interior node missing right_child".into()))?;
+                        let mut next_page = header.right_child.ok_or_else(|| {
+                            Error::Corrupted("Interior node missing right_child".into())
+                        })?;
 
                         for i in 0..header.num_cells as usize {
                             let cell = read_interior_cell(page_buf, curr_page_id, i)?;
@@ -593,7 +593,8 @@ impl BTreeStorage {
         };
 
         // Recursive insert down tree without heap allocation for normal inline cells
-        let split_result = self.insert_into_subtree_cow(pager, root_page, key, inline_payload, overflow_page)?;
+        let split_result =
+            self.insert_into_subtree_cow(pager, root_page, key, inline_payload, overflow_page)?;
 
         if let Some((right_child_id, split_key)) = split_result {
             // The root page itself split!
@@ -619,7 +620,11 @@ impl BTreeStorage {
                         );
                         for i in 0..header.num_cells as usize {
                             let cell = read_interior_cell(&old_root_data, root_page, i)?;
-                            insert_interior_cell_into_page(&mut new_left_data, left_child_id, &cell)?;
+                            insert_interior_cell_into_page(
+                                &mut new_left_data,
+                                left_child_id,
+                                &cell,
+                            )?;
                         }
                     }
                     _ => {
@@ -696,9 +701,9 @@ impl BTreeStorage {
                 let (target_child, child_idx) = pager.with_page(curr_page_id, |page_buf| {
                     let header = read_page_header(page_buf, curr_page_id)?;
                     let num_cells = header.num_cells as usize;
-                    let mut tc = header
-                        .right_child
-                        .ok_or_else(|| Error::Corrupted("Interior node missing right_child".into()))?;
+                    let mut tc = header.right_child.ok_or_else(|| {
+                        Error::Corrupted("Interior node missing right_child".into())
+                    })?;
                     let mut c_idx = None;
 
                     for i in 0..num_cells {
@@ -712,7 +717,8 @@ impl BTreeStorage {
                     Ok((tc, c_idx))
                 })?;
 
-                let child_split = self.insert_into_subtree_cow(pager, target_child, key, payload, overflow_page)?;
+                let child_split =
+                    self.insert_into_subtree_cow(pager, target_child, key, payload, overflow_page)?;
 
                 if let Some((new_child_id, child_split_key)) = child_split {
                     let new_interior_cell = TableInteriorCell {
@@ -738,7 +744,11 @@ impl BTreeStorage {
                         Ok(None)
                     } else {
                         let curr_buf = pager.read_page(curr_page_id)?;
-                        let new_rc = if child_idx.is_none() { Some(new_child_id) } else { None };
+                        let new_rc = if child_idx.is_none() {
+                            Some(new_child_id)
+                        } else {
+                            None
+                        };
                         let (new_interior_page_id, split_key) = self.split_interior_page(
                             pager,
                             curr_page_id,
@@ -752,7 +762,9 @@ impl BTreeStorage {
                     Ok(None)
                 }
             }
-            other => Err(Error::Corrupted(format!("Invalid page type for insertion: {other:?}"))),
+            other => Err(Error::Corrupted(format!(
+                "Invalid page type for insertion: {other:?}"
+            ))),
         }
     }
 
@@ -799,7 +811,8 @@ impl BTreeStorage {
         // 2. Re-populate left page
         let mut new_left_buf = vec![0u8; pager.page_size()];
         if left_page_id == 1 {
-            new_left_buf[..DATABASE_HEADER_SIZE].copy_from_slice(&left_page_buf[..DATABASE_HEADER_SIZE]);
+            new_left_buf[..DATABASE_HEADER_SIZE]
+                .copy_from_slice(&left_page_buf[..DATABASE_HEADER_SIZE]);
         }
         init_interior_page(&mut new_left_buf, left_page_id, promoted_left_child);
         for c in left_cells {
@@ -829,7 +842,8 @@ impl BTreeStorage {
             let last_ptr = read_cell_pointer(left_page_buf, left_page_id, num_cells - 1)? as usize;
             if last_ptr < left_page_buf.len() {
                 let (_, n1) = crate::btree::decode_varint(&left_page_buf[last_ptr..])?;
-                let (last_row_id, _) = crate::btree::decode_varint(&left_page_buf[last_ptr + n1..])?;
+                let (last_row_id, _) =
+                    crate::btree::decode_varint(&left_page_buf[last_ptr + n1..])?;
 
                 if new_cell.row_id > last_row_id {
                     let right_page_id = pager.allocate_page()?;
@@ -869,7 +883,8 @@ impl BTreeStorage {
         let mut new_left_buf = vec![0u8; pager.page_size()];
         if left_page_id == 1 {
             // Preserve DatabaseHeader on Page 1
-            new_left_buf[..DATABASE_HEADER_SIZE].copy_from_slice(&left_page_buf[..DATABASE_HEADER_SIZE]);
+            new_left_buf[..DATABASE_HEADER_SIZE]
+                .copy_from_slice(&left_page_buf[..DATABASE_HEADER_SIZE]);
         }
         init_leaf_page(&mut new_left_buf, left_page_id);
         for c in left_cells {
@@ -901,7 +916,12 @@ impl BTreeStorage {
 
     /// Perform a zero-copy streaming scan passing borrowed payload slices `(row_id: u64, payload: &[u8])`
     /// without allocating heap `Vec<u8>` per cell.
-    pub fn scan_with_ref<F>(&self, pager: &mut Pager, root_page: PageId, mut callback: F) -> Result<()>
+    pub fn scan_with_ref<F>(
+        &self,
+        pager: &mut Pager,
+        root_page: PageId,
+        mut callback: F,
+    ) -> Result<()>
     where
         F: FnMut(u64, &[u8]) -> Result<bool>,
     {
@@ -926,14 +946,18 @@ impl BTreeStorage {
                 for i in 0..header.num_cells as usize {
                     let ptr = read_cell_pointer(&page_buf, curr_page_id, i)? as usize;
                     if ptr >= page_buf.len() {
-                        return Err(Error::Corrupted("Cell pointer points past end of page".into()));
+                        return Err(Error::Corrupted(
+                            "Cell pointer points past end of page".into(),
+                        ));
                     }
                     let (payload_size, n1) = crate::btree::decode_varint(&page_buf[ptr..])?;
                     let (row_id, n2) = crate::btree::decode_varint(&page_buf[ptr + n1..])?;
                     let offset = ptr + n1 + n2;
                     let payload_len = payload_size as usize;
                     if page_buf.len() < offset + payload_len + 4 {
-                        return Err(Error::Corrupted("Truncated cell payload or overflow pointer".into()));
+                        return Err(Error::Corrupted(
+                            "Truncated cell payload or overflow pointer".into(),
+                        ));
                     }
                     let overflow = u32::from_le_bytes([
                         page_buf[offset + payload_len],
@@ -972,7 +996,9 @@ impl BTreeStorage {
                 }
                 Ok(true)
             }
-            other => Err(Error::Corrupted(format!("Invalid page type during scan: {other:?}"))),
+            other => Err(Error::Corrupted(format!(
+                "Invalid page type during scan: {other:?}"
+            ))),
         }
     }
 
@@ -1017,7 +1043,9 @@ impl BTreeStorage {
                 }
                 Ok(true)
             }
-            other => Err(Error::Corrupted(format!("Invalid page type during scan: {other:?}"))),
+            other => Err(Error::Corrupted(format!(
+                "Invalid page type during scan: {other:?}"
+            ))),
         }
     }
 
@@ -1128,4 +1156,3 @@ mod tests {
         assert!(after_delete.is_none());
     }
 }
-

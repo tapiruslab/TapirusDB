@@ -1,0 +1,8 @@
+The packaged native addon includes the TapirusDB engine under its existing
+Business Source License 1.1. The core license parameters and Additional Use
+Grant are reproduced in CORE_LICENSE.
+
+The Node wrapper source is declared MIT. That declaration does not change
+the license of the embedded database engine. The package's license expression
+records both components. Dependency license declarations are inventoried in
+the release CycloneDX file; it is not an ownership or license-compliance audit.

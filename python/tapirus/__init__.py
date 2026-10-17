@@ -309,7 +309,7 @@ class Tapirus:
 
 
 class TapDecision:
-    """Result of Tap cognitive classification."""
+    """Classification result with an uncalibrated lexical score in ``confidence``."""
     def __init__(self, top_choice: str, confidence: float):
         self.top_choice = top_choice
         self.confidence = confidence
@@ -464,23 +464,12 @@ def _compute_jaccard_overlap(a: set, b: set) -> float:
 
 
 def tap_classify(text: str, candidates: List[str]) -> Tuple[str, float]:
-    """Classify text intent across candidates using the native Tap decision engine."""
+    """Return a lexical top match and normalized heuristic score, not a calibrated probability."""
     if not candidates:
         return ("unknown", 0.0)
 
-    # 1. Prefer native Safe-Rust engine via SQL scalar bridge
-    db = _get_tap_db()
-    if db is not None:
-        try:
-            esc_text = text.replace("'", "''")
-            cands_json = json.dumps(candidates).replace("'", "''")
-            rows = db.query(f"SELECT TAP_CLASSIFY('{esc_text}', '{cands_json}') AS label;")
-            if rows and "label" in rows[0]:
-                return (str(rows[0]["label"]), 0.92)
-        except Exception:
-            pass
-
-    # 2. Mathematically calibrated fallback matching BitNet / TapEngine
+    # The core SQL bridge exposes a label only, so compute a matching heuristic here
+    # instead of attaching a fixed confidence value to that label.
     input_words = _extract_word_set(text)
     best_cand = candidates[0]
     best_score = -1.0
@@ -494,7 +483,7 @@ def tap_classify(text: str, candidates: List[str]) -> Tuple[str, float]:
             best_score = overlap
             best_cand = cand
 
-    # Calibrated softmax
+    # Normalize candidate overlap scores for ranking. This is not calibration data.
     exp_scores = [math.exp(s * 2.5) for s in scores]
     total_exp = sum(exp_scores) or 1.0
     probs = [e / total_exp for e in exp_scores]

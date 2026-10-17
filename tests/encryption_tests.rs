@@ -35,13 +35,25 @@ fn test_encrypted_database_creation_and_reopen() -> Result<()> {
 
     // CRITICAL SECURITY AUDIT: Verify sensitive plaintexts DO NOT appear anywhere on disk!
     let file_str = String::from_utf8_lossy(&file_bytes);
-    assert!(!file_str.contains("classified_intel"), "SECURITY LEAK: Table name found in plaintext on disk!");
-    assert!(!file_str.contains("PROJECT_PHOENIX"), "SECURITY LEAK: Row data found in plaintext on disk!");
-    assert!(!file_str.contains("NEBULA_DEEP_PROBE"), "SECURITY LEAK: Row data found in plaintext on disk!");
+    assert!(
+        !file_str.contains("classified_intel"),
+        "SECURITY LEAK: Table name found in plaintext on disk!"
+    );
+    assert!(
+        !file_str.contains("PROJECT_PHOENIX"),
+        "SECURITY LEAK: Row data found in plaintext on disk!"
+    );
+    assert!(
+        !file_str.contains("NEBULA_DEEP_PROBE"),
+        "SECURITY LEAK: Row data found in plaintext on disk!"
+    );
 
     // 3. Attempt reopening WITHOUT password: Must be rejected
     let unauth_attempt = Connection::open(&path);
-    assert!(unauth_attempt.is_err(), "Unauthenticated open must fail on encrypted database");
+    assert!(
+        unauth_attempt.is_err(),
+        "Unauthenticated open must fail on encrypted database"
+    );
 
     // 4. Attempt reopening with WRONG password: Must be rejected by KCV
     let wrong_attempt = Connection::open_encrypted(&path, "incorrect-hacker-password");
@@ -71,7 +83,9 @@ fn test_encrypted_database_wal_crash_resilience() -> Result<()> {
         let db = Connection::open_encrypted(&path, secret)?;
         db.execute("CREATE TABLE sensors (id INTEGER PRIMARY KEY, reading TEXT);")?;
         for i in 1..=10 {
-            db.execute(&format!("INSERT INTO sensors (id, reading) VALUES ({i}, 'SENSOR_CONFIDENTIAL_{i}');"))?;
+            db.execute(&format!(
+                "INSERT INTO sensors (id, reading) VALUES ({i}, 'SENSOR_CONFIDENTIAL_{i}');"
+            ))?;
         }
         // Connection drops here simulating sudden process termination with active WAL
     }
@@ -81,7 +95,10 @@ fn test_encrypted_database_wal_crash_resilience() -> Result<()> {
     assert!(wal_path.exists(), "WAL file must exist");
     let wal_bytes = fs::read(&wal_path).expect("Read WAL bytes");
     let wal_str = String::from_utf8_lossy(&wal_bytes);
-    assert!(!wal_str.contains("SENSOR_CONFIDENTIAL_5"), "SECURITY LEAK: WAL contains plaintext data!");
+    assert!(
+        !wal_str.contains("SENSOR_CONFIDENTIAL_5"),
+        "SECURITY LEAK: WAL contains plaintext data!"
+    );
 
     // 3. Reopen encrypted database: WAL recovery must replay encrypted frames correctly
     let db = Connection::open_encrypted(&path, secret)?;

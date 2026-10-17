@@ -20,7 +20,8 @@ fn test_insert_vector_dimension_mismatch_rejected() {
         .expect("Insert 3-dim vector");
 
     // 2. Mismatched dimension (5 elements into VECTOR(3)) must be rejected with DimensionMismatch
-    let res = conn.execute("INSERT INTO embeddings (id, vec) VALUES (2, [1.0, 2.0, 3.0, 4.0, 5.0])");
+    let res =
+        conn.execute("INSERT INTO embeddings (id, vec) VALUES (2, [1.0, 2.0, 3.0, 4.0, 5.0])");
     match res {
         Err(Error::DimensionMismatch(expected, got)) => {
             assert_eq!(expected, 3);
@@ -53,7 +54,8 @@ fn test_insert_type_mismatch_rejected() {
         .expect("Insert valid row");
 
     // 2. Non-numeric text into INTEGER column must be rejected with ConstraintViolation
-    let res = conn.execute("INSERT INTO accounts (id, balance, note) VALUES (2, 'one-hundred', 'Bad row')");
+    let res = conn
+        .execute("INSERT INTO accounts (id, balance, note) VALUES (2, 'one-hundred', 'Bad row')");
     match res {
         Err(Error::ConstraintViolation(msg)) => {
             assert!(
@@ -61,7 +63,9 @@ fn test_insert_type_mismatch_rejected() {
                 "Expected constraint violation mentioning column and failure, got: {msg}"
             );
         }
-        Ok(_) => panic!("Inserting non-numeric string into INTEGER column must NOT silently succeed!"),
+        Ok(_) => {
+            panic!("Inserting non-numeric string into INTEGER column must NOT silently succeed!")
+        }
         Err(other) => panic!("Expected Error::ConstraintViolation, got: {other:?}"),
     }
 }
@@ -76,7 +80,9 @@ fn test_insert_safe_coercion_succeeds() {
     conn.execute("INSERT INTO products (id, price, code) VALUES (1, 50, 999)")
         .expect("Insert with safe coercions");
 
-    let rows = conn.query("SELECT id, price, code FROM products WHERE id = 1").expect("Query");
+    let rows = conn
+        .query("SELECT id, price, code FROM products WHERE id = 1")
+        .expect("Query");
     assert_eq!(rows.len(), 1);
 
     let price: f64 = rows[0].get("price").expect("price as f64");

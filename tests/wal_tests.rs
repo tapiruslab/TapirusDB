@@ -42,7 +42,10 @@ fn test_wal_file_creation_and_checkpoint() -> Result<()> {
 
         // After checkpoint, WAL is truncated back to its 32-byte header
         let wal_len_after = fs::metadata(&wal_path)?.len();
-        assert_eq!(wal_len_after, 32, "WAL file should be truncated to 32-byte header after checkpoint");
+        assert_eq!(
+            wal_len_after, 32,
+            "WAL file should be truncated to 32-byte header after checkpoint"
+        );
     }
 
     // 2. Reopen database from disk and verify data persists in base file
