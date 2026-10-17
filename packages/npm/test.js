@@ -1,79 +1,113 @@
-const assert = require('assert');
-const { TapirusDatabase } = require('./index');
+'use strict';
 
-async function runTests() {
-  console.log('Testing @tapirus/db SDK...');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const { open, TapirusSessionDatabase } = require(process.env.TAPIRUS_TEST_PACKAGE || './index.js');
 
-  // 1. Version check
-  assert.ok(TapirusDatabase.version().startsWith('1.0'));
+async function main() {
+  const reopenPath = process.env.TAPIRUS_TEST_REOPEN_PATH;
+  if (reopenPath) {
+    const db = open(reopenPath);
+    const rows = db.query('SELECT id, body FROM users ORDER BY id;');
+    assert.deepEqual(rows.map(row => row.id), [1, 2, 4]);
+    assert.equal(rows[1].body, "O'Reilly");
+    db.close();
+    return;
+  }
 
-  // 2. In-memory open
-  const db = await TapirusDatabase.openInMemory();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'tapirus-node-sdk-'));
+  const databasePath = path.join(directory, 'persistent.tapir');
+  try {
+    const limitedPath = path.join(directory, 'limited.tapir');
+    const limited = open(limitedPath, { memory: { maxDocuments: 2 } });
+    limited.storeMemoryBatch([{ content: 'first' }, { content: 'second' }]); limited.close();
+    assert.throws(() => open(limitedPath, { memory: { maxDocuments: 1 } }));
+    const reopenedLimited = open(limitedPath, { memory: { maxDocuments: 2 } });
+    assert.throws(() => reopenedLimited.storeMemory({ content: 'third' })); reopenedLimited.close();
+    const db = open(databasePath);
+    assert.equal(db.isNative, true);
+    db.execute('CREATE TABLE users (id INTEGER PRIMARY KEY, body TEXT NOT NULL, amount INTEGER, vec VECTOR(2));');
+    db.execute('INSERT INTO users VALUES (?, ?, ?, ?);', [1, 'Alice', 10, [1, 0]]);
 
-  // 3. Reactive Subscription & CDC
-  let eventFired = false;
-  const sub = db.subscribe('users', (change) => {
-    assert.strictEqual(change.table, 'users');
-    assert.strictEqual(change.op, 'INSERT');
-    eventFired = true;
-  });
+    const changeIds = [];
+    const subscription = db.subscribe('users', change => changeIds.push(change.row_id));
+    db.execute('BEGIN;');
+    db.execute('INSERT INTO users VALUES (?, ?, ?, ?);', [2, "O'Reilly", 20, [0, 1]]);
+    db.execute('SAVEPOINT nested;');
+    db.execute('INSERT INTO users VALUES (?, ?, ?, ?);', [3, 'rolled back', 30, [1, 1]]);
+    db.execute('ROLLBACK TO nested;');
+    db.execute('INSERT INTO users VALUES (?, ?, ?, ?);', [4, 'committed', 40, [1, 1]]);
+    assert.deepEqual(changeIds, [], 'uncommitted changes must not emit CDC events');
+    db.execute('COMMIT;');
 
-  // 4. Execution
-  await db.execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, embedding VECTOR(3));');
-  await db.execute('INSERT INTO users VALUES (1, "Test User", [0.1, 0.9, 0.0]);');
-  assert.strictEqual(eventFired, true, 'CDC change event should have fired');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(changeIds, [2, 4], 'only committed single-row insert IDs should be published');
+    assert.equal(subscription.unsubscribe(), true);
 
-  // 5. Query verification
-  const rows = await db.query('SELECT * FROM users;');
-  assert.strictEqual(rows.length, 1);
-  assert.strictEqual(rows[0].name, 'Test User');
+    const literalAndParameter = db.query("SELECT '?' AS literal, ? AS bound;", ['value']);
+    assert.deepEqual(literalAndParameter, [{ literal: '?', bound: 'value' }]);
+    assert.equal(db.query('SELECT COUNT(*) AS count FROM users;')[0].count, 3);
+    assert.equal(db.query('SELECT ? AS exact;', [9007199254740993n])[0].exact, 9007199254740993n);
 
-  // 6. Vector search verification
-  const vecMatches = await db.query('SELECT * FROM users VECTOR NEAR embedding = [0.15, 0.85, 0.0] TOP 1;');
-  assert.strictEqual(vecMatches.length, 1);
-  assert.strictEqual(vecMatches[0].id, 1);
+    db.execute('BEGIN;');
+    db.storeMemory({ content: 'Discard this draft', namespace: 'manuals' });
+    db.execute('ROLLBACK;');
+    assert.deepEqual(db.searchMemories({ query: 'draft', namespace: 'manuals' }), []);
+    const source = db.storeMemory({ content: 'Engine repair guide', embedding: [1, 0], namespace: 'manuals', sessionId: 'workshop', tags: ['source:manual'] });
+    const sources = db.searchMemories({ query: 'repair', embedding: [1, 0], namespace: 'manuals', sessionId: 'workshop' });
+    assert.equal(sources[0].entry.id, source);
+    assert.equal(sources[0].entry.content, 'Engine repair guide');
+    assert.ok(sources[0].semantic_score > 0.99);
+    assert.deepEqual(db.searchMemories({ query: 'repair', namespace: 'other' }), []);
+    const keyed = { content: 'Updated repair manual', externalId: 'manual-1', sourceVersion: 'v1', embedding: [0, 1], embeddingModel: 'sdk/test-v1', namespace: 'lifecycle' };
+    const keyedId = db.upsertMemory(keyed);
+    assert.equal(db.upsertMemory({ ...keyed, content: 'Revised repair manual', expectedRevision: 1 }), keyedId);
+    assert.throws(() => db.upsertMemory({ ...keyed, expectedRevision: 1 }));
+    assert.throws(() => db.upsertMemoryBatch([{ ...keyed, externalId: 'new' }, { ...keyed, embedding: [1, 0, 0] }]));
+    assert.equal(db.searchMemories({ query: 'repair', namespace: 'lifecycle' }).length, 1);
+    assert.equal(db.searchMemoriesDetailed({ embedding: [0, 1], embeddingModel: 'sdk/test-v1', namespace: 'lifecycle' }).results[0].entry.revision, 2);
+    assert.ok(db.prepareMemoryIndexes().indexed_vectors >= 2);
+    assert.equal(db.storageHealth().reopen_required, false);
+    db.storeMemory({ content: 'Expired repair note', expiresAt: 1, namespace: 'expiry' });
+    assert.deepEqual(db.searchMemories({ query: 'repair', namespace: 'expiry' }), []);
+    assert.equal(db.purgeExpiredMemories(), 1);
 
-  // 7. Agent Memory verification
-  const memId = await db.remember('Agent preference: loves concise Safe-Rust code');
-  assert.ok(memId > 0);
-  const promptCtx = await db.recallPrompt('Safe-Rust');
-  assert.ok(promptCtx.includes('concise Safe-Rust code'));
+    const nearest = db.vectorSearch('users', 'vec', [0, 1], 1);
+    assert.equal(nearest[0].id, 2);
 
-  // 8. Unsubscribe
-  sub.unsubscribe();
+    assert.throws(() => db.execute('INSERT INTO users VALUES (?, ?, ?, ?);', [5, null, 50, [0, 0]]));
+    assert.equal(db.query('SELECT * FROM users;').length, 3);
+    db.close();
+    assert.throws(() => db.query('SELECT * FROM users;'), /closed/i);
 
-  // 9. Accelerated GraphRAG Query
-  const ragResult = await db.graphRagQuery({
-    query: 'Safe-Rust',
-    limit: 3
-  });
-  assert.strictEqual(ragResult.query, 'Safe-Rust');
-  assert.ok(ragResult.results.length > 0, 'Should return GraphRAG entity results');
-
-  // 10. TAP Decision Core (SQL Scalar & Direct Methods)
-  const tapScalarClassify = await db.query("SELECT TAP_CLASSIFY('refund broken item on delivery', '[\"refund\", \"sales\", \"tech\"]') AS cat;");
-  assert.strictEqual(tapScalarClassify[0].cat, 'refund');
-
-  const tapScalarVerifyNeg = await db.query("SELECT TAP_VERIFY('pengguna tidak bersetuju dengan syarat', 'pengguna bersetuju') AS verified;");
-  assert.strictEqual(tapScalarVerifyNeg[0].verified, 0, 'Negation should yield false');
-
-  const tapScalarVerifyPos = await db.query("SELECT TAP_VERIFY('pengguna bersetuju dengan syarat', 'pengguna bersetuju') AS verified;");
-  assert.strictEqual(tapScalarVerifyPos[0].verified, 1, 'Affirmation should yield true');
-
-  const tapDirectScore = db.tapScore('critical emergency server outage', 'emergency');
-  assert.ok(tapDirectScore > 0.5, 'Score should reflect alignment');
-
-  const tapDirectRoute = db.tapRoute('fraudulent account activity block user', ['block', 'allow', 'review']);
-  assert.strictEqual(tapDirectRoute, 'block');
-
-  // 11. VACUUM INTO
-  await db.vacuumInto('backup.tapir');
-
-  db.close();
-  console.log('All @tapirus/db tests passed successfully!');
+    const child = spawnSync(process.execPath, [__filename], {
+      encoding: 'utf8',
+      env: { ...process.env, TAPIRUS_TEST_REOPEN_PATH: databasePath },
+    });
+    assert.equal(child.status, 0, `second process failed:\n${child.stdout}\n${child.stderr}`);
+    const sessions = new TapirusSessionDatabase(path.join(directory, 'sessions.tapir'));
+    const a = sessions.session(); const b = sessions.session();
+    a.execute('CREATE TABLE session_records (id INTEGER)');
+    a.begin(); a.execute('INSERT INTO session_records VALUES (1)');
+    assert.throws(() => b.query('SELECT * FROM session_records'), /session|busy/i);
+    assert.throws(() => b.commit(), /session|busy/i);
+    a.rollback();
+    assert.deepEqual(b.query('SELECT * FROM session_records'), []);
+    b.transaction(session => { session.execute('INSERT INTO session_records VALUES (2)'); session.upsertMemory({ content: 'session source', externalId: 'source' }); });
+    assert.equal(a.memoryStats().documents, 1);
+    assert.throws(() => b.transaction(() => { b.execute('INSERT INTO session_records VALUES (3)'); throw new Error('abort'); }), /abort/);
+    assert.equal(a.query('SELECT * FROM session_records').length, 1);
+    a.close(); b.close(); sessions.close();
+    console.log('Node.js native SDK persistence, binding, vector, constraint, and CDC checks passed.');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 }
 
-runTests().catch((err) => {
-  console.error('Test failed:', err);
-  process.exit(1);
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
 });

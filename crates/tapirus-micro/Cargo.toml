@@ -1,0 +1,10 @@
+[package]
+name = "tapirus-micro"
+version = "1.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "BUSL-1.1"
+description = "Allocation-free fixed-slot flash records for bare-metal devices"
+
+[lib]
+path = "src/lib.rs"

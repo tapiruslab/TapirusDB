@@ -5,7 +5,7 @@
 //! with sign projection and L2 normalization.
 //!
 //! NOTE: This is a fast, lightweight lexical-semantic hashing technique suited for edge CPUs
-//! and sub-microsecond latency, not a deep neural language model (like BERT or MiniLM).
+//! rather than a trained neural language model.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +26,7 @@ pub trait EmbeddingEngine: Send + Sync {
 /// Deterministic, zero-dependency feature hashing embedder.
 ///
 /// Uses character/word n-gram hashing with sign projection and L2 normalization to produce
-/// rich, consistent semantic vectors in sub-microsecond latency on edge CPUs and WebAssembly.
+/// repeatable lexical vectors. Neural semantic quality is not implied.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeterministicHashEmbedder {
     /// Vector dimensionality (default: 128)
@@ -50,7 +50,7 @@ impl DeterministicHashEmbedder {
         let mut h = seed;
         for &b in bytes {
             h = h.wrapping_mul(31).wrapping_add(b as u32);
-            h = (h << 13) | (h >> 19);
+            h = h.rotate_left(13);
             h ^= h >> 15;
         }
         h
@@ -98,7 +98,8 @@ impl EmbeddingEngine for DeterministicHashEmbedder {
 
         // 3. Trigram context hashing for phrase-level coherence
         for window in words.windows(3) {
-            let mut combined = String::with_capacity(window[0].len() + window[1].len() + window[2].len() + 2);
+            let mut combined =
+                String::with_capacity(window[0].len() + window[1].len() + window[2].len() + 2);
             combined.push_str(window[0]);
             combined.push('_');
             combined.push_str(window[1]);
@@ -142,148 +143,241 @@ impl EmbeddingEngine for DeterministicHashEmbedder {
     }
 }
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::time::Duration;
+/// Fallible model provider. A failed request never substitutes another vector space.
+pub trait EmbeddingProvider: Send + Sync {
+    /// Stable identity including model revision and preprocessing version.
+    fn model_id(&self) -> String;
+    /// Expected dimensionality of every vector.
+    fn vector_dimensions(&self) -> usize;
+    /// Generate one vector per input, in the same order.
+    fn embed_documents(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>>;
+}
 
-/// Production neural embedding engine connecting to Ollama, OpenAI, LM Studio, or local REST services.
-/// Automatically falls back to deterministic feature hashing if the network endpoint is offline.
-#[derive(Debug, Clone)]
+/// Validate provider output before any database mutation.
+pub fn validate_embeddings(vectors: &[Vec<f32>], count: usize, dims: usize) -> crate::Result<()> {
+    if dims == 0
+        || vectors.len() != count
+        || vectors.iter().any(|v| {
+            v.len() != dims || v.iter().any(|x| !x.is_finite()) || v.iter().all(|x| *x == 0.0)
+        })
+    {
+        return Err(crate::Error::ConstraintViolation(
+            "Embedding response requires the expected count, dimension and finite nonzero vectors"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+impl EmbeddingProvider for DeterministicHashEmbedder {
+    fn model_id(&self) -> String {
+        format!("tapirus/feature-hash-v1/{}", self.dims)
+    }
+    fn vector_dimensions(&self) -> usize {
+        self.dims
+    }
+    fn embed_documents(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
+        let vectors = EmbeddingEngine::embed_batch(self, texts);
+        validate_embeddings(&vectors, texts.len(), self.dims)?;
+        Ok(vectors)
+    }
+}
+
+/// HTTP provider with explicit errors and no embedding fallback.
+/// Network support requires `http-embeddings`; native TLS is supplied by ureq.
+#[derive(Clone)]
 pub struct HttpEmbeddingEngine {
-    /// Host:port of embedding service (e.g. "127.0.0.1:11434" or "api.openai.com:443")
+    /// Service authority, without credentials.
     pub host: String,
-    /// Path (default: "/api/embeddings" or "/v1/embeddings")
+    /// HTTP request path.
     pub path: String,
-    /// Model name (e.g. "nomic-embed-text", "text-embedding-3-small", "bge-small")
+    /// Application-pinned model identity sent to the service.
     pub model: String,
-    /// Expected vector dimension
+    /// Expected vector dimensions.
     pub dims: usize,
-    /// Optional Bearer authorization token
+    /// Optional bearer token; omitted from Debug output.
     pub api_key: Option<String>,
-    /// Local feature-hashing fallback engine if offline
-    pub fallback: DeterministicHashEmbedder,
+    tls: bool,
 }
-
+impl std::fmt::Debug for HttpEmbeddingEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpEmbeddingEngine")
+            .field("host", &self.host)
+            .field("path", &self.path)
+            .field("model", &self.model)
+            .field("dims", &self.dims)
+            .field("authenticated", &self.api_key.is_some())
+            .finish()
+    }
+}
 impl HttpEmbeddingEngine {
-    /// Create an HTTP embedding client from full endpoint URL, model, and dimensions
+    /// Construct a client from an HTTP(S) endpoint.
     pub fn new(endpoint: &str, model: impl Into<String>, dims: usize) -> Self {
-        let trimmed = endpoint.trim_start_matches("http://").trim_start_matches("https://");
-        let (host, path) = match trimmed.split_once('/') {
-            Some((h, p)) => (h.to_string(), format!("/{p}")),
-            None => (trimmed.to_string(), "/".to_string()),
-        };
-        Self::new_custom(host, path, model, dims)
+        let tls = endpoint.starts_with("https://");
+        let trimmed = endpoint
+            .strip_prefix("https://")
+            .or_else(|| endpoint.strip_prefix("http://"))
+            .unwrap_or(endpoint);
+        let (host, path) = trimmed
+            .split_once('/')
+            .map_or((trimmed, "/".into()), |(h, p)| (h, format!("/{p}")));
+        Self {
+            host: host.into(),
+            path,
+            model: model.into(),
+            dims,
+            api_key: None,
+            tls,
+        }
     }
-
-    /// Create a new Ollama embedding client
+    /// Use the local Ollama batch embedding endpoint.
     pub fn new_ollama(model: impl Into<String>, dims: usize) -> Self {
-        Self {
-            host: "127.0.0.1:11434".to_string(),
-            path: "/api/embeddings".to_string(),
-            model: model.into(),
-            dims,
-            api_key: None,
-            fallback: DeterministicHashEmbedder::new(dims),
-        }
+        Self::new("http://127.0.0.1:11434/api/embed", model, dims)
     }
-
-    /// Create an OpenAI-compatible embedding client
-    pub fn new_openai(host: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>, dims: usize) -> Self {
-        Self {
-            host: host.into(),
-            path: "/v1/embeddings".to_string(),
-            model: model.into(),
-            dims,
-            api_key: Some(api_key.into()),
-            fallback: DeterministicHashEmbedder::new(dims),
-        }
+    /// Construct an unauthenticated HTTP client with a custom path.
+    pub fn new_custom(
+        host: impl Into<String>,
+        path: impl Into<String>,
+        model: impl Into<String>,
+        dims: usize,
+    ) -> Self {
+        let host = host.into();
+        let path = path.into();
+        Self::new(&format!("http://{host}{path}"), model, dims)
     }
-
-    /// Create an HTTP embedding client with custom host, path, and model
-    pub fn new_custom(host: impl Into<String>, path: impl Into<String>, model: impl Into<String>, dims: usize) -> Self {
-        Self {
-            host: host.into(),
-            path: path.into(),
-            model: model.into(),
+    /// Construct a TLS client for the compatible ordered embedding endpoint.
+    pub fn new_openai(
+        host: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        dims: usize,
+    ) -> Self {
+        let mut engine = Self::new(
+            &format!("https://{}/v1/embeddings", host.into()),
+            model,
             dims,
-            api_key: None,
-            fallback: DeterministicHashEmbedder::new(dims),
-        }
-    }
-
-    /// Query remote embedding endpoint via raw HTTP/1.1
-    fn query_remote(&self, text: &str) -> Option<Vec<f32>> {
-        let stream = TcpStream::connect_timeout(
-            &self.host.parse().ok()?,
-            Duration::from_millis(500),
-        ).ok()?;
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
-
-        let mut stream = stream;
-        let body = serde_json::json!({
-            "model": self.model,
-            "prompt": text,
-            "input": text,
-        }).to_string();
-
-        let auth_hdr = match &self.api_key {
-            Some(key) => format!("Authorization: Bearer {key}\r\n"),
-            None => String::new(),
-        };
-
-        let req = format!(
-            "POST {} HTTP/1.1\r\nHost: {}\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            self.path, self.host, auth_hdr, body.len(), body
         );
-
-        stream.write_all(req.as_bytes()).ok()?;
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).ok()?;
-
-        let resp_str = String::from_utf8_lossy(&response);
-        let json_start = resp_str.find("\r\n\r\n")? + 4;
-        let json_body = &resp_str[json_start..];
-
-        let parsed: serde_json::Value = serde_json::from_str(json_body).ok()?;
-
-        // 1. Ollama /api/embeddings format: {"embedding": [f32, ...]}
-        if let Some(arr) = parsed.get("embedding").and_then(|v| v.as_array()) {
-            let vec: Vec<f32> = arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect();
-            if !vec.is_empty() {
-                return Some(vec);
-            }
-        }
-
-        // 2. OpenAI / TEI / v1/embeddings standard format: {"data": [{"embedding": [f32, ...]}]}
-        if let Some(arr) = parsed
-            .get("data")
-            .and_then(|v| v.as_array())
-            .and_then(|data| data.first())
-            .and_then(|first| first.get("embedding"))
-            .and_then(|v| v.as_array())
+        engine.api_key = Some(api_key.into());
+        engine
+    }
+    /// Fallible replacement for the legacy infallible embedding trait.
+    pub fn try_embed_text(&self, text: &str) -> crate::Result<Vec<f32>> {
+        self.embed_documents(&[text])
+            .map(|mut vectors| vectors.remove(0))
+    }
+    #[cfg(all(feature = "http-embeddings", not(target_arch = "wasm32")))]
+    fn request(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
+        use std::io::Read;
+        let reject = |message: &str| crate::Error::ConstraintViolation(message.into());
+        if self.host.contains(['\r', '\n', '@', '/', '?', '#'])
+            || self.path.contains(['\r', '\n', '#'])
+            || !self.path.starts_with('/')
+            || self.model.trim().is_empty()
+            || self.dims == 0
         {
-            let vec: Vec<f32> = arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect();
-            if !vec.is_empty() {
-                return Some(vec);
-            }
+            return Err(reject("Invalid embedding endpoint, model or dimensions"));
         }
-
-        None
+        if self.api_key.is_some() && !self.tls {
+            return Err(reject("Embedding credentials require HTTPS"));
+        }
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let body = if self.path.ends_with("/api/embeddings") {
+            if texts.len() != 1 {
+                return Err(reject(
+                    "Legacy endpoint supports one input; use /api/embed for batches",
+                ));
+            }
+            serde_json::json!({"model":self.model,"prompt":texts[0]})
+        } else {
+            serde_json::json!({"model":self.model,"input":texts,"truncate":false})
+        };
+        let endpoint = format!(
+            "{}://{}{}",
+            if self.tls { "https" } else { "http" },
+            self.host,
+            self.path
+        );
+        let agent = ureq::AgentBuilder::new()
+            .redirects(0)
+            .timeout(std::time::Duration::from_secs(30))
+            .build();
+        let mut request = agent
+            .post(&endpoint)
+            .set("Content-Type", "application/json");
+        if let Some(key) = &self.api_key {
+            request = request.set("Authorization", &format!("Bearer {key}"));
+        }
+        // Do not return transport errors containing credentials, request bodies or provider responses.
+        let response = request
+            .send_string(&body.to_string())
+            .map_err(|_| reject("Embedding HTTP request failed"))?;
+        if response.status() != 200 {
+            return Err(reject("Embedding endpoint did not return HTTP 200"));
+        }
+        let mut bytes = Vec::new();
+        response
+            .into_reader()
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err(reject("Embedding response exceeds 16 MiB"));
+        }
+        let json: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|_| reject("Invalid embedding JSON response"))?;
+        let value = if let Some(embeddings) = json.get("embeddings") {
+            embeddings.clone()
+        } else if let Some(embedding) = json.get("embedding") {
+            serde_json::json!([embedding])
+        } else if let Some(data) = json.get("data").and_then(|v| v.as_array()) {
+            // The compatible endpoint must return unambiguous input order.
+            if data
+                .iter()
+                .enumerate()
+                .any(|(i, v)| v.get("index").and_then(|x| x.as_u64()) != Some(i as u64))
+            {
+                return Err(reject("Embedding response order mismatch"));
+            }
+            serde_json::Value::Array(
+                data.iter()
+                    .map(|v| v.get("embedding").cloned().unwrap_or_default())
+                    .collect(),
+            )
+        } else {
+            return Err(reject("Missing embeddings in provider response"));
+        };
+        let vectors: Vec<Vec<f32>> =
+            serde_json::from_value(value).map_err(|_| reject("Invalid embedding components"))?;
+        validate_embeddings(&vectors, texts.len(), self.dims)?;
+        Ok(vectors)
     }
 }
-
+impl EmbeddingProvider for HttpEmbeddingEngine {
+    fn model_id(&self) -> String {
+        self.model.clone()
+    }
+    fn vector_dimensions(&self) -> usize {
+        self.dims
+    }
+    fn embed_documents(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
+        #[cfg(all(feature = "http-embeddings", not(target_arch = "wasm32")))]
+        {
+            self.request(texts)
+        }
+        #[cfg(not(all(feature = "http-embeddings", not(target_arch = "wasm32"))))]
+        {
+            let _ = (texts, self.tls);
+            Err(crate::Error::ConstraintViolation("HTTP embeddings require the native http-embeddings feature; supply vectors explicitly on WASM".into()))
+        }
+    }
+}
 impl EmbeddingEngine for HttpEmbeddingEngine {
     fn dimensions(&self) -> usize {
         self.dims
     }
-
+    /// Legacy API returns an empty vector on failure. Use try_embed_text to inspect errors.
     fn embed_text(&self, text: &str) -> Vec<f32> {
-        if let Some(vec) = self.query_remote(text) {
-            vec
-        } else {
-            self.fallback.embed_text(text)
-        }
+        self.try_embed_text(text).unwrap_or_default()
     }
 }
 
@@ -294,7 +388,7 @@ mod tests {
     #[test]
     fn test_deterministic_hash_embedder_consistency() {
         let embedder = DeterministicHashEmbedder::new(128);
-        assert_eq!(embedder.dimensions(), 128);
+        assert_eq!(EmbeddingEngine::dimensions(&embedder), 128);
 
         let v1 = embedder.embed_text("TapirusDB embedded database");
         let v2 = embedder.embed_text("TapirusDB embedded database");

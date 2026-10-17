@@ -55,7 +55,8 @@ fn test_fuzz_randomized_crud_transactions_and_schema_evolution() {
 
     let mut has_extra_column = false;
     let mut in_transaction = false;
-    let mut uncommitted_ops: Vec<(i64, Option<(String, f64, Option<String>)>)> = Vec::new();
+    type PendingAccount = (i64, Option<(String, f64, Option<String>)>);
+    let mut uncommitted_ops: Vec<PendingAccount> = Vec::new();
 
     const TOTAL_OPERATIONS: usize = 1_000;
 
@@ -97,13 +98,25 @@ fn test_fuzz_randomized_crud_transactions_and_schema_evolution() {
                     exists
                 };
                 if exists_in_tx {
-                    assert!(res.is_err(), "Duplicate primary key {id} should be rejected: {:?}", res);
+                    assert!(
+                        res.is_err(),
+                        "Duplicate primary key {id} should be rejected: {:?}",
+                        res
+                    );
                 } else {
                     if res.is_err() {
                         eprintln!("FAILED at op_idx {op_idx}: {sql} => {res:?}");
                     }
-                    assert!(res.is_ok(), "Insert of unique ID {id} should succeed: {:?}", res);
-                    let note = if has_extra_column { Some("note".into()) } else { None };
+                    assert!(
+                        res.is_ok(),
+                        "Insert of unique ID {id} should succeed: {:?}",
+                        res
+                    );
+                    let note = if has_extra_column {
+                        Some("note".into())
+                    } else {
+                        None
+                    };
                     if in_transaction {
                         uncommitted_ops.push((id, Some((name, balance, note))));
                     } else {
@@ -120,8 +133,11 @@ fn test_fuzz_randomized_crud_transactions_and_schema_evolution() {
                     shadow_state.keys().cloned().collect();
                 if in_transaction {
                     for (k, v) in &uncommitted_ops {
-                        if v.is_some() { visible_ids.insert(*k); }
-                        else           { visible_ids.remove(k); }
+                        if v.is_some() {
+                            visible_ids.insert(*k);
+                        } else {
+                            visible_ids.remove(k);
+                        }
                     }
                 }
                 if !visible_ids.is_empty() {
@@ -140,16 +156,20 @@ fn test_fuzz_randomized_crud_transactions_and_schema_evolution() {
                         // Record the update as an uncommitted op so it is only
                         // applied to shadow_state if the transaction commits.
                         // The row might be in shadow_state OR in uncommitted_ops.
-                        let name_note = shadow_state.get(&target_id)
+                        let name_note = shadow_state
+                            .get(&target_id)
                             .map(|(n, _, note)| (n.clone(), note.clone()))
                             .or_else(|| {
-                                uncommitted_ops.iter().rev()
+                                uncommitted_ops
+                                    .iter()
+                                    .rev()
                                     .find(|(k, v)| *k == target_id && v.is_some())
                                     .and_then(|(_, v)| v.as_ref())
                                     .map(|(n, _, note)| (n.clone(), note.clone()))
                             })
                             .unwrap_or_default();
-                        uncommitted_ops.push((target_id, Some((name_note.0, new_balance, name_note.1))));
+                        uncommitted_ops
+                            .push((target_id, Some((name_note.0, new_balance, name_note.1))));
                     } else {
                         if let Some(entry) = shadow_state.get_mut(&target_id) {
                             entry.1 = new_balance;
@@ -165,8 +185,11 @@ fn test_fuzz_randomized_crud_transactions_and_schema_evolution() {
                     shadow_state.keys().cloned().collect();
                 if in_transaction {
                     for (k, v) in &uncommitted_ops {
-                        if v.is_some() { visible_ids.insert(*k); }
-                        else           { visible_ids.remove(k); }
+                        if v.is_some() {
+                            visible_ids.insert(*k);
+                        } else {
+                            visible_ids.remove(k);
+                        }
                     }
                 }
                 if !visible_ids.is_empty() {
@@ -278,15 +301,18 @@ fn test_fuzz_view_queries_and_droppings() {
     let tmp = NamedTempFile::new().unwrap();
     let conn = Connection::open(tmp.path()).expect("Open database");
 
-    conn.execute("CREATE TABLE sensor_data (id INTEGER PRIMARY KEY, sensor_id TEXT, reading REAL);")
-        .expect("Create sensor_data");
+    conn.execute(
+        "CREATE TABLE sensor_data (id INTEGER PRIMARY KEY, sensor_id TEXT, reading REAL);",
+    )
+    .expect("Create sensor_data");
 
     for i in 1..=50 {
         let sid = if i % 2 == 0 { "TEMP_A" } else { "TEMP_B" };
         let reading = 20.0 + (i as f64 * 0.5);
         conn.execute(&format!(
             "INSERT INTO sensor_data (id, sensor_id, reading) VALUES ({i}, '{sid}', {reading});"
-        )).unwrap();
+        ))
+        .unwrap();
     }
 
     // Create multiple views
@@ -300,7 +326,9 @@ fn test_fuzz_view_queries_and_droppings() {
     assert_eq!(rows_b.len(), 25);
 
     // Nested filter on view
-    let high_a = conn.query("SELECT id, reading FROM view_temp_a WHERE reading > 30.0;").unwrap();
+    let high_a = conn
+        .query("SELECT id, reading FROM view_temp_a WHERE reading > 30.0;")
+        .unwrap();
     for r in &high_a {
         if let Some(Value::Real(v)) = r.get_value("reading") {
             assert!(*v > 30.0);

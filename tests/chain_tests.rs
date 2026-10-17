@@ -81,12 +81,7 @@ fn test_vector_to_graph_chaining() -> Result<()> {
         r#"{"name":"Alex Chen"}"#,
         Some(&[0.0, 0.8, 0.2, 0.0]),
     )?;
-    conn.graph_add_node_with_vector(
-        30,
-        "Institution",
-        r#"{"name":"Tapirus Tech Lab"}"#,
-        None,
-    )?;
+    conn.graph_add_node_with_vector(30, "Institution", r#"{"name":"Tapirus Tech Lab"}"#, None)?;
 
     conn.graph_add_edge(10, 20, "AUTHORED_BY", 1.0, "")?;
     conn.graph_add_edge(20, 30, "AFFILIATED_WITH", 1.0, "")?;
@@ -127,7 +122,11 @@ fn test_multi_hop_filtered_chain() -> Result<()> {
 
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].node.id, 4);
-    assert_eq!(matches[0].path.len(), 3, "Path should contain all 3 edge traversals");
+    assert_eq!(
+        matches[0].path.len(),
+        3,
+        "Path should contain all 3 edge traversals"
+    );
     assert_eq!(matches[0].path[0].label, "STEP_1");
     assert_eq!(matches[0].path[1].label, "STEP_2");
     assert_eq!(matches[0].path[2].label, "STEP_3");
@@ -155,10 +154,11 @@ fn test_cycle_and_empty_neighborhood_safety() -> Result<()> {
     assert!(!nodes.is_empty());
 
     // Non-existent edge label should yield empty list without error
-    let empty_matches = conn
-        .chain(1)
-        .out(Some("NON_EXISTENT"))
-        .vector_near(&[1.0, 2.0], 5, DistanceMetric::Cosine)?;
+    let empty_matches = conn.chain(1).out(Some("NON_EXISTENT")).vector_near(
+        &[1.0, 2.0],
+        5,
+        DistanceMetric::Cosine,
+    )?;
 
     assert!(empty_matches.is_empty());
 
@@ -170,12 +170,7 @@ fn test_graph_bm25_and_hybrid_chaining() -> Result<()> {
     let conn = Connection::open_in_memory()?;
 
     // Setup knowledge graph with rich textual properties and vector embeddings
-    conn.graph_add_node_with_vector(
-        100,
-        "Doctor",
-        r#"{"name":"Dr. House"}"#,
-        None,
-    )?;
+    conn.graph_add_node_with_vector(100, "Doctor", r#"{"name":"Dr. House"}"#, None)?;
 
     conn.graph_add_node_with_vector(
         101,
@@ -206,10 +201,12 @@ fn test_graph_bm25_and_hybrid_chaining() -> Result<()> {
 
     // 2. Hybrid Ranking (Vector + BM25) over candidate neighborhood
     let query_vec = [0.85, 0.15, 0.0];
-    let hybrid_matches = conn
-        .chain(100)
-        .out(Some("RESEARCHED"))
-        .hybrid_rank("neurology clinical", &query_vec, 2, 0.6)?;
+    let hybrid_matches = conn.chain(100).out(Some("RESEARCHED")).hybrid_rank(
+        "neurology clinical",
+        &query_vec,
+        2,
+        0.6,
+    )?;
 
     assert_eq!(hybrid_matches.len(), 2);
     assert_eq!(hybrid_matches[0].node.id, 101);

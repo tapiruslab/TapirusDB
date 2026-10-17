@@ -13,7 +13,7 @@
 
 use crate::error::Result;
 use crate::graph::{Direction, Edge, GraphEngine, Node};
-use crate::vector::{cosine_similarity, ProductQuantizer};
+use crate::vector::{ProductQuantizer, cosine_similarity};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -131,7 +131,8 @@ pub fn is_node_permitted(config: &GraphRagConfig, node: &Node) -> bool {
     // 1. Multi-Tenant Isolation
     if let Some(ref req_tenant) = config.tenant_id {
         let matches_tenant = if let Some(ref json) = json_val {
-            let t_val = json.get("tenant_id")
+            let t_val = json
+                .get("tenant_id")
                 .or_else(|| json.get("tenant"))
                 .or_else(|| json.get("tenantId"))
                 .or_else(|| json.get("org_id"));
@@ -142,8 +143,12 @@ pub fn is_node_permitted(config: &GraphRagConfig, node: &Node) -> bool {
         } else {
             node.properties.contains(&format!("tenant_id={req_tenant}"))
                 || node.properties.contains(&format!("tenant={req_tenant}"))
-                || node.properties.contains(&format!("\"tenant_id\": \"{req_tenant}\""))
-                || node.properties.contains(&format!("\"tenant\": \"{req_tenant}\""))
+                || node
+                    .properties
+                    .contains(&format!("\"tenant_id\": \"{req_tenant}\""))
+                || node
+                    .properties
+                    .contains(&format!("\"tenant\": \"{req_tenant}\""))
         };
 
         if !matches_tenant {
@@ -155,7 +160,8 @@ pub fn is_node_permitted(config: &GraphRagConfig, node: &Node) -> bool {
     if let Some(ref allowed_roles) = config.allowed_roles {
         let is_allowed = if let Some(ref json) = json_val {
             // Check public visibility
-            let is_public = json.get("visibility")
+            let is_public = json
+                .get("visibility")
                 .and_then(|v| v.as_str())
                 .map(|v| v.eq_ignore_ascii_case("public"))
                 .unwrap_or(false);
@@ -163,31 +169,34 @@ pub fn is_node_permitted(config: &GraphRagConfig, node: &Node) -> bool {
             if is_public {
                 true
             } else {
-                let node_roles = json.get("roles")
+                let node_roles = json
+                    .get("roles")
                     .or_else(|| json.get("role"))
                     .or_else(|| json.get("acl"))
                     .or_else(|| json.get("groups"));
 
                 match node_roles {
-                    Some(serde_json::Value::Array(arr)) => {
-                        arr.iter().any(|item| {
-                            if let Some(r_str) = item.as_str() {
-                                allowed_roles.iter().any(|ar| ar.eq_ignore_ascii_case(r_str))
-                            } else {
-                                false
-                            }
-                        })
-                    }
-                    Some(serde_json::Value::String(r_str)) => {
-                        allowed_roles.iter().any(|ar| ar.eq_ignore_ascii_case(r_str))
-                    }
+                    Some(serde_json::Value::Array(arr)) => arr.iter().any(|item| {
+                        if let Some(r_str) = item.as_str() {
+                            allowed_roles
+                                .iter()
+                                .any(|ar| ar.eq_ignore_ascii_case(r_str))
+                        } else {
+                            false
+                        }
+                    }),
+                    Some(serde_json::Value::String(r_str)) => allowed_roles
+                        .iter()
+                        .any(|ar| ar.eq_ignore_ascii_case(r_str)),
                     None => true, // Nodes without restricted roles are considered accessible
                     _ => false,
                 }
             }
         } else {
             // Non-JSON properties fallback: match any role token
-            allowed_roles.iter().any(|r| node.properties.to_lowercase().contains(&r.to_lowercase()))
+            allowed_roles
+                .iter()
+                .any(|r| node.properties.to_lowercase().contains(&r.to_lowercase()))
         };
 
         if !is_allowed {
@@ -347,14 +356,12 @@ impl GraphRagEngine {
                     .entry(neighbor_node.id)
                     .or_default()
                     .push(edge.clone());
-                node_edges
-                    .entry(curr_id)
-                    .or_default()
-                    .push(edge.clone());
+                node_edges.entry(curr_id).or_default().push(edge.clone());
 
                 let should_visit = match visited_nodes.get(&neighbor_node.id) {
                     Some(&(prev_hops, prev_weight)) => {
-                        next_hops < prev_hops || (next_hops == prev_hops && next_weight > prev_weight)
+                        next_hops < prev_hops
+                            || (next_hops == prev_hops && next_weight > prev_weight)
                     }
                     None => true,
                 };
@@ -405,7 +412,11 @@ impl GraphRagEngine {
             }
         } else {
             for &id in &candidate_ids {
-                let s_score = seeds.iter().find(|&&(s_id, _)| s_id == id).map(|&(_, s)| s).unwrap_or(0.0);
+                let s_score = seeds
+                    .iter()
+                    .find(|&&(s_id, _)| s_id == id)
+                    .map(|&(_, s)| s)
+                    .unwrap_or(0.0);
                 vector_scores.push((id, s_score));
             }
         }
@@ -498,7 +509,11 @@ impl GraphRagEngine {
         }
 
         // Sort final results descending by RRF score
-        final_results.sort_by(|a, b| b.rrf_score.partial_cmp(&a.rrf_score).unwrap_or(std::cmp::Ordering::Equal));
+        final_results.sort_by(|a, b| {
+            b.rrf_score
+                .partial_cmp(&a.rrf_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         final_results.truncate(config.limit);
 
         // ------------------------------------------------------------------
@@ -506,10 +521,17 @@ impl GraphRagEngine {
         // ------------------------------------------------------------------
         let mut prompt_context = String::new();
         if let Some(ref tenant) = config.tenant_id {
-            let roles_desc = config.allowed_roles.as_ref().map(|r| r.join(", ")).unwrap_or_else(|| "Any".to_string());
+            let roles_desc = config
+                .allowed_roles
+                .as_ref()
+                .map(|r| r.join(", "))
+                .unwrap_or_else(|| "Any".to_string());
             prompt_context.push_str(&format!("### 🧠 Verified Knowledge Graph Context (Tenant: `{tenant}` | Roles: [{roles_desc}])\n\n"));
         } else if let Some(ref roles) = config.allowed_roles {
-            prompt_context.push_str(&format!("### 🧠 Verified Knowledge Graph Context (Roles: [{}])\n\n", roles.join(", ")));
+            prompt_context.push_str(&format!(
+                "### 🧠 Verified Knowledge Graph Context (Roles: [{}])\n\n",
+                roles.join(", ")
+            ));
         } else {
             prompt_context.push_str("### 🧠 Verified Knowledge Graph Context\n\n");
         }
@@ -529,10 +551,10 @@ impl GraphRagEngine {
 
         for r in &final_results {
             for e in &r.related_edges {
-                if seen_edge_ids.insert(e.id) {
-                    if retrieved_ids.contains(&e.from_id) || retrieved_ids.contains(&e.to_id) {
-                        distinct_edges.push(e.clone());
-                    }
+                if seen_edge_ids.insert(e.id)
+                    && (retrieved_ids.contains(&e.from_id) || retrieved_ids.contains(&e.to_id))
+                {
+                    distinct_edges.push(e.clone());
                 }
             }
         }

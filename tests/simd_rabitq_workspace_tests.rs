@@ -6,16 +6,19 @@
 //! 3. High-throughput asymmetric distance calculation and up to 32x memory compression.
 //! 4. End-to-end workspace search scoring and vector embedding integration.
 
-use tapirus::vector::{
-    cosine_distance, cosine_similarity, dot_product, euclidean_distance,
-    simd_cosine_distance, simd_dot_product, simd_euclidean_distance, simd_euclidean_distance_squared,
-    RaBitQuantizer,
-};
 use tapirus::memory::embedder::{DeterministicHashEmbedder, EmbeddingEngine};
+use tapirus::vector::{
+    RaBitQuantizer, cosine_distance, cosine_similarity, dot_product, euclidean_distance,
+    simd_cosine_distance, simd_dot_product, simd_euclidean_distance,
+    simd_euclidean_distance_squared,
+};
 
 // Helper reference calculations in f64 to guarantee precision baseline
 fn naive_dot_product(a: &[f32], b: &[f32]) -> f64 {
-    a.iter().zip(b.iter()).map(|(&x, &y)| (x as f64) * (y as f64)).sum()
+    a.iter()
+        .zip(b.iter())
+        .map(|(&x, &y)| (x as f64) * (y as f64))
+        .sum()
 }
 
 fn naive_euclidean_distance(a: &[f32], b: &[f32]) -> f64 {
@@ -65,12 +68,18 @@ fn test_simd_16lane_dot_product_parity() {
         let simd = simd_dot_product(&a, &b);
         let top_level = dot_product(&a, &b);
 
-        assert_eq!(simd, top_level, "Top-level dot_product must match SIMD kernel");
+        assert_eq!(
+            simd, top_level,
+            "Top-level dot_product must match SIMD kernel"
+        );
         let rel_err = (simd - naive).abs() / (naive.abs().max(1e-4));
         assert!(
             rel_err < 1e-4,
             "Dot product mismatch for dim {}: simd={}, naive={}, rel_err={}",
-            dim, simd, naive, rel_err
+            dim,
+            simd,
+            naive,
+            rel_err
         );
     }
 }
@@ -88,15 +97,25 @@ fn test_simd_16lane_euclidean_parity() {
         let simd_sq = simd_euclidean_distance_squared(&a, &b);
         let top_level = euclidean_distance(&a, &b);
 
-        assert_eq!(simd, top_level, "Top-level euclidean must match SIMD kernel");
+        assert_eq!(
+            simd, top_level,
+            "Top-level euclidean must match SIMD kernel"
+        );
         let rel_sq_diff = (simd * simd - simd_sq).abs() / simd_sq.max(1.0);
-        assert!(rel_sq_diff < 1e-5, "Relative sq diff too high: {}", rel_sq_diff);
+        assert!(
+            rel_sq_diff < 1e-5,
+            "Relative sq diff too high: {}",
+            rel_sq_diff
+        );
 
         let rel_diff = (simd - naive).abs() / naive.max(1.0);
         assert!(
             rel_diff < 1e-4,
             "Euclidean mismatch for dim {}: simd={}, naive={}, rel_diff={}",
-            dim, simd, naive, rel_diff
+            dim,
+            simd,
+            naive,
+            rel_diff
         );
     }
 }
@@ -118,7 +137,10 @@ fn test_simd_16lane_cosine_parity() {
         assert!(
             diff < 1e-4,
             "Cosine mismatch for dim {}: simd={}, naive={}, diff={}",
-            dim, simd, naive, diff
+            dim,
+            simd,
+            naive,
+            diff
         );
     }
 }
@@ -225,8 +247,8 @@ fn test_rabitq_asymmetric_cosine_relative_ranking() {
 
     // Generate targets: highly correlated vs noisy vs opposite
     let mut close = query.clone();
-    for i in 0..10 {
-        close[i] += 0.05;
+    for value in close.iter_mut().take(10) {
+        *value += 0.05;
     }
     let noisy: Vec<f32> = (0..dim).map(|i| (i as f32 * 0.77).sin()).collect();
     let far: Vec<f32> = query.iter().map(|&x| -x).collect();
@@ -242,12 +264,14 @@ fn test_rabitq_asymmetric_cosine_relative_ranking() {
     assert!(
         dist_close < dist_noisy,
         "Close vector dist ({}) should be smaller than noisy dist ({})",
-        dist_close, dist_noisy
+        dist_close,
+        dist_noisy
     );
     assert!(
         dist_noisy < dist_far,
         "Noisy vector dist ({}) should be smaller than far dist ({})",
-        dist_noisy, dist_far
+        dist_noisy,
+        dist_far
     );
 }
 
@@ -258,7 +282,8 @@ fn test_rabitq_serialization_roundtrip() {
     let quantized = quantizer.quantize(&sample);
 
     let serialized_q = serde_json::to_string(&quantizer).expect("Serialization failed");
-    let deserialized_q: RaBitQuantizer = serde_json::from_str(&serialized_q).expect("Deserialization failed");
+    let deserialized_q: RaBitQuantizer =
+        serde_json::from_str(&serialized_q).expect("Deserialization failed");
     assert_eq!(deserialized_q.dimensions, 64);
     assert_eq!(deserialized_q.seed, 0xcafe1234);
 
@@ -276,7 +301,8 @@ fn test_rabitq_serialization_roundtrip() {
 fn test_workspace_embedder_semantic_scoring() {
     let embedder = DeterministicHashEmbedder::new(128);
 
-    let code_snippet = "pub fn execute_transaction(&mut self, wal: &mut WriteAheadLog) -> Result<()>";
+    let code_snippet =
+        "pub fn execute_transaction(&mut self, wal: &mut WriteAheadLog) -> Result<()>";
     let query_tx = "transaction commit wal";
     let query_unrelated = "banana strawberry fruit smoothie";
 
@@ -290,6 +316,7 @@ fn test_workspace_embedder_semantic_scoring() {
     assert!(
         sim_tx > sim_unrelated,
         "Transaction query similarity ({}) must be higher than unrelated ({})",
-        sim_tx, sim_unrelated
+        sim_tx,
+        sim_unrelated
     );
 }

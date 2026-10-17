@@ -1,163 +1,51 @@
-<div align="center">
+# TapirusDB native Python SDK
 
-<img src="https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/assets/icons/python.svg" width="64" height="64" alt="Python Logo" />
-
-# TapirusDB Python SDK (`tapirus`)
-
-### Official Python Client for TapirusDB — Embedded Quad-Model AI Database & Memory Engine
-**Relational SQL • HNSW Vector Search • openCypher Knowledge Graph • JSON Documents**  
-*Single Encrypted `.tapir` Container • 100% Safe Rust Core • < 4 MB Idle RAM • Zero Cloud Daemons*
-
-<br/>
-
-[![PyPI version](https://img.shields.io/pypi/v/tapirus.svg?style=flat-square&logo=pypi)](https://pypi.org/project/tapirus/)
-[![Python versions](https://img.shields.io/pypi/pyversions/tapirus.svg?style=flat-square&logo=python)](https://pypi.org/project/tapirus/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
-[![Memory Safety](https://img.shields.io/badge/memory--safety-100%25_Safe_Rust-brightgreen.svg?style=flat-square)](https://github.com/tapiruslab/TapirusDB)
-[![Docs](https://img.shields.io/badge/docs-tapirusdb.com-2b3a7e.svg?style=flat-square)](https://tapirusdb.com/docs.html)
-
-<br/>
-
-</div>
-
----
-
-## ⚡ Installation
-
-Install from PyPI:
-
-```bash
-pip install tapirus
-```
-
-Or install from source:
-
-```bash
-pip install .
-```
-
-**Requirements:** Python 3.8+ (Supports CPython 3.8, 3.9, 3.10, 3.11, 3.12).
-
----
-
-## 🚀 Quickstart
-
-### 1. Relational SQL & ACID Transactions
+Python 3.10+ binding to the Rust engine through PyO3. This package opens actual `.tapir` files; it does not require a daemon. `python/` is a separate legacy ctypes integration and does not define this package's API.
 
 ```python
-from tapirus import Connection
+import tapirus
 
-# Open or create a persistent database file (or ":memory:")
-with Connection.open("production.tapir") as db:
-    # Create structured table
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS agents (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            model TEXT NOT NULL,
-            memory_mb REAL
-        );
-    """)
-
-    # Insert records
-    db.execute("INSERT INTO agents (id, name, model, memory_mb) VALUES (1, 'Echo-Agent', 'Phi-3-Mini', 3.8);")
-
-    # Query rows as Python dictionaries
-    rows = db.query("SELECT id, name, model, memory_mb FROM agents WHERE memory_mb < 100;")
-    print("Agents:", rows)
-```
-
----
-
-### 2. Native HNSW Vector Similarity Search
-
-```python
-from tapirus import Connection
-
-with Connection.open("production.tapir") as db:
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS embeddings (
-            doc_id INTEGER PRIMARY KEY,
-            content TEXT,
-            vector VECTOR(4)
-        );
-    """)
-
-    # Insert embeddings
-    db.execute("""
-        INSERT INTO embeddings VALUES
-        (1, 'Safe Systems Architecture', [0.12, 0.45, 0.88, -0.23]),
-        (2, 'Quantum Neural Topology', [-0.42, 0.81, 0.15, 0.33]);
-    """)
-
-    # Perform nearest-neighbor similarity search
-    results = db.query("""
-        SELECT doc_id, content, VECTOR_COSINE(vector, [0.10, 0.40, 0.85, -0.20]) AS score
-        FROM embeddings
-        ORDER BY score DESC
-        LIMIT 5;
-    """)
-    print("Top Matches:", results)
-```
-
----
-
-### 3. Knowledge Graph & openCypher GraphRAG
-
-```python
-from tapirus import Connection
-
-with Connection.open("production.tapir") as db:
-    # Create nodes and relationships
-    db.graph_add_node(1, "Agent", '{"name":"Echo"}')
-    db.graph_add_node(2, "Database", '{"name":"TapirusDB"}')
-    db.graph_add_edge(1, 2, "USES", 1.0, '{"since":"2026"}')
-
-    # openCypher pattern matching
-    matches = db.graph_match("MATCH (a:Agent)-[r:USES]->(d:Database) RETURN a.name, d.name;")
-    print("Graph Traversal:", matches)
-```
-
----
-
-### 4. Schemaless JSON Document Collections
-
-```python
-from tapirus import Connection
-
-with Connection.open("production.tapir") as db:
-    users = db.collection("users")
-
-    # Insert nested JSON document
-    doc_id = users.insert_one({
-        "username": "alex",
-        "preferences": {"theme": "light", "telemetry": False},
-        "tags": ["architect", "rust"]
+with tapirus.connect("agent.tapir") as db:
+    db.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)")
+    db.execute("INSERT INTO notes VALUES (?, ?)", [1, "Don't interpolate SQL"])
+    print(db.query("SELECT * FROM notes WHERE id = ?", [1]))
+    source = db.store_memory({
+        "content": "The delivery arrives on Tuesday",
+        "embedding": [1.0, 0.0],  # supply your model's actual embedding
+        "namespace": "support",
+        "session_id": "case-7",
+        "tags": ["source:delivery-policy"],
     })
-
-    # Find document by ID
-    user = users.find_one({"_id": doc_id})
-    print("User document:", user)
+    print(db.search_memories({"embedding": [1.0, 0.0], "namespace": "support"}))
 ```
 
----
+`execute`/`query` accept a list or tuple of bound parameters: `None`, bool, signed 64-bit integer, finite float, string, bytes or a finite vector list. Results are lists of dictionaries; integers retain precision and blobs return `bytes`. Literal question marks inside SQL strings are preserved.
 
-### 5. Encrypted Vault at Rest (ChaCha20-Poly1305 AEAD)
+`store_memory`, `search_memories` and `forget_memory` use the [core AI memory contract](../../docs/AI_MEMORY.md). Results include source content/IDs and separate lexical, semantic and recency scores. Applications supply embeddings from a consistent model. These calls do not invoke a model or a network service. Namespace/session filters are application filters, not authorization boundaries. TAP classification/verification scores are heuristics, not calibrated probabilities or safety guarantees.
 
-```python
-from tapirus import Connection
+`execute("BEGIN")`, `COMMIT`, `ROLLBACK` and savepoints apply to SQL and AI memory together. The context manager closes the database on exit; it does not automatically commit an explicit transaction. `close()` is idempotent. It invalidates retained collection handles and releases the native connection. Connection and collection objects must stay on their creating Python thread; this module requires the GIL.
 
-# Open cryptographically authenticated container
-with Connection.open("vault.tapir", passphrase="your-ultra-secure-passphrase") as db:
-    db.execute("CREATE TABLE secrets (id INT PRIMARY KEY, token TEXT);")
-    db.execute("INSERT INTO secrets VALUES (1, 'sk-agent-confidential-key');")
+Pass a second argument to `connect(path, passphrase)` to open an encrypted native database. Browser snapshots currently use unencrypted files.
+
+## Build and validate the wheel
+
+The wheel also installs `tapirus-migrate`, `tapirus-agent` and `tapirus-eval`.
+See [AI and embedded workflows](../../docs/AI_EMBEDDED_WORKFLOWS.md) for source
+upsert/batch/TTL/model contracts, sessions, SQLite migration, a runnable agent,
+and the optional verified local multilingual E5 ONNX backend. The ONNX runtime,
+tokenizer and NumPy dependencies are optional; install the `onnx` extra or its
+declared dependencies when using `--backend onnx`.
+
+```sh
+python -m pip install 'maturin>=1,<2'
+maturin build --manifest-path sdks/python/Cargo.toml --locked --out target/python-wheels
+python scripts/test-python-sdk.py --wheel target/python-wheels
+maturin sdist --manifest-path sdks/python/Cargo.toml --out target/python-sdist
+python scripts/normalize-python-sdist.py --sdist target/python-sdist --check
 ```
 
----
+The consumer check installs the wheel offline into a fresh directory, writes in a subprocess, then reopens in a second process. It checks parameters, large integers, blobs, vectors, AI filters/rollback, collections, close and encrypted reopen. Local evidence covers Windows/Python 3.12; CI defines additional host/interpreter checks. Registry publication is a separate release step.
 
-## 📜 License
+The source-package step prunes lock entries for workspace crates excluded by Maturin. It rejects registry version/checksum changes, retains other archive bytes and compiles the extracted package with `--locked --offline`. Python 3.12+ is required for this packaging check; the SDK itself supports Python 3.10+.
 
-The TapirusDB Python SDK is licensed under the [MIT License](LICENSE).  
-The underlying TapirusDB core engine is licensed under [BUSL-1.1](https://github.com/tapiruslab/TapirusDB/blob/main/LICENSE).
-
-For complete documentation, benchmarks, and architectural details, visit **[tapirusdb.com](https://tapirusdb.com)**.
+The wrapper retains its existing MIT declaration. The embedded engine uses the repository's BUSL-1.1 terms, included as `CORE_LICENSE`; the combined wheel is labeled `MIT AND BUSL-1.1`. See `NOTICE` for the component boundary.

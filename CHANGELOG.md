@@ -2,6 +2,8 @@
 
 All notable changes to **TapirusDB** will be documented in this file.
 
+> **Historical record:** Entries below preserve claims made at the time; they are not a verified inventory of the current implementation. The 15 October 2026 audit found unsupported or inaccurate claims concerning performance, SQL compatibility, hardware support, key zeroization, formal verification, and crash-safety guarantees. Use the current README, source, tests, and audit report for present status.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 

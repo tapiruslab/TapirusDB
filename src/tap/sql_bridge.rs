@@ -9,9 +9,9 @@
 use crate::error::Result;
 use crate::tap::TapEngine;
 use crate::vector::HnswIndex;
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
-use parking_lot::RwLock;
 
 static GLOBAL_TAP_ENGINE: OnceLock<TapEngine> = OnceLock::new();
 static GROUNDING_REGISTRY: OnceLock<RwLock<HashMap<String, Arc<HnswIndex>>>> = OnceLock::new();
@@ -136,16 +136,32 @@ mod tests {
 
     #[test]
     fn test_sql_bridge_functions() {
-        let label = eval_tap_classify("Urgent billing failure on credit card", "['billing', 'technical', 'sales']").unwrap();
+        let label = eval_tap_classify(
+            "Urgent billing failure on credit card",
+            "['billing', 'technical', 'sales']",
+        )
+        .unwrap();
         assert_eq!(label, "billing");
 
-        let verified = eval_tap_verify("The customer has provided valid proof of purchase receipt", "customer has proof of purchase").unwrap();
+        let verified = eval_tap_verify(
+            "The customer has provided valid proof of purchase receipt",
+            "customer has proof of purchase",
+        )
+        .unwrap();
         assert!(verified);
 
-        let score = eval_tap_score("Critical emergency production database crash", "emergency severity").unwrap();
+        let score = eval_tap_score(
+            "Critical emergency production database crash",
+            "emergency severity",
+        )
+        .unwrap();
         assert!(score > 0.5);
 
-        let route = eval_tap_route("Fraud risk score exceeded limit: block transaction", "block, allow, review").unwrap();
+        let route = eval_tap_route(
+            "Fraud risk score exceeded limit: block transaction",
+            "block, allow, review",
+        )
+        .unwrap();
         assert_eq!(route, "block");
 
         // Test grounded SQL functions with a registered index
@@ -161,7 +177,8 @@ mod tests {
             "refund for damaged goods",
             "policy_idx",
             1,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(g_verified);
 
         let g_label = eval_tap_classify_grounded(
@@ -169,7 +186,8 @@ mod tests {
             "refund, sales, support",
             "policy_idx",
             1,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(g_label, "refund");
     }
 }

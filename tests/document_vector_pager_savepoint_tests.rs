@@ -11,7 +11,7 @@
 use serde_json::json;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tapirus::btree::{engine, BTreeStorage};
+use tapirus::btree::{BTreeStorage, engine};
 use tapirus::pager::Pager;
 use tapirus::traits::Value;
 use tapirus::{Config, Connection};
@@ -141,7 +141,9 @@ fn test_large_vector_and_payload_overflow_pages() {
     // Verify deletion cleans up overflow chain properly
     let deleted = btree.delete(&mut pager, root_page, 42).expect("Delete");
     assert!(deleted);
-    let after_delete = btree.search(&mut pager, root_page, 42).expect("Search after delete");
+    let after_delete = btree
+        .search(&mut pager, root_page, 42)
+        .expect("Search after delete");
     assert!(after_delete.is_none());
 }
 
@@ -155,7 +157,8 @@ fn test_pager_cache_capacity_and_lru_eviction() {
             page_cache_capacity: 6,
             ..Default::default()
         };
-        let conn = Connection::open_with_config(&db_path, config).expect("Open with cache capacity 6");
+        let conn =
+            Connection::open_with_config(&db_path, config).expect("Open with cache capacity 6");
 
         // Create table and insert 50 rows, causing dozens of page allocations
         conn.execute("CREATE TABLE data_stream (id INTEGER PRIMARY KEY, content TEXT);")
@@ -195,8 +198,10 @@ fn test_transaction_savepoint_o1_undo_rollback() {
     conn.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, balance REAL);")
         .expect("Create table");
 
-    conn.execute("INSERT INTO accounts VALUES (1, 500.0);").expect("Insert 1");
-    conn.execute("INSERT INTO accounts VALUES (2, 200.0);").expect("Insert 2");
+    conn.execute("INSERT INTO accounts VALUES (1, 500.0);")
+        .expect("Insert 1");
+    conn.execute("INSERT INTO accounts VALUES (2, 200.0);")
+        .expect("Insert 2");
 
     // Begin Transaction
     conn.begin_transaction().expect("Begin transaction");
@@ -205,9 +210,12 @@ fn test_transaction_savepoint_o1_undo_rollback() {
     // Mutate state during transaction
     conn.execute("UPDATE accounts SET balance = 100.0 WHERE id = 1;")
         .expect("Update 1");
-    conn.execute("INSERT INTO accounts VALUES (3, 999.0);").expect("Insert 3");
+    conn.execute("INSERT INTO accounts VALUES (3, 999.0);")
+        .expect("Insert 3");
 
-    let rows_in_tx = conn.query("SELECT balance FROM accounts WHERE id = 1;").unwrap();
+    let rows_in_tx = conn
+        .query("SELECT balance FROM accounts WHERE id = 1;")
+        .unwrap();
     assert_eq!(rows_in_tx[0].get::<f64>("balance").unwrap(), 100.0);
 
     // Rollback transaction
@@ -215,7 +223,9 @@ fn test_transaction_savepoint_o1_undo_rollback() {
     assert!(!conn.is_in_transaction());
 
     // Verify account 1 is reverted to 500.0 and account 3 does NOT exist
-    let rows_after_rollback = conn.query("SELECT balance FROM accounts WHERE id = 1;").unwrap();
+    let rows_after_rollback = conn
+        .query("SELECT balance FROM accounts WHERE id = 1;")
+        .unwrap();
     assert_eq!(rows_after_rollback[0].get::<f64>("balance").unwrap(), 500.0);
 
     let rows_acc3 = conn.query("SELECT id FROM accounts WHERE id = 3;").unwrap();

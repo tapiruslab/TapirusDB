@@ -1,228 +1,80 @@
-<div align="center">
+# TapirusDB Node.js SDK
 
-<img src="https://raw.githubusercontent.com/tapiruslab/TapirusDB/main/assets/icons/nodejs.svg" width="64" height="64" alt="Node.js Logo" />
+New source APIs include upsert, atomic batches, TTL, model identity, revision
+checks and indexed retrieval diagnostics. `TapirusSessionDatabase` provides
+independently owned transactions over serialized storage. See
+[AI and embedded workflows](../../docs/AI_EMBEDDED_WORKFLOWS.md).
 
-# TapirusDB Node.js & TypeScript SDK (`tapirus`)
+This package is a synchronous Node.js binding to the TapirusDB Rust engine. It requires a matching native `.node` addon. It does not switch to an in-memory JavaScript implementation if that addon is missing; opening a database fails with a diagnostic error instead.
 
-### Official JavaScript & TypeScript Client for TapirusDB — Embedded Quad-Model AI Database & Memory Engine
-**Relational SQL • HNSW Vector Search • openCypher Knowledge Graph • JSON Documents**  
-*Single Encrypted `.tapir` Container • 100% Safe Rust Core • < 4 MB Idle RAM • Zero Cloud Daemons*
+## Install and open a database
 
-<br/>
-
-[![npm](https://img.shields.io/npm/v/tapirus.svg?style=flat-square&logo=npm)](https://www.npmjs.com/package/tapirus)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-green.svg?style=flat-square&logo=node.js)](https://nodejs.org)
-[![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
-[![Docs](https://img.shields.io/badge/docs-tapirusdb.com-2b3a7e.svg?style=flat-square)](https://tapirusdb.com/docs.html)
-
-<br/>
-
-</div>
-
----
-
-## ⚡ Installation
-
-Install from npm:
-
-```bash
-npm install tapirus
-# Or using pnpm / yarn / bun
-pnpm add tapirus
-yarn add tapirus
-bun add tapirus
-```
-
-**Requirements:** Node.js 18.0.0 or later (Full native support for Bun and Deno).
-
----
-
-## 🔰 Beginner's Step-by-Step Guide (Zero to Running in 60s)
-
-> [!WARNING]
-> **Common Beginner Mistake:** Do **NOT** paste JavaScript code (`import`, `const`, `console.log`) directly into your Windows PowerShell, Command Prompt, or Linux Bash terminal. The command line will error with `'import' is not recognized as a cmdlet`. Always write your code into a `.mjs` or `.js` file, and execute it using `node filename.mjs`!
-
-### Step 1: Initialize your project folder
-```powershell
-mkdir my-tapirus-app
-cd my-tapirus-app
-npm init -y
+```sh
 npm install tapirus
 ```
 
-### Step 2: Create your script (`app.mjs` or `app.js`)
+```js
+const { open } = require('tapirus');
 
-**Option A: Modern ES Modules (`app.mjs`):**
-```javascript
-import { open, Tapirus } from 'tapirus';
-
-// Open or create persistent database file (or ":memory:")
-const db = open('production.tapir');
-
-// Create table and insert records
-db.execute('CREATE TABLE IF NOT EXISTS users (id INT, name TEXT, active INT);');
-db.execute("INSERT INTO users VALUES (1, 'Alex', 1);");
-
-// Query rows
-const rows = db.query('SELECT * FROM users WHERE active = 1;');
-console.log('Query result:', rows);
-
-// Always close when finished
+const db = open('app.tapir');
+db.execute('CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL);');
+db.execute('INSERT INTO notes VALUES (?, ?);', [1, 'Stored on disk']);
+console.log(db.query('SELECT id, body FROM notes WHERE id = ?;', [1]));
 db.close();
 ```
 
-**Option B: Standard CommonJS (`app.js`):**
-```javascript
-const { open, Tapirus } = require('tapirus');
+Use `open(':memory:')` when a transient database is intended. `close()` checkpoints the connection and propagates checkpoint errors. For deployments where native artifacts are built locally, set `TAPIRUS_NATIVE_PATH` to the addon file.
 
-const db = open('production.tapir');
-db.execute('CREATE TABLE IF NOT EXISTS users (id INT, name TEXT, active INT);');
-db.execute("INSERT INTO users VALUES (1, 'Alex', 1);");
+## Bound parameters
 
-const rows = db.query('SELECT * FROM users;');
-console.log('Query result:', rows);
-db.close();
+Use `?` placeholders for values. The SDK sends parameters through the engine's prepared-statement API, so question marks inside quoted SQL strings remain literal text.
+
+```js
+db.execute('INSERT INTO notes VALUES (?, ?);', [2, "O'Reilly"]);
+const rows = db.query("SELECT '?' AS literal, ? AS bound;", ['value']);
 ```
 
-### Step 3: Run your script with Node.js
-```powershell
-node app.mjs
-# Output: Query result: [ { id: 1, name: 'Alex', active: 1 } ]
+Supported JavaScript parameter values are strings, booleans, finite numbers, `bigint`, `null`, numeric arrays for vectors, and `Uint8Array` for blobs. Integers outside JavaScript's safe number range must use `bigint`.
+
+## Vector search and memory
+
+```js
+const nearest = db.vectorSearch('notes_with_vectors', 'embedding', [0.1, 0.2, 0.3], 5);
+const memoryId = db.remember('The user prefers concise answers', 0.7, ['preference']);
+const memories = db.recall('answer style', 5);
 ```
 
-### Step 4: Interactive Mode (Node.js REPL)
-If you want to type commands interactively in PowerShell:
-```powershell
-PS C:\workspace\my-tapirus-app> node
-> const { open } = require('tapirus');
-> const db = open('production.tapir');
-> db.execute("CREATE TABLE users (id INT, name TEXT);");
-> db.execute("INSERT INTO users VALUES (1, 'Alex');");
-> db.query("SELECT * FROM users;");
-[ { id: 1, raw: "INSERT INTO users VALUES (1, 'Alex')" } ]
-```
+The vector column must exist on the named table and the query dimension must match its schema. TAP classification, verification, routing and scoring are heuristic engine operations; their scores are not calibrated probabilities.
 
----
+## Committed change notifications
 
-## 🚀 Quickstart
+For model-supplied embeddings, namespace/session filters, transactional source storage and source citations, use `storeMemory`, `searchMemories` and `forgetMemory`. See the [AI memory guide](../../docs/AI_MEMORY.md).
 
-### 1. Relational SQL & ACID Transactions
-
-```typescript
-import { open } from 'tapirus';
-
-// Open or create a persistent database file (or ":memory:")
-const db = open('production.tapir');
-
-// Create structured table
-db.execute(`
-  CREATE TABLE IF NOT EXISTS agents (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    model TEXT NOT NULL,
-    memory_mb REAL
-  );
-`);
-
-// Insert records with parameters
-db.execute(
-  'INSERT INTO agents (id, name, model, memory_mb) VALUES (?, ?, ?, ?);',
-  [1, 'Echo-Agent', 'Phi-3-Mini', 3.8]
-);
-
-// Query rows as typed objects
-const rows = db.query<{ id: number; name: string; model: string; memory_mb: number }>(
-  'SELECT id, name, model, memory_mb FROM agents WHERE memory_mb < 100;'
-);
-console.log('Active Agents:', rows);
-```
-
----
-
-### 2. Native HNSW Vector Similarity Search
-
-```typescript
-import { open } from 'tapirus';
-
-const db = open('production.tapir');
-
-// Create table with dense vector embedding column
-db.execute(`
-  CREATE TABLE IF NOT EXISTS knowledge (
-    id INTEGER PRIMARY KEY,
-    content TEXT NOT NULL,
-    embedding VECTOR(4)
-  );
-`);
-
-// Insert embeddings
-db.execute(`
-  INSERT INTO knowledge VALUES
-  (1, 'Safe Systems Architecture', [0.12, 0.45, 0.88, -0.23]),
-  (2, 'Quantum Neural Topology', [-0.42, 0.81, 0.15, 0.33]);
-`);
-
-// Query top-K nearest neighbors using Cosine similarity
-const queryVector = [0.10, 0.40, 0.85, -0.20];
-const matches = db.query(`
-  SELECT id, content, VECTOR_COSINE(embedding, ?) AS score
-  FROM knowledge
-  ORDER BY score DESC
-  LIMIT 5;
-`, [queryVector]);
-
-console.log('Top Matches:', matches);
-```
-
----
-
-### 3. Knowledge Graph & openCypher GraphRAG
-
-```typescript
-import { open } from 'tapirus';
-
-const db = open('production.tapir');
-
-// Add property graph nodes & edges
-db.graphAddNode(1, 'Agent', { name: 'Echo', role: 'Planner' });
-db.graphAddNode(2, 'Database', { name: 'TapirusDB', version: '1.0.0' });
-db.graphAddEdge(1, 2, 'USES', 1.0, { since: '2026' });
-
-// openCypher pattern traversal
-const results = db.graphMatch(
-  'MATCH (a:Agent)-[r:USES]->(d:Database) RETURN a.name, d.name;'
-);
-console.log('Graph Relationships:', results);
-```
-
----
-
-### 4. Schemaless JSON Document Store
-
-```typescript
-import { open } from 'tapirus';
-
-const db = open('production.tapir');
-const users = db.collection('users');
-
-// Insert nested JSON payload
-const docId = users.insertOne({
-  username: 'alex',
-  profile: { role: 'Architect', location: 'Kuala Lumpur' },
-  models: ['phi-3', 'qwen-2.5']
+```js
+const subscription = db.subscribe('notes', change => {
+  console.log(change.op, change.table, change.row_id);
 });
 
-// Retrieve by document ID
-const user = users.findOne({ _id: docId });
-console.log('User document:', user);
+db.execute('BEGIN;');
+db.execute('INSERT INTO notes VALUES (?, ?);', [3, 'Committed later']);
+db.execute('COMMIT;');
+subscription.unsubscribe();
 ```
 
----
+Notifications are delivered after commit and after the database locks are released. Changes removed by rollback are not delivered. `row_id` is the inserted row ID for a single-row insert; it is `0` when an operation has no single known row ID.
 
-## 📜 License
+## Native package maintenance
 
-The TapirusDB Node.js SDK is licensed under the [MIT License](LICENSE).  
-The underlying TapirusDB core engine is licensed under [BUSL-1.1](https://github.com/tapiruslab/TapirusDB/blob/main/LICENSE).
+The supported npm package is `tapirus` in `sdks/nodejs`. Its release workflow builds platform addons and runs the persistence smoke test before publishing. The older `packages/npm` wrapper is synchronized for local compatibility and marked private; it is not a second published SDK.
 
-For complete documentation, benchmarks, and architectural details, visit **[tapirusdb.com](https://tapirusdb.com)**.
+Build and validate locally from the repository root:
+
+```sh
+node scripts/build-node-sdk.js --debug
+node sdks/nodejs/test.js
+node scripts/test-node-package.js
+```
+
+The package test installs the generated npm tarball into a fresh consumer directory and checks persistence in a second Node process. SQL integers beyond the safe JavaScript number range are returned as `bigint`.
+
+The wrapper source is declared MIT; the packaged native addon embeds the BUSL-1.1 core. `CORE_LICENSE` and `NOTICE` accompany the binary, and the npm license expression includes both existing component licenses.

@@ -1,8 +1,8 @@
-use tapirus::embedded::{
-    FlashBlockDevice, MicroDatabase, MicroPager, RamBlockDevice,
-    DEFAULT_MICRO_BLOCK_SIZE, MICRO_DATABASE_MAGIC,
-};
 use tapirus::Result;
+use tapirus::embedded::{
+    DEFAULT_MICRO_BLOCK_SIZE, FlashBlockDevice, MICRO_DATABASE_MAGIC, MicroDatabase, MicroPager,
+    RamBlockDevice,
+};
 
 #[test]
 fn test_ram_block_device_read_write() -> Result<()> {
@@ -91,8 +91,16 @@ fn test_micro_database_sensor_logs_vectors_and_graphs() -> Result<()> {
     assert!(results[0].0 == 101 || results[0].0 == 102);
 
     // 4. Link entities in embedded knowledge graph
-    db.link_entities(1 /* Temp Sensor */, 201 /* Smart Thermostat */, "CONTROLS")?;
-    db.link_entities(201 /* Smart Thermostat */, 301 /* HVAC AC Unit */, "TRIGGERS")?;
+    db.link_entities(
+        1,   /* Temp Sensor */
+        201, /* Smart Thermostat */
+        "CONTROLS",
+    )?;
+    db.link_entities(
+        201, /* Smart Thermostat */
+        301, /* HVAC AC Unit */
+        "TRIGGERS",
+    )?;
 
     let thermostat_links = db.get_entity_links(201);
     assert_eq!(thermostat_links.len(), 2);

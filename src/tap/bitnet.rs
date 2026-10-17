@@ -164,10 +164,10 @@ impl BitNetLinear {
             let mut acc: f32 = 0.0;
 
             // Pure addition & subtraction: ZERO float-multiplications with weights
-            for col in 0..self.in_features {
+            for (col, &component) in input.iter().enumerate().take(self.in_features) {
                 match self.weights[row_offset + col] {
-                    TernaryVal::PosOne => acc += input[col],
-                    TernaryVal::NegOne => acc -= input[col],
+                    TernaryVal::PosOne => acc += component,
+                    TernaryVal::NegOne => acc -= component,
                     TernaryVal::Zero => {}
                 }
             }

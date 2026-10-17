@@ -113,7 +113,10 @@ fn test_strong_salt_entropy_generation() {
     assert_eq!(s2.len(), 16);
     assert_ne!(s1, [0u8; 16], "Salt must not be all zeros");
     assert_ne!(s2, [0u8; 16], "Salt must not be all zeros");
-    assert_ne!(s1, s2, "Consecutive salts must be cryptographically distinct");
+    assert_ne!(
+        s1, s2,
+        "Consecutive salts must be cryptographically distinct"
+    );
 }
 
 #[test]
@@ -139,7 +142,10 @@ fn test_document_collection_update_by_id() {
     let ok = coll.update_by_id(id, &updated_doc).expect("Update by id");
     assert!(ok, "Update should return true for existing doc");
 
-    let retrieved = coll.find_by_id(id).expect("Find by id").expect("Doc exists");
+    let retrieved = coll
+        .find_by_id(id)
+        .expect("Find by id")
+        .expect("Doc exists");
     assert_eq!(retrieved["theme"], "nord");
     assert_eq!(retrieved["notifications"], false);
     assert_eq!(retrieved["version"], 2);
@@ -148,14 +154,16 @@ fn test_document_collection_update_by_id() {
     assert_eq!(coll.count().expect("Count"), 1);
 
     // Updating non-existent doc returns false
-    let missing_ok = coll.update_by_id(99999, &updated_doc).expect("Update non-existent");
+    let missing_ok = coll
+        .update_by_id(99999, &updated_doc)
+        .expect("Update non-existent");
     assert!(!missing_ok);
 }
 
 #[test]
 fn test_hnsw_metric_override_consistency() {
-    use tapirus::vector::HnswIndex;
     use tapirus::traits::VectorIndexEngine;
+    use tapirus::vector::HnswIndex;
 
     let mut index = HnswIndex::new(3, DistanceMetric::Cosine);
 
@@ -193,10 +201,10 @@ fn test_graph_remove_node_and_edge_cleanup() {
         .expect("Add node 3");
 
     let _e1 = conn
-        .graph_add_edge(1, 2, "CONNECTS_TO", 1.0, "{}".into())
+        .graph_add_edge(1, 2, "CONNECTS_TO", 1.0, "{}")
         .expect("Add edge 1->2");
     let e2 = conn
-        .graph_add_edge(1, 3, "CACHES_IN", 1.0, "{}".into())
+        .graph_add_edge(1, 3, "CACHES_IN", 1.0, "{}")
         .expect("Add edge 1->3");
 
     let neighbors_1 = conn.graph_neighbors(1, Direction::Outgoing, None);
@@ -215,10 +223,16 @@ fn test_graph_remove_node_and_edge_cleanup() {
     assert!(node_removed);
 
     let neighbors_1_final = conn.graph_neighbors(1, Direction::Outgoing, None);
-    assert_eq!(neighbors_1_final.len(), 0, "Node 1 should have no remaining neighbors");
+    assert_eq!(
+        neighbors_1_final.len(),
+        0,
+        "Node 1 should have no remaining neighbors"
+    );
 
     // Removing non-existent node returns false
-    let fake_remove = conn.graph_remove_node(9999).expect("Remove non-existent node");
+    let fake_remove = conn
+        .graph_remove_node(9999)
+        .expect("Remove non-existent node");
     assert!(!fake_remove);
 }
 
@@ -242,7 +256,11 @@ fn test_ansi_sql_null_not_in_three_valued_logic() {
         .query("SELECT id FROM items WHERE category NOT IN ('electronics');")
         .expect("Query NOT IN");
 
-    assert_eq!(rows.len(), 1, "Only non-null matching row should be returned");
+    assert_eq!(
+        rows.len(),
+        1,
+        "Only non-null matching row should be returned"
+    );
     assert_eq!(rows[0].get_value("id").unwrap(), &Value::Integer(2));
 
     // 2. NULL IN ('clothing') is UNKNOWN -> falsy for WHERE
@@ -269,7 +287,10 @@ fn test_abba_deadlock_immunity_concurrent_relational_and_graph() {
         let c = Arc::clone(&conn);
         handles.push(thread::spawn(move || {
             for i in 0..25 {
-                let _ = c.execute(&format!("UPDATE counter SET val = {} WHERE id = 1;", t_id * 100 + i));
+                let _ = c.execute(&format!(
+                    "UPDATE counter SET val = {} WHERE id = 1;",
+                    t_id * 100 + i
+                ));
                 let _ = c.query("SELECT val FROM counter WHERE id = 1;");
             }
         }));
@@ -285,7 +306,7 @@ fn test_abba_deadlock_immunity_concurrent_relational_and_graph() {
                 let _ = c.graph_add_node(node_id, "Worker", &props);
                 if i > 0 {
                     let prev_id = node_id - 1;
-                    let _ = c.graph_add_edge(prev_id, node_id, "NEXT", 1.0, "{}".into());
+                    let _ = c.graph_add_edge(prev_id, node_id, "NEXT", 1.0, "{}");
                 }
                 let _ = c.graph_neighbors(node_id, Direction::Outgoing, None);
                 if i % 5 == 0 {
@@ -297,6 +318,7 @@ fn test_abba_deadlock_immunity_concurrent_relational_and_graph() {
 
     // Join all threads - if any deadlock occurs, this would hang indefinitely
     for h in handles {
-        h.join().expect("Thread completed successfully without deadlock");
+        h.join()
+            .expect("Thread completed successfully without deadlock");
     }
 }

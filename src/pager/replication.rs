@@ -95,6 +95,9 @@ impl WalReplicationChunk {
 
     /// Verify chunk-level and frame-level data integrity
     pub fn verify(&self) -> Result<()> {
+        if self.frame_count as usize != self.frames.len() {
+            return Err(Error::Corrupted("Replication frame count mismatch".into()));
+        }
         let expected_crc = self.calculate_crc();
         if self.chunk_crc32 != expected_crc {
             return Err(Error::Corrupted(format!(
@@ -116,8 +119,9 @@ impl WalReplicationChunk {
 
     /// Deserialize chunk from network stream bytes and perform cryptographic integrity verification
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let chunk: Self = serde_json::from_slice(bytes)
-            .map_err(|e| Error::Corrupted(format!("Failed to deserialize replication chunk: {e}")))?;
+        let chunk: Self = serde_json::from_slice(bytes).map_err(|e| {
+            Error::Corrupted(format!("Failed to deserialize replication chunk: {e}"))
+        })?;
         chunk.verify()?;
         Ok(chunk)
     }
@@ -137,19 +141,24 @@ impl WalReplicationStream {
 
     /// Export a replication chunk containing all modified frames from the primary Pager
     pub fn export_chunk(&mut self, pager: &Pager) -> Result<WalReplicationChunk> {
-        self.last_seq += 1;
+        pager.require_committed_snapshot()?;
+        self.last_seq = self
+            .last_seq
+            .checked_add(1)
+            .ok_or_else(|| Error::TransactionError("Replication sequence exhausted".into()))?
+            .max(u64::from(pager.header().change_counter));
         let seq = self.last_seq;
         let total_pages = pager.header().total_pages;
 
         let mut frames = Vec::new();
 
-        // Collect all active cached in-memory pages
-        for (&pid, data) in pager.in_memory_pages() {
+        // Export a complete committed snapshot, including evicted pages.
+        for (pid, data) in pager.committed_pages()? {
             let mut hasher = Hasher::new();
             hasher.update(&pid.to_le_bytes());
             hasher.update(&total_pages.to_le_bytes());
             hasher.update(&(seq as u32).to_le_bytes());
-            hasher.update(data);
+            hasher.update(&data);
             let crc32 = hasher.finalize();
 
             frames.push(WalReplicationFrame {
@@ -157,7 +166,7 @@ impl WalReplicationStream {
                 db_size_in_pages: total_pages,
                 commit_seq: seq as u32,
                 crc32,
-                data: data.clone(),
+                data,
             });
         }
 
@@ -197,24 +206,60 @@ impl WalReplicationReceiver {
     pub fn apply_chunk(&mut self, pager: &mut Pager, chunk: &WalReplicationChunk) -> Result<usize> {
         // Enforce cryptographic integrity verification before touching storage
         chunk.verify()?;
-
+        pager.require_committed_snapshot()?;
+        let last = self.applied_seq.max(u64::from(pager.header().wal_sequence));
+        if chunk.sequence_number <= last || chunk.sequence_number > u64::from(u32::MAX) {
+            return Err(Error::TransactionError(
+                "Replication sequence is duplicate, stale, or out of range".into(),
+            ));
+        }
         let num_frames = chunk.frames.len();
-
+        let mut ids = std::collections::HashSet::new();
+        if num_frames != chunk.total_pages as usize || chunk.total_pages == 0 {
+            return Err(Error::Corrupted(
+                "Replication requires a complete snapshot".into(),
+            ));
+        }
         for frame in &chunk.frames {
-            pager.in_memory_pages_mut().insert(frame.page_id, frame.data.clone());
-            pager.touch_lru(frame.page_id);
+            if frame.page_id == 0
+                || frame.page_id > chunk.total_pages
+                || frame.data.len() != pager.page_size()
+                || !ids.insert(frame.page_id)
+            {
+                return Err(Error::Corrupted("Invalid replication page layout".into()));
+            }
         }
-
-        // Update total pages from primary
-        pager.header_mut().total_pages = chunk.total_pages;
-        let hdr_bytes = pager.header().to_bytes();
-
-        // Keep page 1 header synchronized
-        if let Some(p1) = pager.in_memory_pages_mut().get_mut(&1) {
-            let len = hdr_bytes.len().min(p1.len());
-            p1[..len].copy_from_slice(&hdr_bytes[..len]);
+        let first = chunk
+            .frames
+            .iter()
+            .find(|frame| frame.page_id == 1)
+            .ok_or_else(|| Error::Corrupted("Replication snapshot lacks page 1".into()))?;
+        let mut header = super::DatabaseHeader::from_bytes(&first.data)?;
+        if header.page_size != pager.header().page_size || header.total_pages != chunk.total_pages {
+            return Err(Error::Corrupted(
+                "Replication header does not match snapshot".into(),
+            ));
         }
-
+        // Payloads are plaintext; encrypt with the receiver's credentials on commit.
+        header.encryption_flags = pager.header().encryption_flags;
+        header.salt = pager.header().salt;
+        header.kcv = pager.header().kcv;
+        header.compression_flags = pager.header().compression_flags;
+        header.wal_sequence = chunk.sequence_number as u32;
+        pager.begin_transaction()?;
+        *pager.header_mut() = header;
+        let result = (|| {
+            for frame in &chunk.frames {
+                pager.write_page(frame.page_id, &frame.data)?;
+            }
+            pager.commit_transaction()
+        })();
+        if let Err(error) = result {
+            if pager.is_in_transaction() {
+                pager.rollback_transaction()?;
+            }
+            return Err(error);
+        }
         self.applied_seq = chunk.sequence_number;
         Ok(num_frames)
     }

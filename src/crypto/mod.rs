@@ -56,13 +56,13 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     }
 
     let mut inner_hasher = Sha256::new();
-    inner_hasher.update(&ipad);
+    inner_hasher.update(ipad);
     inner_hasher.update(data);
     let inner_hash = inner_hasher.finalize();
 
     let mut outer_hasher = Sha256::new();
-    outer_hasher.update(&opad);
-    outer_hasher.update(&inner_hash);
+    outer_hasher.update(opad);
+    outer_hasher.update(inner_hash);
     let outer_hash = outer_hasher.finalize();
 
     let mut out = [0u8; 32];
@@ -125,19 +125,35 @@ pub struct DatabaseCipher {
 impl DatabaseCipher {
     /// Initialize cipher with raw 256-bit key and 16-byte salt
     pub fn new(key: [u8; 32], salt: [u8; 16]) -> Self {
-        Self { key, salt, epoch: 1 }
+        Self {
+            key,
+            salt,
+            epoch: 1,
+        }
     }
 
     /// Initialize cipher by deriving 256-bit key from passphrase and salt via PBKDF2
     pub fn from_passphrase(passphrase: &str, salt: [u8; 16]) -> Self {
         let key = derive_key(passphrase, &salt);
-        Self { key, salt, epoch: 1 }
+        Self {
+            key,
+            salt,
+            epoch: 1,
+        }
     }
 
     /// Initialize cipher with custom PBKDF2 iteration count
-    pub fn from_passphrase_with_iterations(passphrase: &str, salt: [u8; 16], iterations: u32) -> Self {
+    pub fn from_passphrase_with_iterations(
+        passphrase: &str,
+        salt: [u8; 16],
+        iterations: u32,
+    ) -> Self {
         let key = derive_key_with_iterations(passphrase, &salt, iterations);
-        Self { key, salt, epoch: 1 }
+        Self {
+            key,
+            salt,
+            epoch: 1,
+        }
     }
 
     /// Return reference to database salt
@@ -184,9 +200,9 @@ impl DatabaseCipher {
     pub fn generate_kcv(&self) -> Result<[u8; 16]> {
         let cipher = ChaCha20Poly1305::new(Key::from_slice(&self.key));
         let nonce = Nonce::from_slice(&self.salt[0..12]);
-        let ciphertext = cipher
-            .encrypt(nonce, KCV_MAGIC)
-            .map_err(|_| Error::Corrupted("KCV generation failed: ChaCha20-Poly1305 encryption error".into()))?;
+        let ciphertext = cipher.encrypt(nonce, KCV_MAGIC).map_err(|_| {
+            Error::Corrupted("KCV generation failed: ChaCha20-Poly1305 encryption error".into())
+        })?;
         if ciphertext.len() < 16 {
             return Err(Error::Corrupted("KCV ciphertext too short".into()));
         }
@@ -213,12 +229,18 @@ impl DatabaseCipher {
     /// guaranteeing absolute immunity against nonce reuse attacks per RFC 8439.
     pub fn encrypt_page(&self, page_id: PageId, plaintext: &[u8]) -> Result<Vec<u8>> {
         let mut nonce_bytes = [0u8; XNONCE_SIZE];
-        getrandom::fill(&mut nonce_bytes).expect("OS CSPRNG unavailable — cannot generate secure nonce");
+        getrandom::fill(&mut nonce_bytes)
+            .expect("OS CSPRNG unavailable — cannot generate secure nonce");
         self.encrypt_page_with_nonce(page_id, &nonce_bytes, plaintext)
     }
 
     /// Encrypt a 4,096-byte in-memory page with an explicitly provided 24-byte nonce (useful for deterministic tests)
-    pub fn encrypt_page_with_nonce(&self, page_id: PageId, nonce_bytes: &[u8; XNONCE_SIZE], plaintext: &[u8]) -> Result<Vec<u8>> {
+    pub fn encrypt_page_with_nonce(
+        &self,
+        page_id: PageId,
+        nonce_bytes: &[u8; XNONCE_SIZE],
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>> {
         if plaintext.len() != 4096 {
             return Err(Error::Corrupted(format!(
                 "Expected 4096 byte page, got {}",
@@ -256,7 +278,8 @@ impl DatabaseCipher {
         // Copy encrypted ciphertext
         out_page[pt_start..pt_end].copy_from_slice(actual_ct);
         // Store 24-byte random XNonce in trailer [4056..4080]
-        out_page[ENCRYPTED_PAGE_USABLE_SIZE..ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE].copy_from_slice(nonce_bytes);
+        out_page[ENCRYPTED_PAGE_USABLE_SIZE..ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE]
+            .copy_from_slice(nonce_bytes);
         // Store 16-byte Poly1305 authentication tag in trailer [4080..4096]
         out_page[ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE..4096].copy_from_slice(tag);
 
@@ -264,7 +287,13 @@ impl DatabaseCipher {
     }
 
     /// Legacy compatibility wrapper: forwards to `encrypt_page_with_nonce` using a 24-byte padded nonce
-    pub fn encrypt_page_with_seq(&self, page_id: PageId, sequence: u32, epoch: u32, plaintext: &[u8]) -> Result<Vec<u8>> {
+    pub fn encrypt_page_with_seq(
+        &self,
+        page_id: PageId,
+        sequence: u32,
+        epoch: u32,
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>> {
         let mut nonce = [0u8; XNONCE_SIZE];
         nonce[0..4].copy_from_slice(&epoch.to_le_bytes());
         nonce[4..8].copy_from_slice(&page_id.to_le_bytes());
@@ -293,7 +322,8 @@ impl DatabaseCipher {
         };
 
         let ct_slice = &disk_page[pt_start..pt_end];
-        let nonce_slice = &disk_page[ENCRYPTED_PAGE_USABLE_SIZE..ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE];
+        let nonce_slice =
+            &disk_page[ENCRYPTED_PAGE_USABLE_SIZE..ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE];
         let tag_slice = &disk_page[ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE..4096];
 
         let nonce = XNonce::from_slice(nonce_slice);
@@ -321,7 +351,13 @@ impl DatabaseCipher {
     }
 
     /// Legacy compatibility wrapper: forwards directly to self-contained `decrypt_page`
-    pub fn decrypt_page_with_seq(&self, page_id: PageId, _sequence: u32, _epoch: u32, disk_page: &[u8]) -> Result<Vec<u8>> {
+    pub fn decrypt_page_with_seq(
+        &self,
+        page_id: PageId,
+        _sequence: u32,
+        _epoch: u32,
+        disk_page: &[u8],
+    ) -> Result<Vec<u8>> {
         self.decrypt_page(page_id, disk_page)
     }
 }
@@ -333,13 +369,21 @@ mod tests {
     #[test]
     fn test_cipher_roundtrip_page() {
         let salt = [7u8; 16];
-        let cipher = DatabaseCipher::from_passphrase_with_iterations("super-secret-robot-key", salt, PBKDF2_FAST_ITERATIONS);
+        let cipher = DatabaseCipher::from_passphrase_with_iterations(
+            "super-secret-robot-key",
+            salt,
+            PBKDF2_FAST_ITERATIONS,
+        );
 
         // Test KCV verification
         let kcv = cipher.generate_kcv().unwrap();
         assert!(cipher.verify_kcv(&kcv));
 
-        let wrong_cipher = DatabaseCipher::from_passphrase_with_iterations("wrong-password", salt, PBKDF2_FAST_ITERATIONS);
+        let wrong_cipher = DatabaseCipher::from_passphrase_with_iterations(
+            "wrong-password",
+            salt,
+            PBKDF2_FAST_ITERATIONS,
+        );
         assert!(!wrong_cipher.verify_kcv(&kcv));
 
         // Test Page 2 encryption
@@ -366,7 +410,11 @@ mod tests {
     #[test]
     fn test_cipher_roundtrip_page1() {
         let salt = [3u8; 16];
-        let cipher = DatabaseCipher::from_passphrase_with_iterations("mars-rover-mission", salt, PBKDF2_FAST_ITERATIONS);
+        let cipher = DatabaseCipher::from_passphrase_with_iterations(
+            "mars-rover-mission",
+            salt,
+            PBKDF2_FAST_ITERATIONS,
+        );
 
         let mut page1 = vec![0u8; 4096];
         page1[0..8].copy_from_slice(b"TAPIRUS\0"); // Plaintext header preserved
@@ -388,20 +436,18 @@ mod tests {
         let s = b"salt";
         let key_c1 = pbkdf2_hmac_sha256(p, s, 1);
         let expected_c1 = [
-            0x12, 0x0f, 0xb6, 0xcf, 0xfc, 0xf8, 0xb3, 0x2c,
-            0x43, 0xe7, 0x22, 0x52, 0x56, 0xc4, 0xf8, 0x37,
-            0xa8, 0x65, 0x48, 0xc9, 0x2c, 0xcc, 0x35, 0x48,
-            0x08, 0x05, 0x98, 0x7c, 0xb7, 0x0b, 0xe1, 0x7b,
+            0x12, 0x0f, 0xb6, 0xcf, 0xfc, 0xf8, 0xb3, 0x2c, 0x43, 0xe7, 0x22, 0x52, 0x56, 0xc4,
+            0xf8, 0x37, 0xa8, 0x65, 0x48, 0xc9, 0x2c, 0xcc, 0x35, 0x48, 0x08, 0x05, 0x98, 0x7c,
+            0xb7, 0x0b, 0xe1, 0x7b,
         ];
         assert_eq!(key_c1, expected_c1);
 
         // RFC 6070 Test Vector 2: c = 2
         let key_c2 = pbkdf2_hmac_sha256(p, s, 2);
         let expected_c2 = [
-            0xae, 0x4d, 0x0c, 0x95, 0xaf, 0x6b, 0x46, 0xd3,
-            0x2d, 0x0a, 0xdf, 0xf9, 0x28, 0xf0, 0x6d, 0xd0,
-            0x2a, 0x30, 0x3f, 0x8e, 0xf3, 0xc2, 0x51, 0xdf,
-            0xd6, 0xe2, 0xd8, 0x5a, 0x95, 0x47, 0x4c, 0x43,
+            0xae, 0x4d, 0x0c, 0x95, 0xaf, 0x6b, 0x46, 0xd3, 0x2d, 0x0a, 0xdf, 0xf9, 0x28, 0xf0,
+            0x6d, 0xd0, 0x2a, 0x30, 0x3f, 0x8e, 0xf3, 0xc2, 0x51, 0xdf, 0xd6, 0xe2, 0xd8, 0x5a,
+            0x95, 0x47, 0x4c, 0x43,
         ];
         assert_eq!(key_c2, expected_c2);
     }
@@ -409,7 +455,11 @@ mod tests {
     #[test]
     fn test_random_nonce_uniqueness() {
         let salt = [11u8; 16];
-        let cipher = DatabaseCipher::from_passphrase_with_iterations("quantum_encryption_2026", salt, PBKDF2_FAST_ITERATIONS);
+        let cipher = DatabaseCipher::from_passphrase_with_iterations(
+            "quantum_encryption_2026",
+            salt,
+            PBKDF2_FAST_ITERATIONS,
+        );
 
         let page_data = vec![0xaau8; 4096];
 
@@ -428,8 +478,14 @@ mod tests {
         // Both decrypt back to the exact identical plaintext without needing external sequence numbers!
         let pt1 = cipher.decrypt_page(4, &ct1).unwrap();
         let pt2 = cipher.decrypt_page(4, &ct2).unwrap();
-        assert_eq!(&pt1[0..ENCRYPTED_PAGE_USABLE_SIZE], &page_data[0..ENCRYPTED_PAGE_USABLE_SIZE]);
-        assert_eq!(&pt2[0..ENCRYPTED_PAGE_USABLE_SIZE], &page_data[0..ENCRYPTED_PAGE_USABLE_SIZE]);
+        assert_eq!(
+            &pt1[0..ENCRYPTED_PAGE_USABLE_SIZE],
+            &page_data[0..ENCRYPTED_PAGE_USABLE_SIZE]
+        );
+        assert_eq!(
+            &pt2[0..ENCRYPTED_PAGE_USABLE_SIZE],
+            &page_data[0..ENCRYPTED_PAGE_USABLE_SIZE]
+        );
 
         // Decrypt with mismatched PageId fails authentication (AAD protection against page-swapping attacks)
         let swap_fail = cipher.decrypt_page(5, &ct1);
@@ -451,4 +507,3 @@ mod tests {
         assert!(cipher.decrypt_page(4, &tampered_tag).is_err());
     }
 }
-

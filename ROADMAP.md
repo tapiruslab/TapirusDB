@@ -1,69 +1,36 @@
-# 🗺️ TapirusDB Roadmap
+# TapirusDB project status and roadmap
 
-This roadmap outlines the past achievements, current architecture, and upcoming milestones for **TapirusDB**.
+This page tracks work and its supporting evidence. See [release validation](docs/RELEASE_VALIDATION.md) and current source before depending on a capability.
 
----
+## Current focus
 
-## 📍 Completed Milestones
+1. Preserve data correctness with regression coverage for WAL recovery, rollback metadata, prepared statements, graph persistence, vector-index freshness, committed snapshots, and complete SQL parsing.
+2. Keep HTTP and SDK contracts aligned, including authentication, bound parameters, response shapes, native loading, and close behavior.
+3. Maintain the standalone Rust browser workspace, native file interchange and persistence checks. Extend the larger React Studio's integration using the same verified engine.
+4. Re-run benchmarks only after correctness work, using observable results, equivalent durability settings, representative data, and published reproduction details.
+5. Maintain documentation against implemented APIs; label proposals and historical claims as such.
 
-### ✅ v0.1.0 — The Embedded Multi-Model Foundation
-- [x] Pure Safe-Rust engine core (`#![forbid(unsafe_code)]`).
-- [x] Slotted-page B+Tree storage engine with 4KB pages and 1–9B Varints.
-- [x] Multi-model unification in single `.tapir` file (Relational, Documents, Vectors, Graph).
-- [x] Write-Ahead Logging (WAL) with CRC32 frame checksums.
-- [x] Terminal CLI and REPL with syntax highlighting.
+## Next product gates from the 17 October 2026 evidence
 
-### ✅ v0.1.1 — Encryption, MCP & Universal Bindings
-- [x] Authenticated encryption at rest (ChaCha20-Poly1305 AEAD) with SHA-256 KDF and KCV verification.
-- [x] Native Anthropic Model Context Protocol (MCP) server stdio integration.
-- [x] GraphRAG temporal memory decay ($e^{-\lambda \Delta t}$) and BM25 hybrid ranking.
-- [x] Universal C-FFI (`crates/tapirus-ffi`) and WebAssembly runtime (`crates/tapirus-wasm`).
+1. Persist or page the derived AI index. A 100,000 × 384 vector experiment
+   rebuilt HNSW after reopen in 581 seconds; current source and index data
+   reside in RAM. Add a versioned, checksummed cache with recovery and
+   encryption rules before promising fast startup at this scale.
+2. Improve recall at bounded query cost. On independent synthetic queries,
+   128 retained vector candidates recovered 47.3% of exact top-10 neighbors;
+   1,024 recovered 96.4% with materially longer queries. Benchmark graph
+   construction, IVF/quantized alternatives and representative model vectors.
+3. Evaluate ranking on independent BM/English device tasks and more public
+   retrieval sets. The authored paraphrase fixture gave 55% hybrid versus
+   80% vector Recall@5 with one pinned E5 model; tune fusion on development
+   data and reserve a separate held-out set for acceptance.
+4. Validate power-cut behavior, flash endurance, stack, ECC and driver sync on
+   named Cortex-M and RISC-V boards. Cross-compilation and host simulation
+   establish portability of the subset, not hardware qualification.
+5. Complete hosted platform CI, source/wheel/npm/WASM consumer installation,
+   signed release provenance and independent security and storage review
+   before setting a 90++ release score.
 
-### ✅ v0.1.2 — Next-Gen Pillars: Enterprise GraphRAG, Serverless S3/R2 & Ecosystem
-- [x] **Accelerated GraphRAG Suite**: High-speed Product Quantization (PQ) seed discovery, micro-hop graph adjacency traversal ($O(1)$ per edge), and Tri-Modal Reciprocal Rank Fusion (RRF) combining vector, lexical, and structural graph proximity with prompt-ready context synthesis.
-- [x] **Product Quantization (PQ)**: In-memory `ProductQuantizer` delivering 16x–32x RAM reduction with fast Asymmetric Distance Computation (ADC).
-- [x] **S3 / Cloudflare R2 Remote Storage Adapter (`RemotePager`)**: Cloud-native 4KB on-demand page streaming via HTTP Range Requests (`bytes=offset-(offset+4095)`) with in-memory page caching.
-- [x] **Cloudflare Worker Serverless Edge Adapter**: Ultra-fast V8 isolate adapter (`examples/cloudflare-worker/`) with sub-5ms cold starts for SQL, GraphRAG, and AI Agent Memory.
-- [x] **Official Package Ecosystem**: Published official NPM (`@tapirus/db`), Python PyPI wheel configs, macOS/Linux Homebrew formula (`Formula/tapirus.rb`), and Windows Winget manifest (`winget/tapirus.yaml`).
-- [x] **Reactive Live Queries & Change Data Capture (CDC)**: In-memory `RealtimeBus` and atomic table mutation event listeners (`conn.subscribe(table, callback)`).
-- [x] **Hot Online Backup & Time-Travel SQL**: Non-blocking `VACUUM INTO` snapshots and `FOR SYSTEM_TIME AS OF <timestamp>` parser support.
-- [x] **Tier B Bare-Metal Embedded Silicon & MCU Support**: Zero-OS `FlashBlockDevice` and `MicroPager` (512B micro-blocks) driver for ESP32/STM32/RISC-V with sub-512KB SRAM, enabling deterministic telemetry logging, 8-bit quantized micro-vectors, and micro-graph edge traversal.
-- [x] **Robotics & Autonomous Automotive Intelligence Guide**: Complete 3-Tier Hardware Continuum architecture (`docs/ROBOTICS_AUTOMOTIVE_EDGE.md`) featuring ROS2 C++ perception integration and ISO 26262 / ASIL-D safety readiness architecture.
-- [x] **System One Speculative Fan-Out Engine**: Shannon entropy probability calibration ($H(P) = -\sum P_i \log_2 P_i$) and bilingual Malay/English smart home NLU.
-- [x] **Relational SQL Extensions**: Multi-threaded `ConnectionPool`, `SELECT DISTINCT`, and `LEFT OUTER JOIN` evaluation.
-- [x] **TLA+ Formal Verification**: Mathematical models verifying atomic WAL recovery and torn-page defenses.
+## Proposals, not current capabilities
 
----
-
-## 🚀 Near-Term Milestones (v0.2.0)
-
-- [ ] **Declarative Graph Cypher/GQL Query Dialect**: Direct `MATCH (a)-[r:KNOWS]->(b)` syntax in SQL parser.
-- [ ] **SIMD Hardware Acceleration (AVX-512 & ARM NEON)**: Vectorized dot products and quantized ADC routines for hardware silicon.
-- [ ] **Automated CDC Webhook Dispatcher**: Direct streaming transaction webhook dispatcher for Kafka and RabbitMQ pipelines.
-- [ ] **Dual-Engine Full-Text Search (FTS5)**: Advanced linguistic stemming and phonetic matching on document text.
-
----
-
-## 🌐 Strategic Horizon (v0.3.0+) — Tapisaurus Planetary Cloud Mesh
-
-- [ ] **Tapisaurus Replication Gateway**:
-  - Two-way delta synchronization bridge between local `.tapir` embedded micro-shards and distributed **Tapisaurus** cloud clusters.
-  - Conflict-Free Replicated Data Types (CRDTs) for offline-first edge applications.
-- [ ] **Multi-Raft Planet-Scale Clustering** (under the Tapisaurus distributed engine):
-  - Consensus-driven geo-distributed sharding with wire compatibility for PostgreSQL, MongoDB, and MySQL gateways.
-  - Global query routing coordinator with 2-tier hierarchical vector centroids and federated graph edge traversal.
-
----
-
-## 🏛️ Modular Variations & Architecture Extensions
-
-Detailed technical blueprint: [**docs/MODULAR_ARCHITECTURE_AND_EXTENSIONS.md**](docs/MODULAR_ARCHITECTURE_AND_EXTENSIONS.md)
-
-- [ ] **Wire Protocol Adapters**:
-  - `tapirus-pgwire` (Port 5432): Direct compatibility with PostgreSQL drivers, DBeaver, and Prisma ORM.
-  - `tapirus-mongowire` (Port 27017): Direct compatibility with MongoDB Compass, Mongoose, and BSON collections.
-- [ ] **Micro-Kernel Cargo Workspace**:
-  - Modular workspace division: `tapirus-core`, `tapirus-sql`, `tapirus-vector`, `tapirus-graph`, `tapirus-doc`.
-  - Targeted distribution editions: `Tapirus-Lite` (&lt;500KB IoT), `Tapirus-Doc` (NoSQL), `Tapirus-AI` (Robotics/Agent Memory), `Tapirus-Enterprise`.
-- [ ] **Sandboxed WebAssembly (WASM) Plugin System**:
-  - Safe, isolated dynamic extension execution via WASM sandboxing without C-ABI segmentation fault risks.
+Distributed clustering, broad protocol compatibility layers, a modular edition system, and certified safety-critical use require further implementation and evidence. The standalone Rust browser workspace and transactional AI memory are implemented; their validation scope is recorded in the release guide.

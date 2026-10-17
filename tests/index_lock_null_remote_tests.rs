@@ -58,7 +58,10 @@ fn test_secondary_index_persistence_and_query_acceleration() {
             .expect("Query via index");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get_value("id").unwrap(), &Value::Integer(2));
-        assert_eq!(rows[0].get_value("role").unwrap(), &Value::Text("engineer".to_string()));
+        assert_eq!(
+            rows[0].get_value("role").unwrap(),
+            &Value::Text("engineer".to_string())
+        );
 
         // 5. Insert new row after index creation (verifies automatic index maintenance on INSERT)
         conn.execute("INSERT INTO users VALUES (3, 'charlie@tapirus.db', 'researcher');")
@@ -77,7 +80,11 @@ fn test_secondary_index_persistence_and_query_acceleration() {
         let after_delete = conn
             .query("SELECT id FROM users WHERE email = 'bob@tapirus.db';")
             .expect("Query deleted bob");
-        assert_eq!(after_delete.len(), 0, "Deleted row must no longer match in index");
+        assert_eq!(
+            after_delete.len(),
+            0,
+            "Deleted row must no longer match in index"
+        );
     }
 
     // 7. Verify index persistence across connection restarts
@@ -127,7 +134,10 @@ fn test_cross_process_atomic_file_lock() {
                 "Busy error should mention process lock, got: {msg}"
             );
         }
-        other => panic!("Expected Error::Busy for concurrent open, got: {:?}", other.err()),
+        other => panic!(
+            "Expected Error::Busy for concurrent open, got: {:?}",
+            other.err()
+        ),
     }
 
     // Dropping first connection must cleanly release the lock
@@ -174,8 +184,16 @@ fn test_ansi_sql_null_three_valued_logic() {
     );
 
     // Non-null comparisons must still behave normally
-    assert!(matches_condition(&int_val, &BinaryOp::Equals, &Value::Integer(42)));
-    assert!(matches_condition(&Value::Integer(50), &BinaryOp::GreaterThan, &Value::Integer(40)));
+    assert!(matches_condition(
+        &int_val,
+        &BinaryOp::Equals,
+        &Value::Integer(42)
+    ));
+    assert!(matches_condition(
+        &Value::Integer(50),
+        &BinaryOp::GreaterThan,
+        &Value::Integer(40)
+    ));
 }
 
 #[test]
@@ -214,9 +232,19 @@ fn test_remote_object_storage_range_streaming_connection() {
         .query("SELECT id, name, price FROM products;")
         .expect("Query remote connection");
 
-    assert_eq!(rows.len(), 2, "Remote connection should retrieve both products");
-    assert_eq!(rows[0].get_value("name").unwrap(), &Value::Text("Quantum Laptop".to_string()));
-    assert_eq!(rows[1].get_value("name").unwrap(), &Value::Text("Neural Headset".to_string()));
+    assert_eq!(
+        rows.len(),
+        2,
+        "Remote connection should retrieve both products"
+    );
+    assert_eq!(
+        rows[0].get_value("name").unwrap(),
+        &Value::Text("Quantum Laptop".to_string())
+    );
+    assert_eq!(
+        rows[1].get_value("name").unwrap(),
+        &Value::Text("Neural Headset".to_string())
+    );
 
     // 5. Verify remote range calls were recorded
     assert!(

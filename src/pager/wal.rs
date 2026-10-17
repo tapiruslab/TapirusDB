@@ -1,8 +1,9 @@
 //! Write-Ahead Log (WAL) implementation for TapirusDB.
 //!
-//! Provides atomic crash durability, multi-version concurrency (MVCC),
-//! and non-blocking reads/writes via a dedicated `.tapir-wal` file.
+//! Committed page recovery via a dedicated `.tapir-wal` file. Native sessions
+//! serialize access; this module does not provide snapshot isolation or MVCC.
 
+use super::fault::{IoPoint, StorageIo};
 use crate::error::{Error, Result};
 use crate::pager::PageId;
 use crc32fast::Hasher;
@@ -89,7 +90,9 @@ impl WalHeader {
     /// Deserialize header from 32-byte slice and verify CRC32
     pub fn from_bytes(slice: &[u8]) -> Result<Self> {
         if slice.len() < WAL_HEADER_SIZE {
-            return Err(Error::Corrupted("WAL header slice too short (<32 bytes)".into()));
+            return Err(Error::Corrupted(
+                "WAL header slice too short (<32 bytes)".into(),
+            ));
         }
 
         let mut magic = [0u8; 8];
@@ -114,6 +117,15 @@ impl WalHeader {
             salt_2,
             header_crc32,
         };
+
+        if header.version != WAL_VERSION
+            || !header.page_size.is_power_of_two()
+            || !(512..=65536).contains(&header.page_size)
+        {
+            return Err(Error::Corrupted(
+                "Unsupported WAL version or page size".into(),
+            ));
+        }
 
         let expected_crc = header.calculate_crc();
         if header.header_crc32 != expected_crc {
@@ -169,7 +181,9 @@ impl WalFrameHeader {
     /// Deserialize frame header from 24-byte slice
     pub fn from_bytes(slice: &[u8]) -> Result<Self> {
         if slice.len() < WAL_FRAME_HEADER_SIZE {
-            return Err(Error::Corrupted("WAL frame header slice too short (<24 bytes)".into()));
+            return Err(Error::Corrupted(
+                "WAL frame header slice too short (<24 bytes)".into(),
+            ));
         }
 
         let page_id = u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]);
@@ -209,6 +223,20 @@ pub struct Wal {
     /// In-memory frame storage for memory mode or fast lookups
     frames: Vec<InMemoryFrame>,
     current_commit_seq: u32,
+    io: StorageIo,
+    io_failed: bool,
+    checkpoint_error: Option<String>,
+}
+
+/// Storage maintenance state after a successful commit or an I/O failure.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StorageHealth {
+    /// The WAL must be reopened before further mutations.
+    pub reopen_required: bool,
+    /// Last deferred/explicit checkpoint failure, if any.
+    pub checkpoint_error: Option<String>,
+    /// Valid frames retained in the WAL.
+    pub wal_frames: usize,
 }
 
 impl Wal {
@@ -236,6 +264,11 @@ impl Wal {
             file.sync_data()?;
             header
         };
+        if header.page_size != page_size {
+            return Err(Error::Corrupted(
+                "WAL page size does not match the database".into(),
+            ));
+        }
 
         let mut wal = Self {
             header,
@@ -245,12 +278,17 @@ impl Wal {
             index: HashMap::new(),
             frames: Vec::new(),
             current_commit_seq: 0,
+            io: StorageIo::default(),
+            io_failed: false,
+            checkpoint_error: None,
         };
 
         // Replay existing frames into in-memory index
         wal.rebuild_index_from_file(&mut file)?;
         file.seek(SeekFrom::End(0))?;
         wal.writer = Some(BufWriter::with_capacity(128 * 1024, file));
+        // Never expose a valid but uncommitted tail after a process restart.
+        wal.discard_uncommitted_tail()?;
         Ok(wal)
     }
 
@@ -264,12 +302,75 @@ impl Wal {
             index: HashMap::new(),
             frames: Vec::new(),
             current_commit_seq: 0,
+            io: StorageIo::default(),
+            io_failed: false,
+            checkpoint_error: None,
         }
     }
 
     /// Total number of valid frames currently in the WAL
     pub fn frame_count(&self) -> usize {
         self.frames.len()
+    }
+
+    /// Observe deferred checkpoint errors and whether reopen is required.
+    pub fn health(&self) -> StorageHealth {
+        StorageHealth {
+            reopen_required: self.io_failed,
+            checkpoint_error: self.checkpoint_error.clone(),
+            wal_frames: self.frames.len(),
+        }
+    }
+    pub(crate) fn requires_reopen(&self) -> bool {
+        self.io_failed
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn storage_io(&self) -> StorageIo {
+        self.io.clone()
+    }
+
+    /// Install/clear deterministic faults for this WAL only.
+    #[cfg(feature = "fault-injection")]
+    pub fn set_io_fault(&self, plan: Option<super::fault::IoFaultPlan>) -> Result<()> {
+        self.io.configure(plan)
+    }
+
+    /// Read the last committed image without modifying the WAL or base file.
+    /// Used to recover a torn base header before credentials/replay are applied.
+    pub(crate) fn read_committed_page(path: &Path, wanted: PageId) -> Result<Option<Vec<u8>>> {
+        let mut file = File::open(path)?;
+        let length = file.metadata()?.len();
+        if length < WAL_HEADER_SIZE as u64 {
+            return Ok(None);
+        }
+        let mut bytes = [0; WAL_HEADER_SIZE];
+        file.read_exact(&mut bytes)?;
+        let header = WalHeader::from_bytes(&bytes)?;
+        let mut payload = vec![0; header.page_size as usize];
+        let mut pending = None;
+        let mut committed = None;
+        while file.stream_position()? + WAL_FRAME_HEADER_SIZE as u64 + payload.len() as u64
+            <= length
+        {
+            let mut raw = [0; WAL_FRAME_HEADER_SIZE];
+            file.read_exact(&mut raw)?;
+            let frame = WalFrameHeader::from_bytes(&raw)?;
+            file.read_exact(&mut payload)?;
+            if frame.salt_1 != header.salt_1
+                || frame.salt_2 != header.salt_2
+                || frame.page_id == 0
+                || frame.frame_crc32 != frame.calculate_crc(&payload)
+            {
+                break;
+            }
+            if frame.page_id == wanted {
+                pending = Some(payload.clone());
+            }
+            if frame.db_size_in_pages > 0 {
+                committed = pending.clone();
+            }
+        }
+        Ok(committed)
     }
 
     /// Check if a page is currently cached in the WAL
@@ -279,7 +380,10 @@ impl Wal {
 
     /// Export all valid frames currently recorded in the WAL for replication
     pub fn export_frames(&self) -> Vec<(PageId, Vec<u8>)> {
-        self.frames.iter().map(|f| (f.header.page_id, f.page_data.clone())).collect()
+        self.frames
+            .iter()
+            .map(|f| (f.header.page_id, f.page_data.clone()))
+            .collect()
     }
 
     /// Rebuild in-memory index from file frames
@@ -302,7 +406,11 @@ impl Wal {
 
             // Verify CRC32 checksum
             let expected_crc = frame_header.calculate_crc(&page_data);
-            if frame_header.frame_crc32 != expected_crc {
+            if frame_header.frame_crc32 != expected_crc
+                || frame_header.page_id == 0
+                || frame_header.salt_1 != self.header.salt_1
+                || frame_header.salt_2 != self.header.salt_2
+            {
                 // Truncate corrupted or torn frame
                 break;
             }
@@ -320,7 +428,18 @@ impl Wal {
             offset += frame_size;
             frame_idx += 1;
         }
+        // Remove torn/corrupt bytes before the next append, including partial frames.
+        file.set_len(offset)?;
         Ok(())
+    }
+
+    fn discard_uncommitted_tail(&mut self) -> Result<()> {
+        let committed = self
+            .frames
+            .iter()
+            .rposition(|f| f.header.db_size_in_pages > 0)
+            .map_or(0, |i| i + 1);
+        self.rollback_to(committed)
     }
 
     /// Read the latest version of a page from the WAL if present
@@ -337,18 +456,27 @@ impl Wal {
         is_commit: bool,
         db_size_in_pages: u32,
     ) -> Result<()> {
+        if self.io_failed {
+            return Err(Error::TransactionError(
+                "WAL requires reopen or successful rollback after I/O failure".into(),
+            ));
+        }
         if page_data.len() != self.page_size {
             return Err(Error::Corrupted("Page data size mismatch in WAL".into()));
         }
 
-        if is_commit {
-            self.current_commit_seq += 1;
-        }
+        let commit_seq = if is_commit {
+            self.current_commit_seq
+                .checked_add(1)
+                .ok_or_else(|| Error::TransactionError("WAL commit sequence exhausted".into()))?
+        } else {
+            self.current_commit_seq
+        };
 
         let mut frame_header = WalFrameHeader {
             page_id,
             db_size_in_pages: if is_commit { db_size_in_pages } else { 0 },
-            commit_seq: self.current_commit_seq,
+            commit_seq,
             salt_1: self.header.salt_1,
             salt_2: self.header.salt_2,
             frame_crc32: 0,
@@ -357,15 +485,25 @@ impl Wal {
         frame_header.frame_crc32 = frame_header.calculate_crc(page_data);
 
         // Append to buffered writer if disk-backed
-        if let Some(writer) = &mut self.writer {
-            writer.write_all(&frame_header.to_bytes())?;
-            writer.write_all(page_data)?;
-            // Only force physical disk flush on COMMIT frames, eliminating per-page fsync bottleneck
-            if is_commit {
-                writer.flush()?;
-                writer.get_mut().sync_data()?;
+        let written = (|| -> Result<()> {
+            if let Some(writer) = &mut self.writer {
+                self.io
+                    .write(IoPoint::WalWrite, writer, &frame_header.to_bytes())?;
+                self.io.write(IoPoint::WalWrite, writer, page_data)?;
+                if is_commit {
+                    self.io.before(IoPoint::WalFlush)?;
+                    writer.flush()?;
+                    self.io.before(IoPoint::WalSync)?;
+                    writer.get_mut().sync_data()?;
+                }
             }
+            Ok(())
+        })();
+        if let Err(error) = written {
+            self.io_failed = true;
+            return Err(error);
         }
+        self.current_commit_seq = commit_seq;
 
         let frame_idx = self.frames.len();
         self.index.insert(page_id, frame_idx);
@@ -379,11 +517,19 @@ impl Wal {
 
     /// Flush any pending uncommitted WAL frames to durable physical disk storage
     pub fn sync(&mut self) -> Result<()> {
-        if let Some(writer) = &mut self.writer {
-            writer.flush()?;
-            writer.get_mut().sync_data()?;
+        let result = (|| -> Result<()> {
+            if let Some(writer) = &mut self.writer {
+                self.io.before(IoPoint::WalFlush)?;
+                writer.flush()?;
+                self.io.before(IoPoint::WalSync)?;
+                writer.get_mut().sync_data()?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.io_failed = true;
         }
-        Ok(())
+        result
     }
 
     /// Checkpoint all committed pages back into the base database file,
@@ -393,6 +539,31 @@ impl Wal {
         base_file: &mut Option<File>,
         base_in_memory: &mut HashMap<PageId, Vec<u8>>,
     ) -> Result<usize> {
+        let result = if self.io_failed {
+            Err(Error::TransactionError(
+                "WAL requires reopen before checkpoint".into(),
+            ))
+        } else {
+            self.checkpoint_inner(base_file, base_in_memory)
+        };
+        self.checkpoint_error = result.as_ref().err().map(ToString::to_string);
+        result
+    }
+
+    fn checkpoint_inner(
+        &mut self,
+        base_file: &mut Option<File>,
+        base_in_memory: &mut HashMap<PageId, Vec<u8>>,
+    ) -> Result<usize> {
+        if self
+            .frames
+            .last()
+            .is_some_and(|f| f.header.db_size_in_pages == 0)
+        {
+            return Err(Error::TransactionError(
+                "Cannot checkpoint an uncommitted WAL tail".into(),
+            ));
+        }
         let page_size = self.page_size;
         let num_pages_to_flush = self.index.len();
 
@@ -411,15 +582,18 @@ impl Wal {
             if let Some(file) = base_file {
                 let offset = (page_id as u64 - 1) * page_size as u64;
                 file.seek(SeekFrom::Start(offset))?;
-                file.write_all(page_data)?;
+                self.io.write(IoPoint::CheckpointWrite, file, page_data)?;
             }
 
             if base_file.is_none() {
-                base_in_memory.entry(page_id).or_insert_with(|| page_data.clone());
+                base_in_memory
+                    .entry(page_id)
+                    .or_insert_with(|| page_data.clone());
             }
         }
 
         if let Some(file) = base_file {
+            self.io.before(IoPoint::CheckpointSync)?;
             file.sync_all()?;
         }
 
@@ -427,14 +601,25 @@ impl Wal {
         self.header.checkpoint_seq += 1;
         self.header.header_crc32 = self.header.calculate_crc();
 
-        if let Some(writer) = &mut self.writer {
-            writer.flush()?;
-            let file = writer.get_mut();
-            file.seek(SeekFrom::Start(0))?;
-            file.write_all(&self.header.to_bytes())?;
-            file.set_len(WAL_HEADER_SIZE as u64)?;
-            file.sync_all()?;
-            file.seek(SeekFrom::End(0))?;
+        let reset = (|| -> Result<()> {
+            if let Some(writer) = &mut self.writer {
+                self.io.before(IoPoint::WalFlush)?;
+                writer.flush()?;
+                let file = writer.get_mut();
+                self.io.before(IoPoint::WalTruncate)?;
+                file.set_len(0)?;
+                file.seek(SeekFrom::Start(0))?;
+                self.io
+                    .write(IoPoint::WalReset, file, &self.header.to_bytes())?;
+                self.io.before(IoPoint::WalSync)?;
+                file.sync_all()?;
+                file.seek(SeekFrom::End(0))?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = reset {
+            self.io_failed = true;
+            return Err(error);
         }
 
         self.index.clear();
@@ -449,6 +634,7 @@ impl Wal {
         base_file: &mut Option<File>,
         base_in_memory: &mut HashMap<PageId, Vec<u8>>,
     ) -> Result<usize> {
+        self.discard_uncommitted_tail()?;
         if self.frames.is_empty() {
             return Ok(0);
         }
@@ -480,16 +666,19 @@ impl Wal {
             if let Some(file) = base_file {
                 let offset = (page_id as u64 - 1) * self.page_size as u64;
                 file.seek(SeekFrom::Start(offset))?;
-                file.write_all(page_data)?;
+                self.io.write(IoPoint::CheckpointWrite, file, page_data)?;
             }
 
             if base_file.is_none() {
-                base_in_memory.entry(page_id).or_insert_with(|| page_data.clone());
+                base_in_memory
+                    .entry(page_id)
+                    .or_insert_with(|| page_data.clone());
             }
             recovered_count += 1;
         }
 
         if let Some(file) = base_file {
+            self.io.before(IoPoint::CheckpointSync)?;
             file.sync_all()?;
         }
 
@@ -498,19 +687,35 @@ impl Wal {
 
     /// Truncate WAL back to a given frame count (used during rollback)
     pub fn rollback_to(&mut self, frame_count: usize) -> Result<()> {
-        if frame_count >= self.frames.len() {
-            return Ok(());
+        let frame_count = frame_count.min(self.frames.len());
+        let truncate = (|| -> Result<()> {
+            if let Some(writer) = &mut self.writer {
+                let offset = WAL_HEADER_SIZE as u64
+                    + frame_count as u64 * (WAL_FRAME_HEADER_SIZE + self.page_size) as u64;
+                if !self.io_failed
+                    && writer.buffer().is_empty()
+                    && writer.get_ref().metadata()?.len() == offset
+                    && frame_count == self.frames.len()
+                {
+                    return Ok(());
+                }
+                self.io.before(IoPoint::WalFlush)?;
+                writer.flush()?;
+                let file = writer.get_mut();
+                self.io.before(IoPoint::WalTruncate)?;
+                file.set_len(offset)?;
+                self.io.before(IoPoint::WalSync)?;
+                file.sync_data()?;
+                file.seek(SeekFrom::End(0))?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = truncate {
+            self.io_failed = true;
+            return Err(error);
         }
+        self.io_failed = false;
         self.frames.truncate(frame_count);
-        if let Some(writer) = &mut self.writer {
-            writer.flush()?;
-            let file = writer.get_mut();
-            let offset = WAL_HEADER_SIZE as u64
-                + frame_count as u64 * (WAL_FRAME_HEADER_SIZE + self.page_size) as u64;
-            file.set_len(offset)?;
-            file.sync_data()?;
-            file.seek(SeekFrom::End(0))?;
-        }
         self.index.clear();
         for (i, frame) in self.frames.iter().enumerate() {
             self.index.insert(frame.header.page_id, i);
@@ -545,12 +750,18 @@ mod tests {
         frame_header.frame_crc32 = frame_header.calculate_crc(&page_data);
 
         // Verification passes with identical data
-        assert_eq!(frame_header.frame_crc32, frame_header.calculate_crc(&page_data));
+        assert_eq!(
+            frame_header.frame_crc32,
+            frame_header.calculate_crc(&page_data)
+        );
 
         // Verification fails if data is altered by even 1 bit
         let mut corrupted = page_data.clone();
         corrupted[100] ^= 0x01;
-        assert_ne!(frame_header.frame_crc32, frame_header.calculate_crc(&corrupted));
+        assert_ne!(
+            frame_header.frame_crc32,
+            frame_header.calculate_crc(&corrupted)
+        );
     }
 
     #[test]
@@ -574,7 +785,9 @@ mod tests {
 
         // Checkpoint to base
         let mut base_file = None;
-        let flushed = wal.checkpoint(&mut base_file, &mut in_memory_pages).expect("Checkpoint");
+        let flushed = wal
+            .checkpoint(&mut base_file, &mut in_memory_pages)
+            .expect("Checkpoint");
         assert_eq!(flushed, 2);
         assert_eq!(wal.frame_count(), 0);
         assert_eq!(in_memory_pages.get(&1).unwrap(), &page1);

@@ -328,7 +328,9 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
         }
 
         // Numbers (Integer or Float, including negative)
-        if ch.is_ascii_digit() || (ch == '-' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit()) {
+        if ch.is_ascii_digit()
+            || (ch == '-' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit())
+        {
             let start = i;
             if ch == '-' {
                 i += 1;
@@ -342,14 +344,14 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
             }
             let num_str: String = chars[start..i].iter().collect();
             if is_float {
-                let f = num_str.parse::<f64>().map_err(|_| {
-                    Error::SqlSyntax(format!("Invalid float literal: {num_str}"))
-                })?;
+                let f = num_str
+                    .parse::<f64>()
+                    .map_err(|_| Error::SqlSyntax(format!("Invalid float literal: {num_str}")))?;
                 tokens.push(Token::FloatLit(f));
             } else {
-                let val = num_str.parse::<i64>().map_err(|_| {
-                    Error::SqlSyntax(format!("Invalid integer literal: {num_str}"))
-                })?;
+                let val = num_str
+                    .parse::<i64>()
+                    .map_err(|_| Error::SqlSyntax(format!("Invalid integer literal: {num_str}")))?;
                 tokens.push(Token::IntLit(val));
             }
             continue;

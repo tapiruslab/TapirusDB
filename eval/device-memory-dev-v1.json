@@ -1,0 +1,428 @@
+{
+  "name": "tapirus-device-memory-dev-v1",
+  "scope": "Authored fictional BM/English development fixture; 20 sources and 40 queries including translation pairs. Not held-out, industrial, or independent AI evidence. Do not use these fictional instructions on real equipment.",
+  "documents": [
+    {
+      "id": "rhea-battery",
+      "language": "en",
+      "content": "Rhea rover battery: charge the lithium pack at the blue dock. The status indicator turns green when charging is complete. Do not charge below zero degrees Celsius."
+    },
+    {
+      "id": "rhea-filter",
+      "language": "ms",
+      "content": "Penapis habuk rover Rhea perlu dibersihkan setiap 40 jam operasi. Matikan kuasa sebelum membuka penutup penapis. Jangan gunakan air."
+    },
+    {
+      "id": "rhea-radio",
+      "language": "en",
+      "content": "Rhea radio link recovery: hold the amber pairing button for six seconds. Reconnect to the workshop controller on channel seven."
+    },
+    {
+      "id": "suri-stop",
+      "language": "ms",
+      "content": "Robot Suri mempunyai butang henti kecemasan merah di bahagian belakang. Putarkan butang mengikut arah jam untuk melepaskannya, kemudian sahkan kawasan selamat."
+    },
+    {
+      "id": "suri-gripper",
+      "language": "en",
+      "content": "Suri gripper calibration uses an unloaded jaw. Open the maintenance panel, choose CAL GRIP and keep the work area empty during calibration."
+    },
+    {
+      "id": "suri-map",
+      "language": "ms",
+      "content": "Peta navigasi Suri disimpan sebagai sumber berversi. Selepas susun atur kilang berubah, imbas semula lorong dan terbitkan versi peta baharu sebelum operasi."
+    },
+    {
+      "id": "nuri-temperature",
+      "language": "en",
+      "content": "Nuri incubator temperature calibration uses a reference probe at 37 degrees Celsius. Wait fifteen minutes for the chamber to stabilize before recording the offset."
+    },
+    {
+      "id": "nuri-alarm",
+      "language": "ms",
+      "content": "Penggera Nuri kod H12 menunjukkan pintu terbuka melebihi dua minit. Tutup pintu dan periksa getah pengedap sebelum mengakui penggera."
+    },
+    {
+      "id": "bayu-firmware",
+      "language": "en",
+      "content": "Bayu sensor firmware updates require external power and a signed update image. Keep the USB cable attached until the device reports UPDATE COMPLETE."
+    },
+    {
+      "id": "bayu-storage",
+      "language": "ms",
+      "content": "Penderia Bayu menyimpan 2048 bacaan terakhir dalam gelung. Apabila penuh, bacaan paling lama diganti. Eksport bacaan sebelum servis berjadual."
+    },
+    {
+      "id": "mira-backup",
+      "language": "en",
+      "content": "Mira research station backups run at 02:30 UTC. The backup archive is stored on the offline amber drive and verified with a SHA256 checksum."
+    },
+    {
+      "id": "mira-retention",
+      "language": "ms",
+      "content": "Rekod eksperimen Mira disimpan selama 180 hari. Fail latihan beridentiti peserta perlu dipadam selepas tempoh persetujuan tamat."
+    },
+    {
+      "id": "dara-lubrication",
+      "language": "en",
+      "content": "Dara spindle lubrication uses lubricant L7 every 120 operating hours. A dry spindle may trigger vibration warning V31."
+    },
+    {
+      "id": "dara-coolant",
+      "language": "ms",
+      "content": "Tangki penyejuk Dara mempunyai kapasiti 12 liter. Kekalkan kepekatan penyejuk antara empat hingga enam peratus dan periksa sebelum setiap syif."
+    },
+    {
+      "id": "awan-offline",
+      "language": "en",
+      "content": "Awan field gateway can operate without internet for 72 hours. Data is queued locally and synchronized after the authenticated uplink is restored."
+    },
+    {
+      "id": "awan-key",
+      "language": "ms",
+      "content": "Kunci akses Awan ditukar setiap 30 hari. Gunakan port servis setempat dan sahkan identiti peranti sebelum memasang kunci baharu."
+    },
+    {
+      "id": "luma-model",
+      "language": "en",
+      "content": "Luma image classification model revision 8 expects RGB images resized to 224 by 224 pixels. Apply pixel normalization version two before inference."
+    },
+    {
+      "id": "luma-embedding",
+      "language": "ms",
+      "content": "Model embedding Luma teks-v3 menghasilkan vektor 384 dimensi. Dokumen dan pertanyaan mesti menggunakan versi model serta tokenisasi yang sama."
+    },
+    {
+      "id": "tala-reset",
+      "language": "en",
+      "content": "Tala logger factory reset erases all local samples. Export the samples first, disconnect the probe and hold RESET for ten seconds."
+    },
+    {
+      "id": "tala-clock",
+      "language": "ms",
+      "content": "Jam Tala menggunakan UTC. Jika perbezaan masa melebihi lima saat, selaraskan dengan pelayan masa dalaman sebelum memulakan eksperimen baharu."
+    }
+  ],
+  "queries": [
+    {
+      "id": "rhea-battery-en",
+      "language": "en",
+      "query": "Where does the Rhea rover charge its battery?",
+      "relevant": [
+        "rhea-battery"
+      ]
+    },
+    {
+      "id": "rhea-battery-ms",
+      "language": "ms",
+      "query": "Di manakah bateri rover Rhea dicas?",
+      "relevant": [
+        "rhea-battery"
+      ]
+    },
+    {
+      "id": "rhea-filter-ms",
+      "language": "ms",
+      "query": "Berapa jam sebelum penapis habuk Rhea dibersihkan?",
+      "relevant": [
+        "rhea-filter"
+      ]
+    },
+    {
+      "id": "rhea-filter-en",
+      "language": "en",
+      "query": "How often should I clean the Rhea dust filter?",
+      "relevant": [
+        "rhea-filter"
+      ]
+    },
+    {
+      "id": "rhea-radio-en",
+      "language": "en",
+      "query": "How do I pair the Rhea radio again?",
+      "relevant": [
+        "rhea-radio"
+      ]
+    },
+    {
+      "id": "rhea-radio-ms",
+      "language": "ms",
+      "query": "Butang mana untuk sambung semula radio Rhea?",
+      "relevant": [
+        "rhea-radio"
+      ]
+    },
+    {
+      "id": "suri-stop-ms",
+      "language": "ms",
+      "query": "Di mana butang henti kecemasan Suri?",
+      "relevant": [
+        "suri-stop"
+      ]
+    },
+    {
+      "id": "suri-stop-en",
+      "language": "en",
+      "query": "Where is the Suri emergency stop located?",
+      "relevant": [
+        "suri-stop"
+      ]
+    },
+    {
+      "id": "suri-gripper-en",
+      "language": "en",
+      "query": "How do I calibrate the Suri gripper?",
+      "relevant": [
+        "suri-gripper"
+      ]
+    },
+    {
+      "id": "suri-gripper-ms",
+      "language": "ms",
+      "query": "Apakah langkah kalibrasi pencengkam Suri?",
+      "relevant": [
+        "suri-gripper"
+      ]
+    },
+    {
+      "id": "suri-map-ms",
+      "language": "ms",
+      "query": "Apa perlu dibuat jika susun atur kilang Suri berubah?",
+      "relevant": [
+        "suri-map"
+      ]
+    },
+    {
+      "id": "suri-map-en",
+      "language": "en",
+      "query": "What happens to the Suri map after a factory layout change?",
+      "relevant": [
+        "suri-map"
+      ]
+    },
+    {
+      "id": "nuri-temperature-en",
+      "language": "en",
+      "query": "How long should the Nuri chamber stabilize for calibration?",
+      "relevant": [
+        "nuri-temperature"
+      ]
+    },
+    {
+      "id": "nuri-temperature-ms",
+      "language": "ms",
+      "query": "Berapa lama suhu Nuri perlu stabil sebelum rekod offset?",
+      "relevant": [
+        "nuri-temperature"
+      ]
+    },
+    {
+      "id": "nuri-alarm-ms",
+      "language": "ms",
+      "query": "Apakah maksud kod penggera H12 Nuri?",
+      "relevant": [
+        "nuri-alarm"
+      ]
+    },
+    {
+      "id": "nuri-alarm-en",
+      "language": "en",
+      "query": "What does alarm H12 on Nuri mean?",
+      "relevant": [
+        "nuri-alarm"
+      ]
+    },
+    {
+      "id": "bayu-firmware-en",
+      "language": "en",
+      "query": "What is required for a Bayu firmware update?",
+      "relevant": [
+        "bayu-firmware"
+      ]
+    },
+    {
+      "id": "bayu-firmware-ms",
+      "language": "ms",
+      "query": "Apa diperlukan untuk kemas kini firmware Bayu?",
+      "relevant": [
+        "bayu-firmware"
+      ]
+    },
+    {
+      "id": "bayu-storage-ms",
+      "language": "ms",
+      "query": "Berapa banyak bacaan disimpan oleh Bayu?",
+      "relevant": [
+        "bayu-storage"
+      ]
+    },
+    {
+      "id": "bayu-storage-en",
+      "language": "en",
+      "query": "How many recent readings does Bayu retain?",
+      "relevant": [
+        "bayu-storage"
+      ]
+    },
+    {
+      "id": "mira-backup-en",
+      "language": "en",
+      "query": "When is the Mira research backup scheduled?",
+      "relevant": [
+        "mira-backup"
+      ]
+    },
+    {
+      "id": "mira-backup-ms",
+      "language": "ms",
+      "query": "Di manakah arkib backup Mira disimpan?",
+      "relevant": [
+        "mira-backup"
+      ]
+    },
+    {
+      "id": "mira-retention-ms",
+      "language": "ms",
+      "query": "Berapa hari rekod eksperimen Mira disimpan?",
+      "relevant": [
+        "mira-retention"
+      ]
+    },
+    {
+      "id": "mira-retention-en",
+      "language": "en",
+      "query": "How long are Mira experiment records retained?",
+      "relevant": [
+        "mira-retention"
+      ]
+    },
+    {
+      "id": "dara-lubrication-en",
+      "language": "en",
+      "query": "Which lubricant does the Dara spindle need?",
+      "relevant": [
+        "dara-lubrication"
+      ]
+    },
+    {
+      "id": "dara-lubrication-ms",
+      "language": "ms",
+      "query": "Bila gelendong Dara memerlukan pelinciran?",
+      "relevant": [
+        "dara-lubrication"
+      ]
+    },
+    {
+      "id": "dara-coolant-ms",
+      "language": "ms",
+      "query": "Berapakah kapasiti tangki penyejuk Dara?",
+      "relevant": [
+        "dara-coolant"
+      ]
+    },
+    {
+      "id": "dara-coolant-en",
+      "language": "en",
+      "query": "What coolant concentration should Dara use?",
+      "relevant": [
+        "dara-coolant"
+      ]
+    },
+    {
+      "id": "awan-offline-en",
+      "language": "en",
+      "query": "How long can Awan operate offline?",
+      "relevant": [
+        "awan-offline"
+      ]
+    },
+    {
+      "id": "awan-offline-ms",
+      "language": "ms",
+      "query": "Apa berlaku kepada data Awan semasa internet terputus?",
+      "relevant": [
+        "awan-offline"
+      ]
+    },
+    {
+      "id": "awan-key-ms",
+      "language": "ms",
+      "query": "Berapa kerap kunci akses Awan ditukar?",
+      "relevant": [
+        "awan-key"
+      ]
+    },
+    {
+      "id": "awan-key-en",
+      "language": "en",
+      "query": "How do I rotate the Awan access key?",
+      "relevant": [
+        "awan-key"
+      ]
+    },
+    {
+      "id": "luma-model-en",
+      "language": "en",
+      "query": "What image size does Luma revision 8 expect?",
+      "relevant": [
+        "luma-model"
+      ]
+    },
+    {
+      "id": "luma-model-ms",
+      "language": "ms",
+      "query": "Apakah pra pemprosesan model Luma versi 8?",
+      "relevant": [
+        "luma-model"
+      ]
+    },
+    {
+      "id": "luma-embedding-ms",
+      "language": "ms",
+      "query": "Berapa dimensi embedding Luma teks-v3?",
+      "relevant": [
+        "luma-embedding"
+      ]
+    },
+    {
+      "id": "luma-embedding-en",
+      "language": "en",
+      "query": "Which model version must Luma queries and documents share?",
+      "relevant": [
+        "luma-embedding"
+      ]
+    },
+    {
+      "id": "tala-reset-en",
+      "language": "en",
+      "query": "What should I do before a Tala factory reset?",
+      "relevant": [
+        "tala-reset"
+      ]
+    },
+    {
+      "id": "tala-reset-ms",
+      "language": "ms",
+      "query": "Adakah reset kilang Tala memadam sampel?",
+      "relevant": [
+        "tala-reset"
+      ]
+    },
+    {
+      "id": "tala-clock-ms",
+      "language": "ms",
+      "query": "Bilakah jam Tala perlu diselaraskan?",
+      "relevant": [
+        "tala-clock"
+      ]
+    },
+    {
+      "id": "tala-clock-en",
+      "language": "en",
+      "query": "What time zone does the Tala logger use?",
+      "relevant": [
+        "tala-clock"
+      ]
+    }
+  ]
+}

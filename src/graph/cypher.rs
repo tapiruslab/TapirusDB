@@ -3,10 +3,10 @@
 //! Provides native openCypher parsing and execution runtime (`MATCH ... WHERE ... RETURN ...`,
 //! `CREATE ...`, and variable-length path expansion) directly inside TapirusDB in 100% Safe Rust (`#![forbid(unsafe_code)]`).
 
+use crate::Row;
+use crate::Value;
 use crate::error::{Error, Result};
 use crate::graph::{Direction, Edge, GraphEngine, Node};
-use crate::Value;
-use crate::Row;
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
 
@@ -152,8 +152,9 @@ impl CypherParser {
 
             let edge_raw = Self::extract_bracket_content(remainder, '[', ']')
                 .unwrap_or_else(|| "REL".to_string());
-            
-            let (edge_label, edge_props, edge_weight) = if let Some(brace_pos) = edge_raw.find('{') {
+
+            let (edge_label, edge_props, edge_weight) = if let Some(brace_pos) = edge_raw.find('{')
+            {
                 let lbl = edge_raw[..brace_pos].trim().trim_start_matches(':').trim();
                 let prop_content = edge_raw[brace_pos..].trim();
                 let prop_str = if prop_content.ends_with('}') {
@@ -163,18 +164,37 @@ impl CypherParser {
                 };
                 let weight = if let Some(w_pos) = prop_str.to_lowercase().find("weight") {
                     let after = &prop_str[w_pos + 6..];
-                    let val_str = after.trim_start_matches(|c: char| c == ':' || c.is_whitespace() || c == '"' || c == '\'');
-                    val_str.split(|c: char| c == ',' || c == '}' || c.is_whitespace())
+                    let val_str = after.trim_start_matches(|c: char| {
+                        c == ':' || c.is_whitespace() || c == '"' || c == '\''
+                    });
+                    val_str
+                        .split(|c: char| c == ',' || c == '}' || c.is_whitespace())
                         .next()
                         .and_then(|s| s.parse::<f32>().ok())
                         .unwrap_or(1.0)
                 } else {
                     1.0
                 };
-                (if lbl.is_empty() { "RELATED".to_string() } else { lbl.to_string() }, prop_str, weight)
+                (
+                    if lbl.is_empty() {
+                        "RELATED".to_string()
+                    } else {
+                        lbl.to_string()
+                    },
+                    prop_str,
+                    weight,
+                )
             } else {
                 let lbl = edge_raw.trim_start_matches(':').trim();
-                (if lbl.is_empty() { "RELATED".to_string() } else { lbl.to_string() }, "{}".to_string(), 1.0)
+                (
+                    if lbl.is_empty() {
+                        "RELATED".to_string()
+                    } else {
+                        lbl.to_string()
+                    },
+                    "{}".to_string(),
+                    1.0,
+                )
             };
 
             let after_edge = remainder.split(']').nth(1).unwrap_or("");
@@ -242,11 +262,7 @@ impl CypherParser {
             remainder[..return_pos].trim()
         };
 
-        let where_part = if let Some(w_pos) = where_pos {
-            Some(remainder[w_pos + 7..return_pos].trim())
-        } else {
-            None
-        };
+        let where_part = where_pos.map(|w_pos| remainder[w_pos + 7..return_pos].trim());
 
         let return_part = if let Some(l_pos) = limit_pos {
             remainder[return_pos + 8..l_pos].trim()
@@ -308,12 +324,13 @@ impl CypherParser {
         Option<CypherNodePattern>,
     )> {
         // Find first node `(...)`
-        let first_open = pattern.find('(').ok_or_else(|| {
-            Error::Corrupted(format!("Invalid node pattern in: '{pattern}'"))
-        })?;
-        let first_close = pattern[first_open..].find(')').ok_or_else(|| {
-            Error::Corrupted(format!("Unclosed node pattern in: '{pattern}'"))
-        })? + first_open;
+        let first_open = pattern
+            .find('(')
+            .ok_or_else(|| Error::Corrupted(format!("Invalid node pattern in: '{pattern}'")))?;
+        let first_close = pattern[first_open..]
+            .find(')')
+            .ok_or_else(|| Error::Corrupted(format!("Unclosed node pattern in: '{pattern}'")))?
+            + first_open;
 
         let source_content = &pattern[first_open + 1..first_close];
         let source_node = Self::parse_single_node(source_content);
@@ -332,16 +349,18 @@ impl CypherParser {
             Direction::Both
         };
 
-        let edge_content = Self::extract_bracket_content(after_source, '[', ']').unwrap_or_default();
+        let edge_content =
+            Self::extract_bracket_content(after_source, '[', ']').unwrap_or_default();
         let edge_pattern = Self::parse_single_edge(&edge_content, direction);
 
         // Find target node `(...)`
-        let after_edge_pos = after_source.rfind('(').ok_or_else(|| {
-            Error::Corrupted("Missing target node in graph pattern".to_string())
-        })?;
-        let after_edge_close = after_source[after_edge_pos..].find(')').ok_or_else(|| {
-            Error::Corrupted("Unclosed target node in graph pattern".to_string())
-        })? + after_edge_pos;
+        let after_edge_pos = after_source
+            .rfind('(')
+            .ok_or_else(|| Error::Corrupted("Missing target node in graph pattern".to_string()))?;
+        let after_edge_close = after_source[after_edge_pos..]
+            .find(')')
+            .ok_or_else(|| Error::Corrupted("Unclosed target node in graph pattern".to_string()))?
+            + after_edge_pos;
 
         let target_content = &after_source[after_edge_pos + 1..after_edge_close];
         let target_node = Self::parse_single_node(target_content);
@@ -845,7 +864,8 @@ mod tests {
         let _ = engine.add_node(2, "Service", r#"{"name": "Payment"}"#);
 
         let create_query = "CREATE (1)-[:CALLS {weight: 0.85, latency: 12}]->(2)";
-        let rows = CypherExecutor::execute_mutation(&mut engine, create_query).expect("Create edge failed");
+        let rows = CypherExecutor::execute_mutation(&mut engine, create_query)
+            .expect("Create edge failed");
         assert_eq!(rows[0].get::<i64>("edges_created").unwrap(), 1);
 
         let edges = engine.all_edges();

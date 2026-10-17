@@ -39,6 +39,10 @@ pub struct Bm25Index {
     doc_lengths: HashMap<u64, usize>,
     /// BM25 tuning parameters
     params: Bm25Params,
+    #[serde(default)]
+    total_tokens: Option<usize>,
+    #[serde(default)]
+    document_terms: HashMap<u64, Vec<String>>,
 }
 
 impl Bm25Index {
@@ -48,6 +52,8 @@ impl Bm25Index {
             inverted_index: HashMap::new(),
             doc_lengths: HashMap::new(),
             params: Bm25Params::default(),
+            total_tokens: Some(0),
+            document_terms: HashMap::new(),
         }
     }
 
@@ -57,6 +63,8 @@ impl Bm25Index {
             inverted_index: HashMap::new(),
             doc_lengths: HashMap::new(),
             params,
+            total_tokens: Some(0),
+            document_terms: HashMap::new(),
         }
     }
 
@@ -73,6 +81,9 @@ impl Bm25Index {
             return;
         }
 
+        *self
+            .total_tokens
+            .get_or_insert_with(|| self.doc_lengths.values().sum()) += tokens.len();
         self.doc_lengths.insert(doc_id, tokens.len());
 
         // Compute term frequencies for this document
@@ -81,6 +92,8 @@ impl Bm25Index {
             *term_counts.entry(token).or_insert(0) += 1;
         }
 
+        self.document_terms
+            .insert(doc_id, term_counts.keys().cloned().collect());
         for (term, count) in term_counts {
             self.inverted_index
                 .entry(term)
@@ -91,12 +104,28 @@ impl Bm25Index {
 
     /// Remove a document from the inverted index
     pub fn remove_document(&mut self, doc_id: u64) {
-        if self.doc_lengths.remove(&doc_id).is_some() {
-            for postings in self.inverted_index.values_mut() {
-                postings.retain(|(id, _)| *id != doc_id);
+        let total = *self
+            .total_tokens
+            .get_or_insert_with(|| self.doc_lengths.values().sum());
+        if let Some(length) = self.doc_lengths.remove(&doc_id) {
+            self.total_tokens = Some(total.saturating_sub(length));
+            if let Some(terms) = self.document_terms.remove(&doc_id) {
+                for term in terms {
+                    if let Some(postings) = self.inverted_index.get_mut(&term) {
+                        postings.retain(|(id, _)| *id != doc_id);
+                        if postings.is_empty() {
+                            self.inverted_index.remove(&term);
+                        }
+                    }
+                }
+            } else {
+                // Compatibility with older serialized lexical indexes.
+                for postings in self.inverted_index.values_mut() {
+                    postings.retain(|(id, _)| *id != doc_id);
+                }
+                self.inverted_index
+                    .retain(|_, postings| !postings.is_empty());
             }
-            // Clean up empty term entries
-            self.inverted_index.retain(|_, postings| !postings.is_empty());
         }
     }
 
@@ -110,14 +139,45 @@ impl Bm25Index {
         if self.doc_lengths.is_empty() {
             return 0.0;
         }
-        let sum: usize = self.doc_lengths.values().sum();
+        let sum = self
+            .total_tokens
+            .unwrap_or_else(|| self.doc_lengths.values().sum());
         sum as f32 / self.doc_lengths.len() as f32
     }
 
     /// Search the index using Okapi BM25 scoring, returning top-k matching doc IDs with scores
     pub fn search(&self, query: &str, top_k: usize) -> Vec<(u64, f32)> {
+        let mut result = self.search_filtered(query, top_k, None);
+        // Preserve the legacy API's query-relative score normalization.
+        if let Some(&(_, max_score)) = result.first() {
+            if max_score > 0.0 {
+                for (_, score) in &mut result {
+                    *score /= max_score;
+                }
+            }
+        }
+        result
+    }
+
+    /// Return raw BM25 scores with an optional source allow-list before scoring.
+    pub fn search_filtered(
+        &self,
+        query: &str,
+        top_k: usize,
+        allowed: Option<&HashSet<u64>>,
+    ) -> Vec<(u64, f32)> {
+        self.search_where(query, top_k, allowed, |_| true)
+    }
+
+    pub(crate) fn search_where(
+        &self,
+        query: &str,
+        top_k: usize,
+        allowed: Option<&HashSet<u64>>,
+        accept: impl Fn(u64) -> bool,
+    ) -> Vec<(u64, f32)> {
         let query_tokens = tokenize(query);
-        if query_tokens.is_empty() || self.doc_lengths.is_empty() {
+        if top_k == 0 || query_tokens.is_empty() || self.doc_lengths.is_empty() {
             return Vec::new();
         }
 
@@ -137,12 +197,17 @@ impl Bm25Index {
             if let Some(postings) = self.inverted_index.get(token.as_str()) {
                 let doc_freq = postings.len() as f32;
                 // Standard smoothed IDF: ln(1 + (N - df + 0.5) / (df + 0.5))
-                let idf = ((n_docs - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln().max(0.1);
+                let idf = ((n_docs - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0)
+                    .ln()
+                    .max(0.1);
 
                 for &(doc_id, tf) in postings {
+                    if allowed.is_some_and(|ids| !ids.contains(&doc_id)) || !accept(doc_id) {
+                        continue;
+                    }
                     let doc_len = *self.doc_lengths.get(&doc_id).unwrap_or(&0) as f32;
                     let tf_val = tf as f32;
-                    
+
                     let denom = tf_val + k1 * (1.0 - b + b * (doc_len / avgdl.max(1.0)));
                     let term_score = idf * (tf_val * (k1 + 1.0)) / denom.max(0.0001);
 
@@ -152,18 +217,13 @@ impl Bm25Index {
         }
 
         let mut result: Vec<(u64, f32)> = scores.into_iter().collect();
-        result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        result.truncate(top_k);
-
-        // Normalize scores to [0.0, 1.0] if top score > 0
-        if let Some(&(_, max_score)) = result.first() {
-            if max_score > 0.0 {
-                for (_, score) in result.iter_mut() {
-                    *score /= max_score;
-                }
-            }
+        let compare =
+            |a: &(u64, f32), b: &(u64, f32)| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0));
+        if result.len() > top_k {
+            result.select_nth_unstable_by(top_k, compare);
         }
-
+        result.truncate(top_k);
+        result.sort_by(compare);
         result
     }
 }
@@ -200,14 +260,20 @@ mod tests {
     #[test]
     fn test_bm25_tokenization() {
         let tokens = tokenize("Hello, World! This is TapirusDB-2026.");
-        assert_eq!(tokens, vec!["hello", "world", "this", "is", "tapirusdb-2026"]);
+        assert_eq!(
+            tokens,
+            vec!["hello", "world", "this", "is", "tapirusdb-2026"]
+        );
     }
 
     #[test]
     fn test_bm25_search_scoring() {
         let mut index = Bm25Index::new();
         index.index_document(1, "The quick brown fox jumps over the lazy dog");
-        index.index_document(2, "The engineering team built TapirusDB for embedded edge AI memory");
+        index.index_document(
+            2,
+            "The engineering team built TapirusDB for embedded edge AI memory",
+        );
         index.index_document(3, "TapirusDB is ultra fast and safe in Pure Safe Rust");
 
         let results = index.search("TapirusDB Safe Rust", 5);

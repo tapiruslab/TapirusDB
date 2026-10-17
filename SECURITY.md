@@ -1,53 +1,25 @@
 # Security Policy
 
-The TapirusDB team is committed to maintaining high standards of data security, cryptographic integrity, and memory safety.
+Report suspected vulnerabilities privately to [security@tapirusdb.com](mailto:security@tapirusdb.com). Include the affected version, operating system, reproduction steps and impact. Do not include production database files or secret keys in an initial report.
 
----
+## Supported versions
 
-## 🛡️ Supported Versions
+The current source version is `1.0.1`. Apply the newest patch release available for the version line you deploy. Releases older than `1.0.0` are not covered by this policy.
 
-We provide security updates and patches for the following versions:
+## Security properties and limits
 
-| Version | Supported          | Status |
-| ------- | ------------------ | ------ |
-| `0.1.x` | :white_check_mark: | Active Development & Security Support |
-| `< 0.1.0` | :x:              | Deprecated Prototype Releases |
+- The core crate uses `#![forbid(unsafe_code)]`. The separate C FFI crate necessarily contains unsafe boundary code, and dependencies are outside that crate-level lint. Safe Rust prevents classes of memory unsafety; it does not guarantee that a program cannot panic, leak resources or lose data.
+- Encrypted pages use XChaCha20-Poly1305 with 256-bit keys and 24-byte nonces. Passphrases are derived with PBKDF2-HMAC-SHA256. The database header exposes format metadata needed to open the file.
+- `DatabaseCipher` stores key bytes in a cloneable fixed-size array. The current implementation does not guarantee that key material is zeroized when the cipher is dropped. Applications should limit process access and protect passphrases accordingly.
+- Embedded connections do not open network listeners by themselves. The optional `tapirus serve` daemon exposes network endpoints; configure its bind address and API key for the deployment environment. Do not expose an unauthenticated daemon to an untrusted network.
+- Authentication does not replace filesystem permissions, encrypted transport, secret management or application-level authorization.
 
----
+## Vulnerability reports
 
-## 🔒 Reporting a Vulnerability
+Send reports to [security@tapirusdb.com](mailto:security@tapirusdb.com) with subject `[SECURITY] TapirusDB Vulnerability Report`. Include:
 
-If you discover or suspect a security vulnerability in TapirusDB, **please do not disclose it publicly or open a public GitHub issue.**
+1. A concise impact description and reproduction steps.
+2. The TapirusDB version, compiler/runtime version and operating system.
+3. Any suggested mitigation, if available.
 
-Please report it privately via email:
-
-* **Email:** [security@tapirusdb.com](mailto:security@tapirusdb.com)
-* **Subject:** `[SECURITY] TapirusDB Vulnerability Report - <Brief Description>`
-
-### Please Include:
-1. Description of the vulnerability and its potential impact.
-2. Step-by-step reproduction steps or a minimal reproducible code snippet (`main.rs` or shell script).
-3. The specific TapirusDB version, compiler version (`rustc --version`), and target operating system.
-4. Any potential mitigations or patch suggestions if available.
-
-### Response Timeline:
-* **Initial Acknowledgment:** Within **48 hours**.
-* **Triage & Status Update:** Within **5 business days**.
-* **Remediation & Advisory Release:** Coordinated disclosure after a fix has been verified and released.
-
----
-
-## 🏛️ Security Model & Built-In Defenses
-
-TapirusDB is architected from the ground up with defensive security principles:
-
-1. **Zero Unsafe Code (`#![forbid(unsafe_code)]`)**:
-   - The engine is compiled under the strictest Rust compiler invariant.
-   - Eliminates entire classes of critical vulnerabilities, including buffer overflows, heap use-after-free, double-free, dangling pointers, and data races.
-2. **ChaCha20-Poly1305 AEAD Encryption**:
-   - High-performance authenticated encryption at rest with 256-bit keys and 128-bit Poly1305 authentication tags.
-   - SHA-256 key derivation with 16-byte Key Check Value (KCV) preventing unauthorized database unlocks or ciphertext tampering.
-3. **Zero Network Attack Surface (Embedded Mode)**:
-   - In standard library and embedded usage, TapirusDB runs directly in-process with zero listening network ports, zero daemons, and zero socket listeners.
-4. **Cryptographic Key Sanitization**:
-   - Key handles are zeroized in memory upon drop to protect against cold-boot or memory inspection attacks.
+Coordinate public disclosure with the maintainers after a fix or mitigation is available.

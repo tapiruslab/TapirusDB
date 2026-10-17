@@ -11,9 +11,9 @@
 
 use std::path::Path;
 use tapirus::sql::vectorized::VectorizedAccumulator;
-use tapirus::vector::paged_hnsw::PagedHnswIndex;
-use tapirus::vector::DistanceMetric;
 use tapirus::traits::Value;
+use tapirus::vector::DistanceMetric;
+use tapirus::vector::paged_hnsw::PagedHnswIndex;
 use tapirus::{Connection, Direction, Edge, Node};
 
 #[test]
@@ -22,14 +22,19 @@ fn test_pillar1_subqueries_and_ctes() {
 
     conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER);")
         .unwrap();
-    conn.execute("INSERT INTO users VALUES (1, 'Alex', 30);").unwrap();
-    conn.execute("INSERT INTO users VALUES (2, 'Danial', 22);").unwrap();
-    conn.execute("INSERT INTO users VALUES (3, 'Sara', 28);").unwrap();
+    conn.execute("INSERT INTO users VALUES (1, 'Alex', 30);")
+        .unwrap();
+    conn.execute("INSERT INTO users VALUES (2, 'Danial', 22);")
+        .unwrap();
+    conn.execute("INSERT INTO users VALUES (3, 'Sara', 28);")
+        .unwrap();
 
     conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL);")
         .unwrap();
-    conn.execute("INSERT INTO orders VALUES (101, 1, 150.0);").unwrap();
-    conn.execute("INSERT INTO orders VALUES (102, 3, 220.5);").unwrap();
+    conn.execute("INSERT INTO orders VALUES (101, 1, 150.0);")
+        .unwrap();
+    conn.execute("INSERT INTO orders VALUES (102, 3, 220.5);")
+        .unwrap();
 
     // 1. Basic Single CTE
     let cte_rows = conn
@@ -50,7 +55,10 @@ fn test_pillar1_subqueries_and_ctes() {
         .query("SELECT name FROM users WHERE id IN (SELECT user_id FROM orders);")
         .unwrap();
     assert_eq!(sub_rows.len(), 2);
-    let names: Vec<String> = sub_rows.into_iter().map(|r| r.get::<String>("name").unwrap()).collect();
+    let names: Vec<String> = sub_rows
+        .into_iter()
+        .map(|r| r.get::<String>("name").unwrap())
+        .collect();
     assert!(names.contains(&"Alex".to_string()));
     assert!(names.contains(&"Sara".to_string()));
 }
@@ -83,16 +91,26 @@ fn test_pillar2_transparent_page_compression() {
     // Re-open and verify transparent decompression
     {
         let conn = Connection::open(&db_path).expect("Reopen db");
-        assert!(conn.is_compressed(), "Persisted compression flag should remain active");
+        assert!(
+            conn.is_compressed(),
+            "Persisted compression flag should remain active"
+        );
 
         let rows = conn.query("SELECT COUNT(*), MAX(id) FROM docs;").unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get::<i64>("COUNT(*)").unwrap(), 50);
         assert_eq!(rows[0].get::<i64>("MAX(id)").unwrap(), 50);
 
-        let row1 = conn.query("SELECT payload FROM docs WHERE id = 1;").unwrap();
+        let row1 = conn
+            .query("SELECT payload FROM docs WHERE id = 1;")
+            .unwrap();
         assert!(!row1.is_empty());
-        assert!(row1[0].get::<String>("payload").unwrap().contains("Tapirus Tech Lab"));
+        assert!(
+            row1[0]
+                .get::<String>("payload")
+                .unwrap()
+                .contains("Tapirus Tech Lab")
+        );
     }
 }
 
@@ -112,7 +130,10 @@ fn test_pillar3_disk_backed_paged_hnsw() {
     // Search nearest neighbors
     let results = index.search(&[1.0, 0.5, 1.0], 3).unwrap();
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].0, 1, "Vector 1 must be closest to query [1.0, 0.5, 1.0]");
+    assert_eq!(
+        results[0].0, 1,
+        "Vector 1 must be closest to query [1.0, 0.5, 1.0]"
+    );
 }
 
 #[test]
@@ -136,7 +157,10 @@ fn test_pillar4_sql_graph_predicates() {
         .query("GRAPH TRAVERSE FROM 1 OUTGOING LABEL 'COLLABORATES' MAX_DEPTH 1 WHERE target.age > 25;")
         .unwrap();
     // Node 1 is root, Node 3 has age 29, Node 2 has age 22 (filtered out)
-    let ids: Vec<i64> = rows_age.into_iter().map(|r| r.get::<i64>("node_id").unwrap()).collect();
+    let ids: Vec<i64> = rows_age
+        .into_iter()
+        .map(|r| r.get::<i64>("node_id").unwrap())
+        .collect();
     assert!(ids.contains(&3));
     assert!(!ids.contains(&2));
 
@@ -144,7 +168,10 @@ fn test_pillar4_sql_graph_predicates() {
     let rows_weight = conn
         .query("GRAPH TRAVERSE FROM 1 OUTGOING MAX_DEPTH 1 WHERE edge.weight >= 0.5;")
         .unwrap();
-    let weight_ids: Vec<i64> = rows_weight.into_iter().map(|r| r.get::<i64>("node_id").unwrap()).collect();
+    let weight_ids: Vec<i64> = rows_weight
+        .into_iter()
+        .map(|r| r.get::<i64>("node_id").unwrap())
+        .collect();
     assert!(weight_ids.contains(&2)); // weight 0.9
     assert!(!weight_ids.contains(&3)); // weight 0.4
 }
@@ -153,11 +180,15 @@ fn test_pillar4_sql_graph_predicates() {
 fn test_pillar5_vectorized_aggregation_engine() {
     let conn = Connection::open_in_memory().unwrap();
 
-    conn.execute("CREATE TABLE metrics (val INTEGER, score REAL);").unwrap();
+    conn.execute("CREATE TABLE metrics (val INTEGER, score REAL);")
+        .unwrap();
 
     for i in 1..=1000 {
-        conn.execute(&format!("INSERT INTO metrics VALUES ({i}, {});", i as f64 * 1.5))
-            .unwrap();
+        conn.execute(&format!(
+            "INSERT INTO metrics VALUES ({i}, {});",
+            i as f64 * 1.5
+        ))
+        .unwrap();
     }
 
     let rows = conn
@@ -195,7 +226,12 @@ fn test_pillar7_tauri_desktop_configuration() {
             json["build"]["frontendDist"] == "../dist" || json["build"]["frontendDist"] == "../",
             "frontendDist should be ../dist or ../"
         );
-        assert!(json["app"]["windows"][0]["title"].as_str().unwrap().contains("Tapirus Studio"));
+        assert!(
+            json["app"]["windows"][0]["title"]
+                .as_str()
+                .unwrap()
+                .contains("Tapirus Studio")
+        );
     }
 }
 
@@ -238,7 +274,10 @@ fn test_paged_hnsw_disk_persistence_and_reload() {
         assert_eq!(reloaded.len(), 20);
         let results = reloaded.search(&[1.0, 0.5, 1.0], 3).unwrap();
         assert_eq!(results.len(), 3);
-        assert_eq!(results[0].0, 1, "Vector 1 should remain nearest neighbor after reload");
+        assert_eq!(
+            results[0].0, 1,
+            "Vector 1 should remain nearest neighbor after reload"
+        );
     }
 }
 
@@ -253,17 +292,46 @@ fn test_disk_graph_adjacency_and_neighbor_resolution() {
         let mut pager = conn.pager().write();
 
         // 1. Create nodes
-        let n1 = Node { id: 101, label: "Server".into(), properties: "{\"role\": \"primary\"}".into(), vector: None };
-        let n2 = Node { id: 102, label: "Database".into(), properties: "{\"role\": \"replica\"}".into(), vector: None };
-        let n3 = Node { id: 103, label: "Cache".into(), properties: "{\"role\": \"redis\"}".into(), vector: None };
+        let n1 = Node {
+            id: 101,
+            label: "Server".into(),
+            properties: "{\"role\": \"primary\"}".into(),
+            vector: None,
+        };
+        let n2 = Node {
+            id: 102,
+            label: "Database".into(),
+            properties: "{\"role\": \"replica\"}".into(),
+            vector: None,
+        };
+        let n3 = Node {
+            id: 103,
+            label: "Cache".into(),
+            properties: "{\"role\": \"redis\"}".into(),
+            vector: None,
+        };
 
         executor.persist_graph_node(&mut pager, &n1).unwrap();
         executor.persist_graph_node(&mut pager, &n2).unwrap();
         executor.persist_graph_node(&mut pager, &n3).unwrap();
 
         // 2. Create edges: 101 -> 102, 101 -> 103
-        let e1 = Edge { id: 501, from_id: 101, to_id: 102, label: "REPLICATES_TO".into(), weight: 1.0, properties: "{}".into() };
-        let e2 = Edge { id: 502, from_id: 101, to_id: 103, label: "CACHES_IN".into(), weight: 0.8, properties: "{}".into() };
+        let e1 = Edge {
+            id: 501,
+            from_id: 101,
+            to_id: 102,
+            label: "REPLICATES_TO".into(),
+            weight: 1.0,
+            properties: "{}".into(),
+        };
+        let e2 = Edge {
+            id: 502,
+            from_id: 101,
+            to_id: 103,
+            label: "CACHES_IN".into(),
+            weight: 0.8,
+            properties: "{}".into(),
+        };
 
         executor.persist_graph_edge(&mut pager, &e1).unwrap();
         executor.persist_graph_edge(&mut pager, &e2).unwrap();
@@ -301,4 +369,3 @@ fn test_disk_graph_adjacency_and_neighbor_resolution() {
         assert_eq!(remaining[0].0.id, 103);
     }
 }
-

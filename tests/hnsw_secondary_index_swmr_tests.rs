@@ -78,14 +78,20 @@ fn test_true_secondary_index_posting_list() {
         .expect("Create secondary index on status");
 
     // Insert accounts with various statuses
-    conn.execute("INSERT INTO accounts (id, username, status, balance) VALUES (1, 'alice', 'active', 500);")
-        .expect("Insert 1");
-    conn.execute("INSERT INTO accounts (id, username, status, balance) VALUES (2, 'bob', 'pending', 100);")
-        .expect("Insert 2");
+    conn.execute(
+        "INSERT INTO accounts (id, username, status, balance) VALUES (1, 'alice', 'active', 500);",
+    )
+    .expect("Insert 1");
+    conn.execute(
+        "INSERT INTO accounts (id, username, status, balance) VALUES (2, 'bob', 'pending', 100);",
+    )
+    .expect("Insert 2");
     conn.execute("INSERT INTO accounts (id, username, status, balance) VALUES (3, 'charlie', 'active', 750);")
         .expect("Insert 3");
-    conn.execute("INSERT INTO accounts (id, username, status, balance) VALUES (4, 'david', 'banned', 0);")
-        .expect("Insert 4");
+    conn.execute(
+        "INSERT INTO accounts (id, username, status, balance) VALUES (4, 'david', 'banned', 0);",
+    )
+    .expect("Insert 4");
 
     // 1. Direct secondary index query
     let active_rows = conn
@@ -151,8 +157,8 @@ fn test_hnsw_topology_persistence_and_instant_restore() {
 
     // Wave A: Open DB, create vector table, insert vectors, and persist snapshot
     {
-        let conn = Connection::open_with_config(&db_path, Config::default())
-            .expect("Open DB for write");
+        let conn =
+            Connection::open_with_config(&db_path, Config::default()).expect("Open DB for write");
 
         conn.execute(
             "CREATE TABLE items (
@@ -163,12 +169,18 @@ fn test_hnsw_topology_persistence_and_instant_restore() {
         )
         .expect("Create items table");
 
-        conn.execute("INSERT INTO items (id, name, embedding) VALUES (1, 'item_x', '[1.0, 0.0, 0.0]');")
-            .expect("Insert item 1");
-        conn.execute("INSERT INTO items (id, name, embedding) VALUES (2, 'item_y', '[0.0, 1.0, 0.0]');")
-            .expect("Insert item 2");
-        conn.execute("INSERT INTO items (id, name, embedding) VALUES (3, 'item_z', '[0.95, 0.05, 0.0]');")
-            .expect("Insert item 3");
+        conn.execute(
+            "INSERT INTO items (id, name, embedding) VALUES (1, 'item_x', '[1.0, 0.0, 0.0]');",
+        )
+        .expect("Insert item 1");
+        conn.execute(
+            "INSERT INTO items (id, name, embedding) VALUES (2, 'item_y', '[0.0, 1.0, 0.0]');",
+        )
+        .expect("Insert item 2");
+        conn.execute(
+            "INSERT INTO items (id, name, embedding) VALUES (3, 'item_z', '[0.95, 0.05, 0.0]');",
+        )
+        .expect("Insert item 3");
 
         // Persist vector index snapshot to disk system table
         conn.persist_vector_snapshots()
@@ -179,8 +191,8 @@ fn test_hnsw_topology_persistence_and_instant_restore() {
 
     // Wave B: Reopen database from disk and verify instant snapshot restore
     {
-        let conn = Connection::open_with_config(&db_path, Config::default())
-            .expect("Reopen DB from disk");
+        let conn =
+            Connection::open_with_config(&db_path, Config::default()).expect("Reopen DB from disk");
 
         // Verify system table exists
         let tables = conn.tables();
@@ -226,8 +238,13 @@ fn test_swmr_concurrent_readers() {
         .expect("Add graph edge");
 
     // Initialize AI Memory
-    conn.memory_remember("Persistent distributed snapshot journal", None, 0.9, &["architecture"])
-        .expect("Store memory");
+    conn.memory_remember(
+        "Persistent distributed snapshot journal",
+        None,
+        0.9,
+        &["architecture"],
+    )
+    .expect("Store memory");
 
     // Spawn 8 concurrent reader threads
     let handles: Vec<_> = (0..8)
@@ -246,7 +263,11 @@ fn test_swmr_concurrent_readers() {
                     tapirus::graph::Direction::Outgoing,
                     Some("WROTE"),
                 );
-                assert_eq!(neighbors.len(), 1, "Thread {thread_id} read wrong neighbor count");
+                assert_eq!(
+                    neighbors.len(),
+                    1,
+                    "Thread {thread_id} read wrong neighbor count"
+                );
 
                 // Memory concurrent read
                 let count = thread_conn.memory_count();

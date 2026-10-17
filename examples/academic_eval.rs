@@ -7,10 +7,10 @@
 //! 4. Tri-Model Hybrid Transaction Latency
 
 use std::time::Instant;
-use tempfile::NamedTempFile;
-use tapirus::vector::{cosine_distance, DistanceMetric, HnswIndex, QuantizedVector8};
 use tapirus::crypto::DatabaseCipher;
+use tapirus::vector::{DistanceMetric, HnswIndex, QuantizedVector8, cosine_distance};
 use tapirus::{Connection, Direction, VectorIndexEngine};
+use tempfile::NamedTempFile;
 
 fn main() {
     println!("==========================================================================");
@@ -67,11 +67,21 @@ fn eval_sq8_quantization() {
         let compression_ratio = raw_bytes as f32 / quant_bytes as f32;
 
         println!("  [Dimensions = {:>3}]:", dims);
-        println!("    • Compression Ratio      : {:.2}x ({} B -> {} B, 75.0% RAM saved)", compression_ratio, raw_bytes, quant_bytes);
-        println!("    • Quantization Latency   : {:.2} µs", quant_dur.as_nanos() as f64 / 1000.0);
+        println!(
+            "    • Compression Ratio      : {:.2}x ({} B -> {} B, 75.0% RAM saved)",
+            compression_ratio, raw_bytes, quant_bytes
+        );
+        println!(
+            "    • Quantization Latency   : {:.2} µs",
+            quant_dur.as_nanos() as f64 / 1000.0
+        );
         println!("    • Mean Squared Error (MSE: {:.8}", mse);
         println!("    • Mean Absolute Error(MAE: {:.6}", mae);
-        println!("    • Cosine Similarity Loss : {:.6}% (Similarity: {:.6})", (1.0 - cos_sim) * 100.0, cos_sim);
+        println!(
+            "    • Cosine Similarity Loss : {:.6}% (Similarity: {:.6})",
+            (1.0 - cos_sim) * 100.0,
+            cos_sim
+        );
     }
 }
 
@@ -95,7 +105,9 @@ fn eval_crypto_overhead() {
     // Measure ChaCha20-Poly1305 Encryption
     let start_enc = Instant::now();
     for i in 0..iterations {
-        let _ = cipher.encrypt_page(i as u32 + 2, &page_data).expect("Encrypt page");
+        let _ = cipher
+            .encrypt_page(i as u32 + 2, &page_data)
+            .expect("Encrypt page");
     }
     let enc_dur = start_enc.elapsed();
     let enc_dur_secs = enc_dur.as_secs_f64();
@@ -115,12 +127,23 @@ fn eval_crypto_overhead() {
     let dec_throughput_mib = ((iterations * 4096) as f64 / (1024.0 * 1024.0)) / dec_dur_secs;
     let dec_throughput_mb = ((iterations * 4096) as f64 / 1_000_000.0) / dec_dur_secs;
 
-    println!("  • Plaintext 4KB MemCopy Mean Latency : {:>6.2} µs/page", baseline_lat);
-    println!("  • ChaCha20-Poly1305 Encrypt          : {:>6.2} µs/page ({:.2} MiB/s | {:.2} MB/s)", enc_lat_us, enc_throughput_mib, enc_throughput_mb);
-    println!("  • ChaCha20-Poly1305 Decrypt+Auth     : {:>6.2} µs/page ({:.2} MiB/s | {:.2} MB/s)", dec_lat_us, dec_throughput_mib, dec_throughput_mb);
-    println!("  • Added Cryptographic Overhead       : {:>6.2} µs/page", enc_lat_us - baseline_lat);
+    println!(
+        "  • Plaintext 4KB MemCopy Mean Latency : {:>6.2} µs/page",
+        baseline_lat
+    );
+    println!(
+        "  • ChaCha20-Poly1305 Encrypt          : {:>6.2} µs/page ({:.2} MiB/s | {:.2} MB/s)",
+        enc_lat_us, enc_throughput_mib, enc_throughput_mb
+    );
+    println!(
+        "  • ChaCha20-Poly1305 Decrypt+Auth     : {:>6.2} µs/page ({:.2} MiB/s | {:.2} MB/s)",
+        dec_lat_us, dec_throughput_mib, dec_throughput_mb
+    );
+    println!(
+        "  • Added Cryptographic Overhead       : {:>6.2} µs/page",
+        enc_lat_us - baseline_lat
+    );
 }
-
 
 fn eval_high_dim_hnsw() {
     println!("\n--- [Experiment 3] High-Dimensional Vector HNSW Indexing (384D) ---");
@@ -143,12 +166,17 @@ fn eval_high_dim_hnsw() {
     // Measure Ingestion
     let start_ingest = Instant::now();
     for (id, vec) in dataset.iter().enumerate() {
-        index.insert_vector(id as u64 + 1, vec).expect("Insert vector");
+        index
+            .insert_vector(id as u64 + 1, vec)
+            .expect("Insert vector");
     }
     let ingest_dur = start_ingest.elapsed();
     let ingest_qps = num_vectors as f64 / ingest_dur.as_secs_f64();
     let ingest_lat = ingest_dur.as_micros() as f64 / num_vectors as f64;
-    println!("  • Ingestion 1,000 Vectors (384D): {:>8.2?} | {:>8.1} vec/sec | {:>6.2} µs/vec", ingest_dur, ingest_qps, ingest_lat);
+    println!(
+        "  • Ingestion 1,000 Vectors (384D): {:>8.2?} | {:>8.1} vec/sec | {:>6.2} µs/vec",
+        ingest_dur, ingest_qps, ingest_lat
+    );
 
     // Measure Search at different k values
     for &k in &[1, 5, 10] {
@@ -156,13 +184,18 @@ fn eval_high_dim_hnsw() {
         let start_search = Instant::now();
         for i in 0..query_count {
             let q = &dataset[i % num_vectors];
-            let res = index.search_knn(q, k, DistanceMetric::Cosine).expect("Search");
+            let res = index
+                .search_knn(q, k, DistanceMetric::Cosine)
+                .expect("Search");
             assert_eq!(res.len(), k);
         }
         let search_dur = start_search.elapsed();
         let search_qps = query_count as f64 / search_dur.as_secs_f64();
         let search_lat = search_dur.as_micros() as f64 / query_count as f64;
-        println!("  • k-NN Search (384D, k={:>2})    : {:>8.2?} | {:>8.1} QPS     | {:>6.2} µs/query", k, search_dur, search_qps, search_lat);
+        println!(
+            "  • k-NN Search (384D, k={:>2})    : {:>8.2?} | {:>8.1} QPS     | {:>6.2} µs/query",
+            k, search_dur, search_qps, search_lat
+        );
     }
 }
 
@@ -172,13 +205,23 @@ fn eval_tri_model_hybrid() {
     let conn = Connection::open(temp_file.path()).expect("Open connection");
 
     // Schema setup
-    conn.execute("CREATE TABLE papers (id INTEGER PRIMARY KEY, title TEXT, embedding VECTOR(4));").unwrap();
-    conn.execute("INSERT INTO papers VALUES (1, 'Safe Memory Architecture', [0.95, 0.05, 0.0, 0.0]);").unwrap();
-    conn.execute("INSERT INTO papers VALUES (2, 'Graph Intelligence Systems', [0.05, 0.95, 0.0, 0.0]);").unwrap();
+    conn.execute("CREATE TABLE papers (id INTEGER PRIMARY KEY, title TEXT, embedding VECTOR(4));")
+        .unwrap();
+    conn.execute(
+        "INSERT INTO papers VALUES (1, 'Safe Memory Architecture', [0.95, 0.05, 0.0, 0.0]);",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO papers VALUES (2, 'Graph Intelligence Systems', [0.05, 0.95, 0.0, 0.0]);",
+    )
+    .unwrap();
 
-    conn.graph_add_node(1, "Paper", r#"{"title":"Safe Memory Architecture"}"#).unwrap();
-    conn.graph_add_node(2, "Paper", r#"{"title":"Graph Intelligence Systems"}"#).unwrap();
-    conn.graph_add_node(3, "Author", r#"{"name":"Alex Chen"}"#).unwrap();
+    conn.graph_add_node(1, "Paper", r#"{"title":"Safe Memory Architecture"}"#)
+        .unwrap();
+    conn.graph_add_node(2, "Paper", r#"{"title":"Graph Intelligence Systems"}"#)
+        .unwrap();
+    conn.graph_add_node(3, "Author", r#"{"name":"Alex Chen"}"#)
+        .unwrap();
     conn.graph_add_edge(3, 1, "AUTHORED", 1.0, "").unwrap();
     conn.graph_add_edge(3, 2, "AUTHORED", 1.0, "").unwrap();
 
@@ -191,7 +234,8 @@ fn eval_tri_model_hybrid() {
         let matched_id: i64 = rows[0].get("id").unwrap();
 
         // Step 2: Property Graph traversal to fetch author entity
-        let neighbors = conn.graph_neighbors(matched_id as u64, Direction::Incoming, Some("AUTHORED"));
+        let neighbors =
+            conn.graph_neighbors(matched_id as u64, Direction::Incoming, Some("AUTHORED"));
         assert!(!neighbors.is_empty());
     }
 
@@ -199,5 +243,8 @@ fn eval_tri_model_hybrid() {
     let hybrid_qps = iterations as f64 / hybrid_dur.as_secs_f64();
     let hybrid_lat = hybrid_dur.as_micros() as f64 / iterations as f64;
 
-    println!("  • Hybrid GraphRAG (Vector + Graph + SQL): {:>8.2?} | {:>8.1} QPS | {:>6.2} µs/pipeline", hybrid_dur, hybrid_qps, hybrid_lat);
+    println!(
+        "  • Hybrid GraphRAG (Vector + Graph + SQL): {:>8.2?} | {:>8.1} QPS | {:>6.2} µs/pipeline",
+        hybrid_dur, hybrid_qps, hybrid_lat
+    );
 }

@@ -27,10 +27,14 @@ permissions:
   id-token: write
 
 jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
   # ============================================================================
   # 1. PYTHON SDK (PyPI via Maturin)
   # ============================================================================
   build-python-wheels:
+    needs: verify
     name: Build Python Wheels (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -41,7 +45,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -54,15 +58,19 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Build wheels via Maturin
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --manifest-path sdks/python/Cargo.toml --release --out dist
+          args: --manifest-path sdks/python/Cargo.toml --locked --release --out dist
           sccache: 'true'
           manylinux: auto
+
+      - name: Install and test wheel on its native host
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        run: python scripts/test-python-sdk.py --wheel dist
 
       - name: Upload Python wheels artifact
         uses: actions/upload-artifact@v4
@@ -71,6 +79,7 @@ jobs:
           path: dist/*.whl
 
   build-python-sdist:
+    needs: verify
     name: Build Python Source Distribution (sdist)
     runs-on: ubuntu-latest
     steps:
@@ -80,13 +89,16 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Build sdist via Maturin
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
           args: --manifest-path sdks/python/Cargo.toml --out dist
+
+      - name: Normalize and compile source distribution with locked dependencies
+        run: python scripts/normalize-python-sdist.py --sdist dist --check
 
       - name: Upload Python sdist artifact
         uses: actions/upload-artifact@v4
@@ -128,6 +140,7 @@ jobs:
   # 2. NODE.JS SDK (npm via napi-rs)
   # ============================================================================
   build-nodejs-binaries:
+    needs: verify
     name: Build Node.js Binary (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -136,7 +149,7 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -159,20 +172,15 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Install Node SDK Dependencies
-        working-directory: sdks/nodejs
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
-        shell: bash
+      - name: Build host native binary
+        run: node scripts/build-node-sdk.js
 
-      - name: Build Native Binary with napi-rs
+      - name: Test native engine on the target host
         working-directory: sdks/nodejs
-        run: npx @napi-rs/cli build --platform --release --target ${{ matrix.target }}
-        shell: bash
+        run: npm test
+
+      - name: Install and test the npm tarball as a consumer
+        run: node scripts/test-node-package.js
 
       - name: Upload Node binary artifact
         uses: actions/upload-artifact@v4
@@ -207,8 +215,14 @@ jobs:
         run: ls -la *.node
         shell: bash
 
+      - name: Test native SDK persistence and bindings
+        working-directory: sdks/nodejs
+        run: npm test
+
       - name: Publish to npm Registry
         working-directory: sdks/nodejs
-        run: npm publish --access public --provenance
+        run: |
+          node ../../scripts/build-node-sdk.js --license-only
+          npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

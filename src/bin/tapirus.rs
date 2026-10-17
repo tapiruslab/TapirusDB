@@ -5,18 +5,18 @@
 
 #![forbid(unsafe_code)]
 
+use parking_lot::Mutex;
+use sha2::{Digest, Sha256};
 use std::env;
 use std::io::{self, BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
-use parking_lot::Mutex;
-use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tapirus::sql::catalog::DataType;
 use tapirus::{Connection, EmbeddingEngine, Row, Value};
+use web_time::Instant;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -142,14 +142,23 @@ fn main() {
             if is_json {
                 match conn.query(&sql_cmd) {
                     Ok(rows) => {
-                        let json_rows: Vec<serde_json::Value> = rows.iter().map(|r| {
-                            let mut map = serde_json::Map::new();
-                            for (c, v) in r.columns().iter().zip(r.values().iter()) {
-                                map.insert(c.clone(), serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
-                            }
-                            serde_json::Value::Object(map)
-                        }).collect();
-                        println!("{}", serde_json::to_string(&json_rows).unwrap_or_else(|_| "[]".to_string()));
+                        let json_rows: Vec<serde_json::Value> = rows
+                            .iter()
+                            .map(|r| {
+                                let mut map = serde_json::Map::new();
+                                for (c, v) in r.columns().iter().zip(r.values().iter()) {
+                                    map.insert(
+                                        c.clone(),
+                                        serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+                                    );
+                                }
+                                serde_json::Value::Object(map)
+                            })
+                            .collect();
+                        println!(
+                            "{}",
+                            serde_json::to_string(&json_rows).unwrap_or_else(|_| "[]".to_string())
+                        );
                     }
                     Err(e) => {
                         eprintln!("Error: {e}");
@@ -170,8 +179,8 @@ fn main() {
     }
 
     println!("{BANNER}");
-    println!("TapirusDB v{VERSION} — The Safe-Rust Embedded Quad-Model AI Engine");
-    println!("Connected to: {target} (Page Size: 4,096 B | 100% Safe Rust)");
+    println!("TapirusDB v{VERSION} - Embedded Rust database");
+    println!("Connected to: {target} (Page Size: 4,096 B)");
     println!("Enter SQL, Vector, or dot-commands. End SQL statements with ';'.");
     println!("Type '.help' for instructions, '.exit' to quit.\n");
 
@@ -181,15 +190,31 @@ fn main() {
 fn print_help() {
     println!("Usage:");
     println!("  tapirus [OPTIONS] [DATABASE_FILE]                    Launch interactive REPL");
-    println!("  tapirus backup [OPTIONS] <SOURCE_DB> <DEST_BACKUP>   Hot point-in-time snapshot backup");
-    println!("  tapirus restore [OPTIONS] <BACKUP_FILE> <TARGET_DB>  Safe backup verification & restoration");
-    println!("  tapirus verify [OPTIONS] <DATABASE_FILE>             Cryptographic & physical page integrity audit");
-    println!("  tapirus import <FORMAT> <FILE> [OPTIONS]             High-throughput data importer (CSV, JSONL, Markdown)");
-    println!("  tapirus serve [OPTIONS] [DATABASE_FILE]              Launch high-performance HTTP REST server");
-    println!("  tapirus studio [OPTIONS] [DATABASE_FILE]             Launch Tapirus Studio companion bridge server");
-    println!("  tapirus mcp [OPTIONS] [DATABASE_FILE]                Launch Model Context Protocol (MCP) server");
-    println!("  tapirus grep [OPTIONS] <PATTERN> [PATH]              Accelerated hybrid workspace search (tg)");
-    println!("  tapirus bitnet [OPTIONS] <INPUT> [CANDIDATES...]     Safe-Rust BitNet b1.58 ternary tensor neural engine");
+    println!(
+        "  tapirus backup [OPTIONS] <SOURCE_DB> <DEST_BACKUP>   Create a database snapshot backup"
+    );
+    println!(
+        "  tapirus restore [OPTIONS] <BACKUP_FILE> <TARGET_DB>  Restore a database from a backup"
+    );
+    println!(
+        "  tapirus verify [OPTIONS] <DATABASE_FILE>             Check database page and encryption integrity"
+    );
+    println!(
+        "  tapirus import <FORMAT> <FILE> [OPTIONS]             Streaming importer (CSV, JSONL, Markdown)"
+    );
+    println!("  tapirus serve [OPTIONS] [DATABASE_FILE]              Launch the HTTP REST server");
+    println!(
+        "  tapirus studio [OPTIONS] [DATABASE_FILE]             Launch Tapirus Studio companion bridge server"
+    );
+    println!(
+        "  tapirus mcp [OPTIONS] [DATABASE_FILE]                Launch Model Context Protocol (MCP) server"
+    );
+    println!(
+        "  tapirus grep [OPTIONS] <PATTERN> [PATH]              Accelerated hybrid workspace search (tg)"
+    );
+    println!(
+        "  tapirus bitnet [OPTIONS] <INPUT> [CANDIDATES...]     BitNet b1.58 ternary tensor demo"
+    );
     println!();
     println!("Options:");
     println!("  -h, --help                               Print this help message");
@@ -197,38 +222,62 @@ fn print_help() {
     println!();
     println!("Query Options:");
     println!("  -c, --sql <SQL>                          Execute non-interactive SQL statement(s)");
-    println!("  --json <SQL>                             Execute query and format output as JSON array");
+    println!(
+        "  --json <SQL>                             Execute query and format output as JSON array"
+    );
     println!();
     println!("Backup Options (for 'tapirus backup'):");
-    println!("  --passphrase <KEY>                       Passphrase for encrypted database (ChaCha20-Poly1305)");
-    println!("  --vacuum, --compact                      Perform VACUUM and page compaction during backup");
+    println!(
+        "  --passphrase <KEY>                       Passphrase for encrypted database (ChaCha20-Poly1305)"
+    );
+    println!(
+        "  --vacuum, --compact                      Perform VACUUM and page compaction during backup"
+    );
     println!();
     println!("Restore Options (for 'tapirus restore'):");
-    println!("  --passphrase <KEY>                       Passphrase for encrypted backup (ChaCha20-Poly1305)");
-    println!("  -f, --force                              Overwrite target database if it already exists");
+    println!(
+        "  --passphrase <KEY>                       Passphrase for encrypted backup (ChaCha20-Poly1305)"
+    );
+    println!(
+        "  -f, --force                              Overwrite target database if it already exists"
+    );
     println!();
     println!("Verify Options (for 'tapirus verify'):");
     println!("  --passphrase <KEY>                       Passphrase for encrypted database audit");
-    println!("  --deep, --full                           Deep slotted page scan & full checksum verification");
+    println!(
+        "  --deep, --full                           Deep slotted page scan & full checksum verification"
+    );
     println!();
     println!("Import Options (for 'tapirus import'):");
-    println!("  --db <PATH>                              Path to target database file (default: production.tapir)");
+    println!(
+        "  --db <PATH>                              Path to target database file (default: production.tapir)"
+    );
     println!("  --table <NAME>                           Target table name (CSV)");
     println!("  --collection <NAME>                      Target collection name (JSON / JSONL)");
     println!("  --namespace <NAME>                       Target AI memory namespace (Markdown)");
     println!("  --session-id <ID>                        Session ID for agent memory (Markdown)");
-    println!("  --tags <TAG1,TAG2,...>                   Indexing tags for memory recall (Markdown)");
-    println!("  --batch <N>                              Batch transaction commit size (default: 500)");
-    println!("  --passphrase <KEY>                       Passphrase for encrypted database (ChaCha20-Poly1305)");
+    println!(
+        "  --tags <TAG1,TAG2,...>                   Indexing tags for memory recall (Markdown)"
+    );
+    println!(
+        "  --batch <N>                              Batch transaction commit size (default: 500)"
+    );
+    println!(
+        "  --passphrase <KEY>                       Passphrase for encrypted database (ChaCha20-Poly1305)"
+    );
     println!();
     println!("Server Options (for 'tapirus serve'):");
     println!("  -p, --port <PORT>                        Port to listen on (default: 3005)");
     println!("  -b, --host <HOST>                        Host to bind to (default: 0.0.0.0)");
     println!("  -k, --api-key <KEY>                      Enforce API key token authentication");
-    println!("  --passphrase <KEY>                       Encryption passphrase (ChaCha20-Poly1305)");
+    println!(
+        "  --passphrase <KEY>                       Encryption passphrase (ChaCha20-Poly1305)"
+    );
     println!();
     println!("Environment Variables:");
-    println!("  TAPIRUS_API_KEY                          Fallback API key for 'tapirus serve' if --api-key omitted");
+    println!(
+        "  TAPIRUS_API_KEY                          Fallback API key for 'tapirus serve' if --api-key omitted"
+    );
     println!();
     println!("Arguments:");
     println!("  [DATABASE_FILE]                          Path to .tapir database file");
@@ -240,7 +289,9 @@ fn print_serve_help() {
     println!("Options:");
     println!("  -p, --port <PORT>        Port to listen on (default: 3005)");
     println!("  -b, --host <HOST>        Host to bind to (default: 0.0.0.0)");
-    println!("  -k, --api-key <KEY>      Enforce API key token authentication (Bearer / X-API-Key / ?api_key=)");
+    println!(
+        "  -k, --api-key <KEY>      Enforce API key token authentication (Bearer / X-API-Key / ?api_key=)"
+    );
     println!("  --passphrase <KEY>       Passphrase for encrypted database (ChaCha20-Poly1305)");
     println!("  -h, --help               Print this help message");
     println!();
@@ -452,7 +503,7 @@ fn run_backup_command(args: &[String]) {
         Ok(pages) => {
             let elapsed = start.elapsed();
             let dest_size = std::fs::metadata(dest_path).map(|m| m.len()).unwrap_or(0);
-            
+
             // Calculate SHA-256 of created backup for cryptographic verification
             let sha256_hex = match std::fs::read(dest_path) {
                 Ok(bytes) => {
@@ -466,7 +517,11 @@ fn run_backup_command(args: &[String]) {
             println!();
             println!("Backup completed successfully!");
             println!("  Pages Written:  {pages}");
-            println!("  Backup Size:    {} bytes ({:.2} KB)", dest_size, dest_size as f64 / 1024.0);
+            println!(
+                "  Backup Size:    {} bytes ({:.2} KB)",
+                dest_size,
+                dest_size as f64 / 1024.0
+            );
             println!("  SHA-256 Hash:   {sha256_hex}");
             println!("  Duration:       {:.2?}", elapsed);
             println!("  Status:         VERIFIED & COMMITTED");
@@ -538,7 +593,9 @@ fn run_restore_command(args: &[String]) {
     }
 
     if Path::new(target_path).exists() && !force {
-        eprintln!("Error: Restore target '{target_path}' already exists. Use -f or --force to overwrite.");
+        eprintln!(
+            "Error: Restore target '{target_path}' already exists. Use -f or --force to overwrite."
+        );
         std::process::exit(1);
     }
 
@@ -580,22 +637,20 @@ fn run_restore_command(args: &[String]) {
                 std::process::exit(1);
             }
         } else {
-            eprintln!("Error: Backup file is encrypted (ChaCha20-Poly1305). Please provide --passphrase <KEY>.");
+            eprintln!(
+                "Error: Backup file is encrypted (ChaCha20-Poly1305). Please provide --passphrase <KEY>."
+            );
             std::process::exit(1);
         }
     }
 
-    // Clean up stale lock or wal files at target if overwriting
-    if force {
-        let wal_path = Path::new(target_path).with_extension("tapir-wal");
-        let lock_path = Path::new(target_path).with_extension("tapir-lock");
-        let _ = std::fs::remove_file(wal_path);
-        let _ = std::fs::remove_file(lock_path);
-    }
-
-    // 2. Safely copy to target
-    if let Err(e) = std::fs::copy(backup_path, target_path) {
-        eprintln!("Error copying backup file to restore target: {e}");
+    // Validate the full source and preserve target locks, WAL and prior backup.
+    let config = tapirus::Config {
+        passphrase: passphrase.clone(),
+        ..Default::default()
+    };
+    if let Err(e) = Connection::restore_backup(backup_path, target_path, config, force) {
+        eprintln!("Error validating/installing backup: {e}");
         std::process::exit(1);
     }
 
@@ -616,15 +671,31 @@ fn run_restore_command(args: &[String]) {
             println!();
             println!("Database restored successfully!");
             println!("  Total Pages:    {}", header.total_pages);
-            println!("  Database Size:  {} bytes ({:.2} KB)", target_size, target_size as f64 / 1024.0);
+            println!(
+                "  Database Size:  {} bytes ({:.2} KB)",
+                target_size,
+                target_size as f64 / 1024.0
+            );
             println!("  Format Version: v{}", header.version);
-            println!("  Encryption:     {}", if header.encryption_flags == 1 { "ChaCha20-Poly1305 (Verified ✓)" } else { "Plaintext" });
-            println!("  Catalog Stats:  {} tables, {} graph nodes, {} graph edges", table_count, nodes, edges);
+            println!(
+                "  Encryption:     {}",
+                if header.encryption_flags == 1 {
+                    "ChaCha20-Poly1305 (Verified ✓)"
+                } else {
+                    "Plaintext"
+                }
+            );
+            println!(
+                "  Catalog Stats:  {} tables, {} graph nodes, {} graph edges",
+                table_count, nodes, edges
+            );
             println!("  Duration:       {:.2?}", elapsed);
             println!("  Status:         HEALTHY & READY");
         }
         Err(e) => {
-            eprintln!("Restoration validation failed: Could not initialize database at '{target_path}': {e}");
+            eprintln!(
+                "Restoration validation failed: Could not initialize database at '{target_path}': {e}"
+            );
             std::process::exit(1);
         }
     }
@@ -697,7 +768,10 @@ fn run_verify_command(args: &[String]) {
 
     let file_size = file_metadata.len();
     if file_size < 100 {
-        eprintln!("Integrity Error: File size ({} bytes) is too small to contain a valid TapirusDB header.", file_size);
+        eprintln!(
+            "Integrity Error: File size ({} bytes) is too small to contain a valid TapirusDB header.",
+            file_size
+        );
         std::process::exit(1);
     }
 
@@ -747,16 +821,47 @@ fn run_verify_command(args: &[String]) {
     println!("       TapirusDB Physical & Cryptographic Integrity Audit      ");
     println!("===============================================================");
     println!("Database File:     {db_path}");
-    println!("File Size:         {file_size} bytes ({:.2} KB)", file_size as f64 / 1024.0);
+    println!(
+        "File Size:         {file_size} bytes ({:.2} KB)",
+        file_size as f64 / 1024.0
+    );
     println!("Page Size:         {} bytes", header.page_size);
-    println!("Total Pages:       {} pages {}", header.total_pages, if is_size_matching { "(Size verified ✓)" } else { "(Size mismatch warning ⚠️)" });
+    println!(
+        "Total Pages:       {} pages {}",
+        header.total_pages,
+        if is_size_matching {
+            "(Size verified ✓)"
+        } else {
+            "(Size mismatch warning ⚠️)"
+        }
+    );
     println!("Format Version:    v{}", header.version);
     println!("Header CRC32:      0x{:08X} (Valid ✓)", header.header_crc32);
-    println!("Encryption:        {} [{kcv_status}]", if is_encrypted { "ChaCha20-Poly1305 AEAD" } else { "None" });
-    println!("Compression:       {}", if header.compression_flags == 1 { "Transparent LZ4 Block" } else { "None" });
-    println!("WAL Sequence:      {} (Committed changes)", header.wal_sequence);
+    println!(
+        "Encryption:        {} [{kcv_status}]",
+        if is_encrypted {
+            "ChaCha20-Poly1305 AEAD"
+        } else {
+            "None"
+        }
+    );
+    println!(
+        "Compression:       {}",
+        if header.compression_flags == 1 {
+            "Transparent LZ4 Block"
+        } else {
+            "None"
+        }
+    );
+    println!(
+        "WAL Sequence:      {} (Committed changes)",
+        header.wal_sequence
+    );
     println!("Change Counter:    {} transactions", header.change_counter);
-    println!("Freelist:          Trunk Page {}, Free Pages {}", header.freelist_trunk, header.freelist_count);
+    println!(
+        "Freelist:          Trunk Page {}, Free Pages {}",
+        header.freelist_trunk, header.freelist_count
+    );
     println!("Vector Directory:  Root Page {}", header.vector_index_page);
 
     // Deep page scan or catalog inspection if accessible
@@ -773,44 +878,57 @@ fn run_verify_command(args: &[String]) {
         };
 
         match conn_res {
-            Ok(conn) => {
-                match conn.check_integrity() {
-                    Ok(report) => {
-                        println!("  Relational Tables:     {} user tables", report.tables_count);
-                        for t in conn.tables() {
-                            println!("    - Table '{}' ({} columns)", t.name, t.columns.len());
-                        }
-                        println!("  Document Collections:  {} collections", report.collections_count);
-                        for c in conn.collections() {
-                            println!("    - Collection '{}'", c);
-                        }
-                        println!("  Knowledge Graph:       {} nodes, {} edges", report.graph_nodes_count, report.graph_edges_count);
-
-                        if deep {
-                            println!("  Deep Page Scan:        Scanned {} pages — {} verified", report.total_pages, report.pages_verified);
-                        }
-
-                        if report.is_ok() {
-                            println!("---------------------------------------------------------------");
-                            println!("Audit Result: PASSED (100% Integrity Verified, 0 Errors)");
-                            println!("===============================================================");
-                        } else {
-                            println!("---------------------------------------------------------------");
-                            println!("Audit Result: ANOMALIES DETECTED ({} issues):", report.errors.len());
-                            for err in &report.errors {
-                                println!("  ✗ {err}");
-                            }
-                            println!("===============================================================");
-                            std::process::exit(1);
-                        }
+            Ok(conn) => match conn.check_integrity() {
+                Ok(report) => {
+                    println!(
+                        "  Relational Tables:     {} user tables",
+                        report.tables_count
+                    );
+                    for t in conn.tables() {
+                        println!("    - Table '{}' ({} columns)", t.name, t.columns.len());
                     }
-                    Err(e) => {
+                    println!(
+                        "  Document Collections:  {} collections",
+                        report.collections_count
+                    );
+                    for c in conn.collections() {
+                        println!("    - Collection '{}'", c);
+                    }
+                    println!(
+                        "  Knowledge Graph:       {} nodes, {} edges",
+                        report.graph_nodes_count, report.graph_edges_count
+                    );
+
+                    if deep {
+                        println!(
+                            "  Deep Page Scan:        Scanned {} pages — {} verified",
+                            report.total_pages, report.pages_verified
+                        );
+                    }
+
+                    if report.is_ok() {
                         println!("---------------------------------------------------------------");
-                        println!("Audit Warning: Integrity check failed: {e}");
+                        println!("Audit Result: PASSED (100% Integrity Verified, 0 Errors)");
                         println!("===============================================================");
+                    } else {
+                        println!("---------------------------------------------------------------");
+                        println!(
+                            "Audit Result: ANOMALIES DETECTED ({} issues):",
+                            report.errors.len()
+                        );
+                        for err in &report.errors {
+                            println!("  ✗ {err}");
+                        }
+                        println!("===============================================================");
+                        std::process::exit(1);
                     }
                 }
-            }
+                Err(e) => {
+                    println!("---------------------------------------------------------------");
+                    println!("Audit Warning: Integrity check failed: {e}");
+                    println!("===============================================================");
+                }
+            },
             Err(e) => {
                 println!("---------------------------------------------------------------");
                 println!("Audit Warning: Catalog boot error: {e}");
@@ -827,7 +945,14 @@ fn run_verify_command(args: &[String]) {
     }
 }
 
-fn run_http_server(conn: Connection, host: &str, port: u16, db_path: &str, encrypted: bool, api_key: Option<String>) {
+fn run_http_server(
+    conn: Connection,
+    host: &str,
+    port: u16,
+    db_path: &str,
+    encrypted: bool,
+    api_key: Option<String>,
+) {
     let addr = format!("{host}:{port}");
     let listener = match TcpListener::bind(&addr) {
         Ok(l) => l,
@@ -838,20 +963,22 @@ fn run_http_server(conn: Connection, host: &str, port: u16, db_path: &str, encry
     };
 
     println!("{BANNER}");
-    println!("🚀 TapirusDB High-Performance HTTP Server running at http://{addr}");
-    println!("📁 Database: {db_path} (Encrypted: {encrypted} | 100% Safe Rust)");
+    println!("TapirusDB HTTP server listening at http://{addr}");
+    println!("Database: {db_path} (Encrypted: {encrypted})");
     if api_key.is_some() {
-        println!("🔒 Security: API Key Authentication ENABLED (Bearer / X-API-Key / ?api_key=)");
+        println!("API key authentication is enabled (Bearer / X-API-Key).");
     } else {
-        println!("⚠️  Security: Unauthenticated Mode (Public Endpoints)");
+        println!("API key authentication is disabled; restrict the bind address accordingly.");
     }
     println!("📡 Endpoints:");
     println!("   • GET  /health   -> Healthcheck & Version (Public)");
     println!("   • POST /api/sql  -> Execute SQL / Vector Search (Protected)");
     println!("   • GET  /         -> Built-in Web UI Console (Public)");
-    println!("   • GET  /chat     -> AI Cognitive Chatbot Web UI (Public)");
-    println!("   • POST /api/chat -> Sub-millisecond Cognitive Chatbot API (Public/Protected)");
-    println!("   • GET  /api/chat/logs -> Inspect Persisted Chat Logs (Public)");
+    println!("   • GET  /chat     -> Chat demo page (Public)");
+    println!("   • POST /api/chat -> Chat handler (Protected when API key is configured)");
+    println!(
+        "   • GET  /api/chat/logs -> Inspect chat logs (Protected when API key is configured)"
+    );
     println!("\nPress Ctrl+C to stop.\n");
 
     let db = Arc::new(Mutex::new(conn));
@@ -874,7 +1001,9 @@ fn run_http_server(conn: Connection, host: &str, port: u16, db_path: &str, encry
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn constant_time_eq_str(a: &str, b: &str) -> bool {
@@ -884,7 +1013,77 @@ fn constant_time_eq_str(a: &str, b: &str) -> bool {
     a.as_bytes().ct_eq(b.as_bytes()).into()
 }
 
-fn handle_http_client(mut stream: TcpStream, db: Arc<Mutex<Connection>>, api_key: Arc<Option<String>>) {
+fn request_has_valid_api_key(
+    expected_key: &str,
+    query_str: Option<&str>,
+    header_str: &str,
+) -> bool {
+    let mut provided_key = query_str.and_then(|query| {
+        query.split('&').find_map(|param| {
+            let (key, value) = param.split_once('=')?;
+            (key == "api_key" || key == "key").then_some(value)
+        })
+    });
+    for line in header_str.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("authorization:") {
+            if let Some((_, value)) = line.split_once(':') {
+                let value = value.trim();
+                provided_key = Some(if value.to_ascii_lowercase().starts_with("bearer ") {
+                    value[7..].trim()
+                } else {
+                    value
+                });
+            }
+        } else if lower.starts_with("x-api-key:") {
+            if let Some((_, value)) = line.split_once(':') {
+                provided_key = Some(value.trim());
+            }
+        }
+    }
+    provided_key.is_some_and(|key| constant_time_eq_str(key, expected_key))
+}
+
+fn parse_http_sql_payload(body: &str) -> std::result::Result<(String, Vec<Value>), String> {
+    let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
+    let (sql, raw_params) = match parsed {
+        Some(serde_json::Value::String(sql)) => (sql, None),
+        Some(serde_json::Value::Object(object)) => {
+            let sql = object
+                .get("sql")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| body.to_owned());
+            (sql, object.get("params").cloned())
+        }
+        _ => (body.to_owned(), None),
+    };
+    let Some(raw_params) = raw_params else {
+        return Ok((sql, Vec::new()));
+    };
+    let params = raw_params
+        .as_array()
+        .ok_or_else(|| "SQL params must be a JSON array".to_owned())?
+        .iter()
+        .map(Value::from_json_parameter)
+        .collect::<tapirus::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    Ok((sql, params))
+}
+
+fn is_sql_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn handle_http_client(
+    mut stream: TcpStream,
+    db: Arc<Mutex<Connection>>,
+    api_key: Arc<Option<String>>,
+) {
     let mut request_data = Vec::new();
     let mut buf = [0u8; 4096];
     let mut body_start = None;
@@ -934,7 +1133,8 @@ fn handle_http_client(mut stream: TcpStream, db: Arc<Mutex<Connection>>, api_key
     let body_offset = body_start.unwrap_or(request_data.len());
     let header_bytes = &request_data[..body_offset];
     let body_bytes = if body_offset < request_data.len() {
-        &request_data[body_offset..body_offset + content_length.min(request_data.len() - body_offset)]
+        &request_data
+            [body_offset..body_offset + content_length.min(request_data.len() - body_offset)]
     } else {
         b""
     };
@@ -964,7 +1164,7 @@ fn handle_http_client(mut stream: TcpStream, db: Arc<Mutex<Connection>>, api_key
         return;
     }
 
-    // Healthcheck endpoint (Public)
+    // Healthcheck endpoint (public by design)
     if method == "GET" && (route_path == "/health" || route_path == "/api/health") {
         let json = serde_json::json!({
             "status": "ok",
@@ -975,7 +1175,7 @@ fn handle_http_client(mut stream: TcpStream, db: Arc<Mutex<Connection>>, api_key
         return;
     }
 
-    // Built-in Web Client UI & Server Info (Public)
+    // Built-in UI page (public by design)
     if method == "GET" && (route_path == "/" || route_path == "/index.html") {
         let html = r#"<!DOCTYPE html>
 <html lang="en">
@@ -1022,13 +1222,32 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
         return;
     }
 
-    // Built-in Native AI Cognitive Chatbot Web UI (Public)
+    // Chat demo page (public by design)
     if method == "GET" && (route_path == "/chat" || route_path == "/chat.html") {
-        send_http_response(&mut stream, "200 OK", "text/html; charset=utf-8", CHATBOT_HTML);
+        send_http_response(
+            &mut stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            CHATBOT_HTML,
+        );
         return;
     }
 
-    // Chatbot SQL logs inspection endpoint (Public)
+    // User chat and persisted chat logs share the same API-key boundary as SQL/vector APIs.
+    let protected_chat_route = (method == "GET"
+        && (route_path == "/api/chat/logs" || route_path == "/chat/logs"))
+        || (method == "POST" && (route_path == "/chat" || route_path == "/api/chat"));
+    if protected_chat_route {
+        if let Some(expected_key) = api_key.as_ref() {
+            if !request_has_valid_api_key(expected_key, query_str, header_str) {
+                let err_json = serde_json::json!({"error":"Unauthorized","message":"Missing or invalid API key."});
+                send_http_unauthorized_response(&mut stream, &err_json.to_string());
+                return;
+            }
+        }
+    }
+
+    // Chat logs endpoint (protected when API key is configured)
     if method == "GET" && (route_path == "/api/chat/logs" || route_path == "/chat/logs") {
         let conn = db.lock();
         let _ = ensure_chatbot_schema(&conn);
@@ -1050,22 +1269,37 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
             }
             Err(e) => {
                 let res = serde_json::json!({ "error": e.to_string() });
-                send_http_response(&mut stream, "500 Internal Server Error", "application/json", &res.to_string());
+                send_http_response(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    "application/json",
+                    &res.to_string(),
+                );
             }
         }
         return;
     }
 
-    // Native Quad-Model Cognitive Chatbot API (Public/Protected)
+    // Chat API (protected when API key is configured)
     if method == "POST" && (route_path == "/chat" || route_path == "/api/chat") {
         let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
         match handle_chatbot_request(Arc::clone(&db), body_str) {
             Ok(json_res) => {
-                send_http_response(&mut stream, "200 OK", "application/json", &json_res.to_string());
+                send_http_response(
+                    &mut stream,
+                    "200 OK",
+                    "application/json",
+                    &json_res.to_string(),
+                );
             }
             Err(err_msg) => {
                 let res = serde_json::json!({ "error": err_msg });
-                send_http_response(&mut stream, "400 Bad Request", "application/json", &res.to_string());
+                send_http_response(
+                    &mut stream,
+                    "400 Bad Request",
+                    "application/json",
+                    &res.to_string(),
+                );
             }
         }
         return;
@@ -1073,45 +1307,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
 
     // Authentication enforcement for protected endpoints
     if let Some(ref expected_key) = *api_key {
-        let mut provided_key: Option<&str> = None;
-
-        // 1. Check Query parameter: ?api_key=<KEY> or ?key=<KEY>
-        if let Some(query) = query_str {
-            for param in query.split('&') {
-                if let Some((k, v)) = param.split_once('=') {
-                    if k == "api_key" || k == "key" {
-                        provided_key = Some(v);
-                        break;
-                    }
-                }
-            }
-        }
-
-        // 2. Check HTTP Headers (Authorization: Bearer <KEY> or X-API-Key: <KEY>)
-        for line in header_str.lines() {
-            let lower = line.to_ascii_lowercase();
-            if lower.starts_with("authorization:") {
-                if let Some((_, val)) = line.split_once(':') {
-                    let val = val.trim();
-                    if val.to_ascii_lowercase().starts_with("bearer ") {
-                        provided_key = Some(val[7..].trim());
-                    } else {
-                        provided_key = Some(val);
-                    }
-                }
-            } else if lower.starts_with("x-api-key:") {
-                if let Some((_, val)) = line.split_once(':') {
-                    provided_key = Some(val.trim());
-                }
-            }
-        }
-
-        let is_auth = match provided_key {
-            Some(key) => constant_time_eq_str(key, expected_key),
-            None => false,
-        };
-
-        if !is_auth {
+        if !request_has_valid_api_key(expected_key, query_str, header_str) {
             let err_json = serde_json::json!({
                 "error": "Unauthorized",
                 "message": "Missing or invalid API key. Please provide 'Authorization: Bearer <KEY>', 'X-API-Key: <KEY>', or '?api_key=<KEY>'."
@@ -1124,23 +1320,25 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
     // SQL execution endpoint (Protected)
     if method == "POST" && (route_path == "/sql" || route_path == "/api/sql") {
         let body_str = std::str::from_utf8(body_bytes).unwrap_or("").trim();
-        let sql = if let Ok(v) = serde_json::from_str::<serde_json::Value>(body_str) {
-            if let Some(s) = v.get("sql").and_then(|s| s.as_str()) {
-                s.to_string()
-            } else if let Some(s) = v.as_str() {
-                s.to_string()
-            } else {
-                body_str.to_string()
+        let (sql, params) = match parse_http_sql_payload(body_str) {
+            Ok(payload) => payload,
+            Err(error) => {
+                let res = serde_json::json!({"error": error});
+                send_http_response(
+                    &mut stream,
+                    "400 Bad Request",
+                    "application/json",
+                    &res.to_string(),
+                );
+                return;
             }
-        } else {
-            body_str.to_string()
         };
 
         let trimmed = sql.trim();
         let conn = db.lock();
 
         if trimmed.to_uppercase().starts_with("SELECT") {
-            match conn.query(trimmed) {
+            match conn.query_with_params(trimmed, &params) {
                 Ok(rows) => {
                     let clean_rows: Vec<serde_json::Value> = rows
                         .iter()
@@ -1158,18 +1356,28 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                 }
                 Err(e) => {
                     let res = serde_json::json!({ "error": e.to_string() });
-                    send_http_response(&mut stream, "400 Bad Request", "application/json", &res.to_string());
+                    send_http_response(
+                        &mut stream,
+                        "400 Bad Request",
+                        "application/json",
+                        &res.to_string(),
+                    );
                 }
             }
         } else {
-            match conn.execute(trimmed) {
+            match conn.execute_with_params(trimmed, &params) {
                 Ok(affected) => {
                     let res = serde_json::json!({ "affected": affected });
                     send_http_response(&mut stream, "200 OK", "application/json", &res.to_string());
                 }
                 Err(e) => {
                     let res = serde_json::json!({ "error": e.to_string() });
-                    send_http_response(&mut stream, "400 Bad Request", "application/json", &res.to_string());
+                    send_http_response(
+                        &mut stream,
+                        "400 Bad Request",
+                        "application/json",
+                        &res.to_string(),
+                    );
                 }
             }
         }
@@ -1192,54 +1400,59 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
             }
         };
 
-        let collection = parsed.get("collection").and_then(|s| s.as_str()).unwrap_or("embeddings");
+        let collection = parsed
+            .get("collection")
+            .and_then(|s| s.as_str())
+            .unwrap_or("embeddings");
         let k = parsed.get("k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
-        let query_vec: Vec<f32> = parsed
-            .get("vector")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|val| val.as_f64().map(|f| f as f32))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let conn = db.lock();
-        let vec_str = format!("{:?}", query_vec);
-        let sql_candidates = [
-            format!("SELECT * FROM {collection} VECTOR NEAR embedding = {vec_str} TOP {k};"),
-            format!("SELECT * FROM {collection} VECTOR NEAR vector = {vec_str} TOP {k};"),
-            format!("SELECT * FROM {collection} VECTOR NEAR vec = {vec_str} TOP {k};"),
-            format!("SELECT * FROM {collection} VECTOR NEAR v = {vec_str} TOP {k};"),
-        ];
-
-        let mut matched_rows = None;
-        for sql in &sql_candidates {
-            if let Ok(rows) = conn.query(sql) {
-                matched_rows = Some(rows);
-                break;
+        let query_vec_result: std::result::Result<Vec<f32>, String> =
+            match parsed.get("vector").and_then(|v| v.as_array()) {
+                Some(values) => values
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_f64()
+                            .map(|number| number as f32)
+                            .filter(|number| number.is_finite())
+                            .ok_or_else(|| "Vector entries must be finite numbers".to_owned())
+                    })
+                    .collect::<std::result::Result<_, _>>(),
+                None => Err("vector must be a JSON array".to_owned()),
+            };
+        let query_vec: Vec<f32> = match query_vec_result {
+            Ok(vector) => vector,
+            Err(error) => {
+                send_http_response(
+                    &mut stream,
+                    "400 Bad Request",
+                    "application/json",
+                    &serde_json::json!({"error": error}).to_string(),
+                );
+                return;
             }
+        };
+        if query_vec.is_empty() || !is_sql_identifier(collection) || k == 0 {
+            send_http_response(
+                &mut stream,
+                "400 Bad Request",
+                "application/json",
+                r#"{"error":"collection must be an identifier, vector must be nonempty, and k must be positive"}"#,
+            );
+            return;
         }
 
-        let results: Vec<serde_json::Value> = if let Some(rows) = matched_rows {
-            rows.iter().enumerate().map(|(idx, r)| {
-                let id = r.get::<i64>("id").or_else(|_| r.get::<i64>("doc_id")).unwrap_or(idx as i64 + 1);
-                let mut metadata = serde_json::Map::new();
-                for (col, val) in r.columns().iter().zip(r.values().iter()) {
-                    if col != "id" && col != "embedding" && col != "vector" && col != "vec" && col != "v" {
-                        metadata.insert(col.clone(), value_to_json(val));
-                    }
-                }
-                serde_json::json!({
-                    "id": id,
-                    "score": 1.0 / (1.0 + (idx as f32 * 0.05)),
-                    "collection": collection,
-                    "vector": query_vec,
-                    "metadata": metadata
-                })
-            }).collect()
-        } else {
-            Vec::new()
+        let conn = db.lock();
+        let results = match vector_search_results(&conn, collection, &query_vec, k) {
+            Ok(results) => results,
+            Err((status, error)) => {
+                send_http_response(
+                    &mut stream,
+                    status,
+                    "application/json",
+                    &serde_json::json!({"error": error}).to_string(),
+                );
+                return;
+            }
         };
 
         let res = serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_string());
@@ -1286,14 +1499,27 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
         let rag_ctx = conn.graph_rag_query(query, query_vec.as_deref(), &config);
         match rag_ctx {
             Ok(ctx) => {
-                let nodes: Vec<serde_json::Value> = ctx.results.iter().map(|r| {
-                    let mut m = serde_json::Map::new();
-                    m.insert("id".to_string(), serde_json::Value::Number(r.entity_id.into()));
-                    m.insert("label".to_string(), serde_json::Value::String(r.label.clone()));
-                    m.insert("properties".to_string(), serde_json::Value::String(r.properties.clone()));
-                    m.insert("rrf_score".to_string(), serde_json::json!(r.rrf_score));
-                    serde_json::Value::Object(m)
-                }).collect();
+                let nodes: Vec<serde_json::Value> = ctx
+                    .results
+                    .iter()
+                    .map(|r| {
+                        let mut m = serde_json::Map::new();
+                        m.insert(
+                            "id".to_string(),
+                            serde_json::Value::Number(r.entity_id.into()),
+                        );
+                        m.insert(
+                            "label".to_string(),
+                            serde_json::Value::String(r.label.clone()),
+                        );
+                        m.insert(
+                            "properties".to_string(),
+                            serde_json::Value::String(r.properties.clone()),
+                        );
+                        m.insert("rrf_score".to_string(), serde_json::json!(r.rrf_score));
+                        serde_json::Value::Object(m)
+                    })
+                    .collect();
 
                 let mut all_edges = Vec::new();
                 for r in &ctx.results {
@@ -1319,7 +1545,12 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
             }
             Err(e) => {
                 let res = serde_json::json!({ "error": e.to_string() });
-                send_http_response(&mut stream, "500 Internal Server Error", "application/json", &res.to_string());
+                send_http_response(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    "application/json",
+                    &res.to_string(),
+                );
             }
         }
         return;
@@ -1361,6 +1592,91 @@ fn send_http_response(stream: &mut TcpStream, status: &str, content_type: &str, 
     let _ = stream.write_all(response.as_bytes());
 }
 
+fn vector_search_results(
+    conn: &Connection,
+    collection: &str,
+    query_vec: &[f32],
+    limit: usize,
+) -> std::result::Result<Vec<serde_json::Value>, (&'static str, String)> {
+    if !is_sql_identifier(collection) || query_vec.is_empty() || limit == 0 {
+        return Err((
+            "400 Bad Request",
+            "Invalid collection, vector, or limit".into(),
+        ));
+    }
+    let table = conn
+        .tables()
+        .into_iter()
+        .find(|table| table.name.eq_ignore_ascii_case(collection))
+        .ok_or_else(|| {
+            (
+                "404 Not Found",
+                format!("Table '{collection}' was not found"),
+            )
+        })?;
+    let (vector_index, dimensions) = table.vector_column().ok_or_else(|| {
+        (
+            "400 Bad Request",
+            format!("Table '{collection}' has no vector column"),
+        )
+    })?;
+    if dimensions != query_vec.len() {
+        return Err((
+            "400 Bad Request",
+            format!("Expected a {dimensions}-dimensional query vector"),
+        ));
+    }
+    let vector_col = &table.columns[vector_index].name;
+    if !is_sql_identifier(vector_col) {
+        return Err((
+            "400 Bad Request",
+            "Unsupported vector column identifier".into(),
+        ));
+    }
+    let sql =
+        format!("SELECT * FROM {collection} VECTOR NEAR {vector_col} = {query_vec:?} TOP {limit};");
+    let rows = conn
+        .query(&sql)
+        .map_err(|error| ("400 Bad Request", error.to_string()))?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| {
+            let vector = row
+                .columns()
+                .iter()
+                .zip(row.values())
+                .find_map(|(name, value)| {
+                    name.eq_ignore_ascii_case(vector_col)
+                        .then_some(value)
+                        .and_then(|value| match value {
+                            Value::Vector(vector) => Some(vector.clone()),
+                            _ => None,
+                        })
+                })?;
+            let id = row
+                .get::<i64>("id")
+                .or_else(|_| row.get::<i64>("doc_id"))
+                .ok();
+            let mut metadata = serde_json::Map::new();
+            for (column, value) in row.columns().iter().zip(row.values()) {
+                if !column.eq_ignore_ascii_case(vector_col)
+                    && !column.eq_ignore_ascii_case("id")
+                    && !column.eq_ignore_ascii_case("doc_id")
+                {
+                    metadata.insert(column.clone(), value_to_json(value));
+                }
+            }
+            Some(serde_json::json!({
+                "id": id,
+                "score": tapirus::vector::cosine_similarity(query_vec, &vector),
+                "collection": collection,
+                "vector": vector,
+                "metadata": metadata
+            }))
+        })
+        .collect())
+}
+
 fn value_to_json(val: &Value) -> serde_json::Value {
     match val {
         Value::Null => serde_json::Value::Null,
@@ -1385,26 +1701,84 @@ fn detect_language(text: &str) -> &'static str {
     let words: Vec<&str> = lower.split_whitespace().collect();
 
     let ms_markers = [
-        "saya", "sy", "nak", "nk", "boleh", "bagaimana", "macam", "cmne", "apa", "cara",
-        "pelan", "harga", "tukar", "tolong", "ada", "ini", "tu", "dan", "ke", "di", "hai",
-        "khabar", "guna", "buat", "pangkalan", "data", "terbenam", "vektor", "graf", "enjin"
+        "saya",
+        "sy",
+        "nak",
+        "nk",
+        "boleh",
+        "bagaimana",
+        "macam",
+        "cmne",
+        "apa",
+        "cara",
+        "pelan",
+        "harga",
+        "tukar",
+        "tolong",
+        "ada",
+        "ini",
+        "tu",
+        "dan",
+        "ke",
+        "di",
+        "hai",
+        "khabar",
+        "guna",
+        "buat",
+        "pangkalan",
+        "data",
+        "terbenam",
+        "vektor",
+        "graf",
+        "enjin",
     ];
     let fr_markers = [
-        "bonjour", "comment", "merci", "avec", "pour", "votre", "base", "donnees", "aidez",
-        "mot", "passe", "securite", "chiffrement"
+        "bonjour",
+        "comment",
+        "merci",
+        "avec",
+        "pour",
+        "votre",
+        "base",
+        "donnees",
+        "aidez",
+        "mot",
+        "passe",
+        "securite",
+        "chiffrement",
     ];
     let de_markers = [
-        "hallo", "wie", "danke", "bitte", "datenbank", "kann", "ich", "brauche", "hilfe",
-        "unterstutzung", "sicherheit", "speicher"
+        "hallo",
+        "wie",
+        "danke",
+        "bitte",
+        "datenbank",
+        "kann",
+        "ich",
+        "brauche",
+        "hilfe",
+        "unterstutzung",
+        "sicherheit",
+        "speicher",
     ];
     let es_markers = [
-        "hola", "como", "gracias", "por", "favor", "para", "cuenta", "base", "datos",
-        "ayuda", "reembolso", "seguridad", "cifrado"
+        "hola",
+        "como",
+        "gracias",
+        "por",
+        "favor",
+        "para",
+        "cuenta",
+        "base",
+        "datos",
+        "ayuda",
+        "reembolso",
+        "seguridad",
+        "cifrado",
     ];
 
-    let count_matches = |markers: &[&str]| -> usize {
-        words.iter().filter(|w| markers.contains(w)).count()
-    };
+    let count_matches =
+        |markers: &[&str]| -> usize { words.iter().filter(|w| markers.contains(w)).count() };
 
     let ms_score = count_matches(&ms_markers);
     let fr_score = count_matches(&fr_markers);
@@ -1450,14 +1824,14 @@ fn ensure_chatbot_schema(conn: &Connection) -> Result<(), String> {
     );";
     conn.execute(sql_kb).map_err(|e| e.to_string())?;
 
-    // 3. Populate default verified knowledge base if empty
-    let count_rows = conn.query("SELECT COUNT(*) FROM tap_knowledge_base;").unwrap_or_default();
+    // 3. Populate the built-in demo knowledge base if empty
+    let count_rows = conn
+        .query("SELECT COUNT(*) FROM tap_knowledge_base;")
+        .unwrap_or_default();
     let mut count = 0i64;
     if let Some(row) = count_rows.first() {
-        if let Some(val) = row.values().first() {
-            if let Value::Integer(i) = val {
-                count = *i;
-            }
+        if let Some(Value::Integer(i)) = row.values().first() {
+            count = *i;
         }
     }
 
@@ -1473,9 +1847,9 @@ fn seed_knowledge_base(conn: &Connection) -> Result<(), String> {
         (
             1,
             "tap_cognitive_engine",
-            "tap perception cognitive inference latency sub-millisecond intent classify nli verify",
-            "TAP Sub-Millisecond Cognitive Engine",
-            "TAP (Tapirus Accelerated Perception) is TapirusDB's embedded cognitive engine. It delivers sub-millisecond (< 2ms) intent classification, NLI policy verification, and semantic routing natively in 100% Safe Rust without external GPUs or heavy Python runtimes.",
+            "tap perception heuristic intent classify policy route no latency guarantee",
+            "TAP heuristic routing helpers",
+            "TAP provides heuristic intent classification and routing helpers. Its scores are not calibrated probabilities, and it does not independently verify facts or guarantee safety.",
             "en",
         ),
         (
@@ -1483,7 +1857,7 @@ fn seed_knowledge_base(conn: &Connection) -> Result<(), String> {
             "database_architecture_and_rag",
             "architecture quad-model sql vector hnsw graph opencypher json rag embedded acid",
             "TapirusDB Quad-Model Architecture",
-            "TapirusDB unifies Relational SQL, native HNSW Vector search, openCypher Knowledge Graph, and Schemaless Documents in a single embedded engine with ACID compliance and zero external dependencies.",
+            "TapirusDB provides embedded SQL, vector, graph, and JSON APIs. Query coverage and persistence behavior vary by API; optional dependencies and encryption depend on the build.",
             "en",
         ),
         (
@@ -1491,7 +1865,7 @@ fn seed_knowledge_base(conn: &Connection) -> Result<(), String> {
             "database_architecture_and_rag",
             "hnsw vector search grounding cosine similarity top-k tap_classify_grounded tap_verify_grounded",
             "HNSW Vector Grounding in TapirusDB",
-            "TapirusDB features native HNSW vector indexing for high-speed vector retrieval. With HNSW Grounding, cognitive decisions are cross-checked against vector indexes using TAP_CLASSIFY_GROUNDED and TAP_VERIFY_GROUNDED directly in SQL.",
+            "TapirusDB includes HNSW vector index code and SQL vector operations. Measure retrieval latency and recall on representative data; TAP helper scores are heuristic.",
             "en",
         ),
         (
@@ -1515,7 +1889,7 @@ fn seed_knowledge_base(conn: &Connection) -> Result<(), String> {
             "security_and_encryption",
             "security chacha20 poly1305 encryption passphrase safe rust memory safety",
             "Hardware-Accelerated Encryption & Memory Safety",
-            "TapirusDB provides hardware-accelerated ChaCha20-Poly1305 encryption at rest with SHA-256 key derivation. The entire codebase is strictly compiled with #![forbid(unsafe_code)] ensuring total memory safety.",
+            "TapirusDB includes optional page encryption. The core Rust crate forbids unsafe code; the C FFI crate contains unsafe code. This does not guarantee key zeroization, crash safety, or absence of logic errors.",
             "en",
         ),
         (
@@ -1523,7 +1897,7 @@ fn seed_knowledge_base(conn: &Connection) -> Result<(), String> {
             "billing_and_enterprise_plans",
             "billing enterprise plans pricing commercial license sla support cluster",
             "TapirusDB Enterprise & Licensing Plans",
-            "TapirusDB is open-source under BUSL-1.1 for development. The Enterprise Plan provides dedicated 24/7 SLA production support, multi-node clustering replication, custom GraphRAG tuning, and commercial production licensing.",
+            "TapirusDB is licensed under BUSL-1.1. Support plans, service levels, clustering, and commercial terms are not established by this repository; consult current published terms.",
             "en",
         ),
         // Malay entries
@@ -1532,7 +1906,7 @@ fn seed_knowledge_base(conn: &Connection) -> Result<(), String> {
             "database_architecture_and_rag",
             "pangkalan data seni bina quad-model vektor hnsw graf opencypher dokumen sql rag melayu",
             "Seni Bina Quad-Model TapirusDB",
-            "TapirusDB adalah pangkalan data terbenam (embedded) berprestasi tinggi dalam Safe Rust yang menggabungkan SQL Relasi, carian Vektor HNSW, Graf Pengetahuan openCypher, dan Dokumen JSON dalam satu fail tunggal yang patuh ACID tanpa kebergantungan luar.",
+            "TapirusDB menyediakan API SQL, vektor, graf dan JSON dalam perpustakaan Rust terbenam. Sokongan query, persistence, penggunaan sumber dan keselamatan perlu diuji mengikut build dan workload.",
             "ms",
         ),
         (
@@ -1540,7 +1914,7 @@ fn seed_knowledge_base(conn: &Connection) -> Result<(), String> {
             "tap_cognitive_engine",
             "tap enjin kognitif niat klasifikasi verifikasi sub-milisaat ai memori melayu",
             "Enjin Kognitif TAP Sub-Milisaat",
-            "Enjin TAP (Tapirus Accelerated Perception) memproses klasifikasi niat (intent) dan semakan polisi (verification) dalam masa kurang 2 milisaat (< 2ms) terus dalam pangkalan data tanpa memerlukan GPU atau persekitaran Python luaran.",
+            "Helper TAP menggunakan isyarat heuristik untuk klasifikasi niat dan routing. Skornya bukan kebarangkalian terkalibrasi atau pengesahan fakta; masa jalan bergantung pada workload.",
             "ms",
         ),
         (
@@ -1548,7 +1922,7 @@ fn seed_knowledge_base(conn: &Connection) -> Result<(), String> {
             "billing_and_enterprise_plans",
             "pelan langganan enterprise harga bayaran sokongan sla lesen komersial beli pakej",
             "Pelan Enterprise & Sokongan Komersial TapirusDB",
-            "Pelan Enterprise TapirusDB menawarkan sokongan teknikal 24/7 SLA, lesen komersial penuh, kluster replikasi teragih, bantuan penalaan GraphRAG tersuai, dan penyulitan ChaCha20-Poly1305 gred industri. Hubungi sales@tapirusdb.com untuk maklumat lanjut.",
+            "Terma sokongan, SLA, kluster, dan lesen komersial tidak ditetapkan oleh repositori ini. Semak terma rasmi semasa sebelum membuat keputusan.",
             "ms",
         ),
         (
@@ -1556,7 +1930,7 @@ fn seed_knowledge_base(conn: &Connection) -> Result<(), String> {
             "python_and_developer_sdk",
             "python cara guna pasang sdk sambung kod skrip tutorial pembangunan",
             "Panduan Pembangunan Python TapirusDB",
-            "Anda boleh menggunakan TapirusDB dalam Python dengan memasang pakej 'tapirus'. Gunakan connect() untuk buka pangkalan data, query() untuk bacaan SQL, dan tap_classify() serta tap_verify() untuk keupayaan kognitif AI segera.",
+            "Repositori mengandungi lebih daripada satu laluan integrasi Python. Periksa pakej dan binding yang digunakan; jangan anggap operasi atau tingkah laku persistence setara.",
             "ms",
         ),
         // French
@@ -1565,7 +1939,7 @@ fn seed_knowledge_base(conn: &Connection) -> Result<(), String> {
             "database_architecture_and_rag",
             "base de donnees architecture francais vecteur graphe securite chacha20",
             "Architecture Quad-Model TapirusDB (Français)",
-            "TapirusDB est une base de données embarquée haute performance en 100% Safe Rust unifiant SQL relationnel, recherche vectorielle HNSW, graphes openCypher et documents JSON avec chiffrement ChaCha20-Poly1305.",
+            "TapirusDB est une base de données embarquée réunissant SQL relationnel, recherche vectorielle HNSW, graphes openCypher et documents JSON avec chiffrement ChaCha20-Poly1305. Les capacités et performances dépendent de la version et de la charge de travail.",
             "fr",
         ),
         // German
@@ -1574,7 +1948,7 @@ fn seed_knowledge_base(conn: &Connection) -> Result<(), String> {
             "database_architecture_and_rag",
             "datenbank architektur deutsch vektor graph sicherheit rust",
             "TapirusDB Quad-Model-Architektur (Deutsch)",
-            "TapirusDB ist eine eingebettete Hochleistungsdatenbank in 100% Safe Rust, die relationale SQL-Abfragen, HNSW-Vektorsuche, openCypher-Wissensgraphen und JSON-Dokumente nahtlos vereint.",
+            "TapirusDB bietet eingebettete Rust-APIs f?r SQL, Vektoren, Graphen und JSON. Umfang, Persistenz und Ressourcenverbrauch m?ssen f?r Build und Arbeitslast gepr?ft werden.",
             "de",
         ),
         // Spanish
@@ -1583,7 +1957,7 @@ fn seed_knowledge_base(conn: &Connection) -> Result<(), String> {
             "database_architecture_and_rag",
             "base de datos arquitectura espanol vector grafo seguridad chacha20",
             "Arquitectura Quad-Model TapirusDB (Español)",
-            "TapirusDB es una base de datos embebida de alto rendimiento en 100% Safe Rust que unifica SQL relacional, búsqueda vectorial HNSW, grafos openCypher y documentos JSON con cifrado ChaCha20-Poly1305.",
+            "TapirusDB ofrece API Rust integradas para SQL, vectores, grafos y JSON. Compatibilidad, persistencia y recursos dependen de la versi?n y del uso.",
             "es",
         ),
     ];
@@ -1622,8 +1996,12 @@ fn retrieve_grounded_answer(
     let rows = conn.query(&sql).unwrap_or_default();
     if rows.is_empty() {
         let fallback = match lang {
-            "ms" => "TapirusDB menyokong pemprosesan kognitif TAP, carian vektor HNSW, dan graf pengetahuan openCypher secara terbenam dalam Safe Rust.",
-            _ => "TapirusDB supports embedded TAP cognition, HNSW vector search, and openCypher knowledge graphs in Safe Rust.",
+            "ms" => {
+                "TapirusDB ialah perpustakaan Rust terbenam dengan API SQL, vektor, graf dan JSON. Skop dan prestasi bergantung pada binaan dan workload."
+            }
+            _ => {
+                "TapirusDB provides embedded Rust APIs for SQL, vector, graph, and JSON workloads. API scope and performance depend on the build and workload."
+            }
         };
         return (fallback.to_string(), "tap_default_grounding", true);
     }
@@ -1632,11 +2010,46 @@ fn retrieve_grounded_answer(
     let mut best_row: Option<(String, String)> = None;
 
     for row in &rows {
-        let cat = row.values().get(1).and_then(|v| match v { Value::Text(s) => Some(s.as_str()), _ => None }).unwrap_or("");
-        let kw = row.values().get(2).and_then(|v| match v { Value::Text(s) => Some(s.as_str()), _ => None }).unwrap_or("");
-        let title = row.values().get(3).and_then(|v| match v { Value::Text(s) => Some(s.as_str()), _ => None }).unwrap_or("");
-        let content = row.values().get(4).and_then(|v| match v { Value::Text(s) => Some(s.as_str()), _ => None }).unwrap_or("");
-        let row_lang = row.values().get(5).and_then(|v| match v { Value::Text(s) => Some(s.as_str()), _ => None }).unwrap_or("");
+        let cat = row
+            .values()
+            .get(1)
+            .and_then(|v| match v {
+                Value::Text(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+        let kw = row
+            .values()
+            .get(2)
+            .and_then(|v| match v {
+                Value::Text(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+        let title = row
+            .values()
+            .get(3)
+            .and_then(|v| match v {
+                Value::Text(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+        let content = row
+            .values()
+            .get(4)
+            .and_then(|v| match v {
+                Value::Text(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+        let row_lang = row
+            .values()
+            .get(5)
+            .and_then(|v| match v {
+                Value::Text(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
 
         let mut score = 0.0f32;
         if cat == intent {
@@ -1667,17 +2080,36 @@ fn retrieve_grounded_answer(
 
     if let Some((title, content)) = best_row {
         let formatted = match lang {
-            "ms" => format!("### {}\n\n{}\n\n*(Jawapan disahkan melalui rekod tap_knowledge_base TapirusDB)*", title, content),
-            "fr" => format!("### {}\n\n{}\n\n*(Réponse validée depuis la base de connaissances TapirusDB)*", title, content),
-            "de" => format!("### {}\n\n{}\n\n*(Antwort verifiziert über tap_knowledge_base)*", title, content),
-            "es" => format!("### {}\n\n{}\n\n*(Respuesta verificada en tap_knowledge_base)*", title, content),
-            _ => format!("### {}\n\n{}\n\n*(Factually grounded against TapirusDB's verified knowledge base)*", title, content),
+            "ms" => format!(
+                "### {}\n\n{}\n\n*(Jawapan disahkan melalui rekod tap_knowledge_base TapirusDB)*",
+                title, content
+            ),
+            "fr" => format!(
+                "### {}\n\n{}\n\n*(Réponse validée depuis la base de connaissances TapirusDB)*",
+                title, content
+            ),
+            "de" => format!(
+                "### {}\n\n{}\n\n*(Antwort verifiziert über tap_knowledge_base)*",
+                title, content
+            ),
+            "es" => format!(
+                "### {}\n\n{}\n\n*(Respuesta verificada en tap_knowledge_base)*",
+                title, content
+            ),
+            _ => format!(
+                "### {}\n\n{}\n\n*(Retrieved from the local knowledge base using heuristic matching; verify before relying on the answer.)",
+                title, content
+            ),
         };
         (formatted, "tap_knowledge_base", true)
     } else {
         let generic = match lang {
-            "ms" => "TapirusDB menyediakan pangkalan data berbilang model terbenam dalam 100% Safe Rust dengan enjin kognitif TAP sub-milisaat.",
-            _ => "TapirusDB provides an embedded multi-model database in 100% Safe Rust with sub-millisecond TAP cognition.",
+            "ms" => {
+                "TapirusDB ialah perpustakaan Rust terbenam dengan API SQL, vektor, graf dan JSON. Skop dan prestasi bergantung pada binaan dan workload."
+            }
+            _ => {
+                "TapirusDB provides embedded SQL, vector, graph, and JSON APIs. TAP helpers use heuristics; latency and resource use depend on the workload."
+            }
         };
         (generic.to_string(), "tap_default_grounding", true)
     }
@@ -1689,8 +2121,8 @@ fn handle_chatbot_request(
 ) -> Result<serde_json::Value, String> {
     let start_time = Instant::now();
 
-    let json_req: serde_json::Value = serde_json::from_str(body_str)
-        .map_err(|e| format!("Invalid JSON request payload: {e}"))?;
+    let json_req: serde_json::Value =
+        serde_json::from_str(body_str).map_err(|e| format!("Invalid JSON request payload: {e}"))?;
 
     let user_message = json_req
         .get("message")
@@ -1747,26 +2179,46 @@ fn handle_chatbot_request(
     } else {
         // Run TAP verification to ensure query doesn't contradict safe policy
         let v = conn.tap().verify(user_message, user_message);
-        v.map(|r| r.is_verified).unwrap_or(true)
+        v.map(|r| r.is_verified).unwrap_or(false)
     };
 
     // 3. Grounded Retrieval
     let (reply, grounding_source, is_grounded) = if !is_safe {
         let msg = match lang {
-            "ms" => "Mesej anda mengandungi ungkapan yang tidak mematuhi polisi keselamatan kami. Sila kemukakan soalan berkaitan pangkalan data secara sopan.",
-            "fr" => "Votre message ne respecte pas les règles de sécurité. Veuillez poser une question constructive.",
-            "de" => "Ihre Anfrage entspricht nicht unseren Sicherheitsrichtlinien. Bitte stellen Sie eine sachliche Frage.",
-            "es" => "Su mensaje no cumple con las directivas de seguridad. Por favor formule una consulta válida.",
-            _ => "Your query was flagged by TAP safety verification. Please submit a constructive database inquiry.",
+            "ms" => {
+                "Mesej anda mengandungi ungkapan yang tidak mematuhi polisi keselamatan kami. Sila kemukakan soalan berkaitan pangkalan data secara sopan."
+            }
+            "fr" => {
+                "Votre message ne respecte pas les règles de sécurité. Veuillez poser une question constructive."
+            }
+            "de" => {
+                "Ihre Anfrage entspricht nicht unseren Sicherheitsrichtlinien. Bitte stellen Sie eine sachliche Frage."
+            }
+            "es" => {
+                "Su mensaje no cumple con las directivas de seguridad. Por favor formule una consulta válida."
+            }
+            _ => {
+                "Your query was flagged by TAP safety verification. Please submit a constructive database inquiry."
+            }
         };
         (msg.to_string(), "tap_policy_guardrail", false)
     } else if intent == "general_greeting_or_help" {
         let greeting = match lang {
-            "ms" => "Hai! Saya pembantu kognitif pintar TapirusDB. Dikuasakan oleh enjin TAP sub-milisaat (<2ms) dalam 100% Safe Rust, saya bersedia membantu anda mengenai SQL, carian Vektor HNSW, Graf Pengetahuan openCypher, integrasi Python, atau pelan Enterprise TapirusDB. Ada apa yang boleh saya bantu hari ini?",
-            "fr" => "Bonjour ! Je suis l'assistant cognitif de TapirusDB. Propulsé par le moteur TAP (<2ms), je peux vous assister avec SQL, la recherche vectorielle HNSW, les graphes openCypher ou le SDK Python. Comment puis-je vous aider ?",
-            "de" => "Hallo! Ich bin der kognitive Assistent von TapirusDB. Angetrieben von der TAP-Engine (<2ms) unterstütze ich Sie gerne bei SQL, HNSW-Vektorsuche, Wissensgraphen oder Entwickler-SDKs.",
-            "es" => "¡Hola! Soy el asistente cognitivo de TapirusDB. Con el motor TAP (<2ms) en Safe Rust, estoy listo para responder sobre SQL relacional, búsqueda vectorial HNSW, grafos openCypher o el SDK de Python.",
-            _ => "Hello! I am your TapirusDB cognitive assistant. Powered by our sub-millisecond (<2ms) Safe-Rust TAP engine, I can help you with Relational SQL, native HNSW Vector search, openCypher Knowledge Graph, Python SDK, or Enterprise plans. What would you like to explore?",
+            "ms" => {
+                "Hai. Demo setempat ini menggunakan klasifikasi niat heuristik dan carian kata kunci. Skornya tidak dikalibrasi dan jawapan perlu disemak."
+            }
+            "fr" => {
+                "Bonjour. Cette d?monstration utilise des heuristiques et une recherche locale par mots-cl?s. Les scores ne sont pas calibr?s; les r?ponses doivent ?tre v?rifi?es."
+            }
+            "de" => {
+                "Hallo. Diese Demo verwendet heuristische Klassifizierung und lokale Stichwortsuche. Die Werte sind nicht kalibriert; Antworten sollten ?berpr?ft werden."
+            }
+            "es" => {
+                "Hola. Esta demostraci?n usa heur?sticas y b?squeda local por palabras clave. Las puntuaciones no est?n calibradas; las respuestas deben verificarse."
+            }
+            _ => {
+                "Hello. This local demo uses heuristic intent classification and keyword retrieval. Its scores are not calibrated and its answers should be checked."
+            }
         };
         (greeting.to_string(), "tap_conversational_core", true)
     } else {
@@ -1778,8 +2230,8 @@ fn handle_chatbot_request(
     let latency_ms = elapsed.as_secs_f64() * 1000.0;
 
     // 4. Persist to tap_chat_logs in SQL database
-    let now_ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now_ts = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     let created_at = format!("{now_ts}");
@@ -1804,6 +2256,8 @@ fn handle_chatbot_request(
         "reply": reply,
         "intent": intent,
         "confidence": (confidence * 100.0).round() / 100.0,
+        "confidence_kind": "heuristic_unvalidated",
+        "policy_check_kind": "heuristic_not_a_safety_guarantee",
         "is_safe": is_safe,
         "is_grounded": is_grounded,
         "grounding_source": grounding_source,
@@ -2334,14 +2788,14 @@ tr:hover {
   <div class="logo-group">
     <div class="logo-icon">🦣</div>
     <div class="logo-text">
-      <h1>TapirusDB AI Cognitive Chatbot</h1>
-      <p>100% Safe-Rust &bull; Native Sub-Millisecond Cognition</p>
+      <h1>TapirusDB chat prototype</h1>
+      <p>Heuristic intent classification and local keyword retrieval</p>
     </div>
   </div>
   <div class="header-actions">
     <div class="status-pill">
       <div class="status-dot"></div>
-      <span>Active (&lt; 2ms)</span>
+      <span>Demo active</span>
     </div>
     <button class="btn-header" onclick="openLogsDrawer()">📊 Inspect SQL Logs</button>
     <button class="btn-header" onclick="clearChat()">🗑️ Clear</button>
@@ -2356,12 +2810,12 @@ tr:hover {
       <p>
         Direct in-process cognitive triage running within TapirusDB. Your queries undergo 
         <strong>intent classification</strong>, <strong>policy verification</strong>, and 
-        <strong>factual knowledge grounding</strong> in under 2ms — with authentic in-process execution, verified knowledge grounding, and full SQL persistence to <code>tap_chat_logs</code>.
+        <strong>local knowledge retrieval using heuristic matching. The demo does not provide a latency or factual-accuracy guarantee.
       </p>
       <div class="suggestions-grid">
         <button class="suggestion-chip" onclick="askQuick(this.innerText)">🇲🇾 Saya nak pelan langganan enterprise TapirusDB</button>
         <button class="suggestion-chip" onclick="askQuick(this.innerText)">🇲🇾 Bagaimana cara sambung TapirusDB guna Python?</button>
-        <button class="suggestion-chip" onclick="askQuick(this.innerText)">🇬🇧 What is TAP sub-millisecond cognitive engine?</button>
+        <button class="suggestion-chip" onclick="askQuick(this.innerText)">🇬🇧 How do the TAP decision helpers work?</button>
         <button class="suggestion-chip" onclick="askQuick(this.innerText)">🇬🇧 Explain HNSW vector search and grounding in TapirusDB</button>
         <button class="suggestion-chip" onclick="askQuick(this.innerText)">🇫🇷 Architecture et sécurité de TapirusDB</button>
       </div>
@@ -2393,7 +2847,7 @@ tr:hover {
             <th>ID</th>
             <th>User Query</th>
             <th>Intent</th>
-            <th>Confidence</th>
+            <th>TAP heuristic score (not probability)</th>
             <th>Latency</th>
             <th>Policy</th>
             <th>Time</th>
@@ -2459,9 +2913,9 @@ function appendBotMessage(data) {
     <div class="msg-bubble">
       <div>${replyHtml}</div>
       <div class="telemetry-bar">
-        <span class="telemetry-pill pill-intent">🎯 Intent: ${escapeHtml(data.intent || 'general')} (${confPercent}%)</span>
+        <span class="telemetry-pill pill-intent">🎯 Intent heuristic: ${escapeHtml(data.intent || 'general')} (${confPercent}%)</span>
         <span class="telemetry-pill pill-latency">⚡ Latency: ${latencyUs} µs (${latencyMs} ms)</span>
-        <span class="telemetry-pill pill-safe">${data.is_safe ? '🛡️ Policy: Passed' : '⚠️ Policy: Flagged'}</span>
+        <span class="telemetry-pill pill-safe">${data.is_safe ? '🛡️ Heuristic check: passed' : '⚠️ Heuristic check: flagged'}</span>
         <span class="telemetry-pill pill-safe">🧠 ${escapeHtml(data.grounding_source || 'grounded')}</span>
         <span class="telemetry-pill pill-sql">💾 Stored: tap_chat_logs</span>
       </div>
@@ -2549,11 +3003,11 @@ function clearChat() {
     <div class="welcome-card" id="welcome-banner">
       <div class="welcome-badge">TAP EMBEDDED COGNITIVE ARCHITECTURE</div>
       <h2>TapirusDB Online AI Assistant</h2>
-      <p>Direct in-process cognitive triage running within TapirusDB. Your queries undergo intent classification, policy verification, and factual knowledge grounding in under 2ms.</p>
+      <p>The local demo uses heuristic intent classification and keyword retrieval. Its results are not calibrated or independently verified, and no latency guarantee is made.</p>
       <div class="suggestions-grid">
         <button class="suggestion-chip" onclick="askQuick(this.innerText)">🇲🇾 Saya nak pelan langganan enterprise TapirusDB</button>
         <button class="suggestion-chip" onclick="askQuick(this.innerText)">🇲🇾 Bagaimana cara sambung TapirusDB guna Python?</button>
-        <button class="suggestion-chip" onclick="askQuick(this.innerText)">🇬🇧 What is TAP sub-millisecond cognitive engine?</button>
+        <button class="suggestion-chip" onclick="askQuick(this.innerText)">🇬🇧 How do the TAP decision helpers work?</button>
         <button class="suggestion-chip" onclick="askQuick(this.innerText)">🇬🇧 Explain HNSW vector search and grounding in TapirusDB</button>
       </div>
     </div>
@@ -2611,7 +3065,6 @@ document.getElementById('chat-input').addEventListener('keydown', function(e) {
 </body>
 </html>
 "##;
-
 
 fn run_repl(conn: &Connection, target: &str) {
     let stdin = io::stdin();
@@ -2746,7 +3199,10 @@ fn handle_dot_command(conn: &Connection, cmd: &str, target: &str) -> bool {
             let start = Instant::now();
             match conn.checkpoint() {
                 Ok(flushed) => {
-                    println!("WAL Checkpoint complete: {flushed} page(s) flushed in {:?}", start.elapsed());
+                    println!(
+                        "WAL Checkpoint complete: {flushed} page(s) flushed in {:?}",
+                        start.elapsed()
+                    );
                 }
                 Err(e) => {
                     println!("Checkpoint error: {e}");
@@ -2762,7 +3218,10 @@ fn handle_dot_command(conn: &Connection, cmd: &str, target: &str) -> bool {
                 let start = Instant::now();
                 match conn.backup(dest) {
                     Ok(pages) => {
-                        println!("Hot backup created successfully at '{dest}' ({pages} pages) in {:?}", start.elapsed());
+                        println!(
+                            "Hot backup created successfully at '{dest}' ({pages} pages) in {:?}",
+                            start.elapsed()
+                        );
                     }
                     Err(e) => {
                         println!("Backup error: {e}");
@@ -2777,7 +3236,10 @@ fn handle_dot_command(conn: &Connection, cmd: &str, target: &str) -> bool {
                 let dest = parts[2];
                 match conn.vacuum_into(dest) {
                     Ok(pages) => {
-                        println!("Vacuum into '{dest}' completed ({pages} pages) in {:?}", start.elapsed());
+                        println!(
+                            "Vacuum into '{dest}' completed ({pages} pages) in {:?}",
+                            start.elapsed()
+                        );
                     }
                     Err(e) => {
                         println!("Vacuum error: {e}");
@@ -2786,7 +3248,10 @@ fn handle_dot_command(conn: &Connection, cmd: &str, target: &str) -> bool {
             } else {
                 match conn.vacuum() {
                     Ok(flushed) => {
-                        println!("In-place vacuum complete: {flushed} page(s) checkpointed in {:?}", start.elapsed());
+                        println!(
+                            "In-place vacuum complete: {flushed} page(s) checkpointed in {:?}",
+                            start.elapsed()
+                        );
                     }
                     Err(e) => {
                         println!("Vacuum error: {e}");
@@ -2818,7 +3283,7 @@ fn handle_dot_command(conn: &Connection, cmd: &str, target: &str) -> bool {
         ".info" => {
             println!("Database: {target}");
             println!("Page Size: 4,096 bytes");
-            println!("Engine: TapirusDB v{VERSION} (100% Pure Safe Rust)");
+            println!("TapirusDB v{VERSION} - Embedded Rust database");
             let (nodes, edges) = conn.graph_stats();
             println!("Knowledge Graph: {nodes} nodes, {edges} edges");
             println!("Document Collections: {}", conn.collections().len());
@@ -2826,7 +3291,10 @@ fn handle_dot_command(conn: &Connection, cmd: &str, target: &str) -> bool {
             false
         }
         _ => {
-            println!("Unknown command: '{}'. Type '.help' for available commands.", parts[0]);
+            println!(
+                "Unknown command: '{}'. Type '.help' for available commands.",
+                parts[0]
+            );
             false
         }
     }
@@ -2940,11 +3408,18 @@ fn handle_graph_command(conn: &Connection, parts: &[&str]) {
 
             let start = Instant::now();
             if let Some(path) = conn.graph_find_path(from_id, to_id, 10) {
-                println!("Shortest path ({}) hops found in {:?}:", path.len(), start.elapsed());
+                println!(
+                    "Shortest path ({}) hops found in {:?}:",
+                    path.len(),
+                    start.elapsed()
+                );
                 for (i, edge) in path.iter().enumerate() {
                     println!(
                         "  Step {}: (#{}) -[{}]-> (#{})",
-                        i + 1, edge.from_id, edge.label, edge.to_id
+                        i + 1,
+                        edge.from_id,
+                        edge.label,
+                        edge.to_id
                     );
                 }
             } else {
@@ -3103,7 +3578,9 @@ fn print_dot_help() {
     println!();
     println!("SQL Syntax Examples:");
     println!("  CREATE TABLE items (id INTEGER PRIMARY KEY, title TEXT, embedding VECTOR(4));");
-    println!("  INSERT INTO items (id, title, embedding) VALUES (1, 'Rover', [0.1, 0.2, 0.3, 0.4]);");
+    println!(
+        "  INSERT INTO items (id, title, embedding) VALUES (1, 'Rover', [0.1, 0.2, 0.3, 0.4]);"
+    );
     println!("  SELECT id, title FROM items WHERE id > 0 AND title LIKE '%Rover%';");
     println!("  SELECT id, title FROM items WHERE title MATCH 'Rover AI';");
     println!("  EXPLAIN QUERY PLAN SELECT * FROM items WHERE id = 1;");
@@ -3145,7 +3622,8 @@ fn handle_dump_command(conn: &Connection, parts: &[&str]) {
                         Value::Real(r) => r.to_string(),
                         Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
                         Value::Blob(b) => {
-                            let hex_str: String = b.iter().map(|byte| format!("{:02X}", byte)).collect();
+                            let hex_str: String =
+                                b.iter().map(|byte| format!("{:02X}", byte)).collect();
                             format!("X'{hex_str}'")
                         }
                         Value::Vector(v) => format!(
@@ -3255,9 +3733,7 @@ fn parse_csv_line(line: &str) -> Vec<String> {
                 current.push(ch);
             }
             ']' if !in_quotes => {
-                if bracket_depth > 0 {
-                    bracket_depth -= 1;
-                }
+                bracket_depth = bracket_depth.saturating_sub(1);
                 current.push(ch);
             }
             ',' if !in_quotes && bracket_depth == 0 => {
@@ -3325,7 +3801,13 @@ fn import_csv_file(conn: &Connection, csv_path: &str, table_name: &str, batch_si
             } else {
                 trimmed
                     .chars()
-                    .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == '_' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
                     .collect()
             }
         })
@@ -3337,18 +3819,23 @@ fn import_csv_file(conn: &Connection, csv_path: &str, table_name: &str, batch_si
         let mut sample_rows = Vec::new();
         let mut row_buffer = Vec::new();
 
-        for line_res in lines_iter.by_ref() {
-            if let Ok(line) = line_res {
-                if !line.trim().is_empty() {
-                    let fields = parse_csv_line(&line);
-                    if fields.len() == clean_headers.len() {
-                        if sample_rows.len() < 100 {
-                            sample_rows.push(fields.clone());
-                        }
-                        row_buffer.push(fields);
-                        if row_buffer.len() >= batch_size {
-                            break;
-                        }
+        for line in lines_iter.by_ref() {
+            let line = match line {
+                Ok(line) => line,
+                Err(error) => {
+                    eprintln!("CSV read failed: {error}");
+                    return;
+                }
+            };
+            if !line.trim().is_empty() {
+                let fields = parse_csv_line(&line);
+                if fields.len() == clean_headers.len() {
+                    if sample_rows.len() < 100 {
+                        sample_rows.push(fields.clone());
+                    }
+                    row_buffer.push(fields);
+                    if row_buffer.len() >= batch_size {
+                        break;
                     }
                 }
             }
@@ -3373,7 +3860,9 @@ fn import_csv_file(conn: &Connection, csv_path: &str, table_name: &str, batch_si
                     if val.starts_with('[') && val.ends_with(']') {
                         let inner = &val[1..val.len() - 1];
                         let parts: Vec<&str> = inner.split(',').collect();
-                        if !parts.is_empty() && parts.iter().all(|p| p.trim().parse::<f32>().is_ok()) {
+                        if !parts.is_empty()
+                            && parts.iter().all(|p| p.trim().parse::<f32>().is_ok())
+                        {
                             vector_dim = Some(parts.len());
                             all_int = false;
                             all_float = false;
@@ -3420,17 +3909,17 @@ fn import_csv_file(conn: &Connection, csv_path: &str, table_name: &str, batch_si
             return;
         }
 
-        println!("  ✓ Schema auto-inferred and table '{}' initialized.", table_name);
+        println!(
+            "  ✓ Schema auto-inferred and table '{}' initialized.",
+            table_name
+        );
 
         let header_list = clean_headers.join(", ");
         let mut total_imported = 0usize;
 
         let _ = conn.begin_transaction();
         for row in row_buffer {
-            let formatted_vals: Vec<String> = row
-                .iter()
-                .map(|v| format_csv_sql_value(v))
-                .collect();
+            let formatted_vals: Vec<String> = row.iter().map(|v| format_csv_sql_value(v)).collect();
 
             let sql = format!(
                 "INSERT INTO {} ({}) VALUES ({});",
@@ -3447,30 +3936,34 @@ fn import_csv_file(conn: &Connection, csv_path: &str, table_name: &str, batch_si
         let _ = conn.begin_transaction();
         let mut batch_count = 0usize;
 
-        for line_res in lines_iter {
-            if let Ok(line) = line_res {
-                if !line.trim().is_empty() {
-                    let fields = parse_csv_line(&line);
-                    if fields.len() == clean_headers.len() {
-                        let formatted_vals: Vec<String> = fields
-                            .iter()
-                            .map(|v| format_csv_sql_value(v))
-                            .collect();
+        for line in lines_iter {
+            let line = match line {
+                Ok(line) => line,
+                Err(error) => {
+                    let _ = conn.rollback();
+                    eprintln!("CSV read failed: {error}");
+                    return;
+                }
+            };
+            if !line.trim().is_empty() {
+                let fields = parse_csv_line(&line);
+                if fields.len() == clean_headers.len() {
+                    let formatted_vals: Vec<String> =
+                        fields.iter().map(|v| format_csv_sql_value(v)).collect();
 
-                        let sql = format!(
-                            "INSERT INTO {} ({}) VALUES ({});",
-                            table_name,
-                            header_list,
-                            formatted_vals.join(", ")
-                        );
-                        if conn.execute(&sql).is_ok() {
-                            total_imported += 1;
-                            batch_count += 1;
-                            if batch_count >= batch_size {
-                                let _ = conn.commit();
-                                let _ = conn.begin_transaction();
-                                batch_count = 0;
-                            }
+                    let sql = format!(
+                        "INSERT INTO {} ({}) VALUES ({});",
+                        table_name,
+                        header_list,
+                        formatted_vals.join(", ")
+                    );
+                    if conn.execute(&sql).is_ok() {
+                        total_imported += 1;
+                        batch_count += 1;
+                        if batch_count >= batch_size {
+                            let _ = conn.commit();
+                            let _ = conn.begin_transaction();
+                            batch_count = 0;
                         }
                     }
                 }
@@ -3498,30 +3991,34 @@ fn import_csv_file(conn: &Connection, csv_path: &str, table_name: &str, batch_si
     let mut batch_count = 0usize;
 
     let _ = conn.begin_transaction();
-    for line_res in lines_iter {
-        if let Ok(line) = line_res {
-            if !line.trim().is_empty() {
-                let fields = parse_csv_line(&line);
-                if fields.len() == clean_headers.len() {
-                    let formatted_vals: Vec<String> = fields
-                        .iter()
-                        .map(|v| format_csv_sql_value(v))
-                        .collect();
+    for line in lines_iter {
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                let _ = conn.rollback();
+                eprintln!("CSV read failed: {error}");
+                return;
+            }
+        };
+        if !line.trim().is_empty() {
+            let fields = parse_csv_line(&line);
+            if fields.len() == clean_headers.len() {
+                let formatted_vals: Vec<String> =
+                    fields.iter().map(|v| format_csv_sql_value(v)).collect();
 
-                    let sql = format!(
-                        "INSERT INTO {} ({}) VALUES ({});",
-                        table_name,
-                        header_list,
-                        formatted_vals.join(", ")
-                    );
-                    if conn.execute(&sql).is_ok() {
-                        total_imported += 1;
-                        batch_count += 1;
-                        if batch_count >= batch_size {
-                            let _ = conn.commit();
-                            let _ = conn.begin_transaction();
-                            batch_count = 0;
-                        }
+                let sql = format!(
+                    "INSERT INTO {} ({}) VALUES ({});",
+                    table_name,
+                    header_list,
+                    formatted_vals.join(", ")
+                );
+                if conn.execute(&sql).is_ok() {
+                    total_imported += 1;
+                    batch_count += 1;
+                    if batch_count >= batch_size {
+                        let _ = conn.commit();
+                        let _ = conn.begin_transaction();
+                        batch_count = 0;
                     }
                 }
             }
@@ -3561,7 +4058,10 @@ fn import_jsonl_file(conn: &Connection, json_path: &str, collection_name: &str, 
     };
 
     let mut total_imported = 0usize;
-    let initial_max_id = col.find_all().map(|v| v.iter().map(|(id, _)| *id).max().unwrap_or(0)).unwrap_or(0);
+    let initial_max_id = col
+        .find_all()
+        .map(|v| v.iter().map(|(id, _)| *id).max().unwrap_or(0))
+        .unwrap_or(0);
     let mut next_id = initial_max_id + 1;
 
     // Check if whole file is a single JSON array
@@ -3608,21 +4108,19 @@ fn import_jsonl_file(conn: &Connection, json_path: &str, collection_name: &str, 
             continue;
         }
         match serde_json::from_str::<serde_json::Value>(line) {
-            Ok(doc) => {
-                match col.insert_with_id(next_id, &doc) {
-                    Ok(_) => {
-                        next_id += 1;
-                        total_imported += 1;
-                        batch_count += 1;
-                        if batch_count >= batch_size {
-                            let _ = conn.commit();
-                            let _ = conn.begin_transaction();
-                            batch_count = 0;
-                        }
+            Ok(doc) => match col.insert_with_id(next_id, &doc) {
+                Ok(_) => {
+                    next_id += 1;
+                    total_imported += 1;
+                    batch_count += 1;
+                    if batch_count >= batch_size {
+                        let _ = conn.commit();
+                        let _ = conn.begin_transaction();
+                        batch_count = 0;
                     }
-                    Err(e) => eprintln!("Insert error: {e}"),
                 }
-            }
+                Err(e) => eprintln!("Insert error: {e}"),
+            },
             Err(e) => eprintln!("JSON parse error: {e}"),
         }
     }
@@ -3658,7 +4156,10 @@ fn import_markdown_file(
     };
 
     let p = Path::new(md_path);
-    let filename = p.file_name().and_then(|n| n.to_str()).unwrap_or("document.md");
+    let filename = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("document.md");
 
     // Chunk markdown by headings
     let mut sections: Vec<(String, String)> = Vec::new();
@@ -3696,7 +4197,12 @@ fn import_markdown_file(
     let embedder = tapirus::DeterministicHashEmbedder::default();
     let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
 
-    let max_existing_node_id = conn.graph_nodes().into_iter().map(|n| n.id).max().unwrap_or(0);
+    let max_existing_node_id = conn
+        .graph_nodes()
+        .into_iter()
+        .map(|n| n.id)
+        .max()
+        .unwrap_or(0);
     let mut next_node_id = max_existing_node_id + 1;
 
     // Create Root Document Node in Knowledge Graph
@@ -3719,13 +4225,10 @@ fn import_markdown_file(
     for (heading, body) in &sections {
         let chunk_text = format!("## {heading}\n{body}");
 
-        if conn.memory_remember_text_scoped(
-            &chunk_text,
-            0.7,
-            &tag_refs,
-            Some(namespace),
-            session_id,
-        ).is_ok() {
+        if conn
+            .memory_remember_text_scoped(&chunk_text, 0.7, &tag_refs, Some(namespace), session_id)
+            .is_ok()
+        {
             memories_stored += 1;
         }
 
@@ -3740,15 +4243,29 @@ fn import_markdown_file(
             "document": filename
         });
 
-        if conn.graph_add_node_with_vector(sec_node_id, "Section", &sec_props.to_string(), Some(&sec_vector)).is_ok() {
+        if conn
+            .graph_add_node_with_vector(
+                sec_node_id,
+                "Section",
+                &sec_props.to_string(),
+                Some(&sec_vector),
+            )
+            .is_ok()
+        {
             sections_stored += 1;
 
-            if conn.graph_add_edge(doc_node_id, sec_node_id, "CONTAINS", 1.0, "{}").is_ok() {
+            if conn
+                .graph_add_edge(doc_node_id, sec_node_id, "CONTAINS", 1.0, "{}")
+                .is_ok()
+            {
                 edges_created += 1;
             }
 
             if let Some(prev_id) = prev_section_node_id {
-                if conn.graph_add_edge(prev_id, sec_node_id, "PRECEDES", 1.0, "{}").is_ok() {
+                if conn
+                    .graph_add_edge(prev_id, sec_node_id, "PRECEDES", 1.0, "{}")
+                    .is_ok()
+                {
                     edges_created += 1;
                 }
             }
@@ -3761,10 +4278,20 @@ fn import_markdown_file(
         "\x1b[1;32m✓\x1b[0m Successfully imported Markdown '\x1b[36m{}\x1b[0m' into TapirusDB in {:.2?}:",
         filename, elapsed
     );
-    println!("  • AI Agent Memories:   \x1b[1m{}\x1b[0m chunks (Namespace: '\x1b[33m{}\x1b[0m', 128D Embeddings)", memories_stored, namespace);
-    println!("  • Knowledge Graph:     \x1b[1m{}\x1b[0m Nodes (1 Document + {} Sections)", sections_stored + 1, sections_stored);
-    println!("  • Graph Relationships: \x1b[1m{}\x1b[0m Edges (CONTAINS, PRECEDES)", edges_created);
-    println!("  • GraphRAG Status:     \x1b[32mInstant Retrieval & Hybrid Recall Ready ✓\x1b[0m");
+    println!(
+        "  • AI Agent Memories:   \x1b[1m{}\x1b[0m chunks (Namespace: '\x1b[33m{}\x1b[0m', 128D Embeddings)",
+        memories_stored, namespace
+    );
+    println!(
+        "  • Knowledge Graph:     \x1b[1m{}\x1b[0m Nodes (1 Document + {} Sections)",
+        sections_stored + 1,
+        sections_stored
+    );
+    println!(
+        "  • Graph Relationships: \x1b[1m{}\x1b[0m Edges (CONTAINS, PRECEDES)",
+        edges_created
+    );
+    println!("  ? GraphRAG Status:     Records imported; retrieval quality not measured");
 }
 
 fn print_import_help() {
@@ -3790,7 +4317,9 @@ fn print_import_help() {
     println!("  --table <NAME>           Target table name (defaults to file name stem)");
     println!();
     println!("JSON / JSONL Specific Options:");
-    println!("  --collection <NAME>      Target document collection name (defaults to file name stem)");
+    println!(
+        "  --collection <NAME>      Target document collection name (defaults to file name stem)"
+    );
     println!();
     println!("Markdown Specific Options:");
     println!("  --namespace <NAME>       Target memory namespace (defaults to file name stem)");
@@ -3859,7 +4388,11 @@ fn run_import_command(args: &[String]) {
             }
             "--tags" => {
                 if i + 1 < args.len() {
-                    tags = args[i + 1].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    tags = args[i + 1]
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
                     i += 1;
                 }
             }
@@ -3876,7 +4409,13 @@ fn run_import_command(args: &[String]) {
                 }
             }
             arg if !arg.starts_with('-') => {
-                if format.is_none() && (arg == "csv" || arg == "jsonl" || arg == "json" || arg == "markdown" || arg == "md") {
+                if format.is_none()
+                    && (arg == "csv"
+                        || arg == "jsonl"
+                        || arg == "json"
+                        || arg == "markdown"
+                        || arg == "md")
+                {
                     format = Some(arg.to_string());
                 } else if file_path.is_none() {
                     file_path = Some(arg.to_string());
@@ -3904,7 +4443,11 @@ fn run_import_command(args: &[String]) {
     }
 
     let inferred_format = format.unwrap_or_else(|| {
-        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
         match ext.as_str() {
             "csv" => "csv".to_string(),
             "jsonl" => "jsonl".to_string(),
@@ -3932,7 +4475,11 @@ fn run_import_command(args: &[String]) {
         }
     };
 
-    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("data").to_string();
+    let stem = p
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("data")
+        .to_string();
 
     match inferred_format.as_str() {
         "csv" => {
@@ -3948,7 +4495,9 @@ fn run_import_command(args: &[String]) {
             import_markdown_file(&conn, &file_path, &ns, session_id.as_deref(), &tags);
         }
         other => {
-            eprintln!("Error: Unsupported import format '{other}'. Choose from: csv, jsonl, json, markdown.");
+            eprintln!(
+                "Error: Unsupported import format '{other}'. Choose from: csv, jsonl, json, markdown."
+            );
             std::process::exit(1);
         }
     }
@@ -4005,7 +4554,10 @@ fn handle_memory_command(conn: &Connection, parts: &[&str]) {
             }
         }
         _ => {
-            println!("Unknown memory command: '{}'. Use .memory <count|remember|recall>", parts[1]);
+            println!(
+                "Unknown memory command: '{}'. Use .memory <count|remember|recall>",
+                parts[1]
+            );
         }
     }
 }
@@ -4225,7 +4777,10 @@ fn run_mcp_command(args: &[String]) {
             "tools/call" => {
                 let params = req.get("params").cloned().unwrap_or(serde_json::json!({}));
                 let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let tool_args = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+                let tool_args = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
 
                 let tool_result = handle_mcp_tool_call(&conn, tool_name, &tool_args);
                 let resp = serde_json::json!({
@@ -4393,7 +4948,7 @@ fn handle_mcp_tool_call(conn: &Connection, tool_name: &str, args: &serde_json::V
                 "status": "operational",
                 "engine": "TapirusDB",
                 "version": VERSION,
-                "memory_safety": "100% Pure Safe Rust (#![forbid(unsafe_code)])",
+                "memory_safety": "Core crate forbids unsafe code; C FFI crate contains unsafe code",
                 "page_size_bytes": 4096,
                 "stored_memories_count": mem_count,
                 "tables_count": tables.len(),
@@ -4443,7 +4998,12 @@ fn run_grep_command(args: &[String]) {
             }
             "--ext" => {
                 if i + 1 < args.len() {
-                    extensions = Some(args[i + 1].split(',').map(|s| s.trim().to_lowercase()).collect());
+                    extensions = Some(
+                        args[i + 1]
+                            .split(',')
+                            .map(|s| s.trim().to_lowercase())
+                            .collect(),
+                    );
                     i += 2;
                 } else {
                     i += 1;
@@ -4476,33 +5036,47 @@ fn run_grep_command(args: &[String]) {
         }
     };
 
-    println!("\x1b[1;36m🔍 Tapirus Grep (tg)\x1b[0m — Searching for '\x1b[1;33m{pattern}\x1b[0m' in '{search_path}'...");
+    println!(
+        "\x1b[1;36m🔍 Tapirus Grep (tg)\x1b[0m — Searching for '\x1b[1;33m{pattern}\x1b[0m' in '{search_path}'..."
+    );
     let start_time = Instant::now();
 
     let embedder = if use_vector {
-        Some(tapirus::memory::embedder::DeterministicHashEmbedder::new(64))
+        Some(tapirus::memory::embedder::DeterministicHashEmbedder::new(
+            64,
+        ))
     } else {
         None
     };
 
     let query_vector = embedder.as_ref().map(|e| e.embed_text(&pattern));
     let pattern_lower = pattern.to_lowercase();
-    let query_tokens: Vec<String> = pattern_lower.split_whitespace().map(|s| s.to_string()).collect();
+    let query_tokens: Vec<String> = pattern_lower
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
 
     let mut matches = Vec::new();
+
+    struct SearchPattern<'a> {
+        raw: &'a str,
+        lowercase: &'a str,
+        tokens: &'a [String],
+    }
 
     // Recursive directory walk
     fn walk_dir(
         dir: &Path,
-        pattern: &str,
-        pattern_lower: &str,
-        query_tokens: &[String],
+        query: &SearchPattern<'_>,
         ignore_case: bool,
         embedder: Option<&tapirus::memory::embedder::DeterministicHashEmbedder>,
         query_vector: Option<&[f32]>,
         extensions: Option<&[String]>,
         matches: &mut Vec<(f32, String, usize, String)>,
     ) {
+        let pattern = query.raw;
+        let pattern_lower = query.lowercase;
+        let query_tokens = query.tokens;
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(_) => return,
@@ -4511,17 +5085,34 @@ fn run_grep_command(args: &[String]) {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.') || name == "target" || name == "node_modules" || name == "dist" || name == "__pycache__" {
+                if name.starts_with('.')
+                    || name == "target"
+                    || name == "node_modules"
+                    || name == "dist"
+                    || name == "__pycache__"
+                {
                     continue;
                 }
             }
 
             if path.is_dir() {
-                walk_dir(&path, pattern, pattern_lower, query_tokens, ignore_case, embedder, query_vector, extensions, matches);
+                walk_dir(
+                    &path,
+                    query,
+                    ignore_case,
+                    embedder,
+                    query_vector,
+                    extensions,
+                    matches,
+                );
             } else if path.is_file() {
                 // Check extension
                 if let Some(exts) = extensions {
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                    let ext = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
                     if !exts.contains(&ext) {
                         continue;
                     }
@@ -4536,7 +5127,11 @@ fn run_grep_command(args: &[String]) {
                             Err(_) => break, // non-utf8/binary file
                         };
 
-                        let line_lower = if ignore_case { line.to_lowercase() } else { line.clone() };
+                        let line_lower = if ignore_case {
+                            line.to_lowercase()
+                        } else {
+                            line.clone()
+                        };
                         let has_substring = if ignore_case {
                             line_lower.contains(pattern_lower)
                         } else {
@@ -4577,9 +5172,11 @@ fn run_grep_command(args: &[String]) {
 
     walk_dir(
         Path::new(&search_path),
-        &pattern,
-        &pattern_lower,
-        &query_tokens,
+        &SearchPattern {
+            raw: &pattern,
+            lowercase: &pattern_lower,
+            tokens: &query_tokens,
+        },
         ignore_case,
         embedder.as_ref(),
         query_vector.as_deref(),
@@ -4613,12 +5210,18 @@ fn run_grep_command(args: &[String]) {
 
 fn run_bitnet_command(args: &[String]) {
     if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
-        println!("TapirusDB BitNet b1.58 Ternary Tensor Engine (100% Safe Rust)");
+        println!("TapirusDB BitNet b1.58 ternary tensor prototype");
         println!();
         println!("Commands:");
-        println!("  tapirus bitnet <input> <cand1> <cand2> ...   Categorical classification via BitNet ternary layers");
-        println!("  tapirus bitnet verify <premise> <hypothesis> Truth verification via ternary projection");
-        println!("  tapirus bitnet benchmark                      Benchmark ternary matrix addition throughput");
+        println!(
+            "  tapirus bitnet <input> <cand1> <cand2> ...   Categorical classification via BitNet ternary layers"
+        );
+        println!(
+            "  tapirus bitnet verify <premise> <hypothesis> Heuristic text comparison (not fact verification)"
+        );
+        println!(
+            "  tapirus bitnet benchmark                      Run an illustrative local timing loop"
+        );
         return;
     }
 
@@ -4631,21 +5234,28 @@ fn run_bitnet_command(args: &[String]) {
         }
         let premise = &args[1];
         let hypothesis = &args[2];
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         match engine.verify_deep(premise, hypothesis) {
             Ok((verified, score)) => {
                 let us = start.elapsed().as_micros();
                 println!("┌─────────────────────────────────────────────────────────────┐");
-                println!("│ BitNet b1.58 Ternary Truth Verification                     │");
+                println!("BitNet text-match heuristic demo (not fact verification)");
                 println!("├─────────────────────────────────────────────────────────────┤");
                 println!("│ Premise:    {}", premise);
                 println!("│ Hypothesis: {}", hypothesis);
                 println!(
-                    "│ Verified:   {} (Score: {:.4})",
-                    if verified { "\x1b[1;32mYES (TRUE)\x1b[0m" } else { "\x1b[1;31mNO (FALSE)\x1b[0m" },
+                    "Heuristic match: {} (score: {:.4}, not a probability)",
+                    if verified {
+                        "\x1b[1;32mMATCH\x1b[0m"
+                    } else {
+                        "\x1b[1;31mNO MATCH\x1b[0m"
+                    },
                     score
                 );
-                println!("│ Latency:    {} µs (Multiplication-free ternary addition)    │", us);
+                println!(
+                    "│ Latency:    {} µs (Multiplication-free ternary addition)    │",
+                    us
+                );
                 println!("└─────────────────────────────────────────────────────────────┘");
             }
             Err(e) => eprintln!("Error: {e}"),
@@ -4654,7 +5264,9 @@ fn run_bitnet_command(args: &[String]) {
     }
 
     if args[0] == "benchmark" {
-        println!("Benchmarking BitNet b1.58 ternary linear contraction (100% Safe Rust)...");
+        println!(
+            "Benchmarking BitNet b1.58 ternary linear contraction (local exploratory timing)..."
+        );
         let block = match tapirus::BitNetBlock::new(256, 512) {
             Ok(b) => b,
             Err(e) => {
@@ -4663,20 +5275,32 @@ fn run_bitnet_command(args: &[String]) {
             }
         };
         let input = vec![0.5f32; 256];
-        let _ = block.forward(&input);
+        let warmup = block.forward(std::hint::black_box(&input));
+        let _ = std::hint::black_box(warmup);
 
-        let iterations = if cfg!(debug_assertions) { 1_000 } else { 10_000 };
-        let start = std::time::Instant::now();
+        let iterations = if cfg!(debug_assertions) {
+            1_000
+        } else {
+            10_000
+        };
+        let start = web_time::Instant::now();
         for _ in 0..iterations {
-            let _ = block.forward(&input);
+            let output = block.forward(std::hint::black_box(&input));
+            let _ = std::hint::black_box(output);
         }
         let total_us = start.elapsed().as_micros();
         let per_op_ns = (total_us as f64 * 1000.0) / iterations as f64;
         let ops_per_sec = (iterations as f64 / (total_us.max(1) as f64 / 1_000_000.0)) as u64;
 
-        println!("BitNet b1.58 [256 -> 512 SwiGLU -> 256] Results:");
+        println!(
+            "BitNet b1.58 [256 -> 512 SwiGLU -> 256] local timing (not comparative evidence):"
+        );
         println!("  Total Contractions: {}", iterations);
-        println!("  Latency per block:  {:.2} ns ({:.3} µs)", per_op_ns, per_op_ns / 1000.0);
+        println!(
+            "  Latency per block:  {:.2} ns ({:.3} µs)",
+            per_op_ns,
+            per_op_ns / 1000.0
+        );
         println!("  Throughput:         {} ternary blocks/sec", ops_per_sec);
         println!("  Multiply Ops:       0 (Zero floating-point weight multiplications)");
         return;
@@ -4690,7 +5314,7 @@ fn run_bitnet_command(args: &[String]) {
         return;
     }
 
-    let start = std::time::Instant::now();
+    let start = web_time::Instant::now();
     match engine.classify_deep(input, &candidates) {
         Ok((winner, score)) => {
             let us = start.elapsed().as_micros();
@@ -4698,13 +5322,69 @@ fn run_bitnet_command(args: &[String]) {
             println!("│ BitNet b1.58 Ternary Categorical Classification             │");
             println!("├─────────────────────────────────────────────────────────────┤");
             println!("│ Input:      {}", input);
-            println!("│ Top Choice: \x1b[1;32m{}\x1b[0m (Score: {:.4})", winner, score);
+            println!(
+                "│ Top Choice: \x1b[1;32m{}\x1b[0m (Score: {:.4})",
+                winner, score
+            );
             println!("│ Candidates: {:?}", candidates);
-            println!("│ Latency:    {} µs (Safe Rust Ternary Neural Engine)         │", us);
+            println!(
+                "│ Latency:    {} µs (local run; workload-specific)         │",
+                us
+            );
             println!("└─────────────────────────────────────────────────────────────┘");
         }
         Err(e) => eprintln!("Error: {e}"),
     }
 }
 
+#[cfg(test)]
+mod audit_regression_tests {
+    use super::*;
 
+    #[test]
+    fn http_sql_payload_preserves_bound_parameters() {
+        let (sql, params) =
+            parse_http_sql_payload(r#"{"sql":"SELECT ? AS value","params":["?"]}"#).unwrap();
+        assert_eq!(sql, "SELECT ? AS value");
+        assert_eq!(params, vec![Value::Text("?".into())]);
+        assert!(parse_http_sql_payload(r#"{"sql":"SELECT ?","params":{}}"#).is_err());
+    }
+
+    #[test]
+    fn chat_endpoints_require_the_configured_key() {
+        assert!(!request_has_valid_api_key(
+            "secret",
+            None,
+            "GET /api/chat/logs HTTP/1.1\r\n"
+        ));
+        assert!(request_has_valid_api_key(
+            "secret",
+            None,
+            "GET /api/chat/logs HTTP/1.1\r\nAuthorization: Bearer secret\r\n"
+        ));
+        assert!(!request_has_valid_api_key(
+            "secret",
+            None,
+            "GET /api/chat/logs HTTP/1.1\r\nX-API-Key: wrong\r\n"
+        ));
+    }
+
+    #[test]
+    fn vector_endpoint_reports_record_vector_and_cosine_similarity()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let db = Connection::open_in_memory()?;
+        db.execute(
+            "CREATE TABLE vectors (id INTEGER PRIMARY KEY, body TEXT, embedding VECTOR(2));",
+        )?;
+        db.execute("INSERT INTO vectors VALUES (1, 'orthogonal', [1.0, 0.0]);")?;
+        db.execute("INSERT INTO vectors VALUES (2, 'same', [0.0, 1.0]);")?;
+        let results = vector_search_results(&db, "vectors", &[0.0, 1.0], 2).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["id"], 2);
+        assert_eq!(results[0]["score"].as_f64().unwrap(), 1.0);
+        assert_eq!(results[0]["vector"], serde_json::json!([0.0, 1.0]));
+        assert_eq!(results[1]["score"].as_f64().unwrap().abs(), 0.0);
+        assert_eq!(results[1]["vector"], serde_json::json!([1.0, 0.0]));
+        Ok(())
+    }
+}

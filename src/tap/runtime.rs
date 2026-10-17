@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 /// Magic bytes for Tap serialized models: "TAP1"
-pub const TAP_MODEL_MAGIC: [u8; 4] = [b'T', b'A', b'P', b'1'];
+pub const TAP_MODEL_MAGIC: [u8; 4] = *b"TAP1";
 
 /// In-memory pre-trained or baseline weights for Tap decision projections
 #[derive(Debug, Clone)]
@@ -59,41 +59,41 @@ impl TapWeights {
 
     /// Load weights from a binary `.tapmodel` file
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let mut file = File::open(path).map_err(|e| Error::Io(e))?;
+        let mut file = File::open(path).map_err(Error::Io)?;
         let mut magic = [0u8; 4];
-        file.read_exact(&mut magic).map_err(|e| Error::Io(e))?;
+        file.read_exact(&mut magic).map_err(Error::Io)?;
         if magic != TAP_MODEL_MAGIC {
             return Err(Error::Internal("Invalid Tap model magic header".into()));
         }
 
         let mut buf_u32 = [0u8; 4];
-        file.read_exact(&mut buf_u32).map_err(|e| Error::Io(e))?;
+        file.read_exact(&mut buf_u32).map_err(Error::Io)?;
         let dim = u32::from_le_bytes(buf_u32) as usize;
 
-        file.read_exact(&mut buf_u32).map_err(|e| Error::Io(e))?;
+        file.read_exact(&mut buf_u32).map_err(Error::Io)?;
         let vocab_size = u32::from_le_bytes(buf_u32) as usize;
 
         let emb_len = vocab_size * dim;
         let mut embedding_table = Vec::with_capacity(emb_len);
         for _ in 0..emb_len {
-            file.read_exact(&mut buf_u32).map_err(|e| Error::Io(e))?;
+            file.read_exact(&mut buf_u32).map_err(Error::Io)?;
             embedding_table.push(f32::from_le_bytes(buf_u32));
         }
 
         let proj_len = dim * dim;
         let mut projection_matrix = Vec::with_capacity(proj_len);
         for _ in 0..proj_len {
-            file.read_exact(&mut buf_u32).map_err(|e| Error::Io(e))?;
+            file.read_exact(&mut buf_u32).map_err(Error::Io)?;
             projection_matrix.push(f32::from_le_bytes(buf_u32));
         }
 
         let mut projection_bias = Vec::with_capacity(dim);
         for _ in 0..dim {
-            file.read_exact(&mut buf_u32).map_err(|e| Error::Io(e))?;
+            file.read_exact(&mut buf_u32).map_err(Error::Io)?;
             projection_bias.push(f32::from_le_bytes(buf_u32));
         }
 
-        file.read_exact(&mut buf_u32).map_err(|e| Error::Io(e))?;
+        file.read_exact(&mut buf_u32).map_err(Error::Io)?;
         let temperature = f32::from_le_bytes(buf_u32);
 
         Ok(Self {
@@ -108,23 +108,26 @@ impl TapWeights {
 
     /// Save weights to a binary `.tapmodel` file
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let mut file = File::create(path).map_err(|e| Error::Io(e))?;
-        file.write_all(&TAP_MODEL_MAGIC).map_err(|e| Error::Io(e))?;
-        file.write_all(&(self.dim as u32).to_le_bytes()).map_err(|e| Error::Io(e))?;
-        file.write_all(&(self.vocab_size as u32).to_le_bytes()).map_err(|e| Error::Io(e))?;
+        let mut file = File::create(path).map_err(Error::Io)?;
+        file.write_all(&TAP_MODEL_MAGIC).map_err(Error::Io)?;
+        file.write_all(&(self.dim as u32).to_le_bytes())
+            .map_err(Error::Io)?;
+        file.write_all(&(self.vocab_size as u32).to_le_bytes())
+            .map_err(Error::Io)?;
 
         for &val in &self.embedding_table {
-            file.write_all(&val.to_le_bytes()).map_err(|e| Error::Io(e))?;
+            file.write_all(&val.to_le_bytes()).map_err(Error::Io)?;
         }
         for &val in &self.projection_matrix {
-            file.write_all(&val.to_le_bytes()).map_err(|e| Error::Io(e))?;
+            file.write_all(&val.to_le_bytes()).map_err(Error::Io)?;
         }
         for &val in &self.projection_bias {
-            file.write_all(&val.to_le_bytes()).map_err(|e| Error::Io(e))?;
+            file.write_all(&val.to_le_bytes()).map_err(Error::Io)?;
         }
-        file.write_all(&self.temperature.to_le_bytes()).map_err(|e| Error::Io(e))?;
+        file.write_all(&self.temperature.to_le_bytes())
+            .map_err(Error::Io)?;
 
-        file.flush().map_err(|e| Error::Io(e))?;
+        file.flush().map_err(Error::Io)?;
         Ok(())
     }
 }
@@ -162,27 +165,27 @@ impl TapRuntime {
             let idx = (tid as usize) % self.weights.vocab_size;
             let offset = idx * dim;
             let emb_slice = &self.weights.embedding_table[offset..offset + dim];
-            for i in 0..dim {
-                pooled[i] += emb_slice[i];
+            for (value, component) in pooled.iter_mut().zip(emb_slice) {
+                *value += component;
             }
             count += 1.0;
         }
 
         if count > 0.0 {
-            for i in 0..dim {
-                pooled[i] /= count;
+            for value in &mut pooled {
+                *value /= count;
             }
         }
 
         // Apply linear projection layer: y = W * x + b
         let mut projected = vec![0.0; dim];
-        for i in 0..dim {
+        for (i, value) in projected.iter_mut().enumerate() {
             let mut sum = self.weights.projection_bias[i];
             let row_offset = i * dim;
-            for j in 0..dim {
-                sum += self.weights.projection_matrix[row_offset + j] * pooled[j];
+            for (j, &component) in pooled.iter().enumerate() {
+                sum += self.weights.projection_matrix[row_offset + j] * component;
             }
-            projected[i] = sum;
+            *value = sum;
         }
 
         // L2 Normalize

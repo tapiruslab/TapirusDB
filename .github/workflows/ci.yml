@@ -1,12 +1,59 @@
 name: Continuous Integration & Benchmark Suite
 
 on:
+  workflow_call:
   push:
     branches: [ master, main ]
   pull_request:
     branches: [ master, main ]
 
+permissions:
+  contents: read
+
 jobs:
+  micro:
+    name: Bare-metal component compile and host fault simulation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf,riscv32imac-unknown-none-elf
+      - run: cargo test --locked -p tapirus-micro
+      - run: cargo check --locked -p tapirus-micro --target thumbv7em-none-eabihf
+      - run: cargo check --locked -p tapirus-micro --target riscv32imac-unknown-none-elf
+  quality:
+    name: Format and strict Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: python scripts/check-release-version.py
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: bash -n install.sh scripts/test-unix-installer.sh
+
+  dependency-security:
+    name: Known dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python scripts/check-dependency-advisories.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-advisories
+          path: target/dependency-advisories.json
+
   test:
     name: Test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
@@ -16,8 +63,10 @@ jobs:
         include:
           - name: "Linux Universal (Debian, Ubuntu, Fedora, RHEL)"
             os: ubuntu-latest
-          - name: "macOS (Apple Silicon & Intel)"
+          - name: "macOS (Apple Silicon)"
             os: macos-latest
+          - name: "macOS (Intel)"
+            os: macos-15-intel
           - name: "Windows (x86_64 MSVC)"
             os: windows-latest
 
@@ -28,14 +77,30 @@ jobs:
       - name: Install Stable Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Check Compiler & Lints
-        run: cargo check --workspace --verbose
+      - name: Check all host features
+        run: cargo check --locked --workspace --all-features
 
       - name: Run Full Test Suite
-        run: cargo test --workspace --verbose
+        run: cargo test --locked --workspace --all-targets
+
+      - name: Storage fault and recovery tests
+        run: cargo test --locked --features fault-injection --test io_fault_recovery_tests
+
+      - name: Verify Windows installer in an isolated directory
+        if: runner.os == 'Windows'
+        run: ./scripts/test-windows-installer.ps1
+        shell: pwsh
+
+      - name: Verify Unix installer in an isolated directory
+        if: runner.os != 'Windows'
+        run: bash scripts/test-unix-installer.sh
 
   test-alpine-musl:
     name: Test (Linux Alpine musl)
@@ -50,16 +115,88 @@ jobs:
         run: apk add --no-cache musl-dev gcc
 
       - name: Check Compiler & Lints (musl)
-        run: cargo check --workspace --verbose
+        run: cargo check --locked -p tapirus -p tapirus-ffi -p tapirus-wasm
 
       - name: Run Full Test Suite (musl)
-        run: cargo test --workspace --verbose
+        run: cargo test --locked -p tapirus -p tapirus-ffi -p tapirus-wasm
+
+  native-sdk:
+    name: Native npm consumer (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: node scripts/sync-node-sdk.js --check
+      - run: node scripts/build-node-sdk.js --debug
+      - run: node sdks/nodejs/test.js
+      - run: node scripts/test-node-package.js
+
+  python-sdk:
+    name: Native Python wheel (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.10', '3.12', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: python -m pip install 'maturin>=1,<2'
+      - run: maturin build --manifest-path sdks/python/Cargo.toml --locked --out target/python-wheels
+      - run: python scripts/test-python-sdk.py --wheel target/python-wheels
+
+  wasm-runtime:
+    name: Rust WASM runtime and browser persistence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install CLI matching the locked wasm-bindgen schema
+        run: |
+          version=$(python -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')
+          cargo install wasm-bindgen-cli --version "$version" --locked
+      - run: node scripts/build-node-sdk.js --debug
+      - run: node scripts/build-wasm.js
+      - run: node scripts/test-wasm.mjs
+      - run: node scripts/test-browser-workspace.mjs
+        env:
+          BROWSER_BIN: /usr/bin/google-chrome
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-browser-evidence
+          path: |
+            target/browser-workspace-results.json
+            target/browser-workspace-*.png
+            crates/tapirus-wasm/pkg/
 
 
   benchmark:
     name: Performance & Latency Benchmark
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, quality]
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -73,6 +210,7 @@ jobs:
       - name: Run Benchmark Suite
         run: |
           cargo bench --bench tapirus_bench
+          cargo bench --bench release_readiness
           if [ -f target/tapirus_bench_results.json ]; then
             echo "### 🦛 TapirusDB Benchmark Telemetry Summary" >> $GITHUB_STEP_SUMMARY
             echo '```json' >> $GITHUB_STEP_SUMMARY
@@ -84,6 +222,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tapirus-benchmark-telemetry
-          path: target/tapirus_bench_results.json
+          path: |
+            target/tapirus_bench_results.json
+            target/release-readiness-results.json
           if-no-files-found: warn
 

@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::ptr;
 use tapirus::Connection;
@@ -240,10 +240,10 @@ pub extern "C" fn tapirus_version() -> *const c_char {
 }
 
 unsafe fn set_err(err_msg_out: *mut *mut c_char, msg: &str) {
-    if !err_msg_out.is_null() {
-        if let Ok(c_msg) = CString::new(msg) {
-            unsafe { *err_msg_out = c_msg.into_raw() };
-        }
+    if !err_msg_out.is_null()
+        && let Ok(c_msg) = CString::new(msg)
+    {
+        unsafe { *err_msg_out = c_msg.into_raw() };
     }
 }
 
@@ -570,7 +570,9 @@ pub unsafe extern "C" fn sqlite3_column_text(pStmt: *mut sqlite3_stmt, N: i32) -
             other => other.to_string(),
         };
         stmt.current_text_cache = CString::new(s).ok();
-        stmt.current_text_cache.as_ref().map_or(ptr::null(), |c| c.as_ptr())
+        stmt.current_text_cache
+            .as_ref()
+            .map_or(ptr::null(), |c| c.as_ptr())
     } else {
         ptr::null()
     }
@@ -683,13 +685,13 @@ pub unsafe extern "C" fn sqlite3_reset(pStmt: *mut sqlite3_stmt) -> i32 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sqlite3_errmsg(db: *mut sqlite3) -> *const c_char {
     if db.is_null() {
-        return b"out of memory\0".as_ptr() as *const c_char;
+        return c"out of memory".as_ptr();
     }
     let db_ref = unsafe { &*db };
     if let Some(ref err) = db_ref.last_error {
         err.as_ptr()
     } else {
-        b"not an error\0".as_ptr() as *const c_char
+        c"not an error".as_ptr()
     }
 }
 
@@ -728,7 +730,7 @@ pub unsafe extern "C" fn sqlite3_changes(db: *mut sqlite3) -> i32 {
 /// Return SQLite library version.
 #[unsafe(no_mangle)]
 pub extern "C" fn sqlite3_libversion() -> *const c_char {
-    b"3.45.0-tapirusdb\0".as_ptr() as *const c_char
+    c"3.45.0-tapirusdb".as_ptr()
 }
 
 /// Return SQLite library version number.

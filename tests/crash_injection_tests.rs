@@ -45,7 +45,11 @@ fn test_crash_recovery_truncated_frame_torn_write() -> Result<()> {
     {
         let conn = Connection::open(&db_path)?;
         let rows = conn.query("SELECT id, item, qty FROM orders ORDER BY id;")?;
-        assert_eq!(rows.len(), 2, "Both committed rows must be recovered despite torn write");
+        assert_eq!(
+            rows.len(),
+            2,
+            "Both committed rows must be recovered despite torn write"
+        );
         assert_eq!(rows[0].get::<String>("item")?, "Book");
         assert_eq!(rows[1].get::<String>("item")?, "Laptop");
     }
@@ -90,7 +94,10 @@ fn test_crash_recovery_corrupted_frame_crc32() -> Result<()> {
     {
         let conn = Connection::open(&db_path)?;
         let rows = conn.query("SELECT id FROM ledger;")?;
-        assert!(!rows.is_empty(), "Uncorrupted prior records must remain valid");
+        assert!(
+            !rows.is_empty(),
+            "Uncorrupted prior records must remain valid"
+        );
     }
 
     Ok(())
@@ -146,7 +153,9 @@ fn test_crash_recovery_mid_checkpoint_resilience() -> Result<()> {
         let conn = Connection::open(&db_path)?;
         conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, name TEXT);")?;
         for i in 1..=20 {
-            conn.execute(&format!("INSERT INTO events (id, name) VALUES ({i}, 'evt_{i}');"))?;
+            conn.execute(&format!(
+                "INSERT INTO events (id, name) VALUES ({i}, 'evt_{i}');"
+            ))?;
         }
         // Explicitly drop without checkpointing (simulates sudden shutdown)
     }
@@ -185,7 +194,9 @@ fn test_crash_recovery_idempotence() -> Result<()> {
         let conn = Connection::open(&db_path)?;
         conn.execute("CREATE TABLE series (id INTEGER PRIMARY KEY, val REAL);")?;
         for i in 1..=10 {
-            conn.execute(&format!("INSERT INTO series (id, val) VALUES ({i}, {i}.5);"))?;
+            conn.execute(&format!(
+                "INSERT INTO series (id, val) VALUES ({i}, {i}.5);"
+            ))?;
         }
     }
 
@@ -193,7 +204,11 @@ fn test_crash_recovery_idempotence() -> Result<()> {
     for iteration in 1..=3 {
         let conn = Connection::open(&db_path)?;
         let rows = conn.query("SELECT id, val FROM series ORDER BY id;")?;
-        assert_eq!(rows.len(), 10, "Iteration {iteration} must recover exact 10 records");
+        assert_eq!(
+            rows.len(),
+            10,
+            "Iteration {iteration} must recover exact 10 records"
+        );
         assert_eq!(rows[0].get::<i64>("id")?, 1);
         assert_eq!(rows[9].get::<i64>("id")?, 10);
     }

@@ -257,8 +257,8 @@ impl CsrGraph {
             }
 
             for &neighbor in self.outgoing_neighbors(current) {
-                if !visited.contains_key(&neighbor) {
-                    visited.insert(neighbor, depth + 1);
+                if let std::collections::hash_map::Entry::Vacant(e) = visited.entry(neighbor) {
+                    e.insert(depth + 1);
                     queue.push_back(neighbor);
                     order.push(neighbor);
                 }

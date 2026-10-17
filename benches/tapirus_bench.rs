@@ -1,6 +1,7 @@
 //! # TapirusDB Scientific Performance & Tail-Latency Benchmark Suite (`tapirus_bench`)
 //!
-//! Provides rigorous, peer-review-grade profiling across all database engines:
+//! Collects local timing samples for selected operations. This is not a
+//! release benchmark, peer-reviewed result, or memory-leak check.
 //! - Relational SQL (Slotted B+Tree)
 //! - Native AI Vector Search (HNSW Multi-Layer Index with Tombstone Vacuuming)
 //! - MongoDB-style Schemaless Documents
@@ -104,12 +105,23 @@ impl LatencyStats {
 
 fn main() {
     println!("\n==========================================================================");
-    println!("     🦛 TAPIRUSDB SCIENTIFIC TAIL-LATENCY BENCHMARK SUITE (Safe Rust)    ");
+    println!("     TAPIRUSDB EXPLORATORY LOCAL TIMING HARNESS                           ");
     println!("==========================================================================");
-    println!("Platform       : {} {} (Universal POSIX / Multi-Arch)", std::env::consts::OS, std::env::consts::ARCH);
-    println!("Compiler       : rustc 1.98.0 | Optimization: Level 3 (Release)");
-    println!("Page Size      : 4,096 B | Nonce: Monotonic 96-bit | Memory: Zero-Unsafe");
-    println!("Harness Config : Warm-up Enabled | Seed: 0x19890604 | Distribution: Normal/Uniform\n");
+    println!(
+        "Platform       : {} {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    println!(
+        "Build profile  : {}",
+        if cfg!(debug_assertions) {
+            "debug/test"
+        } else {
+            "release"
+        }
+    );
+    println!("Page size      : 4,096 B");
+    println!("Scope          : local samples only; not release or comparative evidence\n");
 
     let mut all_stats = Vec::new();
 
@@ -122,16 +134,18 @@ fn main() {
     all_stats.extend(bench_graph_vector_chaining());
     all_stats.extend(bench_rabitq_vector_scale_and_popcnt());
 
-    // Export raw JSON file for peer-review inspection
+    // Export raw JSON output from this local harness.
     if let Ok(json) = serde_json::to_string_pretty(&all_stats) {
         if let Ok(mut f) = File::create("target/tapirus_bench_results.json") {
             let _ = f.write_all(json.as_bytes());
-            println!("Benchmark telemetry exported to `target/tapirus_bench_results.json`");
+            println!("Local harness telemetry exported to target/tapirus_bench_results.json");
         }
     }
 
     println!("\n==========================================================================");
-    println!("  All benchmarks completed successfully. Zero crashes. Zero memory leaks.  ");
+    println!(
+        "  Harness completed. This run does not establish release performance or absence of leaks."
+    );
     println!("==========================================================================\n");
 }
 
@@ -216,7 +230,9 @@ fn bench_vector_hnsw() -> Vec<LatencyStats> {
     let start_all_ingest = Instant::now();
     for (id, vec) in vectors.iter().enumerate() {
         let t0 = Instant::now();
-        index.insert_vector(id as u64 + 1, vec).expect("Vector insert");
+        index
+            .insert_vector(id as u64 + 1, vec)
+            .expect("Vector insert");
         ingest_samples.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
     }
     let dur_ingest = start_all_ingest.elapsed();
@@ -235,9 +251,12 @@ fn bench_vector_hnsw() -> Vec<LatencyStats> {
     for i in 0..search_count {
         let query_vec = &vectors[i % index_size];
         let t0 = Instant::now();
-        let neighbors = index.search_knn(query_vec, 5, DistanceMetric::Cosine).expect("KNN search");
+        let neighbors = index
+            .search_knn(std::hint::black_box(query_vec), 5, DistanceMetric::Cosine)
+            .expect("KNN search");
         search_samples.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
         assert!(!neighbors.is_empty());
+        std::hint::black_box(neighbors);
     }
     let dur_search = start_all_search.elapsed();
     let search_stats = LatencyStats::compute("hnsw_knn_search_k5", search_samples, dur_search);
@@ -261,7 +280,9 @@ fn bench_vector_hnsw() -> Vec<LatencyStats> {
     let dur_vacuum = start_vacuum.elapsed();
     println!(
         "  • {:<24} 100 purged in {:>8.2?} | {:>6.2} µs total\n",
-        "HNSW Vacuum Purge", dur_vacuum, dur_vacuum.as_nanos() as f64 / 1_000.0
+        "HNSW Vacuum Purge",
+        dur_vacuum,
+        dur_vacuum.as_nanos() as f64 / 1_000.0
     );
 
     vec![ingest_stats, search_stats, del_stats]
@@ -285,7 +306,9 @@ fn bench_document_collection() -> Vec<LatencyStats> {
     let start_all_inserts = Instant::now();
     for i in 1..=count {
         let t0 = Instant::now();
-        collection.insert_with_id(i as u64, &doc).expect("Insert document");
+        collection
+            .insert_with_id(i as u64, &doc)
+            .expect("Insert document");
         insert_samples.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
     }
     let dur_inserts = start_all_inserts.elapsed();
@@ -315,14 +338,17 @@ fn bench_graph_traversal() -> Vec<LatencyStats> {
 
     let node_count: usize = 500;
     for i in 1..=node_count {
-        conn.graph_add_node(i as u64, "Entity", "{}").expect("Add node");
+        conn.graph_add_node(i as u64, "Entity", "{}")
+            .expect("Add node");
     }
 
     // Connect entities in a ring and cross-chords
     for i in 1..node_count {
-        conn.graph_add_edge(i as u64, (i + 1) as u64, "CONNECTED_TO", 1.0, "").expect("Add edge");
+        conn.graph_add_edge(i as u64, (i + 1) as u64, "CONNECTED_TO", 1.0, "")
+            .expect("Add edge");
         if i + 5 <= node_count {
-            conn.graph_add_edge(i as u64, (i + 5) as u64, "SHORTCUT", 0.5, "").expect("Add shortcut");
+            conn.graph_add_edge(i as u64, (i + 5) as u64, "SHORTCUT", 0.5, "")
+                .expect("Add shortcut");
         }
     }
 
@@ -362,7 +388,7 @@ fn bench_graph_traversal() -> Vec<LatencyStats> {
 }
 
 fn bench_wal_disk_persistence() -> Vec<LatencyStats> {
-    println!("--- 5. Storage & WAL Durability (Single .tapir File Mode) ---");
+    println!("--- 5. Storage & WAL write/checkpoint timings ---");
     let temp_file = NamedTempFile::new().expect("Create temp file");
     let path = temp_file.path();
 
@@ -416,7 +442,8 @@ fn bench_ai_agent_memory() -> Vec<LatencyStats> {
         remember_samples.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
     }
     let dur_remember = start_all_remember.elapsed();
-    let remember_stats = LatencyStats::compute("memory_ingest_bm25", remember_samples, dur_remember);
+    let remember_stats =
+        LatencyStats::compute("memory_ingest_bm25", remember_samples, dur_remember);
     remember_stats.print_summary("Memory Ingest (BM25)");
 
     // Hybrid Recall (BM25 + Temporal Decay)
@@ -451,14 +478,19 @@ fn bench_ai_agent_memory() -> Vec<LatencyStats> {
     let mut turnkey_samples = Vec::with_capacity(agent_recall_count);
     let start_turnkey = Instant::now();
     for i in 1..=agent_recall_count {
-        let query = if i % 2 == 0 { "system configuration" } else { "telemetry event" };
+        let query = if i % 2 == 0 {
+            "system configuration"
+        } else {
+            "telemetry event"
+        };
         let t0 = Instant::now();
         let prompt = agent_conn.recall_prompt(query, 3);
         turnkey_samples.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
         assert!(!prompt.is_empty());
     }
     let dur_turnkey = start_turnkey.elapsed();
-    let turnkey_stats = LatencyStats::compute("agent_memory_recall_turnkey", turnkey_samples, dur_turnkey);
+    let turnkey_stats =
+        LatencyStats::compute("agent_memory_recall_turnkey", turnkey_samples, dur_turnkey);
     turnkey_stats.print_summary("Turnkey Agent Recall (500 ctx)");
     println!();
 
@@ -504,10 +536,11 @@ fn bench_graph_vector_chaining() -> Vec<LatencyStats> {
     // Warm-up
     for i in 1..=100 {
         let start_id = ((i % 20) + 1) as u64;
-        let _ = conn
-            .chain(start_id)
-            .out(Some("RELATES_TO"))
-            .vector_near(&query_vec, 3, DistanceMetric::Cosine);
+        let _ = conn.chain(start_id).out(Some("RELATES_TO")).vector_near(
+            &query_vec,
+            3,
+            DistanceMetric::Cosine,
+        );
     }
 
     // Benchmark: 1-hop Graph Traversal -> Vector Cosine Ranking over neighborhood
@@ -522,7 +555,7 @@ fn bench_graph_vector_chaining() -> Vec<LatencyStats> {
             .vector_near(&query_vec, 3, DistanceMetric::Cosine)
             .expect("Chain query");
         chain_samples.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
-        let _ = matches.len();
+        std::hint::black_box(matches.len());
     }
     let dur_chain = start_all.elapsed();
     let chain_stats = LatencyStats::compute("graph_to_vector_chain", chain_samples, dur_chain);
@@ -533,7 +566,7 @@ fn bench_graph_vector_chaining() -> Vec<LatencyStats> {
 }
 
 fn bench_rabitq_vector_scale_and_popcnt() -> Vec<LatencyStats> {
-    println!("--- 8. RaBitQ Ultra-Scale Vector Engine (1-Bit POPCNT vs Float32) ---");
+    println!("--- 8. RaBitQ payload estimate and local distance timings ---");
     let dims = 1536; // OpenAI text-embedding-3 standard dimension
     let quantizer = tapirus::RaBitQuantizer::new(dims, 1);
 
@@ -560,21 +593,17 @@ fn bench_rabitq_vector_scale_and_popcnt() -> Vec<LatencyStats> {
     let quant_stats = LatencyStats::compute("rabitq_1bit_quantize_1536d", quant_samples, dur_quant);
     quant_stats.print_summary("RaBitQ 1-Bit Quantize (1536D)");
 
-    // Exact Physical Memory Scale Verification
+    // Payload-only estimate; excludes allocator, indexes, and container overhead.
     let bytes_per_quant = (quantized_vecs[0].bits.len() * 8) + 4; // 192 bytes bitmask + 4 bytes norm = 196 bytes
     let bytes_per_float = dims * 4; // 6,144 bytes
     let ram_1m_quant_mb = (bytes_per_quant as f64 * 1_000_000.0) / (1024.0 * 1024.0);
     let ram_1m_float_gb = (bytes_per_float as f64 * 1_000_000.0) / (1024.0 * 1024.0 * 1024.0);
     println!(
-        "  • {:<24} {:>4} B/vec (1M = {:>5.1} MB) vs Float32: {:>4} B/vec (1M = {:>4.2} GB) [31.3x Less RAM]",
-        "1M Vector RAM Scale",
-        bytes_per_quant,
-        ram_1m_quant_mb,
-        bytes_per_float,
-        ram_1m_float_gb
+        "  • {:<24} {:>4} B/vec (1M = {:>5.1} MB) vs Float32: {:>4} B/vec (1M = {:>4.2} GB) [payload ratio only; excludes index and allocator]",
+        "1M payload estimate", bytes_per_quant, ram_1m_quant_mb, bytes_per_float, ram_1m_float_gb
     );
 
-    // 2. Hardware Single-Cycle POPCNT vs Float32 Cosine
+    // 2. Separate local timings for Hamming distance and Float32 dot product.
     let dist_count = 50_000;
     let q_a = &quantized_vecs[0];
     let q_b = &quantized_vecs[1];
@@ -583,32 +612,30 @@ fn bench_rabitq_vector_scale_and_popcnt() -> Vec<LatencyStats> {
     let start_all_popcnt = Instant::now();
     for _ in 0..dist_count {
         let t0 = Instant::now();
-        let d = q_a.hamming_distance(q_b);
+        let d = std::hint::black_box(q_a.hamming_distance(q_b));
         popcnt_samples.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
-        let _ = d;
+        std::hint::black_box(d);
     }
     let dur_popcnt = start_all_popcnt.elapsed();
     let popcnt_stats =
         LatencyStats::compute("rabitq_popcnt_distance_1536d", popcnt_samples, dur_popcnt);
     popcnt_stats.print_summary("1-Bit POPCNT Distance");
 
-    // Float32 Cosine baseline for empirical comparison
+    // Dot product is not cosine similarity and is not a correctness-equivalent comparison.
     let f_a = &raw_vectors[0];
     let f_b = &raw_vectors[1];
     let mut fma_samples = Vec::with_capacity(dist_count);
     let start_all_fma = Instant::now();
     for _ in 0..dist_count {
         let t0 = Instant::now();
-        let dot: f32 = f_a.iter().zip(f_b.iter()).map(|(a, b)| a * b).sum();
+        let dot: f32 = std::hint::black_box(f_a.iter().zip(f_b.iter()).map(|(a, b)| a * b).sum());
         fma_samples.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
-        let _ = dot;
+        std::hint::black_box(dot);
     }
     let dur_fma = start_all_fma.elapsed();
-    let fma_stats = LatencyStats::compute("float32_fma_distance_1536d", fma_samples, dur_fma);
-    fma_stats.print_summary("Float32 FMA Distance");
+    let fma_stats = LatencyStats::compute("float32_dot_product_1536d", fma_samples, dur_fma);
+    fma_stats.print_summary("Float32 Dot Product (not cosine)");
     println!();
 
     vec![quant_stats, popcnt_stats, fma_stats]
 }
-
-

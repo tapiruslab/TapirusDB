@@ -11,7 +11,7 @@
 
 use crate::error::{Error, Result};
 use crate::traits::VectorIndexEngine;
-use crate::vector::{cosine_distance, euclidean_distance, DistanceMetric, QuantizedVector8};
+use crate::vector::{DistanceMetric, QuantizedVector8, cosine_distance, euclidean_distance};
 use parking_lot::{Mutex, RwLock};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
@@ -28,7 +28,10 @@ impl Eq for MinCandidate {}
 
 impl Ord for MinCandidate {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.distance.partial_cmp(&self.distance).unwrap_or(Ordering::Equal)
+        other
+            .distance
+            .partial_cmp(&self.distance)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -49,7 +52,9 @@ impl Eq for MaxCandidate {}
 
 impl Ord for MaxCandidate {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.distance.partial_cmp(&other.distance).unwrap_or(Ordering::Equal)
+        self.distance
+            .partial_cmp(&other.distance)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -185,7 +190,11 @@ impl PagedVectorStore {
 
     /// Dump all disk page bytes as (node_id, payload)
     pub fn dump_pages(&self) -> Vec<(u64, Vec<u8>)> {
-        self.disk_pages.read().iter().map(|(&k, v)| (k, v.clone())).collect()
+        self.disk_pages
+            .read()
+            .iter()
+            .map(|(&k, v)| (k, v.clone()))
+            .collect()
     }
 
     /// Load a serialized node page directly into disk storage
@@ -359,7 +368,9 @@ impl PagedHnswIndex {
         }
 
         let entry = self.entry_point.ok_or_else(|| {
-            Error::Corrupted("HNSW entry_point is None during insert — index state is corrupted".into())
+            Error::Corrupted(
+                "HNSW entry_point is None during insert — index state is corrupted".into(),
+            )
         })?;
         let mut curr_obj = entry;
 
@@ -369,7 +380,11 @@ impl PagedHnswIndex {
                 let mut changed = true;
                 while changed {
                     changed = false;
-                    let curr_vec = self.store.get(curr_obj).map(|n| n.vector).unwrap_or_default();
+                    let curr_vec = self
+                        .store
+                        .get(curr_obj)
+                        .map(|n| n.vector)
+                        .unwrap_or_default();
                     let mut curr_dist = self.distance(&vector, &curr_vec);
 
                     let upper_neighbors = self
@@ -457,7 +472,11 @@ impl PagedHnswIndex {
             let mut changed = true;
             while changed {
                 changed = false;
-                let curr_vec = self.store.get(curr_obj).map(|n| n.vector).unwrap_or_default();
+                let curr_vec = self
+                    .store
+                    .get(curr_obj)
+                    .map(|n| n.vector)
+                    .unwrap_or_default();
                 let mut curr_dist = self.distance(query, &curr_vec);
 
                 let upper_neighbors = self
@@ -488,12 +507,21 @@ impl PagedHnswIndex {
         if let Some(entry_node) = self.store.get(curr_obj) {
             let dist = self.distance(query, &entry_node.vector);
             visited.insert(curr_obj);
-            candidates.push(MinCandidate { id: curr_obj, distance: dist });
-            top_candidates.push(MaxCandidate { id: curr_obj, distance: dist });
+            candidates.push(MinCandidate {
+                id: curr_obj,
+                distance: dist,
+            });
+            top_candidates.push(MaxCandidate {
+                id: curr_obj,
+                distance: dist,
+            });
         }
 
         while let Some(candidate) = candidates.pop() {
-            let furthest_dist = top_candidates.peek().map(|c| c.distance).unwrap_or(f32::MAX);
+            let furthest_dist = top_candidates
+                .peek()
+                .map(|c| c.distance)
+                .unwrap_or(f32::MAX);
             if candidate.distance > furthest_dist && top_candidates.len() >= self.ef_search {
                 break;
             }
@@ -509,8 +537,14 @@ impl PagedHnswIndex {
                     if let Some(neighbor) = self.store.get(neighbor_id) {
                         let dist = self.distance(query, &neighbor.vector);
                         if dist < furthest_dist || top_candidates.len() < self.ef_search {
-                            candidates.push(MinCandidate { id: neighbor_id, distance: dist });
-                            top_candidates.push(MaxCandidate { id: neighbor_id, distance: dist });
+                            candidates.push(MinCandidate {
+                                id: neighbor_id,
+                                distance: dist,
+                            });
+                            top_candidates.push(MaxCandidate {
+                                id: neighbor_id,
+                                distance: dist,
+                            });
                             if top_candidates.len() > self.ef_search {
                                 top_candidates.pop();
                             }
@@ -553,7 +587,12 @@ impl VectorIndexEngine for PagedHnswIndex {
         self.insert(id, vector.to_vec())
     }
 
-    fn search_knn(&self, query: &[f32], k: usize, _metric: DistanceMetric) -> Result<Vec<(u64, f32)>> {
+    fn search_knn(
+        &self,
+        query: &[f32],
+        k: usize,
+        _metric: DistanceMetric,
+    ) -> Result<Vec<(u64, f32)>> {
         self.search(query, k)
     }
 }

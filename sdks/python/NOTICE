@@ -1,0 +1,8 @@
+This distribution contains the Python binding and the TapirusDB database engine.
+
+The existing Python package metadata declares the binding under MIT. The
+embedded TapirusDB engine is subject to the repository's Business Source
+License 1.1 parameters, reproduced in CORE_LICENSE. The combined wheel is
+therefore described as MIT AND BUSL-1.1. The binding's MIT declaration does not
+relicense the embedded engine. The engine's existing use grant and change
+date remain as recorded in CORE_LICENSE.

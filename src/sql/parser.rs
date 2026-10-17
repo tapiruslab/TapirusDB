@@ -4,7 +4,7 @@
 
 use crate::error::{Error, Result};
 use crate::sql::catalog::{ColumnDef, DataType};
-use crate::sql::lexer::{tokenize, Token};
+use crate::sql::lexer::{Token, tokenize};
 use crate::traits::Value;
 
 /// Relational JOIN types supported in TapirusDB
@@ -37,7 +37,12 @@ pub struct JoinClause {
 
 impl JoinClause {
     /// Helper to create a new JoinClause
-    pub fn new(table: impl Into<String>, left_col: impl Into<String>, right_col: impl Into<String>, join_type: JoinType) -> Self {
+    pub fn new(
+        table: impl Into<String>,
+        left_col: impl Into<String>,
+        right_col: impl Into<String>,
+        join_type: JoinType,
+    ) -> Self {
         Self {
             table: table.into(),
             left_col: left_col.into(),
@@ -207,6 +212,19 @@ pub enum Statement {
         /// Conflict resolution strategy (Upsert / Replace / Ignore / Abort)
         conflict_action: OnConflict,
         /// Optional RETURNING column projections
+        returning: Option<Vec<String>>,
+    },
+    /// Atomic INSERT of multiple value tuples.
+    InsertMany {
+        /// Target table.
+        table: String,
+        /// Optional column list.
+        columns: Option<Vec<String>>,
+        /// Value tuples.
+        rows: Vec<Vec<Value>>,
+        /// Conflict policy applied to each tuple.
+        conflict_action: OnConflict,
+        /// Optional result projection.
         returning: Option<Vec<String>>,
     },
     /// SELECT [DISTINCT] columns... FROM table [JOIN ...] [WHERE ...] [GROUP BY ...] [HAVING ...] [ORDER BY col [ASC|DESC]] [LIMIT n]
@@ -513,7 +531,11 @@ pub fn tokens_to_sql(tokens: &[Token]) -> String {
     for (i, tok) in tokens.iter().enumerate() {
         if i > 0 {
             match tok {
-                Token::Comma | Token::Semicolon | Token::CloseParen | Token::CloseBracket | Token::Dot => {}
+                Token::Comma
+                | Token::Semicolon
+                | Token::CloseParen
+                | Token::CloseBracket
+                | Token::Dot => {}
                 _ => {
                     if let Some(prev) = tokens.get(i - 1) {
                         if !matches!(prev, Token::OpenParen | Token::OpenBracket | Token::Dot) {
@@ -664,7 +686,7 @@ pub fn parse_tokens(tokens: &[Token]) -> Result<Statement> {
     }
 
     let mut cursor = 0;
-    match &tokens[cursor] {
+    let statement = match &tokens[cursor] {
         Token::Create => {
             if cursor + 1 < tokens.len() && tokens[cursor + 1] == Token::Index {
                 parse_create_index(tokens, &mut cursor)
@@ -696,7 +718,17 @@ pub fn parse_tokens(tokens: &[Token]) -> Result<Statement> {
         other => Err(Error::SqlSyntax(format!(
             "Unexpected statement starting with {other:?}"
         ))),
+    }?;
+    while tokens.get(cursor) == Some(&Token::Semicolon) {
+        cursor += 1;
     }
+    if cursor != tokens.len() {
+        return Err(Error::SqlSyntax(format!(
+            "Unexpected trailing SQL token {:?}",
+            tokens[cursor]
+        )));
+    }
+    Ok(statement)
 }
 
 /// Parse a raw SQL query string into an AST Statement
@@ -712,7 +744,11 @@ fn parse_with_cte(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     loop {
         let name = match get_token(tokens, cursor)? {
             Token::Ident(s) => s.clone(),
-            other => return Err(Error::SqlSyntax(format!("Expected CTE name, got {other:?}"))),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected CTE name, got {other:?}"
+                )));
+            }
         };
 
         let mut columns = None;
@@ -788,6 +824,11 @@ fn parse_identifier_or_keyword(tokens: &[Token], cursor: &mut usize) -> Result<S
         Token::Blob => Ok("blob".to_string()),
         Token::Key => Ok("key".to_string()),
         Token::Plan => Ok("plan".to_string()),
+        Token::Count => Ok("count".to_string()),
+        Token::Sum => Ok("sum".to_string()),
+        Token::Avg => Ok("avg".to_string()),
+        Token::Min => Ok("min".to_string()),
+        Token::Max => Ok("max".to_string()),
         Token::Order => Ok("order".to_string()),
         Token::Match => Ok("match".to_string()),
         Token::Like => Ok("like".to_string()),
@@ -813,7 +854,9 @@ fn parse_identifier_or_keyword(tokens: &[Token], cursor: &mut usize) -> Result<S
         Token::Preceding => Ok("preceding".to_string()),
         Token::Following => Ok("following".to_string()),
         Token::Unbounded => Ok("unbounded".to_string()),
-        other => Err(Error::SqlSyntax(format!("Expected identifier or column name, got {other:?}"))),
+        other => Err(Error::SqlSyntax(format!(
+            "Expected identifier or column name, got {other:?}"
+        ))),
     }
 }
 
@@ -826,18 +869,34 @@ fn parse_column_def(tokens: &[Token], cursor: &mut usize) -> Result<ColumnDef> {
         Token::Text => DataType::Text,
         Token::Blob => DataType::Blob,
         Token::Timestamp => DataType::Text,
-        Token::Ident(id) if id.eq_ignore_ascii_case("DATETIME") || id.eq_ignore_ascii_case("TIMESTAMP") => DataType::Text,
-        Token::Ident(id) if id.eq_ignore_ascii_case("BOOLEAN") || id.eq_ignore_ascii_case("BOOL") => DataType::Integer,
+        Token::Ident(id)
+            if id.eq_ignore_ascii_case("DATETIME") || id.eq_ignore_ascii_case("TIMESTAMP") =>
+        {
+            DataType::Text
+        }
+        Token::Ident(id)
+            if id.eq_ignore_ascii_case("BOOLEAN") || id.eq_ignore_ascii_case("BOOL") =>
+        {
+            DataType::Integer
+        }
         Token::Vector => {
             expect_token(tokens, cursor, &Token::OpenParen)?;
             let dims = match get_token(tokens, cursor)? {
                 Token::IntLit(n) => *n as usize,
-                other => return Err(Error::SqlSyntax(format!("Expected vector dimensions, got {other:?}"))),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected vector dimensions, got {other:?}"
+                    )));
+                }
             };
             expect_token(tokens, cursor, &Token::CloseParen)?;
             DataType::Vector(dims)
         }
-        other => return Err(Error::SqlSyntax(format!("Expected data type, got {other:?}"))),
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "Expected data type, got {other:?}"
+            )));
+        }
     };
 
     let mut primary_key = false;
@@ -880,7 +939,11 @@ fn parse_create_table(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
 
     let table_name = match get_token(tokens, cursor)? {
         Token::Ident(s) => s.clone(),
-        other => return Err(Error::SqlSyntax(format!("Expected table name, got {other:?}"))),
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "Expected table name, got {other:?}"
+            )));
+        }
     };
 
     expect_token(tokens, cursor, &Token::OpenParen)?;
@@ -896,7 +959,9 @@ fn parse_create_table(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
             *cursor += 1;
             break;
         } else {
-            return Err(Error::SqlSyntax("Expected ',' or ')' in CREATE TABLE".into()));
+            return Err(Error::SqlSyntax(
+                "Expected ',' or ')' in CREATE TABLE".into(),
+            ));
         }
     }
 
@@ -911,7 +976,9 @@ fn parse_create_table(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
                     *cursor += 1;
                 }
                 let opt_val = parse_identifier_or_keyword(tokens, cursor)?;
-                if opt_key.eq_ignore_ascii_case("SYSTEM_VERSIONING") || opt_key.eq_ignore_ascii_case("TEMPORAL") {
+                if opt_key.eq_ignore_ascii_case("SYSTEM_VERSIONING")
+                    || opt_key.eq_ignore_ascii_case("TEMPORAL")
+                {
                     let v = opt_val.to_uppercase();
                     if v == "TRUE" || v == "ON" || v == "1" {
                         system_versioning = true;
@@ -971,7 +1038,9 @@ fn parse_insert(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                 *cursor += 1; // consume IGNORE
                 conflict_action = OnConflict::Ignore;
             } else {
-                return Err(Error::SqlSyntax("Expected REPLACE or IGNORE after INSERT OR".into()));
+                return Err(Error::SqlSyntax(
+                    "Expected REPLACE or IGNORE after INSERT OR".into(),
+                ));
             }
         }
     }
@@ -980,7 +1049,11 @@ fn parse_insert(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 
     let table_name = match get_token(tokens, cursor)? {
         Token::Ident(s) => s.clone(),
-        other => return Err(Error::SqlSyntax(format!("Expected table name, got {other:?}"))),
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "Expected table name, got {other:?}"
+            )));
+        }
     };
 
     let mut columns = None;
@@ -1014,12 +1087,34 @@ fn parse_insert(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             *cursor += 1;
             break;
         } else {
-            return Err(Error::SqlSyntax("Expected ',' or ')' in VALUES clause".into()));
+            return Err(Error::SqlSyntax(
+                "Expected ',' or ')' in VALUES clause".into(),
+            ));
         }
     }
 
+    let mut rows = vec![values.clone()];
+    while check_token(tokens, *cursor, &Token::Comma) {
+        *cursor += 1;
+        expect_token(tokens, cursor, &Token::OpenParen)?;
+        let mut row = Vec::new();
+        loop {
+            row.push(parse_value_literal(tokens, cursor)?);
+            if check_token(tokens, *cursor, &Token::Comma) {
+                *cursor += 1;
+            } else {
+                expect_token(tokens, cursor, &Token::CloseParen)?;
+                break;
+            }
+        }
+        rows.push(row);
+    }
+
     // Check optional ON CONFLICT clause
-    if check_token(tokens, *cursor, &Token::On) && *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::Conflict {
+    if check_token(tokens, *cursor, &Token::On)
+        && *cursor + 1 < tokens.len()
+        && tokens[*cursor + 1] == Token::Conflict
+    {
         *cursor += 2; // consume ON CONFLICT
 
         // Optional conflict target e.g. (id)
@@ -1059,6 +1154,15 @@ fn parse_insert(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 
     let returning = parse_optional_returning(tokens, cursor)?;
 
+    if rows.len() > 1 {
+        return Ok(Statement::InsertMany {
+            table: table_name,
+            columns,
+            rows,
+            conflict_action,
+            returning,
+        });
+    }
     Ok(Statement::Insert {
         table: table_name,
         columns,
@@ -1133,10 +1237,17 @@ fn parse_window_spec(tokens: &[Token], cursor: &mut usize) -> Result<String> {
 
 fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<String> {
     if *cursor >= tokens.len() {
-        return Err(Error::SqlSyntax("Unexpected end of tokens in column list".into()));
+        return Err(Error::SqlSyntax(
+            "Unexpected end of tokens in column list".into(),
+        ));
     }
     let mut expr = match &tokens[*cursor] {
-        Token::RowNumber | Token::Rank | Token::DenseRank => {
+        Token::StringLit(_) | Token::IntLit(_) | Token::FloatLit(_) | Token::Null | Token::Dash => {
+            parse_func_arg_expr(tokens, cursor)?
+        }
+        Token::RowNumber | Token::Rank | Token::DenseRank
+            if check_token(tokens, *cursor + 1, &Token::OpenParen) =>
+        {
             let func_name = match &tokens[*cursor] {
                 Token::RowNumber => "ROW_NUMBER",
                 Token::Rank => "RANK",
@@ -1149,18 +1260,22 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
             let window_spec = parse_window_spec(tokens, cursor)?;
             format!("{func_name}() {window_spec}")
         }
-        Token::Ntile => {
+        Token::Ntile if check_token(tokens, *cursor + 1, &Token::OpenParen) => {
             *cursor += 1;
             expect_token(tokens, cursor, &Token::OpenParen)?;
             let n = match get_token(tokens, cursor)? {
                 Token::IntLit(val) => *val,
-                other => return Err(Error::SqlSyntax(format!("Expected integer in NTILE, got {other:?}"))),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected integer in NTILE, got {other:?}"
+                    )));
+                }
             };
             expect_token(tokens, cursor, &Token::CloseParen)?;
             let window_spec = parse_window_spec(tokens, cursor)?;
             format!("NTILE({n}) {window_spec}")
         }
-        Token::Lag | Token::Lead => {
+        Token::Lag | Token::Lead if check_token(tokens, *cursor + 1, &Token::OpenParen) => {
             let func_name = match &tokens[*cursor] {
                 Token::Lag => "LAG",
                 Token::Lead => "LEAD",
@@ -1174,14 +1289,20 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
                 *cursor += 1;
                 match get_token(tokens, cursor)? {
                     Token::IntLit(val) => offset = *val,
-                    other => return Err(Error::SqlSyntax(format!("Expected integer offset in {func_name}, got {other:?}"))),
+                    other => {
+                        return Err(Error::SqlSyntax(format!(
+                            "Expected integer offset in {func_name}, got {other:?}"
+                        )));
+                    }
                 }
             }
             expect_token(tokens, cursor, &Token::CloseParen)?;
             let window_spec = parse_window_spec(tokens, cursor)?;
             format!("{func_name}({col}, {offset}) {window_spec}")
         }
-        Token::Count | Token::Sum | Token::Avg | Token::Min | Token::Max => {
+        Token::Count | Token::Sum | Token::Avg | Token::Min | Token::Max
+            if check_token(tokens, *cursor + 1, &Token::OpenParen) =>
+        {
             let func_name = match &tokens[*cursor] {
                 Token::Count => "COUNT",
                 Token::Sum => "SUM",
@@ -1217,58 +1338,20 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
             expect_token(tokens, cursor, &Token::Comma)?;
             let path = match get_token(tokens, cursor)? {
                 Token::StringLit(p) => p.clone(),
-                other => return Err(Error::SqlSyntax(format!("Expected string path in JSON_EXTRACT, got {other:?}"))),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected string path in JSON_EXTRACT, got {other:?}"
+                    )));
+                }
             };
             expect_token(tokens, cursor, &Token::CloseParen)?;
             format!("JSON_EXTRACT({col}, '{path}')")
         }
-        Token::Ident(id) if id.eq_ignore_ascii_case("TAP_CLASSIFY_GROUNDED")
-            || id.eq_ignore_ascii_case("TAP_VERIFY_GROUNDED") => {
-            let func_name = id.to_ascii_uppercase();
-            *cursor += 1;
-            expect_token(tokens, cursor, &Token::OpenParen)?;
-            let col = parse_column_ident(tokens, cursor)?;
-            expect_token(tokens, cursor, &Token::Comma)?;
-            let arg2 = match get_token(tokens, cursor)? {
-                Token::StringLit(s) => s.clone(),
-                other => return Err(Error::SqlSyntax(format!("Expected string literal in {func_name}, got {other:?}"))),
-            };
-            expect_token(tokens, cursor, &Token::Comma)?;
-            let index_name = match get_token(tokens, cursor)? {
-                Token::StringLit(s) => s.clone(),
-                Token::Ident(s) => s.clone(),
-                other => return Err(Error::SqlSyntax(format!("Expected index name in {func_name}, got {other:?}"))),
-            };
-            let mut top_k = 3usize;
-            if check_token(tokens, *cursor, &Token::Comma) {
-                *cursor += 1;
-                match get_token(tokens, cursor)? {
-                    Token::IntLit(k) => top_k = *k as usize,
-                    other => return Err(Error::SqlSyntax(format!("Expected integer top_k in {func_name}, got {other:?}"))),
-                }
-            }
-            expect_token(tokens, cursor, &Token::CloseParen)?;
-            format!("{func_name}({col}, '{arg2}', '{index_name}', {top_k})")
-        }
-        Token::Ident(id) if id.eq_ignore_ascii_case("TAP_CLASSIFY")
-            || id.eq_ignore_ascii_case("TAP_SCORE")
-            || id.eq_ignore_ascii_case("TAP_VERIFY")
-            || id.eq_ignore_ascii_case("TAP_ROUTE") => {
-            let func_name = id.to_ascii_uppercase();
-            *cursor += 1;
-            expect_token(tokens, cursor, &Token::OpenParen)?;
-            let col = parse_column_ident(tokens, cursor)?;
-            expect_token(tokens, cursor, &Token::Comma)?;
-            let arg2 = match get_token(tokens, cursor)? {
-                Token::StringLit(s) => s.clone(),
-                other => return Err(Error::SqlSyntax(format!("Expected string literal in {func_name}, got {other:?}"))),
-            };
-            expect_token(tokens, cursor, &Token::CloseParen)?;
-            format!("{func_name}({col}, '{arg2}')")
-        }
-        Token::Ident(id) if id.eq_ignore_ascii_case("VECTOR_COSINE")
-            || id.eq_ignore_ascii_case("VECTOR_L2")
-            || id.eq_ignore_ascii_case("VECTOR_DISTANCE") => {
+        Token::Ident(id)
+            if id.eq_ignore_ascii_case("VECTOR_COSINE")
+                || id.eq_ignore_ascii_case("VECTOR_L2")
+                || id.eq_ignore_ascii_case("VECTOR_DISTANCE") =>
+        {
             let func_name = id.to_ascii_uppercase();
             *cursor += 1;
             expect_token(tokens, cursor, &Token::OpenParen)?;
@@ -1286,7 +1369,11 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
                     match get_token(tokens, cursor)? {
                         Token::FloatLit(f) => vec_items.push(format!("{}", f * sign)),
                         Token::IntLit(i) => vec_items.push(format!("{}.0", (*i as f64) * sign)),
-                        other => return Err(Error::SqlSyntax(format!("Expected float in vector literal, got {other:?}"))),
+                        other => {
+                            return Err(Error::SqlSyntax(format!(
+                                "Expected float in vector literal, got {other:?}"
+                            )));
+                        }
                     }
                     if check_token(tokens, *cursor, &Token::Comma) {
                         *cursor += 1;
@@ -1305,7 +1392,9 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
             expect_token(tokens, cursor, &Token::CloseParen)?;
             format!("{func_name}({col}, {arg2})")
         }
-        Token::Ident(id) if *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::OpenParen => {
+        Token::Ident(id)
+            if *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::OpenParen =>
+        {
             let func_name = id.clone();
             *cursor += 2;
             let mut args = Vec::new();
@@ -1348,11 +1437,13 @@ fn parse_column_ident(tokens: &[Token], cursor: &mut usize) -> Result<String> {
 
 fn parse_func_arg_expr(tokens: &[Token], cursor: &mut usize) -> Result<String> {
     if *cursor >= tokens.len() {
-        return Err(Error::SqlSyntax("Unexpected end of function arguments".into()));
+        return Err(Error::SqlSyntax(
+            "Unexpected end of function arguments".into(),
+        ));
     }
     match &tokens[*cursor] {
         Token::StringLit(s) => {
-            let res = format!("'{s}'");
+            let res = format!("'{}'", s.replace("'", "''"));
             *cursor += 1;
             Ok(res)
         }
@@ -1371,7 +1462,9 @@ fn parse_func_arg_expr(tokens: &[Token], cursor: &mut usize) -> Result<String> {
             match get_token(tokens, cursor)? {
                 Token::IntLit(n) => Ok(format!("-{n}")),
                 Token::FloatLit(f) => Ok(format!("-{f}")),
-                other => Err(Error::SqlSyntax(format!("Expected number after '-', got {other:?}"))),
+                other => Err(Error::SqlSyntax(format!(
+                    "Expected number after '-', got {other:?}"
+                ))),
             }
         }
         Token::Asterisk => {
@@ -1382,7 +1475,9 @@ fn parse_func_arg_expr(tokens: &[Token], cursor: &mut usize) -> Result<String> {
             *cursor += 1;
             Ok("NULL".to_string())
         }
-        Token::Ident(id) if *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::OpenParen => {
+        Token::Ident(id)
+            if *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::OpenParen =>
+        {
             let func_name = id.clone();
             *cursor += 2;
             let mut args = Vec::new();
@@ -1427,7 +1522,9 @@ fn parse_optional_returning(tokens: &[Token], cursor: &mut usize) -> Result<Opti
     }
 
     if cols.is_empty() {
-        return Err(Error::SqlSyntax("RETURNING clause requires at least one column or *".into()));
+        return Err(Error::SqlSyntax(
+            "RETURNING clause requires at least one column or *".into(),
+        ));
     }
 
     Ok(Some(cols))
@@ -1453,12 +1550,31 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 
             if check_token(tokens, *cursor, &Token::Comma) {
                 *cursor += 1;
-            } else if check_token(tokens, *cursor, &Token::From) {
+            } else {
                 break;
             }
         }
     }
 
+    if !check_token(tokens, *cursor, &Token::From) {
+        if columns.is_empty() {
+            return Err(Error::SqlSyntax("SELECT * requires FROM".into()));
+        }
+        return Ok(Statement::Select {
+            distinct,
+            columns,
+            table: String::new(),
+            from_subquery: None,
+            join: None,
+            where_clause: None,
+            group_by: None,
+            having: None,
+            order_by: None,
+            limit: None,
+            offset: None,
+            as_of_timestamp: None,
+        });
+    }
     expect_token(tokens, cursor, &Token::From)?;
 
     let (table_name, from_subquery) = if check_token(tokens, *cursor, &Token::OpenParen) {
@@ -1473,7 +1589,11 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     } else {
         let name = match get_token(tokens, cursor)? {
             Token::Ident(s) => s.clone(),
-            other => return Err(Error::SqlSyntax(format!("Expected table name, got {other:?}"))),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected table name, got {other:?}"
+                )));
+            }
         };
         if check_token(tokens, *cursor, &Token::As)
             && !(*cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::Of)
@@ -1526,7 +1646,11 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 
         let right_table = match get_token(tokens, cursor)? {
             Token::Ident(s) => s.clone(),
-            other => return Err(Error::SqlSyntax(format!("Expected table name after JOIN, got {other:?}"))),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected table name after JOIN, got {other:?}"
+                )));
+            }
         };
 
         expect_token(tokens, cursor, &Token::On)?;
@@ -1550,7 +1674,11 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 
         let vector_col = match get_token(tokens, cursor)? {
             Token::Ident(s) => s.clone(),
-            other => return Err(Error::SqlSyntax(format!("Expected vector column, got {other:?}"))),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected vector column, got {other:?}"
+                )));
+            }
         };
 
         expect_token(tokens, cursor, &Token::Equals)?;
@@ -1558,14 +1686,22 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         let query_val = parse_value_literal(tokens, cursor)?;
         let query_vector = match query_val {
             Value::Vector(v) => v,
-            other => return Err(Error::SqlSyntax(format!("Expected vector literal, got {other:?}"))),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected vector literal, got {other:?}"
+                )));
+            }
         };
 
         expect_token(tokens, cursor, &Token::Top)?;
 
         let top_k = match get_token(tokens, cursor)? {
             Token::IntLit(n) => *n as usize,
-            other => return Err(Error::SqlSyntax(format!("Expected integer TOP k, got {other:?}"))),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected integer TOP k, got {other:?}"
+                )));
+            }
         };
 
         let where_clause = parse_optional_where_clause(tokens, cursor)?;
@@ -1582,18 +1718,21 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 
     // Optional AS OF TIMESTAMP clause: AS OF TIMESTAMP <ts>
     let mut as_of_timestamp = None;
-    if check_token(tokens, *cursor, &Token::As) {
-        if *cursor + 2 < tokens.len()
-            && tokens[*cursor + 1] == Token::Of
-            && tokens[*cursor + 2] == Token::Timestamp
-        {
-            *cursor += 3;
-            let ts = match get_token(tokens, cursor)? {
-                Token::IntLit(n) => *n as u64,
-                other => return Err(Error::SqlSyntax(format!("Expected integer timestamp for AS OF TIMESTAMP, got {other:?}"))),
-            };
-            as_of_timestamp = Some(ts);
-        }
+    if check_token(tokens, *cursor, &Token::As)
+        && *cursor + 2 < tokens.len()
+        && tokens[*cursor + 1] == Token::Of
+        && tokens[*cursor + 2] == Token::Timestamp
+    {
+        *cursor += 3;
+        let ts = match get_token(tokens, cursor)? {
+            Token::IntLit(n) => *n as u64,
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected integer timestamp for AS OF TIMESTAMP, got {other:?}"
+                )));
+            }
+        };
+        as_of_timestamp = Some(ts);
     }
 
     // Optional WHERE clause: WHERE ...
@@ -1664,7 +1803,11 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                         return Err(Error::SqlSyntax("Expected vector literal after <->".into()));
                     }
                 }
-                other => return Err(Error::SqlSyntax(format!("Expected vector literal after <->, got {other:?}"))),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected vector literal after <->, got {other:?}"
+                    )));
+                }
             };
 
             let mut top_k = 10;
@@ -1672,7 +1815,11 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                 *cursor += 1;
                 top_k = match get_token(tokens, cursor)? {
                     Token::IntLit(n) => *n as usize,
-                    other => return Err(Error::SqlSyntax(format!("Expected integer for LIMIT, got {other:?}"))),
+                    other => {
+                        return Err(Error::SqlSyntax(format!(
+                            "Expected integer for LIMIT, got {other:?}"
+                        )));
+                    }
                 };
             }
 
@@ -1707,7 +1854,11 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         *cursor += 1;
         let n = match get_token(tokens, cursor)? {
             Token::IntLit(n) => *n as usize,
-            other => return Err(Error::SqlSyntax(format!("Expected integer for LIMIT, got {other:?}"))),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected integer for LIMIT, got {other:?}"
+                )));
+            }
         };
         limit = Some(n);
     }
@@ -1718,7 +1869,11 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         *cursor += 1;
         let n = match get_token(tokens, cursor)? {
             Token::IntLit(n) => *n as usize,
-            other => return Err(Error::SqlSyntax(format!("Expected integer for OFFSET, got {other:?}"))),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected integer for OFFSET, got {other:?}"
+                )));
+            }
         };
         offset = Some(n);
     }
@@ -1743,7 +1898,11 @@ fn parse_update(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     *cursor += 1; // consume UPDATE
     let table_name = match get_token(tokens, cursor)? {
         Token::Ident(s) => s.clone(),
-        other => return Err(Error::SqlSyntax(format!("Expected table name, got {other:?}"))),
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "Expected table name, got {other:?}"
+            )));
+        }
     };
 
     expect_token(tokens, cursor, &Token::Set)?;
@@ -1763,7 +1922,9 @@ fn parse_update(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     }
 
     if assignments.is_empty() {
-        return Err(Error::SqlSyntax("UPDATE statement missing SET assignments".into()));
+        return Err(Error::SqlSyntax(
+            "UPDATE statement missing SET assignments".into(),
+        ));
     }
 
     let where_clause = parse_optional_where_clause(tokens, cursor)?;
@@ -1782,7 +1943,11 @@ fn parse_delete(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     expect_token(tokens, cursor, &Token::From)?;
     let table_name = match get_token(tokens, cursor)? {
         Token::Ident(s) => s.clone(),
-        other => return Err(Error::SqlSyntax(format!("Expected table name in DELETE FROM, got {other:?}"))),
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "Expected table name in DELETE FROM, got {other:?}"
+            )));
+        }
     };
 
     let where_clause = parse_optional_where_clause(tokens, cursor)?;
@@ -1849,7 +2014,9 @@ fn parse_alter(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             column: col,
         })
     } else {
-        Err(Error::SqlSyntax("Expected ADD, RENAME, or DROP in ALTER TABLE statement".into()))
+        Err(Error::SqlSyntax(
+            "Expected ADD, RENAME, or DROP in ALTER TABLE statement".into(),
+        ))
     }
 }
 
@@ -1990,14 +2157,22 @@ fn parse_create_index(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
 
     let index_name = match get_token(tokens, cursor)? {
         Token::Ident(s) => s.clone(),
-        other => return Err(Error::SqlSyntax(format!("Expected index name, got {other:?}"))),
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "Expected index name, got {other:?}"
+            )));
+        }
     };
 
     expect_token(tokens, cursor, &Token::On)?;
 
     let table_name = match get_token(tokens, cursor)? {
         Token::Ident(s) => s.clone(),
-        other => return Err(Error::SqlSyntax(format!("Expected table name in CREATE INDEX ON, got {other:?}"))),
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "Expected table name in CREATE INDEX ON, got {other:?}"
+            )));
+        }
     };
 
     expect_token(tokens, cursor, &Token::OpenParen)?;
@@ -2055,7 +2230,10 @@ fn parse_primary_where_expr(tokens: &[Token], cursor: &mut usize) -> Result<Wher
         });
     }
 
-    if check_token(tokens, *cursor, &Token::Not) && *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::Exists {
+    if check_token(tokens, *cursor, &Token::Not)
+        && *cursor + 1 < tokens.len()
+        && tokens[*cursor + 1] == Token::Exists
+    {
         *cursor += 2;
         expect_token(tokens, cursor, &Token::OpenParen)?;
         let subquery = parse_select(tokens, cursor)?;
@@ -2079,7 +2257,11 @@ fn parse_primary_where_expr(tokens: &[Token], cursor: &mut usize) -> Result<Wher
         expect_token(tokens, cursor, &Token::Null)?;
         return Ok(WhereExpr::Condition(WhereCondition {
             column: col_name,
-            op: if is_not { BinaryOp::IsNotNull } else { BinaryOp::IsNull },
+            op: if is_not {
+                BinaryOp::IsNotNull
+            } else {
+                BinaryOp::IsNull
+            },
             value: Value::Null,
         }));
     }
@@ -2140,7 +2322,11 @@ fn parse_primary_where_expr(tokens: &[Token], cursor: &mut usize) -> Result<Wher
         Token::LessOrEqual => BinaryOp::LessOrEqual,
         Token::Like => BinaryOp::Like,
         Token::Match => BinaryOp::Match,
-        other => return Err(Error::SqlSyntax(format!("Expected comparison operator in WHERE, got {other:?}"))),
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "Expected comparison operator in WHERE, got {other:?}"
+            )));
+        }
     };
 
     let op = if negated {
@@ -2207,7 +2393,11 @@ fn parse_explain(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         Token::Insert => parse_insert(tokens, cursor)?,
         Token::Update => parse_update(tokens, cursor)?,
         Token::Delete => parse_delete(tokens, cursor)?,
-        other => return Err(Error::SqlSyntax(format!("EXPLAIN does not support {other:?}"))),
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "EXPLAIN does not support {other:?}"
+            )));
+        }
     };
 
     Ok(Statement::Explain {
@@ -2223,7 +2413,11 @@ fn parse_vacuum(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         *cursor += 1; // consume INTO
         match get_token(tokens, cursor)? {
             Token::StringLit(s) => into = Some(s.clone()),
-            other => return Err(Error::SqlSyntax(format!("Expected destination file path string after VACUUM INTO, got {other:?}"))),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected destination file path string after VACUUM INTO, got {other:?}"
+                )));
+            }
         }
     }
     Ok(Statement::Vacuum { into })
@@ -2273,7 +2467,11 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                 Token::IntLit(i) => i.to_string(),
                 Token::StringLit(s) => s.clone(),
                 Token::Ident(s) => s.clone(),
-                other => return Err(Error::SqlSyntax(format!("Unexpected value for option {key}: {other:?}"))),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Unexpected value for option {key}: {other:?}"
+                    )));
+                }
             };
             options.insert(key, val);
         }
@@ -2290,7 +2488,11 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             *cursor += 1;
             let id = match get_token(tokens, cursor)? {
                 Token::IntLit(n) => *n as u64,
-                other => return Err(Error::SqlSyntax(format!("Expected node ID integer, got {other:?}"))),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected node ID integer, got {other:?}"
+                    )));
+                }
             };
 
             // Optional LABEL
@@ -2300,7 +2502,11 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                     *cursor += 1;
                     match get_token(tokens, cursor)? {
                         Token::Ident(l) | Token::StringLit(l) => label = l.clone(),
-                        other => return Err(Error::SqlSyntax(format!("Expected label name, got {other:?}"))),
+                        other => {
+                            return Err(Error::SqlSyntax(format!(
+                                "Expected label name, got {other:?}"
+                            )));
+                        }
                     }
                 }
             }
@@ -2312,17 +2518,29 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                     *cursor += 1;
                     match get_token(tokens, cursor)? {
                         Token::StringLit(p) => properties = p.clone(),
-                        other => return Err(Error::SqlSyntax(format!("Expected properties string, got {other:?}"))),
+                        other => {
+                            return Err(Error::SqlSyntax(format!(
+                                "Expected properties string, got {other:?}"
+                            )));
+                        }
                     }
                 }
             }
 
-            Ok(Statement::GraphInsertNode { id, label, properties })
+            Ok(Statement::GraphInsertNode {
+                id,
+                label,
+                properties,
+            })
         } else if check_token(tokens, *cursor, &Token::Edge) {
             *cursor += 1;
             let from_id = match get_token(tokens, cursor)? {
                 Token::IntLit(n) => *n as u64,
-                other => return Err(Error::SqlSyntax(format!("Expected from_id integer, got {other:?}"))),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected from_id integer, got {other:?}"
+                    )));
+                }
             };
 
             // Optional arrow -> or TO keyword
@@ -2343,7 +2561,11 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 
             let to_id = match get_token(tokens, cursor)? {
                 Token::IntLit(n) => *n as u64,
-                other => return Err(Error::SqlSyntax(format!("Expected to_id integer, got {other:?}"))),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected to_id integer, got {other:?}"
+                    )));
+                }
             };
 
             let mut label = "CONNECTS".to_string();
@@ -2356,20 +2578,32 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                         *cursor += 1;
                         match get_token(tokens, cursor)? {
                             Token::Ident(l) | Token::StringLit(l) => label = l.clone(),
-                            other => return Err(Error::SqlSyntax(format!("Expected edge label, got {other:?}"))),
+                            other => {
+                                return Err(Error::SqlSyntax(format!(
+                                    "Expected edge label, got {other:?}"
+                                )));
+                            }
                         }
                     } else if s.eq_ignore_ascii_case("WEIGHT") {
                         *cursor += 1;
                         match get_token(tokens, cursor)? {
                             Token::FloatLit(w) => weight = *w as f32,
                             Token::IntLit(w) => weight = *w as f32,
-                            other => return Err(Error::SqlSyntax(format!("Expected weight number, got {other:?}"))),
+                            other => {
+                                return Err(Error::SqlSyntax(format!(
+                                    "Expected weight number, got {other:?}"
+                                )));
+                            }
                         }
                     } else if s.eq_ignore_ascii_case("PROPERTIES") {
                         *cursor += 1;
                         match get_token(tokens, cursor)? {
                             Token::StringLit(p) => properties = p.clone(),
-                            other => return Err(Error::SqlSyntax(format!("Expected properties string, got {other:?}"))),
+                            other => {
+                                return Err(Error::SqlSyntax(format!(
+                                    "Expected properties string, got {other:?}"
+                                )));
+                            }
                         }
                     } else {
                         break;
@@ -2387,7 +2621,9 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                 properties,
             })
         } else {
-            Err(Error::SqlSyntax("Expected NODE or EDGE after GRAPH INSERT".into()))
+            Err(Error::SqlSyntax(
+                "Expected NODE or EDGE after GRAPH INSERT".into(),
+            ))
         }
     } else if let Ok(Token::Ident(cmd)) = get_token_peek(tokens, *cursor) {
         if cmd.eq_ignore_ascii_case("TRAVERSE") {
@@ -2395,7 +2631,11 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             expect_token(tokens, cursor, &Token::From)?;
             let start_id = match get_token(tokens, cursor)? {
                 Token::IntLit(n) => *n as u64,
-                other => return Err(Error::SqlSyntax(format!("Expected integer start_id for GRAPH TRAVERSE, got {other:?}"))),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected integer start_id for GRAPH TRAVERSE, got {other:?}"
+                    )));
+                }
             };
 
             let mut direction = crate::graph::Direction::Both;
@@ -2417,13 +2657,23 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                         *cursor += 1;
                         match get_token(tokens, cursor)? {
                             Token::Ident(l) | Token::StringLit(l) => label = Some(l.clone()),
-                            other => return Err(Error::SqlSyntax(format!("Expected label name in GRAPH TRAVERSE, got {other:?}"))),
+                            other => {
+                                return Err(Error::SqlSyntax(format!(
+                                    "Expected label name in GRAPH TRAVERSE, got {other:?}"
+                                )));
+                            }
                         }
-                    } else if opt.eq_ignore_ascii_case("MAX_DEPTH") || opt.eq_ignore_ascii_case("DEPTH") {
+                    } else if opt.eq_ignore_ascii_case("MAX_DEPTH")
+                        || opt.eq_ignore_ascii_case("DEPTH")
+                    {
                         *cursor += 1;
                         match get_token(tokens, cursor)? {
                             Token::IntLit(d) => max_depth = (*d).max(1) as usize,
-                            other => return Err(Error::SqlSyntax(format!("Expected integer depth, got {other:?}"))),
+                            other => {
+                                return Err(Error::SqlSyntax(format!(
+                                    "Expected integer depth, got {other:?}"
+                                )));
+                            }
                         }
                     } else {
                         break;
@@ -2458,11 +2708,17 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             expect_token(tokens, cursor, &Token::From)?;
             let start_id = match get_token(tokens, cursor)? {
                 Token::IntLit(n) => *n as u64,
-                other => return Err(Error::SqlSyntax(format!("Expected integer start_id for GRAPH SHORTEST_PATH, got {other:?}"))),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected integer start_id for GRAPH SHORTEST_PATH, got {other:?}"
+                    )));
+                }
             };
 
             // Optional TO keyword
-            if check_token(tokens, *cursor, &Token::To) || check_token(tokens, *cursor, &Token::Into) {
+            if check_token(tokens, *cursor, &Token::To)
+                || check_token(tokens, *cursor, &Token::Into)
+            {
                 *cursor += 1;
             } else if let Ok(Token::Ident(to_kw)) = get_token_peek(tokens, *cursor) {
                 if to_kw.eq_ignore_ascii_case("TO") {
@@ -2472,15 +2728,23 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 
             let end_id = match get_token(tokens, cursor)? {
                 Token::IntLit(n) => *n as u64,
-                other => return Err(Error::SqlSyntax(format!("Expected integer end_id for GRAPH SHORTEST_PATH, got {other:?}"))),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected integer end_id for GRAPH SHORTEST_PATH, got {other:?}"
+                    )));
+                }
             };
 
             Ok(Statement::GraphShortestPath { start_id, end_id })
         } else {
-            Err(Error::SqlSyntax(format!("Expected INSERT, TRAVERSE, SHORTEST_PATH, or MATCH after GRAPH, got {cmd}")))
+            Err(Error::SqlSyntax(format!(
+                "Expected INSERT, TRAVERSE, SHORTEST_PATH, or MATCH after GRAPH, got {cmd}"
+            )))
         }
     } else {
-        Err(Error::SqlSyntax("Expected INSERT, TRAVERSE, SHORTEST_PATH, or MATCH after GRAPH".into()))
+        Err(Error::SqlSyntax(
+            "Expected INSERT, TRAVERSE, SHORTEST_PATH, or MATCH after GRAPH".into(),
+        ))
     }
 }
 
@@ -2520,7 +2784,9 @@ pub fn parse_graph_match(tokens: &[Token], cursor: &mut usize) -> Result<Stateme
         if check_token(tokens, *cursor, &Token::OpenBracket) {
             *cursor += 1;
             // Variable name (if not colon)
-            if !check_token(tokens, *cursor, &Token::Colon) && !check_token(tokens, *cursor, &Token::CloseBracket) {
+            if !check_token(tokens, *cursor, &Token::Colon)
+                && !check_token(tokens, *cursor, &Token::CloseBracket)
+            {
                 let v = parse_identifier_or_keyword(tokens, cursor)?;
                 rel_var = Some(v);
             }
@@ -2626,7 +2892,11 @@ fn parse_value_literal(tokens: &[Token], cursor: &mut usize) -> Result<Value> {
                 match get_token(tokens, cursor)? {
                     Token::FloatLit(f) => floats.push(*f as f32),
                     Token::IntLit(i) => floats.push(*i as f32),
-                    other => return Err(Error::SqlSyntax(format!("Expected float in vector, got {other:?}"))),
+                    other => {
+                        return Err(Error::SqlSyntax(format!(
+                            "Expected float in vector, got {other:?}"
+                        )));
+                    }
                 }
                 if check_token(tokens, *cursor, &Token::Comma) {
                     *cursor += 1;
@@ -2637,13 +2907,21 @@ fn parse_value_literal(tokens: &[Token], cursor: &mut usize) -> Result<Value> {
             }
             Ok(Value::Vector(floats))
         }
-        other => Err(Error::SqlSyntax(format!("Unexpected value token {other:?}"))),
+        other => Err(Error::SqlSyntax(format!(
+            "Unexpected value token {other:?}"
+        ))),
     }
 }
 
-fn expect_token<'a>(tokens: &'a [Token], cursor: &mut usize, expected: &Token) -> Result<&'a Token> {
+fn expect_token<'a>(
+    tokens: &'a [Token],
+    cursor: &mut usize,
+    expected: &Token,
+) -> Result<&'a Token> {
     if *cursor >= tokens.len() {
-        return Err(Error::SqlSyntax(format!("Unexpected end of input, expected {expected:?}")));
+        return Err(Error::SqlSyntax(format!(
+            "Unexpected end of input, expected {expected:?}"
+        )));
     }
     if &tokens[*cursor] == expected {
         let t = &tokens[*cursor];
@@ -2722,7 +3000,13 @@ mod tests {
         let sql = "SELECT id, name FROM users VECTOR NEAR embedding = [0.1, 0.2, 0.3] TOP 5;";
         let stmt = parse_sql(sql).expect("Parse VECTOR NEAR");
         match stmt {
-            Statement::VectorSearch { table, vector_col, query_vector, top_k, .. } => {
+            Statement::VectorSearch {
+                table,
+                vector_col,
+                query_vector,
+                top_k,
+                ..
+            } => {
                 assert_eq!(table, "users");
                 assert_eq!(vector_col, "embedding");
                 assert_eq!(query_vector.len(), 3);
@@ -2737,10 +3021,18 @@ mod tests {
         let sql = "UPDATE users SET name = 'Ahmad', age = 30 WHERE id = 1;";
         let stmt = parse_sql(sql).expect("Parse UPDATE");
         match stmt {
-            Statement::Update { table, assignments, where_clause, .. } => {
+            Statement::Update {
+                table,
+                assignments,
+                where_clause,
+                ..
+            } => {
                 assert_eq!(table, "users");
                 assert_eq!(assignments.len(), 2);
-                assert_eq!(assignments[0], ("name".to_string(), Value::Text("Ahmad".into())));
+                assert_eq!(
+                    assignments[0],
+                    ("name".to_string(), Value::Text("Ahmad".into()))
+                );
                 assert_eq!(assignments[1], ("age".to_string(), Value::Integer(30)));
                 assert_eq!(where_clause, Some(WhereExpr::eq("id", Value::Integer(1))));
             }
@@ -2750,7 +3042,11 @@ mod tests {
         let sql_del = "DELETE FROM users WHERE id = 42;";
         let stmt_del = parse_sql(sql_del).expect("Parse DELETE");
         match stmt_del {
-            Statement::Delete { table, where_clause, .. } => {
+            Statement::Delete {
+                table,
+                where_clause,
+                ..
+            } => {
                 assert_eq!(table, "users");
                 assert_eq!(where_clause, Some(WhereExpr::eq("id", Value::Integer(42))));
             }
@@ -2763,7 +3059,12 @@ mod tests {
         let sql1 = "INSERT INTO users (id, name) VALUES (1, 'Alex') RETURNING id, name;";
         let stmt1 = parse_sql(sql1).expect("Parse INSERT RETURNING");
         match stmt1 {
-            Statement::Insert { table, conflict_action, returning, .. } => {
+            Statement::Insert {
+                table,
+                conflict_action,
+                returning,
+                ..
+            } => {
                 assert_eq!(table, "users");
                 assert_eq!(conflict_action, OnConflict::Abort);
                 assert_eq!(returning, Some(vec!["id".to_string(), "name".to_string()]));
@@ -2774,7 +3075,12 @@ mod tests {
         let sql2 = "INSERT OR REPLACE INTO users (id, name) VALUES (1, 'Alex') RETURNING *;";
         let stmt2 = parse_sql(sql2).expect("Parse INSERT OR REPLACE RETURNING *");
         match stmt2 {
-            Statement::Insert { table, conflict_action, returning, .. } => {
+            Statement::Insert {
+                table,
+                conflict_action,
+                returning,
+                ..
+            } => {
                 assert_eq!(table, "users");
                 assert_eq!(conflict_action, OnConflict::Replace);
                 assert_eq!(returning, Some(vec!["*".to_string()]));
@@ -2785,7 +3091,11 @@ mod tests {
         let sql3 = "REPLACE INTO users (id, name) VALUES (2, 'Ali');";
         let stmt3 = parse_sql(sql3).expect("Parse REPLACE INTO");
         match stmt3 {
-            Statement::Insert { table, conflict_action, .. } => {
+            Statement::Insert {
+                table,
+                conflict_action,
+                ..
+            } => {
                 assert_eq!(table, "users");
                 assert_eq!(conflict_action, OnConflict::Replace);
             }
@@ -2795,7 +3105,9 @@ mod tests {
         let sql4 = "UPDATE users SET name = 'Ali' WHERE id = 1 RETURNING name;";
         let stmt4 = parse_sql(sql4).expect("Parse UPDATE RETURNING");
         match stmt4 {
-            Statement::Update { table, returning, .. } => {
+            Statement::Update {
+                table, returning, ..
+            } => {
                 assert_eq!(table, "users");
                 assert_eq!(returning, Some(vec!["name".to_string()]));
             }
@@ -2805,7 +3117,9 @@ mod tests {
         let sql5 = "DELETE FROM users WHERE id = 1 RETURNING *;";
         let stmt5 = parse_sql(sql5).expect("Parse DELETE RETURNING");
         match stmt5 {
-            Statement::Delete { table, returning, .. } => {
+            Statement::Delete {
+                table, returning, ..
+            } => {
                 assert_eq!(table, "users");
                 assert_eq!(returning, Some(vec!["*".to_string()]));
             }
@@ -2818,16 +3132,37 @@ mod tests {
         let sql_exp = "EXPLAIN QUERY PLAN SELECT id FROM items WHERE price > 50 AND price <= 100;";
         let stmt_exp = parse_sql(sql_exp).expect("Parse EXPLAIN");
         match stmt_exp {
-            Statement::Explain { statement, query_plan } => {
+            Statement::Explain {
+                statement,
+                query_plan,
+            } => {
                 assert!(query_plan);
                 match *statement {
-                    Statement::Select { table, where_clause, .. } => {
+                    Statement::Select {
+                        table,
+                        where_clause,
+                        ..
+                    } => {
                         assert_eq!(table, "items");
                         let expr = where_clause.expect("where clause");
                         match expr {
                             WhereExpr::And(l, r) => {
-                                assert_eq!(*l, WhereExpr::cond("price", BinaryOp::GreaterThan, Value::Integer(50)));
-                                assert_eq!(*r, WhereExpr::cond("price", BinaryOp::LessOrEqual, Value::Integer(100)));
+                                assert_eq!(
+                                    *l,
+                                    WhereExpr::cond(
+                                        "price",
+                                        BinaryOp::GreaterThan,
+                                        Value::Integer(50)
+                                    )
+                                );
+                                assert_eq!(
+                                    *r,
+                                    WhereExpr::cond(
+                                        "price",
+                                        BinaryOp::LessOrEqual,
+                                        Value::Integer(100)
+                                    )
+                                );
                             }
                             _ => panic!("Expected And expression"),
                         }
@@ -2851,7 +3186,8 @@ mod tests {
     #[test]
     fn test_parse_group_by_having_or_and_subquery() {
         // Test OR and parenthesis
-        let sql_or = "SELECT id FROM users WHERE (status = 'active' AND age > 20) OR role = 'admin';";
+        let sql_or =
+            "SELECT id FROM users WHERE (status = 'active' AND age > 20) OR role = 'admin';";
         let stmt_or = parse_sql(sql_or).expect("Parse OR");
         match stmt_or {
             Statement::Select { where_clause, .. } => {
@@ -2861,10 +3197,13 @@ mod tests {
         }
 
         // Test GROUP BY and HAVING
-        let sql_gb = "SELECT dept, COUNT(*), AVG(salary) FROM employees GROUP BY dept HAVING COUNT(*) > 5;";
+        let sql_gb =
+            "SELECT dept, COUNT(*), AVG(salary) FROM employees GROUP BY dept HAVING COUNT(*) > 5;";
         let stmt_gb = parse_sql(sql_gb).expect("Parse GROUP BY");
         match stmt_gb {
-            Statement::Select { group_by, having, .. } => {
+            Statement::Select {
+                group_by, having, ..
+            } => {
                 assert_eq!(group_by, Some(vec!["dept".to_string()]));
                 assert!(having.is_some());
             }
@@ -2875,33 +3214,38 @@ mod tests {
         let sql_in = "SELECT id FROM items WHERE category IN ('Electronics', 'Books');";
         let stmt_in = parse_sql(sql_in).expect("Parse IN list");
         match stmt_in {
-            Statement::Select { where_clause, .. } => {
-                match where_clause.unwrap() {
-                    WhereExpr::InList { column, values, negated } => {
-                        assert_eq!(column, "category");
-                        assert_eq!(values.len(), 2);
-                        assert!(!negated);
-                    }
-                    _ => panic!("Expected InList"),
+            Statement::Select { where_clause, .. } => match where_clause.unwrap() {
+                WhereExpr::InList {
+                    column,
+                    values,
+                    negated,
+                } => {
+                    assert_eq!(column, "category");
+                    assert_eq!(values.len(), 2);
+                    assert!(!negated);
                 }
-            }
+                _ => panic!("Expected InList"),
+            },
             _ => panic!("Expected Select"),
         }
 
         // Test IN subquery
-        let sql_sub = "SELECT id FROM orders WHERE user_id IN (SELECT id FROM users WHERE active = 1);";
+        let sql_sub =
+            "SELECT id FROM orders WHERE user_id IN (SELECT id FROM users WHERE active = 1);";
         let stmt_sub = parse_sql(sql_sub).expect("Parse IN subquery");
         match stmt_sub {
-            Statement::Select { where_clause, .. } => {
-                match where_clause.unwrap() {
-                    WhereExpr::InSubquery { column, subquery, negated } => {
-                        assert_eq!(column, "user_id");
-                        assert!(!negated);
-                        assert!(matches!(*subquery, Statement::Select { .. }));
-                    }
-                    _ => panic!("Expected InSubquery"),
+            Statement::Select { where_clause, .. } => match where_clause.unwrap() {
+                WhereExpr::InSubquery {
+                    column,
+                    subquery,
+                    negated,
+                } => {
+                    assert_eq!(column, "user_id");
+                    assert!(!negated);
+                    assert!(matches!(*subquery, Statement::Select { .. }));
                 }
-            }
+                _ => panic!("Expected InSubquery"),
+            },
             _ => panic!("Expected Select"),
         }
     }
@@ -2909,14 +3253,25 @@ mod tests {
     #[test]
     fn test_parse_transactions_and_index() {
         assert_eq!(parse_sql("BEGIN;").unwrap(), Statement::BeginTransaction);
-        assert_eq!(parse_sql("BEGIN TRANSACTION;").unwrap(), Statement::BeginTransaction);
+        assert_eq!(
+            parse_sql("BEGIN TRANSACTION;").unwrap(),
+            Statement::BeginTransaction
+        );
         assert_eq!(parse_sql("COMMIT;").unwrap(), Statement::CommitTransaction);
-        assert_eq!(parse_sql("ROLLBACK;").unwrap(), Statement::RollbackTransaction);
+        assert_eq!(
+            parse_sql("ROLLBACK;").unwrap(),
+            Statement::RollbackTransaction
+        );
 
         let sql_idx = "CREATE INDEX IF NOT EXISTS idx_name ON users (name);";
         let stmt_idx = parse_sql(sql_idx).expect("Parse CREATE INDEX");
         match stmt_idx {
-            Statement::CreateIndex { name, if_not_exists, table, column } => {
+            Statement::CreateIndex {
+                name,
+                if_not_exists,
+                table,
+                column,
+            } => {
                 assert_eq!(name, "idx_name");
                 assert!(if_not_exists);
                 assert_eq!(table, "users");
@@ -2931,20 +3286,33 @@ mod tests {
         let sql = "SELECT users.id, orders.total FROM users INNER JOIN orders ON users.id = orders.user_id ORDER BY orders.total DESC LIMIT 10;";
         let stmt = parse_sql(sql).expect("Parse JOIN and ORDER BY");
         match stmt {
-            Statement::Select { columns, table, join, order_by, limit, .. } => {
+            Statement::Select {
+                columns,
+                table,
+                join,
+                order_by,
+                limit,
+                ..
+            } => {
                 assert_eq!(table, "users");
                 assert_eq!(columns, vec!["users.id", "orders.total"]);
-                assert_eq!(join, Some(JoinClause {
-                    table: "orders".to_string(),
-                    left_col: "users.id".to_string(),
-                    right_col: "orders.user_id".to_string(),
-                    is_left: false,
-                    join_type: JoinType::Inner,
-                }));
-                assert_eq!(order_by, Some(OrderByClause {
-                    column: "orders.total".to_string(),
-                    is_ascending: false,
-                }));
+                assert_eq!(
+                    join,
+                    Some(JoinClause {
+                        table: "orders".to_string(),
+                        left_col: "users.id".to_string(),
+                        right_col: "orders.user_id".to_string(),
+                        is_left: false,
+                        join_type: JoinType::Inner,
+                    })
+                );
+                assert_eq!(
+                    order_by,
+                    Some(OrderByClause {
+                        column: "orders.total".to_string(),
+                        is_ascending: false,
+                    })
+                );
                 assert_eq!(limit, Some(10));
             }
             _ => panic!("Expected Select with JOIN and ORDER BY"),

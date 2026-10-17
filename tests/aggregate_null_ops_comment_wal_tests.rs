@@ -35,11 +35,15 @@ fn test_count_1_and_digits_aggregate() {
     assert_eq!(rows_one[0].get_idx::<i64>(0).unwrap(), 3);
 
     // COUNT(42) should be 3
-    let rows_num = conn.query("SELECT COUNT(42) FROM items").expect("COUNT(42)");
+    let rows_num = conn
+        .query("SELECT COUNT(42) FROM items")
+        .expect("COUNT(42)");
     assert_eq!(rows_num[0].get_idx::<i64>(0).unwrap(), 3);
 
     // COUNT(note) should be 2 because row 2 has NULL note
-    let rows_col = conn.query("SELECT COUNT(note) FROM items").expect("COUNT(note)");
+    let rows_col = conn
+        .query("SELECT COUNT(note) FROM items")
+        .expect("COUNT(note)");
     assert_eq!(rows_col[0].get_idx::<i64>(0).unwrap(), 2);
 }
 
@@ -153,7 +157,9 @@ fn test_between_operator() {
 
     // Range BETWEEN 25 AND 75 inclusive
     let rows = conn
-        .query("SELECT player, points FROM scores WHERE points BETWEEN 25 AND 75 ORDER BY points ASC")
+        .query(
+            "SELECT player, points FROM scores WHERE points BETWEEN 25 AND 75 ORDER BY points ASC",
+        )
         .expect("Query BETWEEN");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].get::<String>("player").unwrap(), "p2");
@@ -168,10 +174,14 @@ fn test_escape_sequences_in_string_literals() {
         .expect("Create table");
 
     // Insert literal containing \n, \t, \\, \r
-    conn.execute("INSERT INTO docs (id, content) VALUES (1, 'Line1\\nLine2\\tTabbed\\\\Backslash\\rReturn')")
-        .expect("Insert with escapes");
+    conn.execute(
+        "INSERT INTO docs (id, content) VALUES (1, 'Line1\\nLine2\\tTabbed\\\\Backslash\\rReturn')",
+    )
+    .expect("Insert with escapes");
 
-    let rows = conn.query("SELECT content FROM docs WHERE id = 1").expect("Query");
+    let rows = conn
+        .query("SELECT content FROM docs WHERE id = 1")
+        .expect("Query");
     let content: String = rows[0].get("content").expect("Get content");
 
     assert!(

@@ -1,27 +1,13 @@
-# 📐 Formal Verification: TapirusDB Write-Ahead Logging (WAL) Protocol
+# WAL TLA+ specification: scope and status
 
-This directory contains the formal mathematical specification of TapirusDB's Write-Ahead Logging (WAL) and crash recovery engine using **TLA+ (Temporal Logic of Actions)**.
+This directory contains a TLA+ model for selected WAL and recovery transitions. The model is a design aid and is not evidence that the Rust implementation has been formally verified.
 
----
+No TLC execution output, checked state count, invariant result, or refinement proof connecting this model to the implementation is included in this repository. Do not describe the engine as formally verified based on these files alone.
 
-## 🎯 Verification Goals
-
-1. **Atomicity Invariant (`NoUncommittedDataPersisted`)**: Proves that after an arbitrary crash (power failure or kernel panic), dirty uncommitted pages from aborted transactions NEVER contaminate physical storage.
-2. **Durability Invariant (`CommittedDataDurability`)**: Proves that all transactions marked committed in the WAL are faithfully reconstructed upon crash recovery.
-3. **Checkpoint Correctness**: Proves that replaying WAL from `lastCheckpointLsn` preserves consistency and prevents torn pages.
-
----
-
-## 🛠️ Model Checking with TLC
-
-To verify the model against all state transitions:
+To run the model locally, install the TLA+ tools and execute:
 
 ```bash
-# Using TLA+ Tools / tlc
 java -cp tla2tools.jar tlc2.TLC TAPIRUS_WAL.tla -config TAPIRUS_WAL.cfg
 ```
 
-Model parameters:
-- `MaxPages = 3`: 3 discrete slotted pages.
-- `MaxTxId = 2`: Concurrent transactional workloads.
-- Evaluates complete state space of interleaved `WriteBuffer`, `AppendWalFrame`, `CommitTx`, `Checkpoint`, `Crash`, and `Recover` operations.
+A successful run should be recorded with the TLC version, exact command, model configuration, explored state count, and invariant results. It would verify only the bounded model that was checked; it would not prove the Rust implementation correct.

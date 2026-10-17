@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 __version__ = "1.0.1"
 __all__ = [
     "Tapirus",
+    "Connection",
+    "Collection",
     "TapirusError",
     "TapirusVectorStore",
     "TapirusChatMessageHistory",
@@ -280,9 +282,10 @@ class Tapirus:
         vec_str = json.dumps(query_vec)
         return self.query(f"SELECT * FROM {table} VECTOR NEAR {vector_col} = {vec_str} TOP {top_k};")
 
-    def graph_algorithm(self, algo: str) -> Dict[str, Any]:
-        """Run graph algorithm (Louvain, PageRank, WCC) on knowledge graph."""
-        return {"algorithm": algo, "status": "converged", "iterations": 20}
+    def graph_algorithm(self, algo: str) -> List[Dict[str, Any]]:
+        """Run graph algorithm (Louvain, PageRank, Betweenness, Connected_Components) on knowledge graph."""
+        clean_algo = algo.strip().upper()
+        return self.query(f"GRAPH ALGORITHM {clean_algo};")
 
     @property
     def tap(self) -> "_TapInterface":
@@ -306,7 +309,7 @@ class Tapirus:
 
 
 class TapDecision:
-    """Result of Tap cognitive classification."""
+    """Classification result with an uncalibrated lexical score in ``confidence``."""
     def __init__(self, top_choice: str, confidence: float):
         self.top_choice = top_choice
         self.confidence = confidence
@@ -346,12 +349,20 @@ class _TapInterface:
         return tap_classify_grounded(text, candidates, index_name, top_k)
 
 
+# Alias Connection to Tapirus for complete drop-in interoperability with PyO3 sdk
+Connection = Tapirus
+
+
 class Collection:
     """Document collection abstraction using underlying relational JSON storage."""
 
-    def __init__(self, db: Tapirus, name: str):
+    def __init__(self, db: "Tapirus", name: str):
         self.db = db
-        self.name = "".join(c for c in name if c.isalnum() or c == "_")
+        if not name or not re.match(r"^[a-zA-Z0-9_]+$", name):
+            raise TapirusError(
+                f"Invalid collection name '{name}': must contain only alphanumeric characters and underscores"
+            )
+        self.name = name
         self.table_name = f"__doc_{self.name}"
         self.db.execute(
             f"CREATE TABLE IF NOT EXISTS {self.table_name} (id INTEGER PRIMARY KEY, doc TEXT);"
@@ -360,10 +371,9 @@ class Collection:
     def insert_one(self, doc: Any) -> int:
         json_str = doc if isinstance(doc, str) else json.dumps(doc)
         escaped = json_str.replace("'", "''")
-        self.db.execute(f"INSERT INTO {self.table_name} (doc) VALUES ('{escaped}');")
-        rows = self.db.query(f"SELECT MAX(id) as last_id FROM {self.table_name};")
-        if rows and rows[0].get("last_id") is not None:
-            return int(rows[0]["last_id"])
+        rows = self.db.query(f"INSERT INTO {self.table_name} (doc) VALUES ('{escaped}') RETURNING id;")
+        if rows and rows[0].get("id") is not None:
+            return int(rows[0]["id"])
         return 1
 
     def insert(self, doc: Any) -> int:
@@ -454,23 +464,12 @@ def _compute_jaccard_overlap(a: set, b: set) -> float:
 
 
 def tap_classify(text: str, candidates: List[str]) -> Tuple[str, float]:
-    """Classify text intent across candidates using the native Tap decision engine."""
+    """Return a lexical top match and normalized heuristic score, not a calibrated probability."""
     if not candidates:
         return ("unknown", 0.0)
 
-    # 1. Prefer native Safe-Rust engine via SQL scalar bridge
-    db = _get_tap_db()
-    if db is not None:
-        try:
-            esc_text = text.replace("'", "''")
-            cands_json = json.dumps(candidates).replace("'", "''")
-            rows = db.query(f"SELECT TAP_CLASSIFY('{esc_text}', '{cands_json}') AS label;")
-            if rows and "label" in rows[0]:
-                return (str(rows[0]["label"]), 0.92)
-        except Exception:
-            pass
-
-    # 2. Mathematically calibrated fallback matching BitNet / TapEngine
+    # The core SQL bridge exposes a label only, so compute a matching heuristic here
+    # instead of attaching a fixed confidence value to that label.
     input_words = _extract_word_set(text)
     best_cand = candidates[0]
     best_score = -1.0
@@ -484,7 +483,7 @@ def tap_classify(text: str, candidates: List[str]) -> Tuple[str, float]:
             best_score = overlap
             best_cand = cand
 
-    # Calibrated softmax
+    # Normalize candidate overlap scores for ranking. This is not calibration data.
     exp_scores = [math.exp(s * 2.5) for s in scores]
     total_exp = sum(exp_scores) or 1.0
     probs = [e / total_exp for e in exp_scores]

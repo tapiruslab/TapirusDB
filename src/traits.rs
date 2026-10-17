@@ -45,6 +45,77 @@ impl std::fmt::Display for Value {
 }
 
 impl Value {
+    /// Decode an HTTP/SDK bound parameter without interpolating SQL text.
+    pub fn from_json_parameter(value: &serde_json::Value) -> Result<Self> {
+        match value {
+            serde_json::Value::Null => Ok(Self::Null),
+            serde_json::Value::Bool(value) => Ok(Self::Integer(i64::from(*value))),
+            serde_json::Value::Number(value) => {
+                if let Some(integer) = value.as_i64() {
+                    Ok(Self::Integer(integer))
+                } else if value.is_u64() {
+                    Err(Error::ConstraintViolation(
+                        "Integer parameter exceeds i64 range".into(),
+                    ))
+                } else {
+                    value
+                        .as_f64()
+                        .filter(|number| number.is_finite())
+                        .map(Self::Real)
+                        .ok_or_else(|| {
+                            Error::ConstraintViolation("Non-finite numeric parameter".into())
+                        })
+                }
+            }
+            serde_json::Value::String(value) => Ok(Self::Text(value.clone())),
+            serde_json::Value::Array(values) => {
+                let vector = values
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_f64()
+                            .map(|number| number as f32)
+                            .filter(|number| number.is_finite())
+                            .ok_or_else(|| {
+                                Error::ConstraintViolation(
+                                    "Vector parameter requires finite numbers".into(),
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Self::Vector(vector))
+            }
+            serde_json::Value::Object(value)
+                if value.len() == 1 && value.contains_key("$integer") =>
+            {
+                value["$integer"]
+                    .as_str()
+                    .and_then(|number| number.parse::<i64>().ok())
+                    .map(Self::Integer)
+                    .ok_or_else(|| Error::ConstraintViolation("Invalid i64 parameter".into()))
+            }
+            serde_json::Value::Object(value) if value.len() == 1 && value.contains_key("$blob") => {
+                let array = value["$blob"].as_array().ok_or_else(|| {
+                    Error::ConstraintViolation("Blob parameter requires a byte array".into())
+                })?;
+                Ok(Self::Blob(
+                    array
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_u64()
+                                .and_then(|number| u8::try_from(number).ok())
+                                .ok_or_else(|| {
+                                    Error::ConstraintViolation("Invalid blob byte".into())
+                                })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                ))
+            }
+            serde_json::Value::Object(_) => Ok(Self::Text(value.to_string())),
+        }
+    }
+
     /// Check if the value is NULL
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Null)
@@ -197,9 +268,7 @@ fn json_value_to_db_value(val: &serde_json::Value) -> Value {
             }
         }
         serde_json::Value::String(s) => Value::Text(s.clone()),
-        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-            Value::Text(val.to_string())
-        }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => Value::Text(val.to_string()),
     }
 }
 
@@ -235,14 +304,20 @@ impl Row {
 
     /// Extract a typed column by name (supports both qualified "table.col" and unqualified "col")
     pub fn get<T: FromValue>(&self, col_name: &str) -> Result<T> {
-        let idx = self.columns.iter().position(|c| col_name_matches(c, col_name))
+        let idx = self
+            .columns
+            .iter()
+            .position(|c| col_name_matches(c, col_name))
             .ok_or_else(|| Error::Corrupted(format!("Column '{col_name}' not found in row")))?;
         T::from_value(&self.values[idx])
     }
 
     /// Extract raw Value reference by column name
     pub fn get_value(&self, col_name: &str) -> Option<&Value> {
-        let idx = self.columns.iter().position(|c| col_name_matches(c, col_name))?;
+        let idx = self
+            .columns
+            .iter()
+            .position(|c| col_name_matches(c, col_name))?;
         self.values.get(idx)
     }
 
@@ -282,8 +357,12 @@ impl Row {
 
     /// Extract a typed column by index (0-based)
     pub fn get_idx<T: FromValue>(&self, idx: usize) -> Result<T> {
-        let val = self.values.get(idx)
-            .ok_or_else(|| Error::Corrupted(format!("Column index {idx} out of bounds (len: {})", self.values.len())))?;
+        let val = self.values.get(idx).ok_or_else(|| {
+            Error::Corrupted(format!(
+                "Column index {idx} out of bounds (len: {})",
+                self.values.len()
+            ))
+        })?;
         T::from_value(val)
     }
 
@@ -326,7 +405,9 @@ impl FromValue for u64 {
     fn from_value(value: &Value) -> Result<Self> {
         match value {
             Value::Integer(i) if *i >= 0 => Ok(*i as u64),
-            _ => Err(Error::Corrupted("Type mismatch: expected non-negative Integer for u64".into())),
+            _ => Err(Error::Corrupted(
+                "Type mismatch: expected non-negative Integer for u64".into(),
+            )),
         }
     }
 }
@@ -335,7 +416,9 @@ impl FromValue for usize {
     fn from_value(value: &Value) -> Result<Self> {
         match value {
             Value::Integer(i) if *i >= 0 => Ok(*i as usize),
-            _ => Err(Error::Corrupted("Type mismatch: expected non-negative Integer for usize".into())),
+            _ => Err(Error::Corrupted(
+                "Type mismatch: expected non-negative Integer for usize".into(),
+            )),
         }
     }
 }
@@ -347,9 +430,13 @@ impl FromValue for bool {
             Value::Text(s) => match s.to_lowercase().as_str() {
                 "true" | "t" | "1" | "yes" => Ok(true),
                 "false" | "f" | "0" | "no" => Ok(false),
-                _ => Err(Error::Corrupted(format!("Invalid boolean text representation: {s}"))),
+                _ => Err(Error::Corrupted(format!(
+                    "Invalid boolean text representation: {s}"
+                ))),
             },
-            _ => Err(Error::Corrupted("Type mismatch: expected Boolean (Integer or Text)".into())),
+            _ => Err(Error::Corrupted(
+                "Type mismatch: expected Boolean (Integer or Text)".into(),
+            )),
         }
     }
 }
@@ -413,7 +500,12 @@ pub trait VectorIndexEngine {
     fn insert_vector(&mut self, id: u64, vector: &[f32]) -> Result<()>;
 
     /// Search K-nearest neighbors for a query vector
-    fn search_knn(&self, query: &[f32], k: usize, metric: DistanceMetric) -> Result<Vec<(u64, f32)>>;
+    fn search_knn(
+        &self,
+        query: &[f32],
+        k: usize,
+        metric: DistanceMetric,
+    ) -> Result<Vec<(u64, f32)>>;
 }
 
 /// Public Database Connection Trait
@@ -427,13 +519,17 @@ pub trait DatabaseConnection {
     /// Execute a parameterized non-query SQL command
     fn execute_with_params(&self, sql: &str, params: &[Value]) -> Result<usize> {
         let _ = (sql, params);
-        Err(Error::Corrupted("Parameterized execution is not supported by this connection implementation".into()))
+        Err(Error::Corrupted(
+            "Parameterized execution is not supported by this connection implementation".into(),
+        ))
     }
 
     /// Execute a parameterized SQL query returning multiple rows
     fn query_with_params(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
         let _ = (sql, params);
-        Err(Error::Corrupted("Parameterized queries are not supported by this connection implementation".into()))
+        Err(Error::Corrupted(
+            "Parameterized queries are not supported by this connection implementation".into(),
+        ))
     }
 }
 
@@ -443,7 +539,12 @@ mod tests {
 
     #[test]
     fn test_row_extraction() {
-        let cols = vec!["id".into(), "name".into(), "score".into(), "embedding".into()];
+        let cols = vec![
+            "id".into(),
+            "name".into(),
+            "score".into(),
+            "embedding".into(),
+        ];
         let vals = vec![
             Value::Integer(1),
             Value::Text("Alex".into()),

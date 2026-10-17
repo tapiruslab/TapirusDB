@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'">
+  <meta name="tapirus-engine" content="../pkg/tapirus_wasm.js">
+  <meta name="description" content="Run TapirusDB's Rust engine in your browser. Query SQL, store AI document memory, and open or export native .tapir databases.">
+  <title>TapirusDB — Rust Workspace</title>
+  <link rel="stylesheet" href="workspace.css">
+  <script type="module" src="workspace.js"></script>
+</head>
+<body>
+  <header><a class="brand" href="https://tapirusdb.com">TAPIRUS<span>DB</span></a><span id="engine" role="status" data-engine-ready="false">Loading Rust engine…</span></header>
+  <main>
+    <div class="intro"><p class="eyebrow">LOCAL DATA · SQL + AI MEMORY</p><h1>Your data. Your engine.</h1><p>SQL and document retrieval run inside the Rust WebAssembly engine. Download a native <code>.tapir</code> file to continue with the CLI or SDK.</p></div>
+    <section class="vault" aria-label="Database file">
+      <label for="vault-name">Database name<input id="vault-name" value="workspace.tapir" maxlength="120" autocomplete="off"></label>
+      <div class="actions"><button id="new-database" type="button">New database</button><button id="open-saved" type="button">Open browser copy</button><button id="open-database" type="button">Open .tapir</button><button id="download-database" type="button">Download .tapir</button></div>
+      <input id="database-file" type="file" accept=".tapir" hidden>
+      <p id="storage-status" class="muted" role="status">Browser storage: not initialized</p>
+      <p class="muted">Browser copies use IndexedDB and are unencrypted. Keep downloaded backups; clearing site data removes the browser copy. Encrypted files require the native SDK.</p>
+    </section>
+    <div class="workspace-grid">
+      <section class="panel" aria-labelledby="sql-title">
+        <div class="section-heading"><h2 id="sql-title">SQL workspace</h2><span id="transaction-status">AUTOCOMMIT</span></div>
+        <label for="sql">One SQL statement<textarea id="sql" rows="5" spellcheck="false">CREATE TABLE documents (id INTEGER PRIMARY KEY, content TEXT NOT NULL, embedding VECTOR(2));</textarea></label>
+        <details id="parameter-details"><summary>Bound parameters <span class="muted">optional JSON array</span></summary><label for="parameters">Parameter values<textarea id="parameters" rows="2" spellcheck="false">[]</textarea></label></details>
+        <div class="actions"><button class="primary" id="run-sql" type="button">Run statement <kbd>Ctrl ↵</kbd></button><button id="sample-sql" type="button">Insert example</button></div>
+        <p id="sql-status" role="status" data-sequence="0">Ready when the engine has loaded.</p>
+        <pre id="sql-result" tabindex="0" aria-label="SQL results">[]</pre>
+      </section>
+      <section class="panel" aria-labelledby="ai-title">
+        <div class="section-heading"><h2 id="ai-title">AI document memory</h2><span>SOURCE RETRIEVAL</span></div>
+        <p class="muted">Search with BM25 keywords, a model-supplied embedding, or both. Results include source text and separate scores; no cloud service is contacted.</p>
+        <label for="memory-content">Document text or search query<textarea id="memory-content" rows="4" placeholder="An engine maintenance guide…"></textarea></label>
+        <div class="field-grid"><label for="namespace">Namespace<input id="namespace" value="documents" autocomplete="off"></label><label for="session">Session <span class="muted">optional</span><input id="session" autocomplete="off"></label></div>
+        <label for="embedding">Embedding <span class="muted">optional JSON vector from your model</span><textarea id="embedding" rows="2" spellcheck="false" placeholder="[0.12, -0.3, …]"></textarea></label>
+        <div class="actions"><button id="remember" type="button">Store source</button><button class="primary" id="recall" type="button">Search sources</button></div>
+        <p id="memory-status" role="status" data-sequence="0">Source IDs and score components appear here.</p><pre id="memory-result" tabindex="0" aria-label="Memory retrieval results">[]</pre>
+      </section>
+    </div>
+    <section class="panel" aria-labelledby="catalog-title"><div class="section-heading"><h2 id="catalog-title">Engine catalog</h2><button id="refresh-schema" type="button">Refresh</button></div><pre id="schema-result" tabindex="0" aria-label="Actual database schema">[]</pre></section>
+    <footer>Native file format · Bound SQL parameters · Transactional AI memory<br><a href="https://github.com/tapiruslab/TapirusDB">Source and compatibility information</a> · <a href="../pkg/LICENSE">Engine license</a></footer>
+  </main>
+</body>
+</html>

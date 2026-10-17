@@ -5,9 +5,9 @@
 //! or full-precision vectors to enable sub-millisecond retrieval across millions of vectors
 //! on embedded memory budgets under 100% Safe Rust (`#![forbid(unsafe_code)]`).
 
+use crate::vector::DistanceMetric;
 use crate::vector::quantization::{RaBitQuantizedVector, RaBitQuantizer};
 use crate::vector::simd::{simd_cosine_distance, simd_euclidean_distance};
-use crate::vector::DistanceMetric;
 use serde::{Deserialize, Serialize};
 
 /// Configuration parameters for IVF index partitioning
@@ -84,7 +84,11 @@ pub struct IvfIndex {
 
 impl IvfIndex {
     /// Create a new IVF index with trained centroids
-    pub fn new(config: IvfConfig, centroids: Vec<Vec<f32>>, quantizer: Option<RaBitQuantizer>) -> Self {
+    pub fn new(
+        config: IvfConfig,
+        centroids: Vec<Vec<f32>>,
+        quantizer: Option<RaBitQuantizer>,
+    ) -> Self {
         let clusters = centroids.into_iter().map(IvfCluster::new).collect();
         Self {
             config,
@@ -100,7 +104,10 @@ impl IvfIndex {
         config: IvfConfig,
         quantizer: Option<RaBitQuantizer>,
     ) -> Self {
-        assert!(!vectors.is_empty(), "Cannot train IVF index with empty vectors");
+        assert!(
+            !vectors.is_empty(),
+            "Cannot train IVF index with empty vectors"
+        );
         let k = config.num_clusters.min(vectors.len()).max(1);
         let dim = config.dimensions;
 
@@ -300,7 +307,9 @@ mod tests {
         let dim = 32;
         let mut vectors = Vec::new();
         for i in 0..100 {
-            let v: Vec<f32> = (0..dim).map(|j| ((i * dim + j) as f32 * 0.1).sin()).collect();
+            let v: Vec<f32> = (0..dim)
+                .map(|j| ((i * dim + j) as f32 * 0.1).sin())
+                .collect();
             vectors.push((i as u64, v));
         }
 
@@ -328,7 +337,9 @@ mod tests {
         let quantizer = RaBitQuantizer::new(dim, 1);
         let mut vectors = Vec::new();
         for i in 0..60 {
-            let v: Vec<f32> = (0..dim).map(|j| ((i * dim + j) as f32 * 0.05).cos()).collect();
+            let v: Vec<f32> = (0..dim)
+                .map(|j| ((i * dim + j) as f32 * 0.05).cos())
+                .collect();
             vectors.push((i as u64, v));
         }
 

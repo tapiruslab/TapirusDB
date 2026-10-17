@@ -9,8 +9,8 @@
 //! 6. CDC Event Broadcasting in Prepared Statements and Document Collections
 //! 7. Defensive Bounds in B+Tree Leaf Cell Deletion
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tapirus::traits::Value;
 use tapirus::vector::{cosine_distance, euclidean_distance};
 use tapirus::{ChangeOp, Connection, Error, MemoryRecallFilter};
@@ -26,9 +26,12 @@ fn test_stale_lockfile_recovery() {
     assert!(lock_path.exists());
 
     // Open connection - it should detect dead PID 999999, break the stale lock, and open successfully
-    let conn = Connection::open_file(&db_path).expect("Should recover and open database despite stale lock");
-    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY);").expect("Create table");
-    conn.execute("INSERT INTO t VALUES (1);").expect("Insert row");
+    let conn = Connection::open_file(&db_path)
+        .expect("Should recover and open database despite stale lock");
+    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY);")
+        .expect("Create table");
+    conn.execute("INSERT INTO t VALUES (1);")
+        .expect("Insert row");
 
     let rows = conn.query("SELECT * FROM t;").expect("Query");
     assert_eq!(rows.len(), 1);
@@ -71,7 +74,10 @@ fn test_vacuum_into_self_overwrite_prevented() {
         .query("SELECT * FROM users;")
         .expect("Query active database after prevented vacuum");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get_value("name").unwrap(), &Value::Text("Alice".into()));
+    assert_eq!(
+        rows[0].get_value("name").unwrap(),
+        &Value::Text("Alice".into())
+    );
 
     // Safe VACUUM INTO a distinct backup target should succeed
     let backup_path = tmp_dir.path().join("backup.tapir");
@@ -133,11 +139,17 @@ fn test_nan_vector_distance_immunity() {
     let normal_vec = vec![1.0, 0.0, 0.0];
 
     let cos_dist = cosine_distance(&nan_vec, &normal_vec);
-    assert!(cos_dist.is_finite(), "Cosine distance with NaN must be finite sentinel");
+    assert!(
+        cos_dist.is_finite(),
+        "Cosine distance with NaN must be finite sentinel"
+    );
     assert_eq!(cos_dist, 1.0);
 
     let euc_dist = euclidean_distance(&nan_vec, &normal_vec);
-    assert!(euc_dist.is_finite(), "Euclidean distance with NaN must be finite sentinel");
+    assert!(
+        euc_dist.is_finite(),
+        "Euclidean distance with NaN must be finite sentinel"
+    );
     assert_eq!(euc_dist, f32::MAX);
 
     // Vector operations in SQL
@@ -180,26 +192,20 @@ fn test_hybrid_memory_recall_query_matching() {
 
     // Semantic query targeting Rust memory concepts
     let filter = MemoryRecallFilter::default();
-    let recalled = conn.memory_recall(
-        Some("memory safety"),
-        Some(&[0.95, 0.05, 0.0]),
-        5,
-        &filter,
-    );
+    let recalled = conn.memory_recall(Some("memory safety"), Some(&[0.95, 0.05, 0.0]), 5, &filter);
 
     assert!(!recalled.is_empty(), "Should match relevant Rust memory");
     assert_eq!(recalled[0].entry.id, id1);
 
     // Semantic query with vector completely orthogonal / non-positive similarity
-    let unrelated = conn.memory_recall(
-        None,
-        Some(&[0.0, 0.0, -1.0]),
-        5,
-        &filter,
-    );
+    let unrelated = conn.memory_recall(None, Some(&[0.0, 0.0, -1.0]), 5, &filter);
 
     // Non-positive semantic similarity with no text match must not return unrelated memories
-    assert_eq!(unrelated.len(), 0, "Orthogonal/negative vector must not match");
+    assert_eq!(
+        unrelated.len(),
+        0,
+        "Orthogonal/negative vector must not match"
+    );
 }
 
 #[test]
@@ -219,8 +225,15 @@ fn test_cdc_broadcasting_in_prepared_statements_and_documents() {
         .expect("Create table");
 
     // 1. Parameterized execution via PreparedStatement
-    let pstmt = conn.prepare("INSERT INTO products VALUES (?, ?, ?);").expect("Prepare");
-    pstmt.execute(&[Value::Integer(1), Value::Text("Laptop".into()), Value::Real(999.99)])
+    let pstmt = conn
+        .prepare("INSERT INTO products VALUES (?, ?, ?);")
+        .expect("Prepare");
+    pstmt
+        .execute(&[
+            Value::Integer(1),
+            Value::Text("Laptop".into()),
+            Value::Real(999.99),
+        ])
         .expect("Execute prepared statement");
 
     assert_eq!(
@@ -232,8 +245,13 @@ fn test_cdc_broadcasting_in_prepared_statements_and_documents() {
     // 2. execute_with_params helper
     conn.execute_with_params(
         "INSERT INTO products VALUES (?, ?, ?);",
-        &[Value::Integer(2), Value::Text("Mouse".into()), Value::Real(29.99)],
-    ).expect("execute_with_params");
+        &[
+            Value::Integer(2),
+            Value::Text("Mouse".into()),
+            Value::Real(29.99),
+        ],
+    )
+    .expect("execute_with_params");
 
     assert_eq!(
         insert_count.load(Ordering::SeqCst),
@@ -263,5 +281,8 @@ fn test_btree_leaf_deletion_bounds_guard() {
     // Attempt leaf cell deletion on completely uninitialized/corrupt page
     // Should safely return Ok(false) or Err without panicking or underflowing
     let result = delete_leaf_cell_from_page(&mut page_buf, 0, 42);
-    assert!(result.is_ok() || result.is_err(), "Must gracefully handle corrupted leaf page without panic");
+    assert!(
+        result.is_ok() || result.is_err(),
+        "Must gracefully handle corrupted leaf page without panic"
+    );
 }

@@ -7,6 +7,6 @@
 pub mod flash;
 
 pub use flash::{
-    FlashBlockDevice, MicroDatabase, MicroHeader, MicroPager, RamBlockDevice,
-    DEFAULT_MICRO_BLOCK_SIZE, MICRO_DATABASE_MAGIC,
+    DEFAULT_MICRO_BLOCK_SIZE, FlashBlockDevice, MICRO_DATABASE_MAGIC, MicroDatabase, MicroHeader,
+    MicroPager, RamBlockDevice,
 };

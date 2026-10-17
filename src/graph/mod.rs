@@ -478,7 +478,10 @@ impl GraphEngine {
 
         impl Ord for State {
             fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                other.cost.partial_cmp(&self.cost).unwrap_or(std::cmp::Ordering::Equal)
+                other
+                    .cost
+                    .partial_cmp(&self.cost)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             }
         }
 
@@ -493,7 +496,10 @@ impl GraphEngine {
         let mut prev: HashMap<u64, (u64, u64)> = HashMap::new(); // node -> (prev_node, edge_id)
 
         dist.insert(start_id, 0.0);
-        heap.push(State { cost: 0.0, node: start_id });
+        heap.push(State {
+            cost: 0.0,
+            node: start_id,
+        });
 
         let mut found = false;
 
@@ -520,7 +526,10 @@ impl GraphEngine {
                         if next_cost < current_best {
                             dist.insert(next_node, next_cost);
                             prev.insert(next_node, (node, eid));
-                            heap.push(State { cost: next_cost, node: next_node });
+                            heap.push(State {
+                                cost: next_cost,
+                                node: next_node,
+                            });
                         }
                     }
                 }
@@ -562,7 +571,8 @@ impl GraphEngine {
         }
 
         let initial_rank = 1.0 / (n as f32);
-        let mut ranks: HashMap<u64, f32> = self.nodes.keys().map(|&id| (id, initial_rank)).collect();
+        let mut ranks: HashMap<u64, f32> =
+            self.nodes.keys().map(|&id| (id, initial_rank)).collect();
 
         let d = damping_factor.clamp(0.01, 0.99);
         let base_score = (1.0 - d) / (n as f32);
@@ -589,7 +599,8 @@ impl GraphEngine {
                     for &eid in incoming_edges {
                         if let Some(edge) = self.edges.get(&eid) {
                             let v = edge.from_id;
-                            let out_deg = self.outgoing.get(&v).map(|e| e.len()).unwrap_or(1).max(1);
+                            let out_deg =
+                                self.outgoing.get(&v).map(|e| e.len()).unwrap_or(1).max(1);
                             let v_rank = ranks.get(&v).copied().unwrap_or(0.0);
                             incoming_sum += v_rank / (out_deg as f32);
                         }
@@ -634,7 +645,9 @@ impl GraphEngine {
                     for &eid in edge_ids {
                         if let Some(edge) = self.edges.get(&eid) {
                             let neighbor = edge.to_id;
-                            if !components.contains_key(&neighbor) && self.nodes.contains_key(&neighbor) {
+                            if !components.contains_key(&neighbor)
+                                && self.nodes.contains_key(&neighbor)
+                            {
                                 components.insert(neighbor, current_comp_id);
                                 queue.push_back(neighbor);
                             }
@@ -647,7 +660,9 @@ impl GraphEngine {
                     for &eid in edge_ids {
                         if let Some(edge) = self.edges.get(&eid) {
                             let neighbor = edge.from_id;
-                            if !components.contains_key(&neighbor) && self.nodes.contains_key(&neighbor) {
+                            if !components.contains_key(&neighbor)
+                                && self.nodes.contains_key(&neighbor)
+                            {
                                 components.insert(neighbor, current_comp_id);
                                 queue.push_back(neighbor);
                             }
@@ -758,7 +773,7 @@ impl GraphEngine {
         let mut total_weight = 0.0f32;
         let mut node_degree: HashMap<u64, f32> = HashMap::new();
 
-        for (&id, _) in &self.nodes {
+        for &id in self.nodes.keys() {
             let mut deg = 0.0f32;
             if let Some(edge_ids) = self.outgoing.get(&id) {
                 for &eid in edge_ids {
@@ -798,7 +813,8 @@ impl GraphEngine {
                     for &eid in edge_ids {
                         if let Some(edge) = self.edges.get(&eid) {
                             if let Some(&target_comm) = communities.get(&edge.to_id) {
-                                *neighbor_comms.entry(target_comm).or_insert(0.0) += edge.weight.max(0.001);
+                                *neighbor_comms.entry(target_comm).or_insert(0.0) +=
+                                    edge.weight.max(0.001);
                             }
                         }
                     }
@@ -807,7 +823,8 @@ impl GraphEngine {
                     for &eid in edge_ids {
                         if let Some(edge) = self.edges.get(&eid) {
                             if let Some(&source_comm) = communities.get(&edge.from_id) {
-                                *neighbor_comms.entry(source_comm).or_insert(0.0) += edge.weight.max(0.001);
+                                *neighbor_comms.entry(source_comm).or_insert(0.0) +=
+                                    edge.weight.max(0.001);
                             }
                         }
                     }
@@ -876,8 +893,12 @@ mod tests {
         let mut graph = GraphEngine::new();
 
         graph.add_node(1, "Person", r#"{"name":"Alex"}"#).unwrap();
-        graph.add_node(2, "Project", r#"{"name":"TapirusDB"}"#).unwrap();
-        graph.add_node(3, "Organization", r#"{"name":"Tapirus Tech Lab"}"#).unwrap();
+        graph
+            .add_node(2, "Project", r#"{"name":"TapirusDB"}"#)
+            .unwrap();
+        graph
+            .add_node(3, "Organization", r#"{"name":"Tapirus Tech Lab"}"#)
+            .unwrap();
 
         graph.add_edge(1, 2, "ARCHITECT_OF", 1.0, "").unwrap();
         graph.add_edge(1, 3, "FOUNDER_OF", 1.0, "").unwrap();
@@ -957,4 +978,3 @@ mod tests {
         assert_eq!(comms[&4], comms[&5]);
     }
 }
-

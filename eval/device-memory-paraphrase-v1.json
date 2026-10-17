@@ -1,0 +1,428 @@
+{
+  "name": "tapirus-device-memory-paraphrase-v1",
+  "scope": "Authored fictional development challenge; same 20 sources, 40 paraphrased BM/English queries without device names. Written before neural inference results, not independent held-out domain evidence. Not real equipment instructions.",
+  "documents": [
+    {
+      "id": "rhea-battery",
+      "language": "en",
+      "content": "Rhea rover battery: charge the lithium pack at the blue dock. The status indicator turns green when charging is complete. Do not charge below zero degrees Celsius."
+    },
+    {
+      "id": "rhea-filter",
+      "language": "ms",
+      "content": "Penapis habuk rover Rhea perlu dibersihkan setiap 40 jam operasi. Matikan kuasa sebelum membuka penutup penapis. Jangan gunakan air."
+    },
+    {
+      "id": "rhea-radio",
+      "language": "en",
+      "content": "Rhea radio link recovery: hold the amber pairing button for six seconds. Reconnect to the workshop controller on channel seven."
+    },
+    {
+      "id": "suri-stop",
+      "language": "ms",
+      "content": "Robot Suri mempunyai butang henti kecemasan merah di bahagian belakang. Putarkan butang mengikut arah jam untuk melepaskannya, kemudian sahkan kawasan selamat."
+    },
+    {
+      "id": "suri-gripper",
+      "language": "en",
+      "content": "Suri gripper calibration uses an unloaded jaw. Open the maintenance panel, choose CAL GRIP and keep the work area empty during calibration."
+    },
+    {
+      "id": "suri-map",
+      "language": "ms",
+      "content": "Peta navigasi Suri disimpan sebagai sumber berversi. Selepas susun atur kilang berubah, imbas semula lorong dan terbitkan versi peta baharu sebelum operasi."
+    },
+    {
+      "id": "nuri-temperature",
+      "language": "en",
+      "content": "Nuri incubator temperature calibration uses a reference probe at 37 degrees Celsius. Wait fifteen minutes for the chamber to stabilize before recording the offset."
+    },
+    {
+      "id": "nuri-alarm",
+      "language": "ms",
+      "content": "Penggera Nuri kod H12 menunjukkan pintu terbuka melebihi dua minit. Tutup pintu dan periksa getah pengedap sebelum mengakui penggera."
+    },
+    {
+      "id": "bayu-firmware",
+      "language": "en",
+      "content": "Bayu sensor firmware updates require external power and a signed update image. Keep the USB cable attached until the device reports UPDATE COMPLETE."
+    },
+    {
+      "id": "bayu-storage",
+      "language": "ms",
+      "content": "Penderia Bayu menyimpan 2048 bacaan terakhir dalam gelung. Apabila penuh, bacaan paling lama diganti. Eksport bacaan sebelum servis berjadual."
+    },
+    {
+      "id": "mira-backup",
+      "language": "en",
+      "content": "Mira research station backups run at 02:30 UTC. The backup archive is stored on the offline amber drive and verified with a SHA256 checksum."
+    },
+    {
+      "id": "mira-retention",
+      "language": "ms",
+      "content": "Rekod eksperimen Mira disimpan selama 180 hari. Fail latihan beridentiti peserta perlu dipadam selepas tempoh persetujuan tamat."
+    },
+    {
+      "id": "dara-lubrication",
+      "language": "en",
+      "content": "Dara spindle lubrication uses lubricant L7 every 120 operating hours. A dry spindle may trigger vibration warning V31."
+    },
+    {
+      "id": "dara-coolant",
+      "language": "ms",
+      "content": "Tangki penyejuk Dara mempunyai kapasiti 12 liter. Kekalkan kepekatan penyejuk antara empat hingga enam peratus dan periksa sebelum setiap syif."
+    },
+    {
+      "id": "awan-offline",
+      "language": "en",
+      "content": "Awan field gateway can operate without internet for 72 hours. Data is queued locally and synchronized after the authenticated uplink is restored."
+    },
+    {
+      "id": "awan-key",
+      "language": "ms",
+      "content": "Kunci akses Awan ditukar setiap 30 hari. Gunakan port servis setempat dan sahkan identiti peranti sebelum memasang kunci baharu."
+    },
+    {
+      "id": "luma-model",
+      "language": "en",
+      "content": "Luma image classification model revision 8 expects RGB images resized to 224 by 224 pixels. Apply pixel normalization version two before inference."
+    },
+    {
+      "id": "luma-embedding",
+      "language": "ms",
+      "content": "Model embedding Luma teks-v3 menghasilkan vektor 384 dimensi. Dokumen dan pertanyaan mesti menggunakan versi model serta tokenisasi yang sama."
+    },
+    {
+      "id": "tala-reset",
+      "language": "en",
+      "content": "Tala logger factory reset erases all local samples. Export the samples first, disconnect the probe and hold RESET for ten seconds."
+    },
+    {
+      "id": "tala-clock",
+      "language": "ms",
+      "content": "Jam Tala menggunakan UTC. Jika perbezaan masa melebihi lima saat, selaraskan dengan pelayan masa dalaman sebelum memulakan eksperimen baharu."
+    }
+  ],
+  "queries": [
+    {
+      "id": "rhea-battery-paraphrase-en",
+      "language": "en",
+      "query": "Where should the mobile platform refill its electrical energy, and what light means it is finished?",
+      "relevant": [
+        "rhea-battery"
+      ]
+    },
+    {
+      "id": "rhea-battery-paraphrase-ms",
+      "language": "ms",
+      "query": "Di manakah kenderaan bergerak perlu menambah tenaga elektrik dan warna lampu apakah menandakan ia selesai?",
+      "relevant": [
+        "rhea-battery"
+      ]
+    },
+    {
+      "id": "rhea-filter-paraphrase-en",
+      "language": "en",
+      "query": "After how much running time does the dust screen need attention, and can it be washed?",
+      "relevant": [
+        "rhea-filter"
+      ]
+    },
+    {
+      "id": "rhea-filter-paraphrase-ms",
+      "language": "ms",
+      "query": "Selepas berapa lama beroperasi tapisan kotoran perlu diservis dan bolehkah ia dicuci?",
+      "relevant": [
+        "rhea-filter"
+      ]
+    },
+    {
+      "id": "rhea-radio-paraphrase-en",
+      "language": "en",
+      "query": "The wireless connection was lost; how do I restore pairing with the workshop controller?",
+      "relevant": [
+        "rhea-radio"
+      ]
+    },
+    {
+      "id": "rhea-radio-paraphrase-ms",
+      "language": "ms",
+      "query": "Hubungan tanpa wayar terputus; bagaimana mahu memasangkannya semula dengan pengawal bengkel?",
+      "relevant": [
+        "rhea-radio"
+      ]
+    },
+    {
+      "id": "suri-stop-paraphrase-en",
+      "language": "en",
+      "query": "How can an operator immediately halt the robot, and how is the safety button released?",
+      "relevant": [
+        "suri-stop"
+      ]
+    },
+    {
+      "id": "suri-stop-paraphrase-ms",
+      "language": "ms",
+      "query": "Bagaimana pekerja boleh menghentikan robot serta-merta dan melepaskan suis keselamatan itu?",
+      "relevant": [
+        "suri-stop"
+      ]
+    },
+    {
+      "id": "suri-gripper-paraphrase-en",
+      "language": "en",
+      "query": "What preparation is needed before teaching the mechanical hand its jaw positions?",
+      "relevant": [
+        "suri-gripper"
+      ]
+    },
+    {
+      "id": "suri-gripper-paraphrase-ms",
+      "language": "ms",
+      "query": "Apakah persediaan sebelum mengajar tangan mekanikal kedudukan rahangnya?",
+      "relevant": [
+        "suri-gripper"
+      ]
+    },
+    {
+      "id": "suri-map-paraphrase-en",
+      "language": "en",
+      "query": "The aisles in the plant have moved. What must change before autonomous driving resumes?",
+      "relevant": [
+        "suri-map"
+      ]
+    },
+    {
+      "id": "suri-map-paraphrase-ms",
+      "language": "ms",
+      "query": "Laluan dalam loji telah dipindahkan. Apakah yang perlu diubah sebelum pemanduan sendiri disambung?",
+      "relevant": [
+        "suri-map"
+      ]
+    },
+    {
+      "id": "nuri-temperature-paraphrase-en",
+      "language": "en",
+      "query": "Before logging the thermal correction against a reference probe, how long should the enclosure settle?",
+      "relevant": [
+        "nuri-temperature"
+      ]
+    },
+    {
+      "id": "nuri-temperature-paraphrase-ms",
+      "language": "ms",
+      "query": "Sebelum mencatat pembetulan haba berbanding prob rujukan, berapa lama ruang tertutup perlu dibiarkan stabil?",
+      "relevant": [
+        "nuri-temperature"
+      ]
+    },
+    {
+      "id": "nuri-alarm-paraphrase-en",
+      "language": "en",
+      "query": "Which fault indicates an enclosure was left unsealed too long, and what should be inspected?",
+      "relevant": [
+        "nuri-alarm"
+      ]
+    },
+    {
+      "id": "nuri-alarm-paraphrase-ms",
+      "language": "ms",
+      "query": "Ralat manakah bermaksud ruang dibiarkan tidak tertutup terlalu lama dan apakah yang perlu diperiksa?",
+      "relevant": [
+        "nuri-alarm"
+      ]
+    },
+    {
+      "id": "bayu-firmware-paraphrase-en",
+      "language": "en",
+      "query": "Can software be replaced while running only on the internal battery, and may any unsigned image be used?",
+      "relevant": [
+        "bayu-firmware"
+      ]
+    },
+    {
+      "id": "bayu-firmware-paraphrase-ms",
+      "language": "ms",
+      "query": "Bolehkah perisian diganti dengan bateri dalaman sahaja dan adakah imej tanpa tandatangan dibenarkan?",
+      "relevant": [
+        "bayu-firmware"
+      ]
+    },
+    {
+      "id": "bayu-storage-paraphrase-en",
+      "language": "en",
+      "query": "When the sensing device runs out of recording slots, which measurements disappear first?",
+      "relevant": [
+        "bayu-storage"
+      ]
+    },
+    {
+      "id": "bayu-storage-paraphrase-ms",
+      "language": "ms",
+      "query": "Apabila tempat rakaman alat pengukur telah habis, ukuran yang mana hilang dahulu?",
+      "relevant": [
+        "bayu-storage"
+      ]
+    },
+    {
+      "id": "mira-backup-paraphrase-en",
+      "language": "en",
+      "query": "Where is the research station recovery copy kept and how is its integrity checked?",
+      "relevant": [
+        "mira-backup"
+      ]
+    },
+    {
+      "id": "mira-backup-paraphrase-ms",
+      "language": "ms",
+      "query": "Di manakah salinan pemulihan stesen penyelidikan disimpan dan bagaimana keutuhannya diperiksa?",
+      "relevant": [
+        "mira-backup"
+      ]
+    },
+    {
+      "id": "mira-retention-paraphrase-en",
+      "language": "en",
+      "query": "How long may experiment records remain, and what happens when participant permission ends?",
+      "relevant": [
+        "mira-retention"
+      ]
+    },
+    {
+      "id": "mira-retention-paraphrase-ms",
+      "language": "ms",
+      "query": "Berapa lama rekod kajian boleh kekal dan apa terjadi selepas kebenaran peserta berakhir?",
+      "relevant": [
+        "mira-retention"
+      ]
+    },
+    {
+      "id": "dara-lubrication-paraphrase-en",
+      "language": "en",
+      "query": "What oil does the rotating shaft need and which warning can indicate it is running dry?",
+      "relevant": [
+        "dara-lubrication"
+      ]
+    },
+    {
+      "id": "dara-lubrication-paraphrase-ms",
+      "language": "ms",
+      "query": "Apakah minyak yang diperlukan aci berputar dan amaran mana menandakan ia kekeringan?",
+      "relevant": [
+        "dara-lubrication"
+      ]
+    },
+    {
+      "id": "dara-coolant-paraphrase-en",
+      "language": "en",
+      "query": "What dilution range should the machine cooling fluid have, and when is it checked?",
+      "relevant": [
+        "dara-coolant"
+      ]
+    },
+    {
+      "id": "dara-coolant-paraphrase-ms",
+      "language": "ms",
+      "query": "Apakah julat pencairan cecair pendingin mesin dan bilakah ia diperiksa?",
+      "relevant": [
+        "dara-coolant"
+      ]
+    },
+    {
+      "id": "awan-offline-paraphrase-en",
+      "language": "en",
+      "query": "If the internet link fails, how are field readings retained until the uplink returns?",
+      "relevant": [
+        "awan-offline"
+      ]
+    },
+    {
+      "id": "awan-offline-paraphrase-ms",
+      "language": "ms",
+      "query": "Jika sambungan internet gagal, bagaimana bacaan lapangan dikekalkan sehingga talian pulih?",
+      "relevant": [
+        "awan-offline"
+      ]
+    },
+    {
+      "id": "awan-key-paraphrase-en",
+      "language": "en",
+      "query": "How frequently are gateway credentials replaced, and through which local connection?",
+      "relevant": [
+        "awan-key"
+      ]
+    },
+    {
+      "id": "awan-key-paraphrase-ms",
+      "language": "ms",
+      "query": "Berapa kerap kelayakan capaian gerbang diganti dan melalui sambungan setempat yang mana?",
+      "relevant": [
+        "awan-key"
+      ]
+    },
+    {
+      "id": "luma-model-paraphrase-en",
+      "language": "en",
+      "query": "What pixel layout and dimensions are expected by the image recognizer before predictions?",
+      "relevant": [
+        "luma-model"
+      ]
+    },
+    {
+      "id": "luma-model-paraphrase-ms",
+      "language": "ms",
+      "query": "Apakah susunan serta ukuran piksel diperlukan pengecam imej sebelum membuat ramalan?",
+      "relevant": [
+        "luma-model"
+      ]
+    },
+    {
+      "id": "luma-embedding-paraphrase-en",
+      "language": "en",
+      "query": "Can retrieval vectors from a different tokenizer revision be mixed, and how many components are expected?",
+      "relevant": [
+        "luma-embedding"
+      ]
+    },
+    {
+      "id": "luma-embedding-paraphrase-ms",
+      "language": "ms",
+      "query": "Bolehkah vektor carian daripada semakan pentoken berlainan dicampurkan dan berapa komponen dijangka?",
+      "relevant": [
+        "luma-embedding"
+      ]
+    },
+    {
+      "id": "tala-reset-paraphrase-en",
+      "language": "en",
+      "query": "Will restoring factory settings preserve measurements, and what needs to be saved first?",
+      "relevant": [
+        "tala-reset"
+      ]
+    },
+    {
+      "id": "tala-reset-paraphrase-ms",
+      "language": "ms",
+      "query": "Adakah pemulihan tetapan kilang mengekalkan ukuran dan apakah yang mesti disalin dahulu?",
+      "relevant": [
+        "tala-reset"
+      ]
+    },
+    {
+      "id": "tala-clock-paraphrase-en",
+      "language": "en",
+      "query": "What clock convention does the recorder follow and when must time drift be corrected?",
+      "relevant": [
+        "tala-clock"
+      ]
+    },
+    {
+      "id": "tala-clock-paraphrase-ms",
+      "language": "ms",
+      "query": "Apakah piawai waktu digunakan perakam dan bilakah hanyutan waktunya mesti dibetulkan?",
+      "relevant": [
+        "tala-clock"
+      ]
+    }
+  ]
+}
