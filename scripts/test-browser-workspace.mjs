@@ -23,9 +23,10 @@ const server = http.createServer((request, response) => {
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
-let browser, socket;
+let browser, socket, browserClosed;
 try {
   browser = spawn(executable, ['--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--remote-debugging-port=0', `--user-data-dir=${temporary}`, 'about:blank'], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+  browserClosed = new Promise(resolve => browser.once('close', resolve));
   let startupError; browser.on('error', error => { startupError = error; });
   browser.stderr.resume();
   const portFile = path.join(temporary, 'DevToolsActivePort');
@@ -112,8 +113,15 @@ try {
   await call('Browser.close');
 } finally {
   socket?.close();
-  if (browser && browser.exitCode === null) { browser.kill(); await Promise.race([new Promise(resolve => browser.once('exit', resolve)), pause(5000)]); }
+  if (browser) {
+    // Browser.close acknowledges the request before all subprocesses release the profile.
+    await Promise.race([browserClosed, pause(5000)]);
+    if (browser.exitCode === null && browser.signalCode === null) {
+      browser.kill();
+      await Promise.race([browserClosed, pause(5000)]);
+    }
+  }
   await new Promise(resolve => server.close(resolve));
   // Only remove the fresh, task-owned browser profile.
-  fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  await fs.promises.rm(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
 }
