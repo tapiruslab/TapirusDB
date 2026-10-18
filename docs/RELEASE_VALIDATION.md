@@ -1,9 +1,9 @@
 # Release validation — 16 October 2026
 
 This page preserves the 16 October validation snapshot. The 17 October AI,
-embedded, neural evaluation and 100,000-vector work is recorded in the
-[current local engineering report](../audit/LAPORAN_KEMAJUAN_AI_EMBEDDED_2026-10-17.audit.md).
-The table below must not be treated as a measurement of the later working tree.
+embedded and indexed memory work is documented in
+[AI and embedded workflows](AI_EMBEDDED_WORKFLOWS.md).
+The table below must not be treated as a measurement of the later source revision.
 
 This records the local Windows working tree. The release and SDK workflows require automated verification before publishing; new workflow definitions have been parsed locally, and hosted runs are still required for the other platform targets.
 

@@ -138,7 +138,7 @@ jobs:
       - run: node scripts/sync-node-sdk.js --check
       - run: node scripts/build-node-sdk.js --debug
       - run: node sdks/nodejs/test.js
-      - run: node scripts/test-node-package.js
+      - run: npm --prefix sdks/nodejs run test:package
 
   python-sdk:
     name: Native Python wheel (${{ matrix.os }}, Python ${{ matrix.python }})

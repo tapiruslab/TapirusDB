@@ -6,10 +6,15 @@ TapirusDB is an embedded Rust database for local applications that need SQL, vec
 [![Core lint](https://img.shields.io/badge/core-unsafe_code_forbidden-brightgreen.svg?style=flat-square)](src/lib.rs)
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-purple.svg?style=flat-square)](LICENSE)
 
-This working tree includes audit remediation and new integration coverage. See
-[release validation](docs/RELEASE_VALIDATION.md) and the
-[17 October AI/embedded engineering report](audit/LAPORAN_KEMAJUAN_AI_EMBEDDED_2026-10-17.audit.md)
-for measurements and remaining evidence.
+Build local AI products with a data layer that runs inside your application.
+Start with the [web tutorials](https://tapirusdb.com/tutorial), explore the
+[API cookbook](https://tapirusdb.com/cookbook), or
+[try the Rust browser workspace](https://tapirusdb.com/studio/).
+
+The default branch includes storage corrections, transactional AI memory and
+native SDK integration coverage. Published release archives may predate these
+changes; see [release validation](docs/RELEASE_VALIDATION.md) for evidence and
+the distinction between current source and published packages.
 
 ## Highlights
 

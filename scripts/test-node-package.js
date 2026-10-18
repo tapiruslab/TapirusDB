@@ -7,7 +7,13 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
-const npmCli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+const nodeDirectory = path.dirname(fs.realpathSync(process.execPath));
+const npmCli = [
+  process.env.npm_execpath,
+  path.join(nodeDirectory, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  path.resolve(nodeDirectory, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+].find(candidate => candidate && fs.existsSync(candidate));
+assert.ok(npmCli, 'Run via npm run test:package or install npm alongside Node');
 assert.ok(fs.existsSync(npmCli), 'Run via npm run test:package or make npm-cli.js available beside Node');
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'tapirus-npm-consumer-'));
 const npmEnvironment = { ...process.env, npm_config_cache: path.join(directory, 'cache'), npm_config_update_notifier: 'false' };

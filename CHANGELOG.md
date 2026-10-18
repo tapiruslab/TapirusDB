@@ -9,7 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.1] - 2026-10-05
+## [Unreleased]
+
+### Changed
+- Storage and recovery corrections, transactional AI source retrieval, independent sessions and memory lifecycle APIs.
+- Native Node.js and Python SDKs, package consumer checks, and Rust WASM file interchange and browser persistence.
+- Current API documentation and website tutorials replace earlier unsupported examples.
+- Historical benchmark comparisons below are withdrawn; see `docs/RELEASE_VALIDATION.md` for scoped measurements.
+
+### Fixed
+- Locate npm in Unix Node installations and run CI package checks through npm so the consumer test works on Linux and macOS as well as Windows.
+
+## [1.0.1] - 2026-10-05 (historical)
 
 ### Performance & Engine Optimizations
 - **B-Tree Right-Leaning Append Split**:
