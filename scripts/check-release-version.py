@@ -16,6 +16,9 @@ for member in manifest["workspace"]["members"]:
     package = tomllib.loads((root / member / "Cargo.toml").read_text(encoding="utf-8"))["package"]
     if package["version"] != expected:
         raise SystemExit(f'{member}: version {package["version"]} does not match engine {expected}')
+    dependency = tomllib.loads((root / member / "Cargo.toml").read_text(encoding="utf-8")).get("dependencies", {}).get("tapirus")
+    if isinstance(dependency, dict) and "path" in dependency and dependency.get("version") != expected:
+        raise SystemExit(f'{member}: native dependency version does not match engine {expected}')
 for member in ["sdks/nodejs", "packages/npm", "crates/tapirus-wasm"]:
     package = json.loads((root / member / "package.json").read_text(encoding="utf-8"))
     if package["version"] != expected:
