@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verified prebuilt installation; use TAPIRUS_FROM_SOURCE=1 to build a release tag.
 set -euo pipefail
-TAPIRUS_VERSION="${TAPIRUS_VERSION:-1.0.1}"
+TAPIRUS_VERSION="${TAPIRUS_VERSION:-1.0.2}"
 INSTALL_DIR="${TAPIRUS_INSTALL_DIR:-$HOME/.tapirus}"
 [[ "$TAPIRUS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { echo 'Invalid release version' >&2; exit 1; }
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/tapirus-install.XXXXXXXX")"

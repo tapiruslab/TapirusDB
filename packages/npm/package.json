@@ -1,6 +1,6 @@
 {
   "name": "@tapirus/db",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "Legacy local wrapper; use the native tapirus package for supported Node.js distributions",
   "main": "index.js",

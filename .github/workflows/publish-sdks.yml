@@ -9,7 +9,7 @@ on:
       dry_run:
         description: 'Dry run (build only, do not upload to PyPI/npm)'
         required: false
-        default: false
+        default: true
         type: boolean
       publish_pypi:
         description: 'Publish Python SDK to PyPI'
@@ -29,6 +29,25 @@ permissions:
 jobs:
   verify:
     uses: ./.github/workflows/ci.yml
+
+  publication-tag:
+    name: Require a version tag before publishing
+    if: github.event_name == 'push' || !inputs.dry_run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate publication source
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          case "$RELEASE_REF" in
+            refs/tags/v*) ;;
+            *) echo 'Publication requires a version tag. Use dry_run for branches.' >&2; exit 1 ;;
+          esac
+          python scripts/check-release-version.py --tag "${RELEASE_REF#refs/tags/}"
 
   # ============================================================================
   # 1. PYTHON SDK (PyPI via Maturin)
@@ -108,7 +127,7 @@ jobs:
 
   publish-python:
     name: Publish Python SDK to PyPI
-    needs: [build-python-wheels, build-python-sdist]
+    needs: [build-python-wheels, build-python-sdist, publication-tag]
     runs-on: ubuntu-latest
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.publish_pypi && !inputs.dry_run) }}
     steps:
@@ -126,7 +145,6 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
-          skip-existing: true
 
       - name: Attach Python packages to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -180,7 +198,7 @@ jobs:
         run: npm test
 
       - name: Install and test the npm tarball as a consumer
-        run: node scripts/test-node-package.js
+        run: npm --prefix sdks/nodejs run test:package
 
       - name: Upload Node binary artifact
         uses: actions/upload-artifact@v4
@@ -188,11 +206,10 @@ jobs:
           name: node-binary-${{ matrix.target }}
           path: sdks/nodejs/*.node
 
-  publish-nodejs:
-    name: Publish Node.js SDK to npm
+  package-nodejs:
+    name: Assemble and verify the multi-platform npm package
     needs: [build-nodejs-binaries]
     runs-on: ubuntu-latest
-    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.publish_npm && !inputs.dry_run) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -200,8 +217,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          registry-url: 'https://registry.npmjs.org'
+          node-version: 22
 
       - name: Download all Node.js binary artifacts
         uses: actions/download-artifact@v4
@@ -219,10 +235,37 @@ jobs:
         working-directory: sdks/nodejs
         run: npm test
 
-      - name: Publish to npm Registry
+      - name: Create the npm distribution tarball
         working-directory: sdks/nodejs
         run: |
           node ../../scripts/build-node-sdk.js --license-only
-          npm publish --access public --provenance
+          mkdir -p ../../dist
+          npm pack --pack-destination ../../dist
+
+      - name: Install the exact distribution tarball in a fresh consumer
+        run: npm --prefix sdks/nodejs run test:package -- --tarball "$GITHUB_WORKSPACE/dist"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: dist/*.tgz
+          if-no-files-found: error
+
+  publish-nodejs:
+    name: Publish the verified npm tarball
+    needs: [package-nodejs, publication-tag]
+    runs-on: ubuntu-latest
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.publish_npm && !inputs.dry_run) }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: dist
+      - name: Publish to npm Registry
+        run: npm publish dist/*.tgz --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

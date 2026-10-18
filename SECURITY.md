@@ -4,7 +4,7 @@ Report suspected vulnerabilities privately to [security@tapirusdb.com](mailto:se
 
 ## Supported versions
 
-The current source version is `1.0.1`. Apply the newest patch release available for the version line you deploy. Releases older than `1.0.0` are not covered by this policy.
+The current source version is `1.0.2`. Apply the newest patch release available for the version line you deploy. Releases older than `1.0.0` are not covered by this policy.
 
 ## Security properties and limits
 

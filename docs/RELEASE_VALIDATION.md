@@ -71,7 +71,7 @@ Installers default to verified prebuilt assets. Windows also supports `-FromSour
 
 ## Remaining acceptance work
 
-- Choose and synchronize a new release version/tag before publishing these changes. The current working tree still uses 1.0.1 and is not a newly published release.
+- The `release-v1.0.2` branch synchronizes the engine, native SDKs, WASM metadata and installer defaults to the 1.0.2 candidate. It is not a published release. Complete the candidate checks and publish matching artifacts before changing production installer defaults.
 - Run the new hosted CI jobs on Linux/macOS/musl, Node versions and release targets; local Windows results do not establish those outcomes.
 - Validate signed release artifacts and package installation on clean machines. The local installer test uses a fixture archive rather than a downloaded public release.
 - Expand the recorded small-workload release benchmark to realistic datasets, repeated trials, independent hardware, memory measurements and migration workloads.

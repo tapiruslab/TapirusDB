@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Version 1.0.2 candidate. No public tag or package publication is implied by this heading.
+
 ### Changed
 - Storage and recovery corrections, transactional AI source retrieval, independent sessions and memory lifecycle APIs.
 - Native Node.js and Python SDKs, package consumer checks, and Rust WASM file interchange and browser persistence.
@@ -19,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Locate npm in Unix Node installations and run CI package checks through npm so the consumer test works on Linux and macOS as well as Windows.
+- Assemble a multi-platform npm tarball during build-only SDK runs, test that exact tarball, and publish the same artifact after verification.
+- Preserve CLI archives, checksums and build metadata as CI artifacts for release review.
+- Require a matching version tag for registry publication; manual SDK runs default to build-only.
 
 ## [1.0.1] - 2026-10-05 (historical)
 

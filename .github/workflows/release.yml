@@ -66,9 +66,11 @@ jobs:
       - name: Build Release Binaries & FFI Libraries
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --locked --release -p tapirus -p tapirus-ffi --target ${{ matrix.target }}
+            cross build --locked --release -p tapirus --target ${{ matrix.target }}
+            cross build --locked --release -p tapirus-ffi --target ${{ matrix.target }}
           else
-            cargo build --locked --release -p tapirus -p tapirus-ffi --target ${{ matrix.target }}
+            cargo build --locked --release -p tapirus --target ${{ matrix.target }}
+            cargo build --locked --release -p tapirus-ffi --target ${{ matrix.target }}
           fi
         shell: bash
 
@@ -114,6 +116,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
+          name: TapirusDB ${{ github.ref_name }}
+          body_path: docs/releases/${{ github.ref_name }}.md
           files: |
             ${{ matrix.artifact_name }}.tar.gz
             ${{ matrix.artifact_name }}.zip
@@ -123,3 +127,15 @@ jobs:
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Retain distributions for build-only review
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            ${{ matrix.artifact_name }}.tar.gz
+            ${{ matrix.artifact_name }}.zip
+            ${{ matrix.artifact_name }}.*.sha256
+            ${{ matrix.artifact_name }}.cdx.json
+            ${{ matrix.artifact_name }}.build.json
+          if-no-files-found: error

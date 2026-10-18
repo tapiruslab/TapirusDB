@@ -18,11 +18,25 @@ assert.ok(fs.existsSync(npmCli), 'Run via npm run test:package or make npm-cli.j
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'tapirus-npm-consumer-'));
 const npmEnvironment = { ...process.env, npm_config_cache: path.join(directory, 'cache'), npm_config_update_notifier: 'false' };
 try {
-  const packed = JSON.parse(execFileSync(process.execPath, [npmCli, 'pack', '--json', '--pack-destination', directory], { cwd: path.join(root, 'sdks', 'nodejs'), env: npmEnvironment, encoding: 'utf8' }));
+  const tarballFlag = process.argv.indexOf('--tarball');
+  let tarball;
+  if (tarballFlag !== -1) {
+    assert.ok(process.argv[tarballFlag + 1], '--tarball requires a file or directory');
+    tarball = path.resolve(process.argv[tarballFlag + 1]);
+    if (fs.statSync(tarball).isDirectory()) {
+      const files = fs.readdirSync(tarball).filter(file => file.endsWith('.tgz'));
+      assert.equal(files.length, 1, 'Expected exactly one npm distribution tarball');
+      tarball = path.join(tarball, files[0]);
+    }
+    assert.ok(fs.statSync(tarball).isFile() && tarball.endsWith('.tgz'), 'Expected an npm .tgz file');
+  } else {
+    const packed = JSON.parse(execFileSync(process.execPath, [npmCli, 'pack', '--json', '--pack-destination', directory], { cwd: path.join(root, 'sdks', 'nodejs'), env: npmEnvironment, encoding: 'utf8' }));
+    tarball = path.join(directory, packed[0].filename);
+  }
   const consumer = path.join(directory, 'consumer');
   fs.mkdirSync(consumer);
   fs.writeFileSync(path.join(consumer, 'package.json'), JSON.stringify({ name: 'tapirus-install-check', version: '0.0.0', private: true }));
-  execFileSync(process.execPath, [npmCli, 'install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', path.join(directory, packed[0].filename)], { cwd: consumer, env: npmEnvironment, stdio: 'inherit' });
+  execFileSync(process.execPath, [npmCli, 'install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', tarball], { cwd: consumer, env: npmEnvironment, stdio: 'inherit' });
   const environment = { ...process.env, TAPIRUS_TEST_PACKAGE: path.join(consumer, 'node_modules', 'tapirus') };
   delete environment.TAPIRUS_NATIVE_PATH;
   delete environment.TAPIRUS_TEST_REOPEN_PATH;

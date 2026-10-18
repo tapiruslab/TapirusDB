@@ -16,13 +16,23 @@ for member in manifest["workspace"]["members"]:
     package = tomllib.loads((root / member / "Cargo.toml").read_text(encoding="utf-8"))["package"]
     if package["version"] != expected:
         raise SystemExit(f'{member}: version {package["version"]} does not match engine {expected}')
-for member in ["sdks/nodejs", "packages/npm"]:
+for member in ["sdks/nodejs", "packages/npm", "crates/tapirus-wasm"]:
     package = json.loads((root / member / "package.json").read_text(encoding="utf-8"))
     if package["version"] != expected:
         raise SystemExit(f'{member}: npm version does not match engine {expected}')
 python_project = tomllib.loads((root / "sdks/python/pyproject.toml").read_text(encoding="utf-8"))["project"]
 if python_project["version"] != expected:
     raise SystemExit('sdks/python: wheel version does not match engine')
+legacy_python = tomllib.loads((root / "python/pyproject.toml").read_text(encoding="utf-8"))["project"]
+legacy_module = (root / "python/tapirus/__init__.py").read_text(encoding="utf-8")
+legacy_version = re.search(r'__version__\s*=\s*"([^"]+)"', legacy_module)
+if legacy_python["version"] != expected or not legacy_version or legacy_version[1] != expected:
+    raise SystemExit('python: legacy package metadata does not match engine')
+lock = tomllib.loads((root / "Cargo.lock").read_text(encoding="utf-8"))
+members = {tomllib.loads((root / member / "Cargo.toml").read_text(encoding="utf-8"))["package"]["name"] for member in manifest["workspace"]["members"]}
+for package in lock["package"]:
+    if package["name"] in members and "source" not in package and package["version"] != expected:
+        raise SystemExit(f'Cargo.lock: {package["name"]} version does not match engine')
 for file, pattern in [("install.ps1", r"\$Version = '([^']+)'"), ("install.sh", r"TAPIRUS_VERSION:-([^}]+)")]:
     match = re.search(pattern, (root / file).read_text(encoding="utf-8"))
     if not match or match[1] != expected:

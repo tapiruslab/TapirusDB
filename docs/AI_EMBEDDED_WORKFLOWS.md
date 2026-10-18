@@ -1,6 +1,6 @@
 # AI and embedded workflows
 
-These are working-tree APIs in version 1.0.1. A new release has not been
+These are working-tree APIs in version 1.0.2. A new release has not been
 published. Build the local native wheel/addon to use them.
 
 ## Source lifecycle
