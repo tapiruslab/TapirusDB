@@ -10,6 +10,7 @@
 pub mod btree;
 pub mod crypto;
 pub mod document;
+pub mod editions;
 pub mod embedded;
 pub mod error;
 pub mod graph;

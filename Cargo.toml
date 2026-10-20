@@ -38,6 +38,26 @@ default-members = [
 name = "tapirus"
 path = "src/bin/tapirus.rs"
 
+[[bin]]
+name = "tapirus-lite"
+path = "src/bin/tapirus-lite.rs"
+required-features = ["edition-lite"]
+
+[[bin]]
+name = "tapirus-document"
+path = "src/bin/tapirus-document.rs"
+required-features = ["edition-document"]
+
+[[bin]]
+name = "tapirus-graph"
+path = "src/bin/tapirus-graph.rs"
+required-features = ["edition-graph"]
+
+[[bin]]
+name = "tapirus-vector"
+path = "src/bin/tapirus-vector.rs"
+required-features = ["edition-vector"]
+
 [[bench]]
 name = "tapirus_bench"
 harness = false
@@ -110,12 +130,18 @@ server = []
 edition-lite = ["sql", "std"]
 lite = ["edition-lite"]
 
-# 2. Tapirus Document — Pure schemaless JSON/BSON document collections
+# 2. Tapirus Document — Schemaless JSON document collections
 edition-document = ["documents", "sql", "std"]
 document = ["edition-document"]
 
+# Single-model graph and vector entry points, using the shared SQL pager internally.
+edition-graph = ["graphs", "sql", "std"]
+graph-only = ["edition-graph"]
+edition-vector = ["vectors", "sql", "std"]
+vector-only = ["edition-vector"]
+
 # 3. Tapirus AI Brain — Cognitive Agent Memory (Vectors + GraphRAG + Tap Instinct)
-edition-ai-brain = ["vectors", "graphs", "tap", "std"]
+edition-ai-brain = ["vectors", "graphs", "tap", "sql", "std"]
 ai-brain = ["edition-ai-brain"]
 
 # 4. Tapirus Quad (Default Flagship) — Complete Quad-Model Consolidation

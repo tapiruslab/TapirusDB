@@ -25,10 +25,25 @@ the distinction between current source and published packages.
 - Indexed memory adds model-specific HNSW, upsert, revision checks, atomic batches, source versions, TTL and configurable budgets. Python tools provide verified SQLite scalar migration, document ingestion and retrieval evaluation. See [AI and embedded workflows](docs/AI_EMBEDDED_WORKFLOWS.md).
 - `SessionDatabase` provides independent transaction ownership over serialized access. The separate [Micro component](crates/tapirus-micro/README.md) targets bounded bare-metal flash records.
 - The Rust WASM workspace opens and exports native `.tapir` files and saves committed browser snapshots to IndexedDB.
+- First-party SQL Lite, Document, Graph and Vector entry points can be built separately; the default Quad engine exposes every model in the same native file. See [edition builds and limits](docs/EDITIONS.md).
 - Page encryption is optional. Review key handling and deployment configuration for your threat model.
 - The main `tapirus` crate forbids explicit unsafe Rust. The C ABI crate contains unsafe boundary code. This does not prove functional correctness, crash safety, or bounded resource use.
 
 ## Rust quickstart
+
+Need only one model? Build `tapirus-lite`, `tapirus-document`, `tapirus-graph`,
+or `tapirus-vector` from the current source. Quad remains the default `tapirus`
+binary. For example, a SQL-only CLI build is:
+
+```bash
+cargo build --release -p tapirus --no-default-features --features lite --bin tapirus-lite
+```
+
+The edition binaries share the `.tapir` format, but they are API boundaries,
+not security sandboxes or proven low-memory builds. Published v1.0.2 artifacts
+may not include these new binaries; check the asset list for the exact release.
+Follow the [choose-an-edition tutorial](docs/tutorials/choose_an_edition.md)
+for a file-interchange walkthrough.
 
 Add the crate to a Rust project, then open a database and use the SQL API:
 
@@ -97,6 +112,8 @@ These commands validate the current host build and exercised tests. They do not 
 
 ## Documentation
 
+- [Editions and build commands](docs/EDITIONS.md)
+- [Choose an edition tutorial](docs/tutorials/choose_an_edition.md)
 - [API cookbook](docs/COOKBOOK.md)
 - [WAL and recovery architecture notes](docs/architecture/02_WAL_TRANSACTIONS_AND_RECOVERY.md)
 - [TLA+ model scope](docs/formal_verification/README.md)

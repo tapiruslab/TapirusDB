@@ -90,6 +90,17 @@ jobs:
       - name: Run Full Test Suite
         run: cargo test --locked --workspace --all-targets
 
+      - name: Check standalone edition builds
+        shell: bash
+        run: |
+          cargo check --locked -p tapirus --no-default-features --features lite --bin tapirus-lite
+          cargo check --locked -p tapirus --no-default-features --features document --bin tapirus-document
+          cargo check --locked -p tapirus --no-default-features --features graph-only --bin tapirus-graph
+          cargo check --locked -p tapirus --no-default-features --features vector-only --bin tapirus-vector
+
+      - name: Verify edition boundaries and shared file format
+        run: cargo test --locked -p tapirus --no-default-features --features lite,document,graph-only,vector-only --test edition_profiles
+
       - name: Storage fault and recovery tests
         run: cargo test --locked --features fault-injection --test io_fault_recovery_tests
 

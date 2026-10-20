@@ -1,8 +1,8 @@
 ﻿# Modular Architecture and Extensions: Proposal
 
-> Status: design proposal. The adapters, editions, and extension sandbox described here are goals for future work, not capabilities implied by the current build.
+> Status: protocol adapters, a trimmed micro-kernel and third-party extension sandbox remain design proposals. First-party edition entry points are described in [Editions](EDITIONS.md).
 
-This document records possible ways to modularize TapirusDB. The current repository does not establish PostgreSQL or MongoDB wire-protocol compatibility, a micro-kernel set of independently selectable database editions, or a stable third-party WebAssembly extension API.
+This document records possible ways to modularize TapirusDB. The current repository provides separately selectable first-party CLI and Rust API entry points for Lite, Document, Graph and Vector, but does not establish PostgreSQL or MongoDB wire-protocol compatibility, fully isolated compile-time engine modules, or a stable third-party WebAssembly extension API.
 
 ## Candidate directions
 

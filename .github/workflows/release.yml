@@ -99,6 +99,37 @@ jobs:
         shell: bash
 
 
+      - name: Build and package standalone editions
+        run: |
+          for edition in lite document graph vector; do
+            case "$edition" in
+              graph) feature=graph-only ;;
+              vector) feature=vector-only ;;
+              *) feature="$edition" ;;
+            esac
+            binary="tapirus-$edition"
+            artifact="${{ matrix.artifact_name }}-$edition"
+            if [ "${{ matrix.use_cross }}" = "true" ]; then
+              cross build --locked --release -p tapirus --no-default-features --features "$feature" --bin "$binary" --target '${{ matrix.target }}'
+            else
+              cargo build --locked --release -p tapirus --no-default-features --features "$feature" --bin "$binary" --target '${{ matrix.target }}'
+            fi
+            mkdir -p "dist-$edition"
+            if [ "${{ matrix.os }}" = "windows-latest" ]; then
+              cp "target/${{ matrix.target }}/release/$binary.exe" "dist-$edition/"
+            else
+              cp "target/${{ matrix.target }}/release/$binary" "dist-$edition/"
+            fi
+            cp LICENSE "dist-$edition/"
+            cp docs/EDITIONS.md "dist-$edition/"
+            tar -czf "$artifact.tar.gz" -C "dist-$edition" .
+            if [ "${{ matrix.os }}" = "windows-latest" ]; then
+              powershell -Command "Compress-Archive -Path 'dist-$edition/*' -DestinationPath '$artifact.zip' -Force"
+            fi
+            python scripts/release-metadata.py --artifact-glob "$artifact.*" --target '${{ matrix.target }}' --output-prefix "$artifact"
+          done
+        shell: bash
+
       - name: Generate checksums, dependency inventory, and build metadata
         run: python scripts/release-metadata.py --artifact-glob '${{ matrix.artifact_name }}.*' --target '${{ matrix.target }}' --output-prefix '${{ matrix.artifact_name }}'
 
@@ -111,6 +142,10 @@ jobs:
             ${{ matrix.artifact_name }}.zip
             ${{ matrix.artifact_name }}.cdx.json
             ${{ matrix.artifact_name }}.build.json
+            ${{ matrix.artifact_name }}-*.tar.gz
+            ${{ matrix.artifact_name }}-*.zip
+            ${{ matrix.artifact_name }}-*.cdx.json
+            ${{ matrix.artifact_name }}-*.build.json
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
@@ -124,6 +159,11 @@ jobs:
             ${{ matrix.artifact_name }}.*.sha256
             ${{ matrix.artifact_name }}.cdx.json
             ${{ matrix.artifact_name }}.build.json
+            ${{ matrix.artifact_name }}-*.tar.gz
+            ${{ matrix.artifact_name }}-*.zip
+            ${{ matrix.artifact_name }}-*.sha256
+            ${{ matrix.artifact_name }}-*.cdx.json
+            ${{ matrix.artifact_name }}-*.build.json
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -138,4 +178,9 @@ jobs:
             ${{ matrix.artifact_name }}.*.sha256
             ${{ matrix.artifact_name }}.cdx.json
             ${{ matrix.artifact_name }}.build.json
+            ${{ matrix.artifact_name }}-*.tar.gz
+            ${{ matrix.artifact_name }}-*.zip
+            ${{ matrix.artifact_name }}-*.sha256
+            ${{ matrix.artifact_name }}-*.cdx.json
+            ${{ matrix.artifact_name }}-*.build.json
           if-no-files-found: error
