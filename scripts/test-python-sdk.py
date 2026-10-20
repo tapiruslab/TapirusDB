@@ -81,9 +81,10 @@ def main():
     parser.add_argument("--reader", type=Path)
     args = parser.parse_args()
     if args.wheel and args.wheel.is_dir():
-        wheels = list(args.wheel.glob("*.whl"))
+        expected_version = json.loads((Path(__file__).resolve().parents[1] / "sdks/nodejs/package.json").read_text())["version"]
+        wheels = list(args.wheel.glob(f"tapirus-{expected_version}-*.whl"))
         if len(wheels) != 1:
-            raise SystemExit("Expected exactly one built wheel in the directory")
+            raise SystemExit(f"Expected exactly one {expected_version} wheel in the directory")
         args.wheel = wheels[0]
     if args.child or args.reader:
         exercise(args.child or args.reader, writer=bool(args.child))
