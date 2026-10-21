@@ -4,8 +4,8 @@
 //! busy timeout or return Busy, and cannot observe that transaction's mutations.
 //! This supplies isolation without claiming concurrent readers or MVCC.
 use crate::{
-    Config, Connection, Error, IntegrityReport, MemoryDocument, MemorySearch, MemorySearchResponse,
-    Result, Row, Value,
+    Config, Connection, Error, IntegrityReport, MemoryDeleteScope, MemoryDocument, MemorySearch,
+    MemorySearchResponse, Result, Row, Value,
 };
 use parking_lot::{Condvar, Mutex};
 use std::{path::Path, sync::Arc};
@@ -225,6 +225,10 @@ impl Session {
     /// Upsert sources in one atomic statement.
     pub fn upsert_memory_batch(&self, documents: &[MemoryDocument]) -> Result<Vec<u64>> {
         self.access(|connection| connection.upsert_memory_batch(documents))
+    }
+    /// Delete sources matching explicit selectors within this session.
+    pub fn delete_memories(&self, scope: &MemoryDeleteScope) -> Result<usize> {
+        self.access(|connection| connection.delete_memories(scope))
     }
     /// Retrieve source candidates and diagnostics within this session.
     pub fn search_memories(&self, search: &MemorySearch) -> Result<MemorySearchResponse> {

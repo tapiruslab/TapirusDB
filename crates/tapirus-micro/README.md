@@ -7,6 +7,23 @@ provides an `i8` dot product for application-managed quantized vectors.
 This component has a separate `TPMIC001` format. It does not read native `.tapir`
 files and does not implement SQL, HNSW, graphs or a language model.
 
+## Offline bridge to Quad
+
+`Store::export_capsule(slot, device_id, output)` encodes a committed value or
+tombstone into a bounded `TPIOCAP1` transport frame without allocation. The
+application supplies a stable nonzero 16-byte device ID and transmits the exact
+returned byte count by serial, BLE, file or another channel it controls. The
+Quad-side `tapirus-iot` CLI or `iot::import_micro_capsule` can validate and
+import that frame into a local AI memory source. See the
+[IoT capsule guide](../../docs/IOT_CAPSULE.md).
+
+The frame has version, device ID, slot, per-slot sequence, deletion flag, length
+and CRC32. CRC detects accidental corruption only. It is not authentication,
+encryption, a stable `.tapir` file, a multi-record transaction, or a guarantee
+that the frame came from the named device. The Quad importer currently accepts
+nonempty UTF-8 text values for lexical AI retrieval; it does not run an
+embedding model on the MCU.
+
 ## Storage contract
 
 Implement `Flash` for the board's driver. Give each slot two dedicated erase

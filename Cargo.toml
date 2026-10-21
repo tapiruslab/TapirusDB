@@ -58,6 +58,11 @@ name = "tapirus-vector"
 path = "src/bin/tapirus-vector.rs"
 required-features = ["edition-vector"]
 
+[[bin]]
+name = "tapirus-iot"
+path = "src/bin/tapirus-iot.rs"
+required-features = ["quad"]
+
 [[bench]]
 name = "tapirus_bench"
 harness = false
@@ -75,6 +80,7 @@ name = "memory_scale"
 harness = false
 
 [dependencies]
+tapirus-micro = { version = "1.0.2", path = "crates/tapirus-micro", optional = true }
 # Concurrency & Locks
 parking_lot = "0.12"
 
@@ -145,7 +151,7 @@ edition-ai-brain = ["vectors", "graphs", "tap", "sql", "std"]
 ai-brain = ["edition-ai-brain"]
 
 # 4. Tapirus Quad (Default Flagship) — Complete Quad-Model Consolidation
-quad = ["sql", "vectors", "graphs", "documents", "realtime", "tap", "simd", "std"]
+quad = ["sql", "vectors", "graphs", "documents", "realtime", "tap", "simd", "std", "dep:tapirus-micro"]
 
 # 5. Tapirus Enterprise — Full Quad-Model + Daemon Server & Protocol Bridges
 edition-enterprise = ["quad", "server"]

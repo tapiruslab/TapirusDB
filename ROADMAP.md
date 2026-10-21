@@ -31,6 +31,15 @@ This page tracks work and its supporting evidence. See [release validation](docs
    signed release provenance and independent security and storage review
    before setting a 90++ release score.
 
+The first offline Micro-to-Quad capsule bridge is implemented in source: a
+bounded `no_std` frame plus an owned-session importer that preserves current
+per-slot state in local AI memory. It still needs a named MCU driver, physical
+power-cut/endurance tests, authenticated transport and measured resource use.
+
 ## Proposals, not current capabilities
 
-Distributed clustering, broad protocol compatibility layers, a modular edition system, and certified safety-critical use require further implementation and evidence. The standalone Rust browser workspace and transactional AI memory are implemented; their validation scope is recorded in the release guide.
+Distributed clustering, broad protocol compatibility layers, fully isolated
+compile-time editions, and certified safety-critical use require further
+implementation and evidence. First-party edition entry points, the standalone
+Rust browser workspace and transactional AI memory are implemented within the
+limits recorded in their respective guides.

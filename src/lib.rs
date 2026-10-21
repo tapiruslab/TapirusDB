@@ -14,6 +14,8 @@ pub mod editions;
 pub mod embedded;
 pub mod error;
 pub mod graph;
+#[cfg(feature = "quad")]
+pub mod iot;
 pub mod memory;
 pub mod pager;
 pub mod realtime;

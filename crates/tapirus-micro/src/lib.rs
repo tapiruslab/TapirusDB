@@ -8,6 +8,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod capsule;
+
 const HEADER: usize = 32;
 const MAGIC: &[u8; 8] = b"TPMIC001";
 
@@ -46,6 +48,15 @@ pub enum Error<E> {
     Corrupted,
     /// Sequence counter exhausted; application migration is required.
     SequenceExhausted,
+}
+
+/// Failure while exporting a committed slot into a transport capsule.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExportError<E> {
+    /// The underlying flash store failed to read a committed slot.
+    Store(Error<E>),
+    /// The capsule could not be encoded into the supplied output.
+    Capsule(capsule::CapsuleError),
 }
 
 #[derive(Clone, Copy)]
@@ -173,6 +184,34 @@ impl<F: Flash, const BLOCK: usize> Store<F, BLOCK> {
         self.read_record(slot, record.bank, &mut scratch)?;
         output[..record.length].copy_from_slice(&scratch[HEADER..HEADER + record.length]);
         Ok(Some(record.length))
+    }
+    /// Export the latest committed value or tombstone without allocating.
+    /// An empty slot returns None; the caller supplies a stable device ID.
+    pub fn export_capsule(
+        &mut self,
+        slot: usize,
+        device_id: [u8; 16],
+        output: &mut [u8],
+    ) -> Result<Option<usize>, ExportError<F::Error>> {
+        let mut scratch = [0u8; BLOCK];
+        let Some(record) = self
+            .latest(slot, &mut scratch)
+            .map_err(ExportError::Store)?
+        else {
+            return Ok(None);
+        };
+        self.read_record(slot, record.bank, &mut scratch)
+            .map_err(ExportError::Store)?;
+        capsule::Capsule {
+            device_id,
+            slot: slot as u32,
+            sequence: record.sequence,
+            deleted: record.deleted,
+            payload: &scratch[32..32 + record.length],
+        }
+        .encode_into(output)
+        .map(Some)
+        .map_err(ExportError::Capsule)
     }
     /// Replace one slot. Zero-length values are supported and differ from deletion.
     pub fn put(&mut self, slot: usize, value: &[u8]) -> Result<(), Error<F::Error>> {

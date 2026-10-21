@@ -24,6 +24,7 @@ the distinction between current source and published packages.
 - AI source retrieval combines BM25, supplied embeddings, recency and importance, with namespace/session filters and source citations.
 - Indexed memory adds model-specific HNSW, upsert, revision checks, atomic batches, source versions, TTL and configurable budgets. Python tools provide verified SQLite scalar migration, document ingestion and retrieval evaluation. See [AI and embedded workflows](docs/AI_EMBEDDED_WORKFLOWS.md).
 - `SessionDatabase` provides independent transaction ownership over serialized access. The separate [Micro component](crates/tapirus-micro/README.md) targets bounded bare-metal flash records.
+- The [offline IoT capsule bridge](docs/IOT_CAPSULE.md) exports a committed Micro slot without allocation and imports it into Quad's local AI memory with sequence/replay checks. A gateway may attach embeddings from a pinned local provider. It is a source-build capability, not a claim of signed device identity or on-chip LLM inference.
 - The Rust WASM workspace opens and exports native `.tapir` files and saves committed browser snapshots to IndexedDB.
 - First-party SQL Lite, Document, Graph and Vector entry points can be built separately; the default Quad engine exposes every model in the same native file. See [edition builds and limits](docs/EDITIONS.md).
 - Page encryption is optional. Review key handling and deployment configuration for your threat model.
@@ -113,6 +114,7 @@ These commands validate the current host build and exercised tests. They do not 
 ## Documentation
 
 - [Editions and build commands](docs/EDITIONS.md)
+- [Offline Micro-to-Quad IoT capsules](docs/IOT_CAPSULE.md)
 - [Choose an edition tutorial](docs/tutorials/choose_an_edition.md)
 - [API cookbook](docs/COOKBOOK.md)
 - [WAL and recovery architecture notes](docs/architecture/02_WAL_TRANSACTIONS_AND_RECOVERY.md)

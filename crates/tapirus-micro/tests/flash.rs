@@ -1,3 +1,4 @@
+use tapirus_micro::capsule::{Capsule, CapsuleError, HEADER_LEN, decode_capsule};
 use tapirus_micro::{Error, Flash, Store, dot_i8};
 
 #[derive(Clone)]
@@ -115,4 +116,73 @@ fn committed_corruption_fails_closed() {
     ));
     assert_eq!(dot_i8(&[-128, 127], &[-128, 127]), Some(32513));
     assert_eq!(dot_i8(&[], &[]), None);
+}
+
+#[test]
+fn committed_slot_exports_versioned_capsules_and_tombstones() {
+    let mut store = Store::<_, 256>::new(RamFlash::fresh(), 2).unwrap();
+    let mut frame = [0u8; 256];
+    assert_eq!(store.export_capsule(0, [7; 16], &mut frame).unwrap(), None);
+    store.put(0, b"temperature 24 C").unwrap();
+    let length = store
+        .export_capsule(0, [7; 16], &mut frame)
+        .unwrap()
+        .unwrap();
+    let first = decode_capsule(&frame[..length]).unwrap();
+    assert_eq!(first.device_id, [7; 16]);
+    assert_eq!(first.sequence, 1);
+    assert_eq!(first.slot, 0);
+    assert_eq!(first.payload, b"temperature 24 C");
+    assert!(!first.deleted);
+
+    frame[HEADER_LEN] ^= 1;
+    assert_eq!(
+        decode_capsule(&frame[..length]),
+        Err(CapsuleError::Checksum)
+    );
+    store.delete(0).unwrap();
+    let length = store
+        .export_capsule(0, [7; 16], &mut frame)
+        .unwrap()
+        .unwrap();
+    let deleted = decode_capsule(&frame[..length]).unwrap();
+    assert_eq!(deleted.sequence, 2);
+    assert!(deleted.deleted);
+    assert!(deleted.payload.is_empty());
+}
+
+#[test]
+fn capsule_decoder_rejects_truncation_trailing_data_and_unsupported_version() {
+    let mut frame = [0u8; 128];
+    let len = Capsule {
+        device_id: [1; 16],
+        slot: 3,
+        sequence: 9,
+        deleted: false,
+        payload: b"pump ready",
+    }
+    .encode_into(&mut frame)
+    .unwrap();
+    assert_eq!(
+        decode_capsule(&frame[..len - 1]),
+        Err(CapsuleError::Invalid)
+    );
+    assert_eq!(
+        decode_capsule(&frame[..len + 1]),
+        Err(CapsuleError::Invalid)
+    );
+    frame[8] = 2;
+    assert_eq!(decode_capsule(&frame[..len]), Err(CapsuleError::Version));
+    frame[8] = 1;
+    assert_eq!(
+        Capsule {
+            device_id: [0; 16],
+            slot: 0,
+            sequence: 1,
+            deleted: false,
+            payload: b"x"
+        }
+        .encode_into(&mut frame),
+        Err(CapsuleError::Invalid)
+    );
 }
