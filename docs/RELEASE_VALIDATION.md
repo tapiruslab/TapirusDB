@@ -5,7 +5,7 @@ embedded and indexed memory work is documented in
 [AI and embedded workflows](AI_EMBEDDED_WORKFLOWS.md).
 The table below must not be treated as a measurement of the later source revision.
 
-This records the local Windows working tree. The release and SDK workflows require automated verification before publishing; new workflow definitions have been parsed locally, and hosted runs are still required for the other platform targets.
+The table below records the historical local Windows working tree. A later [hosted CI run for commit `8080302`](https://github.com/tapiruslab/TapirusDB/actions/runs/41013988379) finished successfully on 30 October 2026 with 28 jobs, including Linux x86_64/ARM64/musl, macOS Intel/Apple Silicon, Windows, Rust 1.85, native SDKs, WASM/browser, container persistence and benchmarks. This is CI evidence for that source commit; it is not evidence of a tagged release or published registry packages.
 
 ## Evidence collected
 
@@ -52,7 +52,7 @@ A separate local Rust 1.85.0 compilation uncovered trait-object upcasting in the
 
 ## Local Docker smoke check (30 October 2026)
 
-The Linux/amd64 image built from the current working tree on Docker Desktop. `scripts/test-docker-smoke.ps1` checks a non-root process with network disabled and a read-only root filesystem, creates a SQL table, inserts a row, then reopens the same database in a second process and verifies the value. It also requires invalid SQL to return a nonzero CLI exit status. The final runtime uses Alpine 3.24 without an unnecessary `libgcc` package; `docker image ls` reported 16.8 MB for `tapirusdb:local-audit-20261030`. The same checks are now a separate `docker-image` job in the CI workflow, but no hosted result has been observed yet. This is one local container smoke test, not hosted CI, cross-architecture validation, or proof of a published release. The test uses an anonymous volume removed when the container exits.
+The Linux/amd64 image built from the current working tree on Docker Desktop. `scripts/test-docker-smoke.ps1` checks a non-root process with network disabled and a read-only root filesystem, creates a SQL table, inserts a row, then reopens the same database in a second process and verifies the value. It also requires invalid SQL to return a nonzero CLI exit status. The final runtime uses Alpine 3.24 without an unnecessary `libgcc` package; `docker image ls` reported 16.8 MB for `tapirusdb:local-audit-20261030`. The separate hosted `docker-image` CI job passed in run 41013988379. This is local plus CI container smoke evidence, not cross-architecture validation or proof of a published image. The local test uses an anonymous volume removed when the container exits.
 
 ## Build and packaging
 
@@ -85,7 +85,7 @@ Installers default to verified prebuilt assets. Windows also supports `-FromSour
 
 - The `release-v1.0.2` branch synchronizes the engine, native SDKs, WASM metadata and installer defaults to the 1.0.2 candidate. It is not a published release. Complete the candidate checks and publish matching artifacts before changing production installer defaults.
 - A read-only check on 30 October 2026 found no `v1.0.2` tag or GitHub release (`404`). The published `v1.0.1` release lists platform archives but no `.sha256` sidecars required by the current installers. Therefore neither the candidate default nor simply reverting it to 1.0.1 gives a verified public installation path. Publish a validated 1.0.2 release with checksums, then run clean-machine install tests before advertising the installers.
-- Run the new hosted CI jobs on Linux/macOS/musl, Node versions and release targets; local Windows results do not establish those outcomes. In particular, the native Linux ARM64 runner and final release-asset gate have not yet reported a hosted result.
+- The candidate's hosted CI passed in run 41013988379. The tag-triggered release build, native packaged-install steps, final 110-asset gate and downloaded-draft recheck still require a successful hosted run before any public release claim.
 - Validate signed release artifacts and package installation on clean machines. The local installer test uses a fixture archive rather than a downloaded public release.
 - Expand the recorded small-workload release benchmark to realistic datasets, repeated trials, independent hardware, memory measurements and migration workloads.
 - Extend I/O fault injection, long-running recovery/restore testing and independent security review. No cryptographic review or safety certification is claimed.
