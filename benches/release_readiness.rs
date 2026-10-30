@@ -6,6 +6,15 @@ use sha2::{Digest, Sha256};
 use std::{hint::black_box, process::Command, time::Instant};
 use tapirus::{Connection, DistanceMetric, HnswIndex, Value, VectorIndexEngine};
 
+fn digest_hex(digest: impl AsRef<[u8]>) -> String {
+    use std::fmt::Write as _;
+    let mut result = String::with_capacity(digest.as_ref().len() * 2);
+    for byte in digest.as_ref() {
+        write!(&mut result, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    result
+}
+
 fn timings(mut operation: impl FnMut(usize), count: usize) -> Json {
     let mut samples = Vec::with_capacity(count);
     for i in 0..count {
@@ -217,8 +226,8 @@ fn main() {
         "scope": "single-host small-workload measurements; query parsing and correctness assertions included; warm point reads; vector index in memory; no embedding-model cost",
         "source_head": output("git", &["rev-parse", "HEAD"]),
         "source_dirty": !output("git", &["status", "--porcelain"]).is_empty(),
-        "binary_sha256": format!("{:x}", Sha256::digest(std::fs::read(binary).unwrap())),
-        "cargo_lock_sha256": format!("{:x}", Sha256::digest(std::fs::read("Cargo.lock").unwrap())),
+        "binary_sha256": digest_hex(Sha256::digest(std::fs::read(binary).unwrap())),
+        "cargo_lock_sha256": digest_hex(Sha256::digest(std::fs::read("Cargo.lock").unwrap())),
         "rustc": output("rustc", &["--version"]), "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
         "cpu": std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_else(|_| "record host CPU separately".into()),
         "profile": "release: opt-level 3, fat LTO, one codegen unit; default Cargo features",

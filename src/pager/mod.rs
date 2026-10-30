@@ -780,7 +780,7 @@ impl Pager {
             lru_head: None,
             lru_tail: None,
             lru_nodes: HashMap::new(),
-            remote_reader: Some(adapter.clone() as Arc<dyn RemoteRangeReader>),
+            remote_reader: Some(Arc::new(remote::AdapterRangeReader(adapter.clone()))),
             remote_writer: Some(adapter),
         };
 

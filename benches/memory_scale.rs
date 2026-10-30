@@ -5,6 +5,15 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashSet, time::Instant};
 use tapirus::{Connection, MemoryConfig, MemoryDocument, MemorySearch};
 
+fn digest_hex(digest: impl AsRef<[u8]>) -> String {
+    use std::fmt::Write as _;
+    let mut result = String::with_capacity(digest.as_ref().len() * 2);
+    for byte in digest.as_ref() {
+        write!(&mut result, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    result
+}
+
 fn vector(seed: &mut u64, dims: usize) -> Vec<f32> {
     let mut values: Vec<f32> = (0..dims)
         .map(|_| {
@@ -202,7 +211,7 @@ fn main() {
     ] {
         source.update(bytes);
     }
-    let report = json!({"version":tapirus::VERSION,"scope":"Synthetic normalized uniform vectors, independent queries; memory API with persistence/reopen. Not neural relevance evidence.","documents":count,"dimensions":dims,"queries":queries,"k":10,"ef_search":ef,"candidate_limit":ef,"candidate_sweep":sweep,"retrieval_source_sha256":format!("{:x}",source.finalize()),"source_query_sha256":format!("{:x}",digest.finalize()),"generator_sha256":format!("{:x}",Sha256::digest(include_bytes!("memory_scale.rs"))),"ingestion_seconds":ingestion,"reopen_seconds":reopen,"index_build_seconds":index_seconds,"ann_latency_ms":percentiles(ann_latency),"exact_latency_ms":percentiles(exact_latency),"recall_at_10":recall.iter().sum::<f64>()/queries as f64,"minimum_query_recall":recall.iter().copied().fold(1.0,f64::min),"scored_candidates_max":candidate_max,"peak_process_rss_bytes":peak_rss(),"database_bytes":std::fs::metadata(&path).unwrap().len(),"memory_stats":stats,"host":{"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"cpu":std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_default()}});
+    let report = json!({"version":tapirus::VERSION,"scope":"Synthetic normalized uniform vectors, independent queries; memory API with persistence/reopen. Not neural relevance evidence.","documents":count,"dimensions":dims,"queries":queries,"k":10,"ef_search":ef,"candidate_limit":ef,"candidate_sweep":sweep,"retrieval_source_sha256":digest_hex(source.finalize()),"source_query_sha256":digest_hex(digest.finalize()),"generator_sha256":digest_hex(Sha256::digest(include_bytes!("memory_scale.rs"))),"ingestion_seconds":ingestion,"reopen_seconds":reopen,"index_build_seconds":index_seconds,"ann_latency_ms":percentiles(ann_latency),"exact_latency_ms":percentiles(exact_latency),"recall_at_10":recall.iter().sum::<f64>()/queries as f64,"minimum_query_recall":recall.iter().copied().fold(1.0,f64::min),"scored_candidates_max":candidate_max,"peak_process_rss_bytes":peak_rss(),"database_bytes":std::fs::metadata(&path).unwrap().len(),"memory_stats":stats,"host":{"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"cpu":std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_default()}});
     std::fs::create_dir_all("target").unwrap();
     let output = std::env::var("TAPIRUS_BENCH_OUTPUT")
         .unwrap_or_else(|_| "target/memory-scale-results.json".into());

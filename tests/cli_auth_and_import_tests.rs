@@ -16,6 +16,26 @@ use tempfile::tempdir;
 const TAPIRUS_BIN: &str = env!("CARGO_BIN_EXE_tapirus");
 
 #[test]
+fn test_cli_sql_error_returns_failure_and_stops_batch() {
+    let dir = tempdir().expect("Create temp dir");
+    let db_file = dir.path().join("batch.tapir");
+    let output = Command::new(TAPIRUS_BIN)
+        .arg(&db_file)
+        .arg("-c")
+        .arg("CREATE TABLE audit (n INTEGER); INVALID SQL; INSERT INTO audit VALUES (42)")
+        .output()
+        .expect("Execute tapirus SQL batch");
+    assert!(!output.status.success(), "invalid SQL must fail the CLI");
+    let conn = Connection::open(&db_file).expect("Open created database");
+    assert!(
+        conn.query("SELECT n FROM audit")
+            .expect("Query table")
+            .is_empty(),
+        "statements after the error must not run"
+    );
+}
+
+#[test]
 fn test_cli_import_csv() {
     let dir = tempdir().expect("Create temp dir");
     let csv_file = dir.path().join("customers.csv");

@@ -24,9 +24,9 @@ cargo build --release -p tapirus --no-default-features --features vector-only --
 cargo build --release -p tapirus --bin tapirus
 ```
 
-These commands build from the checked-out source. Do not assume existing v1.0.2
-release archives contain the new binaries: check the published asset list. The
-release workflow is prepared to package them on a future successful tag run.
+These commands build from the checked-out source. Check a published release's
+asset list before assuming its edition binaries are available. The release
+workflow packages the editions only after its tag build passes verification.
 
 `--no-default-features` matters: otherwise Cargo also activates `quad`. Features
 are chosen at build time. To move from Lite to Quad, run the Quad executable
@@ -61,8 +61,11 @@ For a worked build, write, close and reopen flow, see the
 
 These editions are **API and executable boundaries**, not a security sandbox.
 The shared core still compiles cross-model modules because SQL execution and
-storage currently depend on them. Binary size and RAM reductions have not yet
-been demonstrated. The tagged release workflow is configured to package each
+storage currently depend on them. A local Windows `min-size` build measured
+smaller edition binaries than Quad; the reproducible measurement command is
+`python scripts/measure-edition-footprint.py` from the repository root.
+RAM savings under equivalent workloads and other platforms remain unproven.
+The tagged release workflow is configured to package each
 edition separately alongside Quad, with checksums, build metadata and
 attestations. These are not published until a new tag completes successfully.
 Removing unused engine modules from each build requires further refactoring and

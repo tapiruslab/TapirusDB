@@ -33,6 +33,19 @@ pub trait RemoteStorageAdapter: RemoteRangeReader {
     fn put_object(&self, data: &[u8]) -> Result<()>;
 }
 
+/// Delegate reads without trait-object upcasting, which is unavailable on Rust 1.85.
+pub(crate) struct AdapterRangeReader(pub Arc<dyn RemoteStorageAdapter>);
+
+impl RemoteRangeReader for AdapterRangeReader {
+    fn fetch_range(&self, offset: u64, length: usize) -> Result<Vec<u8>> {
+        self.0.fetch_range(offset, length)
+    }
+
+    fn total_size(&self) -> Result<u64> {
+        self.0.total_size()
+    }
+}
+
 /// In-memory mock range reader and writable storage for unit tests, local development, and simulated network environments
 pub struct MockRemoteRangeStorage {
     data: RwLock<Vec<u8>>,
@@ -445,8 +458,23 @@ mod tests {
             listener.set_nonblocking(true).unwrap();
             while running_clone.load(Ordering::Relaxed) {
                 if let Ok((mut stream, _)) = listener.accept() {
+                    // Accepted sockets can inherit nonblocking mode on some hosts.
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                        .unwrap();
                     let mut req_buf = [0u8; 2048];
-                    let n = stream.read(&mut req_buf).unwrap_or(0);
+                    let mut n = 0;
+                    while n < req_buf.len() {
+                        let read = stream.read(&mut req_buf[n..]).unwrap_or(0);
+                        if read == 0 {
+                            break;
+                        }
+                        n += read;
+                        if req_buf[..n].windows(4).any(|part| part == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
                     let req_str = String::from_utf8_lossy(&req_buf[..n]);
 
                     if req_str.starts_with("HEAD ") {

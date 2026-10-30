@@ -41,8 +41,8 @@ cargo build --release -p tapirus --no-default-features --features lite --bin tap
 ```
 
 The edition binaries share the `.tapir` format, but they are API boundaries,
-not security sandboxes or proven low-memory builds. Published v1.0.2 artifacts
-may not include these new binaries; check the asset list for the exact release.
+not security sandboxes or proven low-memory builds. Check the asset list for
+the exact published release before depending on a prebuilt edition binary.
 Follow the [choose-an-edition tutorial](docs/tutorials/choose_an_edition.md)
 for a file-interchange walkthrough.
 
@@ -110,6 +110,8 @@ cargo clippy --workspace --all-targets --all-features --offline -- -D warnings
 ```
 
 These commands validate the current host build and exercised tests. They do not establish formal verification, certification, or correctness for every failure mode.
+
+For a local Linux container build, run `docker build -t tapirusdb:local .`. The image runs as a non-root user. Mount a named volume at `/data` for data that must survive container removal, for example `docker run --rm --network none --mount source=tapirus-demo,target=/data tapirusdb:local /data/demo.tapir -c "CREATE TABLE notes (id INTEGER)"`. A bind-mounted host directory must be writable by the container user. The local Windows Docker smoke check is `powershell -NoProfile -File scripts/test-docker-smoke.ps1`; it builds a local test image and verifies SQL reopen and error exit status. This local check is not a substitute for public release asset verification or cross-platform CI results.
 
 ## Documentation
 

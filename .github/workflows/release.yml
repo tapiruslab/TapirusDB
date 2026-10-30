@@ -20,28 +20,24 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact_name: tapirus-linux-x86_64
-            use_cross: false
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             artifact_name: tapirus-linux-aarch64
-            use_cross: true
           - target: x86_64-apple-darwin
             os: macos-15-intel
             artifact_name: tapirus-macos-x86_64
-            use_cross: false
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact_name: tapirus-macos-aarch64
-            use_cross: false
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact_name: tapirus-windows-x86_64
-            use_cross: false
 
     steps:
       - name: Checkout Code
@@ -56,22 +52,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Cross (if needed)
-        if: matrix.use_cross
-        run: |
-          mkdir -p ~/.cargo/bin
-          curl -sSL https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-musl.tar.gz | tar -xz -C ~/.cargo/bin
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
       - name: Build Release Binaries & FFI Libraries
         run: |
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --locked --release -p tapirus --target ${{ matrix.target }}
-            cross build --locked --release -p tapirus-ffi --target ${{ matrix.target }}
-          else
-            cargo build --locked --release -p tapirus --target ${{ matrix.target }}
-            cargo build --locked --release -p tapirus-ffi --target ${{ matrix.target }}
-          fi
+          cargo build --locked --release -p tapirus --target ${{ matrix.target }}
+          cargo build --locked --release -p tapirus-ffi --target ${{ matrix.target }}
         shell: bash
 
       - name: Package Unix Distribution
@@ -79,8 +63,9 @@ jobs:
         run: |
           mkdir -p dist/include
           cp target/${{ matrix.target }}/release/tapirus dist/
-          cp -f target/${{ matrix.target }}/release/libtapirus.* dist/ 2>/dev/null || true
-          cp include/tapirus.h dist/include/ 2>/dev/null || true
+          if [ '${{ runner.os }}' = 'Linux' ]; then extension=so; else extension=dylib; fi
+          cp "target/${{ matrix.target }}/release/libtapirus.$extension" dist/
+          cp include/tapirus.h dist/include/
           cp LICENSE README.md dist/
           tar -czvf ${{ matrix.artifact_name }}.tar.gz -C dist .
         shell: bash
@@ -90,9 +75,9 @@ jobs:
         run: |
           mkdir -p dist/include
           cp target/${{ matrix.target }}/release/tapirus.exe dist/
-          cp -f target/${{ matrix.target }}/release/tapirus.dll dist/ 2>/dev/null || true
-          cp -f target/${{ matrix.target }}/release/tapirus.lib dist/ 2>/dev/null || true
-          cp include/tapirus.h dist/include/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/tapirus.dll dist/
+          cp target/${{ matrix.target }}/release/tapirus.lib dist/
+          cp include/tapirus.h dist/include/
           cp LICENSE README.md dist/
           tar -czvf ${{ matrix.artifact_name }}.tar.gz -C dist .
           powershell -Command "Compress-Archive -Path dist/* -DestinationPath ${{ matrix.artifact_name }}.zip -Force"
@@ -109,11 +94,7 @@ jobs:
             esac
             binary="tapirus-$edition"
             artifact="${{ matrix.artifact_name }}-$edition"
-            if [ "${{ matrix.use_cross }}" = "true" ]; then
-              cross build --locked --release -p tapirus --no-default-features --features "$feature" --bin "$binary" --target '${{ matrix.target }}'
-            else
-              cargo build --locked --release -p tapirus --no-default-features --features "$feature" --bin "$binary" --target '${{ matrix.target }}'
-            fi
+            cargo build --locked --release -p tapirus --no-default-features --features "$feature" --bin "$binary" --target '${{ matrix.target }}'
             mkdir -p "dist-$edition"
             if [ "${{ matrix.os }}" = "windows-latest" ]; then
               cp "target/${{ matrix.target }}/release/$binary.exe" "dist-$edition/"
@@ -133,54 +114,82 @@ jobs:
       - name: Generate checksums, dependency inventory, and build metadata
         run: python scripts/release-metadata.py --artifact-glob '${{ matrix.artifact_name }}.*' --target '${{ matrix.target }}' --output-prefix '${{ matrix.artifact_name }}'
 
+      - name: Install exact packaged Unix release on native host
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          export TAPIRUS_INSTALL_DIR="$RUNNER_TEMP/tapirus-release-install"
+          export TAPIRUS_ARCHIVE_PATH="$GITHUB_WORKSPACE/${{ matrix.artifact_name }}.tar.gz"
+          export TAPIRUS_CHECKSUM_PATH="$TAPIRUS_ARCHIVE_PATH.sha256"
+          bash install.sh
+          "$TAPIRUS_INSTALL_DIR/bin/tapirus" --version
+          "$TAPIRUS_INSTALL_DIR/bin/tapirus" "$RUNNER_TEMP/release-smoke.tapir" -c 'CREATE TABLE smoke (n INTEGER); INSERT INTO smoke VALUES (42)'
+          result="$("$TAPIRUS_INSTALL_DIR/bin/tapirus" "$RUNNER_TEMP/release-smoke.tapir" --json 'SELECT n FROM smoke')"
+          test "$result" = '[{"n":{"Integer":42}}]'
+          for edition in lite document graph vector; do
+            "target/${{ matrix.target }}/release/tapirus-$edition" --version
+          done
+
+      - name: Install exact packaged Windows release on native host
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:GITHUB_WORKSPACE '${{ matrix.artifact_name }}.zip'
+          $destination = Join-Path $env:RUNNER_TEMP 'tapirus-release-install'
+          ./install.ps1 -InstallDir $destination -ArchivePath $archive -ChecksumPath "$archive.sha256" -NoPath
+          & (Join-Path $destination 'bin/tapirus.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged Windows binary failed' }
+          $database = Join-Path $env:RUNNER_TEMP 'release-smoke.tapir'
+          & (Join-Path $destination 'bin/tapirus.exe') $database -c 'CREATE TABLE smoke (n INTEGER); INSERT INTO smoke VALUES (42)'
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged Windows SQL write failed' }
+          $result = & (Join-Path $destination 'bin/tapirus.exe') $database --json 'SELECT n FROM smoke'
+          if ($LASTEXITCODE -ne 0 -or $result -ne '[{"n":{"Integer":42}}]') { throw 'Packaged Windows SQL reopen failed' }
+          foreach ($edition in @('lite', 'document', 'graph', 'vector')) {
+            & "target/${{ matrix.target }}/release/tapirus-$edition.exe" --version
+            if ($LASTEXITCODE -ne 0) { throw "Packaged $edition binary failed" }
+          }
+
       - name: Attest packaged release provenance
         uses: actions/attest-build-provenance@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          subject-path: |
-            ${{ matrix.artifact_name }}.tar.gz
-            ${{ matrix.artifact_name }}.zip
-            ${{ matrix.artifact_name }}.cdx.json
-            ${{ matrix.artifact_name }}.build.json
-            ${{ matrix.artifact_name }}-*.tar.gz
-            ${{ matrix.artifact_name }}-*.zip
-            ${{ matrix.artifact_name }}-*.cdx.json
-            ${{ matrix.artifact_name }}-*.build.json
-
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          name: TapirusDB ${{ github.ref_name }}
-          body_path: docs/releases/${{ github.ref_name }}.md
-          files: |
-            ${{ matrix.artifact_name }}.tar.gz
-            ${{ matrix.artifact_name }}.zip
-            ${{ matrix.artifact_name }}.*.sha256
-            ${{ matrix.artifact_name }}.cdx.json
-            ${{ matrix.artifact_name }}.build.json
-            ${{ matrix.artifact_name }}-*.tar.gz
-            ${{ matrix.artifact_name }}-*.zip
-            ${{ matrix.artifact_name }}-*.sha256
-            ${{ matrix.artifact_name }}-*.cdx.json
-            ${{ matrix.artifact_name }}-*.build.json
-          fail_on_unmatched_files: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          subject-path: ${{ matrix.artifact_name }}*
 
       - name: Retain distributions for build-only review
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
-          path: |
-            ${{ matrix.artifact_name }}.tar.gz
-            ${{ matrix.artifact_name }}.zip
-            ${{ matrix.artifact_name }}.*.sha256
-            ${{ matrix.artifact_name }}.cdx.json
-            ${{ matrix.artifact_name }}.build.json
-            ${{ matrix.artifact_name }}-*.tar.gz
-            ${{ matrix.artifact_name }}-*.zip
-            ${{ matrix.artifact_name }}-*.sha256
-            ${{ matrix.artifact_name }}-*.cdx.json
-            ${{ matrix.artifact_name }}-*.build.json
+          path: ${{ matrix.artifact_name }}*
           if-no-files-found: error
+
+  publish-release:
+    name: Publish complete verified release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify every target, edition, checksum, and source record
+        run: python scripts/verify-release-assets.py --directory release-assets --source-head "$(git rev-parse HEAD)"
+      - name: Create draft with all assets, then verify downloaded copies
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null || true)"
+          if [ -n "$draft" ]; then
+            test "$draft" = true || { echo 'Refusing to replace an already public release.' >&2; exit 1; }
+            gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release-assets/* --draft --verify-tag --notes-file "docs/releases/$GITHUB_REF_NAME.md" --title "TapirusDB $GITHUB_REF_NAME"
+          fi
+          gh release download "$GITHUB_REF_NAME" --dir target/release-download
+          python scripts/verify-release-assets.py --directory target/release-download --source-head "$(git rev-parse HEAD)"
+          gh release edit "$GITHUB_REF_NAME" --draft=false

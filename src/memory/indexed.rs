@@ -9,7 +9,13 @@ type Space = (Option<String>, usize);
 type ExternalKey = (Option<String>, Option<String>, String);
 
 pub(super) fn content_hash(content: &str) -> String {
-    format!("{:x}", Sha256::digest(content.as_bytes()))
+    use std::fmt::Write as _;
+
+    let mut result = String::with_capacity(64);
+    for byte in Sha256::digest(content.as_bytes()) {
+        write!(&mut result, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    result
 }
 fn external_key(entry: &MemoryEntry) -> Option<ExternalKey> {
     Some((

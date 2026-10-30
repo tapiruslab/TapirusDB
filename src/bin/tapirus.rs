@@ -169,8 +169,8 @@ fn main() {
                 let stmts: Vec<&str> = sql_cmd.split(';').collect();
                 for stmt in stmts {
                     let s = stmt.trim();
-                    if !s.is_empty() {
-                        execute_statement(&conn, s);
+                    if !s.is_empty() && !execute_statement(&conn, s) {
+                        std::process::exit(1);
                     }
                 }
             }
@@ -509,7 +509,13 @@ fn run_backup_command(args: &[String]) {
                 Ok(bytes) => {
                     let mut hasher = Sha256::new();
                     hasher.update(&bytes);
-                    format!("{:x}", hasher.finalize())
+                    use std::fmt::Write as _;
+                    let mut digest_hex = String::with_capacity(64);
+                    for byte in hasher.finalize() {
+                        write!(&mut digest_hex, "{byte:02x}")
+                            .expect("writing to String cannot fail");
+                    }
+                    digest_hex
                 }
                 Err(_) => "unavailable".to_string(),
             };
@@ -3110,7 +3116,7 @@ fn run_repl(conn: &Connection, target: &str) {
             for stmt in statements.iter().take(num_complete) {
                 let sql = stmt.trim();
                 if !sql.is_empty() {
-                    execute_statement(conn, sql);
+                    let _ = execute_statement(conn, sql);
                 }
             }
 
@@ -3432,7 +3438,7 @@ fn handle_graph_command(conn: &Connection, parts: &[&str]) {
     }
 }
 
-fn execute_statement(conn: &Connection, sql: &str) {
+fn execute_statement(conn: &Connection, sql: &str) -> bool {
     let start = Instant::now();
     let upper = sql.trim_start().to_uppercase();
     let is_query = upper.starts_with("SELECT") || upper.starts_with("EXPLAIN");
@@ -3443,9 +3449,11 @@ fn execute_statement(conn: &Connection, sql: &str) {
                 let elapsed = start.elapsed();
                 render_ascii_table(&rows);
                 println!("({} row(s) in {:?})\n", rows.len(), elapsed);
+                true
             }
             Err(e) => {
                 println!("Query Error: {e}\n");
+                false
             }
         }
     } else {
@@ -3453,9 +3461,11 @@ fn execute_statement(conn: &Connection, sql: &str) {
             Ok(affected) => {
                 let elapsed = start.elapsed();
                 println!("Query OK, {affected} row(s) affected in {:?}\n", elapsed);
+                true
             }
             Err(e) => {
                 println!("Execution Error: {e}\n");
+                false
             }
         }
     }

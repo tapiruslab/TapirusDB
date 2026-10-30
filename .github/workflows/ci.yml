@@ -11,6 +11,14 @@ permissions:
   contents: read
 
 jobs:
+  msrv:
+    name: Rust 1.85 minimum-version compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install 1.85.0 --profile minimal
+      - run: cargo +1.85.0 check --locked -p tapirus --all-targets --all-features
+
   micro:
     name: Bare-metal component compile and host fault simulation
     runs-on: ubuntu-latest
@@ -36,6 +44,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: python scripts/check-release-version.py
+      - run: python scripts/test-release-assets.py
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: bash -n install.sh scripts/test-unix-installer.sh
 
@@ -61,8 +70,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: "Linux Universal (Debian, Ubuntu, Fedora, RHEL)"
+          - name: "Linux Ubuntu x86_64"
             os: ubuntu-latest
+          - name: "Linux ARM64 native"
+            os: ubuntu-24.04-arm
           - name: "macOS (Apple Silicon)"
             os: macos-latest
           - name: "macOS (Intel)"
@@ -130,6 +141,27 @@ jobs:
 
       - name: Run Full Test Suite (musl)
         run: cargo test --locked -p tapirus -p tapirus-ffi -p tapirus-wasm
+
+  docker-image:
+    name: Container build and offline persistence smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --tag tapirusdb:ci --file Dockerfile .
+      - name: Check non-root runtime and reopen persisted SQL
+        run: |
+          docker run --rm -i --network none --read-only --entrypoint sh tapirusdb:ci -s <<'SH'
+          set -eu
+          test "$(id -u)" != 0
+          tapirus --version
+          tapirus /data/smoke.tapir -c 'CREATE TABLE audit (n INTEGER); INSERT INTO audit VALUES (42)'
+          result="$(tapirus /data/smoke.tapir --json 'SELECT n FROM audit')"
+          test "$result" = '[{"n":{"Integer":42}}]'
+          if tapirus /data/smoke.tapir -c 'INVALID SQL' >/dev/null 2>&1; then
+            echo 'Invalid SQL unexpectedly returned success' >&2
+            exit 1
+          fi
+          SH
 
   native-sdk:
     name: Native npm consumer (${{ matrix.os }}, Node ${{ matrix.node }})

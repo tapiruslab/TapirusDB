@@ -30,6 +30,11 @@ node_modules/
 # Archives
 *.tar.gz
 *.zip
+*.tar.gz.sha256
+*.zip.sha256
+*.cdx.json
+*.build.json
+dist-*/
 
 # Internal reviews, scratchpads, and audit notes
 docs/reviews/

@@ -89,7 +89,9 @@ crc32fast = "1.4"
 
 # Encryption at Rest (AEAD ChaCha20-Poly1305 & SHA256 Key Derivation)
 chacha20poly1305 = "0.10"
-sha2 = "0.10"
+# 0.11.1 raises MSRV to Rust 1.88; pin 0.11.0 while this crate promises 1.85.
+# Cargo.lock currently resolves patched block-buffer 0.12.1; OSV gates updates.
+sha2 = "=0.11.0"
 subtle = "2.6"
 
 # Serialization & Deserialization
