@@ -72,7 +72,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -156,6 +155,9 @@ func NewClient(cfg ...Config) *Client {
 
 // Query executes a SQL query returning rows as a slice of maps.
 func (c *Client) Query(ctx context.Context, sql string, params ...interface{}) ([]map[string]interface{}, error) {
+	if params == nil {
+		params = []interface{}{}
+	}
 	payload := map[string]interface{}{
 		"sql":    sql,
 		"params": params,
@@ -173,6 +175,9 @@ func (c *Client) Query(ctx context.Context, sql string, params ...interface{}) (
 
 // Execute executes a non-query SQL command and returns the affected rows count.
 func (c *Client) Execute(ctx context.Context, sql string, params ...interface{}) (int64, error) {
+	if params == nil {
+		params = []interface{}{}
+	}
 	payload := map[string]interface{}{
 		"sql":    sql,
 		"params": params,
@@ -249,7 +254,7 @@ func (c *Client) request(ctx context.Context, method, path string, body interfac
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "TapirusDB-Go/1.0.0")
+	req.Header.Set("User-Agent", "TapirusDB-Go/1.0.2")
 
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
@@ -267,10 +272,10 @@ func (c *Client) request(ctx context.Context, method, path string, body interfac
 	}
 
 	if dest != nil {
-		if err := json.NewDecoder(res.Body).Decode(dest); err != nil {
-			if !errors.Is(err, io.EOF) {
-				return fmt.Errorf("failed to decode response: %w", err)
-			}
+		decoder := json.NewDecoder(res.Body)
+		decoder.UseNumber()
+		if err := decoder.Decode(dest); err != nil {
+			return fmt.Errorf("failed to decode response: %w", err)
 		}
 	}
 

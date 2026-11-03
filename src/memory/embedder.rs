@@ -298,25 +298,27 @@ impl HttpEmbeddingEngine {
             self.host,
             self.path
         );
-        let agent = ureq::AgentBuilder::new()
-            .redirects(0)
-            .timeout(std::time::Duration::from_secs(30))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .max_redirects(0)
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .build()
+            .new_agent();
         let mut request = agent
             .post(&endpoint)
-            .set("Content-Type", "application/json");
+            .header("Content-Type", "application/json");
         if let Some(key) = &self.api_key {
-            request = request.set("Authorization", &format!("Bearer {key}"));
+            request = request.header("Authorization", format!("Bearer {key}"));
         }
         // Do not return transport errors containing credentials, request bodies or provider responses.
         let response = request
-            .send_string(&body.to_string())
+            .send(body.to_string())
             .map_err(|_| reject("Embedding HTTP request failed"))?;
         if response.status() != 200 {
             return Err(reject("Embedding endpoint did not return HTTP 200"));
         }
         let mut bytes = Vec::new();
         response
+            .into_body()
             .into_reader()
             .take(16 * 1024 * 1024 + 1)
             .read_to_end(&mut bytes)?;

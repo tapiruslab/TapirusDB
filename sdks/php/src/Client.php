@@ -7,8 +7,8 @@ namespace Tapirus;
 /**
  * TapirusDB Official PHP Client.
  *
- * Connects seamlessly to in-process or local `tapirus serve` instances
- * executing Relational SQL, Vector Search, and GraphRAG traversals.
+ * HTTP client for a running `tapirus serve` instance. It is not an embedded
+ * PHP extension. Query rows follow the daemon's JSON contract.
  */
 class Client
 {
@@ -100,7 +100,7 @@ class Client
         $headers = [
             'Content-Type: application/json',
             'Accept: application/json',
-            'User-Agent: TapirusDB-PHP/1.0.0'
+            'User-Agent: TapirusDB-PHP/1.0.2'
         ];
 
         if ($this->token !== null && $this->token !== '') {
@@ -110,25 +110,28 @@ class Client
         curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
 
         if ($body !== null) {
-            $encoded = json_encode($body, JSON_UNESCAPED_SLASHES);
+            $encoded = json_encode($body, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
             curl_setopt($ch, CURLOPT_POSTFIELDS, $encoded);
         }
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
-        curl_close($ch);
+        unset($ch);
 
         if ($response === false) {
             throw new \RuntimeException("TapirusDB connection failed: {$error}");
         }
 
-        $decoded = json_decode($response, true);
+        $decoded = json_decode($response, true, 512, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
         if ($httpCode >= 400) {
             $msg = $decoded['error'] ?? "TapirusDB returned HTTP {$httpCode}";
             throw new \RuntimeException($msg, $httpCode);
         }
 
-        return is_array($decoded) ? $decoded : ['raw' => $response];
+        if (!is_array($decoded)) {
+            throw new \RuntimeException('TapirusDB returned a non-object/non-array JSON response');
+        }
+        return $decoded;
     }
 }

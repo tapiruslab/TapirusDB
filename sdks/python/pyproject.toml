@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.16,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -32,6 +32,7 @@ python-source = "python"
 module-name = "tapirus.tapirus"
 python-packages = ["tapirus", "tapirus_tools"]
 include = [
+    { path = "LICENSE", format = "wheel" },
     { path = "CORE_LICENSE", format = ["wheel", "sdist"] },
     { path = "NOTICE", format = ["wheel", "sdist"] },
 ]

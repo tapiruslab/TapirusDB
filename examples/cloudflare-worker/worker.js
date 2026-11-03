@@ -1,201 +1,57 @@
-/**
- * TapirusDB Cloudflare Edge Worker
- * 
- * Provides ultra-fast, serverless multi-model database endpoints and accelerated
- * GraphRAG query execution directly on the Cloudflare Edge network.
- * 
- * Endpoints:
- * - GET  /health           : Engine health & version
- * - POST /sql              : Execute SQL query or DML
- * - POST /graph-rag        : Accelerated GraphRAG (PQ Seed + Micro-Hop + RRF)
- * - POST /memory/remember  : Record episodic AI agent memory
- * - POST /memory/recall    : Hybrid BM25 + Vector + Recency recall
- */
+// Ephemeral per-isolate demo. Workers cannot load native Node .node addons.
+import { initSync, TapirusWasm } from '../../crates/tapirus-wasm/pkg/tapirus_wasm.js';
+import wasmModule from '../../crates/tapirus-wasm/pkg/tapirus_wasm_bg.wasm';
 
-import { TapirusDatabase } from '../../packages/npm/index.js';
-
-let dbInstance = null;
-
-async function getDatabase() {
-  if (!dbInstance) {
-    dbInstance = await TapirusDatabase.openInMemory();
-
-    // Initialize sample schema & knowledge graph for edge demonstration
-    await dbInstance.execute(`
-      CREATE TABLE IF NOT EXISTS system_logs (
-        id INTEGER PRIMARY KEY,
-        level TEXT,
-        message TEXT,
-        created_at INTEGER
-      );
-    `);
-  }
-  return dbInstance;
+initSync({ module: wasmModule });
+let database;
+function getDatabase() {
+  database ??= new TapirusWasm();
+  return database;
 }
+const json = (value, status = 200) => Response.json(value, { status });
 
 export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-
-    // Handle CORS Preflight
-    if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-        },
-      });
+  async fetch(request, env) {
+    const path = new URL(request.url).pathname;
+    if (path === '/health' && request.method === 'GET') {
+      return json({ status: 'online', engine: 'TapirusDB WASM', version: TapirusWasm.version(), persistence: 'ephemeral per isolate' });
     }
-
-    const corsHeaders = {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'X-Powered-By': `TapirusDB Edge v${TapirusDatabase.version()}`,
-    };
-
+    if (request.method !== 'POST' || !['/sql', '/graph-rag', '/memory/remember', '/memory/recall'].includes(path)) {
+      return json({ error: 'Endpoint not found' }, 404);
+    }
+    if (!env.API_KEY) return json({ error: 'Configure the API_KEY Worker secret before using data endpoints' }, 503);
+    if (request.headers.get('Authorization') !== `Bearer ${env.API_KEY}`) return json({ error: 'Unauthorized' }, 401);
+    let body;
     try {
-      const db = await getDatabase();
-
-      // 1. Health & Status
-      if (url.pathname === '/health' && request.method === 'GET') {
-        return new Response(
-          JSON.stringify({
-            status: 'online',
-            engine: 'TapirusDB Edge',
-            version: TapirusDatabase.version(),
-            runtime: 'Cloudflare Workers (V8 Isolate)',
-            features: [
-              'Safe-Rust Pure Embedded Core',
-              'Sub-5ms Cold Start',
-              'Accelerated GraphRAG (PQ + RRF)',
-              'Reactive Table Subscriptions',
-            ],
-          }),
-          { status: 200, headers: corsHeaders }
-        );
-      }
-
-      // 2. SQL Endpoint
-      if (url.pathname === '/sql' && request.method === 'POST') {
-        const body = await request.json();
+      body = await request.json();
+    } catch {
+      return json({ error: 'Expected a JSON object' }, 400);
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return json({ error: 'Expected a JSON object' }, 400);
+    try {
+      const db = getDatabase();
+      if (path === '/sql') {
         const { query, params = [] } = body;
-
-        if (!query) {
-          return new Response(
-            JSON.stringify({ error: 'Missing "query" string in request body' }),
-            { status: 400, headers: corsHeaders }
-          );
+        if (typeof query !== 'string' || !query.trim() || !Array.isArray(params)) return json({ error: 'Expected query string and params array' }, 400);
+        const operation = body.operation ?? (/^\s*SELECT\b/i.test(query) ? 'query' : 'execute');
+        if (operation === 'query') {
+          const rows = JSON.parse(db.query_params_json(query, JSON.stringify(params)));
+          return json({ rows, count: rows.length });
         }
-
-        const isSelect = query.trim().toUpperCase().startsWith('SELECT');
-        if (isSelect) {
-          const rows = await db.query(query, params);
-          return new Response(
-            JSON.stringify({ success: true, rows, count: rows.length }),
-            { status: 200, headers: corsHeaders }
-          );
-        } else {
-          const affected = await db.execute(query, params);
-          return new Response(
-            JSON.stringify({ success: true, affectedRows: affected }),
-            { status: 200, headers: corsHeaders }
-          );
-        }
+        if (operation !== 'execute') return json({ error: 'operation must be query or execute' }, 400);
+        return json({ affected: db.execute_params(query, JSON.stringify(params)) });
       }
-
-      // 3. Accelerated GraphRAG Endpoint
-      if (url.pathname === '/graph-rag' && request.method === 'POST') {
-        const body = await request.json();
-        const { query, topSeeds = 3, maxHops = 2, limit = 5 } = body;
-
-        if (!query) {
-          return new Response(
-            JSON.stringify({ error: 'Missing "query" string in request body' }),
-            { status: 400, headers: corsHeaders }
-          );
-        }
-
-        const ragResult = await db.graphRagQuery({
-          query,
-          topSeeds,
-          maxHops,
-          limit,
-        });
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            query: ragResult.query,
-            entities: ragResult.results,
-            promptContext: ragResult.promptContext,
-          }),
-          { status: 200, headers: corsHeaders }
-        );
+      if (path === '/memory/remember') {
+        if (typeof body.content !== 'string' || !body.content.trim()) return json({ error: 'Expected nonempty content' }, 400);
+        if (!Array.isArray(body.tags ?? []) || !(body.tags ?? []).every(tag => typeof tag === 'string' && !tag.includes(','))) return json({ error: 'tags must be strings without commas' }, 400);
+        const memoryId = db.memory_remember(body.content, body.importance ?? 0.5, (body.tags ?? []).join(','));
+        return json({ memoryId: memoryId.toString() }, 201);
       }
-
-      // 4. AI Agent Memory: Remember
-      if (url.pathname === '/memory/remember' && request.method === 'POST') {
-        const body = await request.json();
-        const { content, importance = 0.5, tags = [] } = body;
-
-        if (!content) {
-          return new Response(
-            JSON.stringify({ error: 'Missing "content" in request body' }),
-            { status: 400, headers: corsHeaders }
-          );
-        }
-
-        const memoryId = await db.remember(content, importance, tags);
-        return new Response(
-          JSON.stringify({
-            success: true,
-            memoryId,
-            message: 'Memory recorded successfully',
-          }),
-          { status: 201, headers: corsHeaders }
-        );
-      }
-
-      // 5. AI Agent Memory: Recall
-      if (url.pathname === '/memory/recall' && request.method === 'POST') {
-        const body = await request.json();
-        const { query, limit = 5 } = body;
-
-        if (!query) {
-          return new Response(
-            JSON.stringify({ error: 'Missing "query" string in request body' }),
-            { status: 400, headers: corsHeaders }
-          );
-        }
-
-        const memories = await db.recall(query, limit);
-        const promptContext = await db.recallPrompt(query, limit);
-        return new Response(
-          JSON.stringify({
-            success: true,
-            query,
-            memories,
-            promptContext,
-          }),
-          { status: 200, headers: corsHeaders }
-        );
-      }
-
-      // Not Found
-      return new Response(
-        JSON.stringify({
-          error: 'Endpoint not found',
-          available: ['/health', '/sql', '/graph-rag', '/memory/remember', '/memory/recall']
-        }),
-        { status: 404, headers: corsHeaders }
-      );
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: err.message || 'Internal Edge Error' }),
-        { status: 500, headers: corsHeaders }
-      );
+      if (typeof body.query !== 'string' || !body.query.trim()) return json({ error: 'Expected nonempty query' }, 400);
+      if (path === '/memory/recall') return json({ memories: JSON.parse(db.memory_recall_rrf_json(body.query, body.limit ?? 5, 60)) });
+      return json(JSON.parse(db.graph_rag_query_json(body.query, body.topSeeds ?? 3, body.maxHops ?? 2, body.limit ?? 5)));
+    } catch (error) {
+      return json({ error: String(error.message ?? error) }, 400);
     }
   },
 };

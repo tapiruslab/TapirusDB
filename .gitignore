@@ -77,6 +77,9 @@ examples/rust/Cargo.lock
 # Security, Keys & Credentials (Strictly Never Commit)
 .env
 .env.*
+.dev.vars
+.dev.vars.*
+.wrangler/
 *.env
 *.key
 *.pem

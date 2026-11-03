@@ -2,6 +2,9 @@
 
 The repository contains several language integration paths. Their APIs, persistence behavior, packaging, and runtime requirements are not interchangeable or guaranteed to be equivalent.
 
+See the [stack and packaging matrix](../docs/STACK_SUPPORT.md) for the dated
+validation results, package commands, publication gaps and version policy.
+
 | Language | Source path | Notes |
 |---|---|---|
 | Rust | `src/lib.rs` | Main embedded Rust crate. |

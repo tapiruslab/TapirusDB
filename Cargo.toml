@@ -88,6 +88,8 @@ parking_lot = "0.12"
 crc32fast = "1.4"
 
 # Encryption at Rest (AEAD ChaCha20-Poly1305 & SHA256 Key Derivation)
+# 0.11 resolves ctutils 0.4.2 on Rust 1.85 (RUSTSEC-2026-0385).
+# Patched ctutils >=0.4.4 requires Rust 1.87; retain this API line at MSRV 1.85.
 chacha20poly1305 = "0.10"
 # 0.11.1 raises MSRV to Rust 1.88; pin 0.11.0 while this crate promises 1.85.
 # Cargo.lock currently resolves patched block-buffer 0.12.1; OSV gates updates.
@@ -105,7 +107,7 @@ web-time = "1.1"
 # Optional SIMD Vector Math
 wide = { version = "0.7", optional = true }
 getrandom = "0.4.3"
-ureq = { version = "2.10", optional = true }
+ureq = { version = "3.5", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom-02 = { package = "getrandom", version = "0.2", features = ["js"] }

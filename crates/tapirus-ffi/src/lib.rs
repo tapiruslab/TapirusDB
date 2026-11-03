@@ -240,9 +240,10 @@ pub extern "C" fn tapirus_version() -> *const c_char {
 }
 
 unsafe fn set_err(err_msg_out: *mut *mut c_char, msg: &str) {
-    if !err_msg_out.is_null()
-        && let Ok(c_msg) = CString::new(msg)
-    {
+    if err_msg_out.is_null() {
+        return;
+    }
+    if let Ok(c_msg) = CString::new(msg) {
         unsafe { *err_msg_out = c_msg.into_raw() };
     }
 }

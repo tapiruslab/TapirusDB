@@ -3,17 +3,17 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tapirus"
+name = "tapirus-ctypes"
 version = "1.0.2"
 authors = [
   { name="TapirusDB Contributors", email="contact@tapirusdb.com" },
 ]
-description = "The Safe-Rust Embedded Multi-Model Database & AI Agent Memory Engine"
+description = "Legacy ctypes integration for TapirusDB; use the native tapirus SDK for new applications"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.8"
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",

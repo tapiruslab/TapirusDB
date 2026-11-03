@@ -1,18 +1,19 @@
 {
   "name": "tapirus-cloudflare-worker-example",
-  "version": "1.0.1",
+  "version": "1.0.2",
+  "private": true,
+  "engines": { "node": ">=22" },
   "description": "Deploy TapirusDB serverless edge database on Cloudflare Workers",
   "main": "worker.js",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run --outdir ../../target/cloudflare-bundle",
+    "test": "node test.mjs",
     "deploy": "wrangler deploy"
   },
-  "dependencies": {
-    "@tapirus/db": "../../packages/npm"
-  },
   "devDependencies": {
-    "wrangler": "^3.0.0"
+    "wrangler": "^4.156.1"
   },
-  "license": "BSL-1.1"
+  "license": "BUSL-1.1"
 }

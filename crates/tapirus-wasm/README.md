@@ -1,5 +1,11 @@
 ﻿# TapirusDB WASM Crate
 
+The canonical generated npm package is `@tapirus/wasm` in `pkg/`. The parent
+manifest is private so it cannot accidentally publish an incompatible package.
+`node scripts/test-wasm-package.mjs` packs that directory, installs the tarball
+offline in a fresh consumer, and checks bound SQL, rollback and snapshot reopen.
+This is package validation, not evidence that the npm registry contains it.
+
 This crate exposes TapirusDB functionality through `wasm-bindgen`. A generated package includes JavaScript glue and the compiled WebAssembly module; the raw `.wasm` file is not a drop-in replacement for that package.
 
 The standalone Rust workspace runs SQL and AI memory through this package. It saves committed snapshots in IndexedDB and opens/exports the native `.tapir` format. The larger React Studio also contains a separate TypeScript demo; use its Rust workspace link for the actual native-format engine.

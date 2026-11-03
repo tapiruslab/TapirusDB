@@ -123,6 +123,7 @@ For a local Linux container build, run `docker build -t tapirusdb:local .`. The 
 - [TLA+ model scope](docs/formal_verification/README.md)
 - [Assurance scope and limitations](docs/HIGH_ASSURANCE_SAFETY.md)
 - [SDKs](sdks/README.md)
+- [Stack support, versions and package validation](docs/STACK_SUPPORT.md)
 - [Transactional AI memory](docs/AI_MEMORY.md)
 - [Release validation and packaging](docs/RELEASE_VALIDATION.md)
 

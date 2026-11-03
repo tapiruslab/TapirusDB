@@ -10,6 +10,7 @@ import "C"
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"unsafe"
 )
 
@@ -60,6 +61,9 @@ func OpenEncrypted(path string, passphrase string) (*DB, error) {
 
 // Execute executes a non-query SQL command (CREATE, INSERT, UPDATE, DELETE, BEGIN, COMMIT, etc.).
 func (db *DB) Execute(sql string) (int, error) {
+	if db == nil || db.conn == nil {
+		return 0, errors.New("database connection is closed")
+	}
 	cSql := C.CString(sql)
 	defer C.free(unsafe.Pointer(cSql))
 
@@ -78,6 +82,9 @@ func (db *DB) Execute(sql string) (int, error) {
 
 // Query executes a query and returns rows as structured maps.
 func (db *DB) Query(sql string) ([]map[string]interface{}, error) {
+	if db == nil || db.conn == nil {
+		return nil, errors.New("database connection is closed")
+	}
 	cSql := C.CString(sql)
 	defer C.free(unsafe.Pointer(cSql))
 
@@ -106,7 +113,9 @@ func (db *DB) Query(sql string) ([]map[string]interface{}, error) {
 		Values  []interface{} `json:"values"`
 	}
 
-	if err := json.Unmarshal([]byte(payload), &rawRows); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&rawRows); err != nil {
 		return nil, err
 	}
 
@@ -116,6 +125,9 @@ func (db *DB) Query(sql string) ([]map[string]interface{}, error) {
 		for i, col := range r.Columns {
 			if i < len(r.Values) {
 				val := r.Values[i]
+				if val == "Null" {
+					val = nil
+				}
 				if valMap, ok := val.(map[string]interface{}); ok {
 					for _, v := range valMap {
 						val = v

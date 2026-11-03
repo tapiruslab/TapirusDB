@@ -1,6 +1,6 @@
 {
     "name": "tapiruslab/tapirusdb",
-    "description": "Official PHP Client for TapirusDB — Safe-Rust Quad-Model Embedded AI Database & Agent Memory Engine",
+    "description": "PHP HTTP client for the TapirusDB SQL, vector and GraphRAG daemon APIs",
     "type": "library",
     "keywords": [
         "tapirus",
@@ -26,7 +26,7 @@
     "support": {
         "issues": "https://github.com/tapiruslab/TapirusDB/issues",
         "source": "https://github.com/tapiruslab/TapirusDB",
-        "docs": "https://tapirusdb.com"
+        "docs": "https://tapirusdb.com/docs.html"
     },
     "require": {
         "php": ">=8.0",

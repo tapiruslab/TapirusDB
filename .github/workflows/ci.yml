@@ -15,15 +15,15 @@ jobs:
     name: Rust 1.85 minimum-version compile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.85.0 --profile minimal
-      - run: cargo +1.85.0 check --locked -p tapirus --all-targets --all-features
+      - run: cargo +1.85.0 check --locked --workspace --all-targets --all-features
 
   micro:
     name: Bare-metal component compile and host fault simulation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv7em-none-eabihf,riscv32imac-unknown-none-elf
@@ -34,8 +34,8 @@ jobs:
     name: Format and strict Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
@@ -45,6 +45,11 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: python scripts/check-release-version.py
       - run: python scripts/test-release-assets.py
+      - name: Package and check actual Rust crate sources
+        run: |
+          cargo fetch --locked
+          cargo package --workspace --exclude tapirus-nodejs --exclude tapirus-python --locked --offline --no-verify
+          python scripts/test-rust-packages.py
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: bash -n install.sh scripts/test-unix-installer.sh
 
@@ -52,12 +57,12 @@ jobs:
     name: Known dependency advisories
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python scripts/check-dependency-advisories.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: dependency-advisories
@@ -83,12 +88,12 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Stable Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -131,7 +136,7 @@ jobs:
       image: rust:alpine
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Alpine Build Dependencies
         run: apk add --no-cache musl-dev gcc
@@ -146,7 +151,7 @@ jobs:
     name: Container build and offline persistence smoke test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker build --tag tapirusdb:ci --file Dockerfile .
       - name: Check non-root runtime and reopen persisted SQL
         run: |
@@ -170,10 +175,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node: [20, 22]
+        node: [22, 24, 26]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
       - uses: dtolnay/rust-toolchain@stable
@@ -182,6 +187,54 @@ jobs:
       - run: node scripts/build-node-sdk.js --debug
       - run: node sdks/nodejs/test.js
       - run: npm --prefix sdks/nodejs run test:package
+      - name: Check TypeScript declarations and native example
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 26
+        run: |
+          npm --prefix examples/typescript ci
+          npm --prefix examples/typescript run check
+          npm --prefix examples/typescript start
+
+  http-clients:
+    name: Go and PHP real daemon consumers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: curl, ffi
+          ini-values: ffi.enable=1
+          coverage: none
+          tools: composer:v2
+      - run: cargo build --locked -p tapirus --bin tapirus -p tapirus-ffi
+      - run: python scripts/test-http-clients.py
+      - run: python scripts/package-go-sdk.py
+      - run: composer validate --strict
+      - run: composer validate --strict --working-dir=sdks/php
+      - run: php examples/php/test.php
+        env:
+          TAPIRUS_LIB: ${{ github.workspace }}/target/debug/libtapirus.so
+      - run: bun run examples/bun/test.ts
+        env:
+          TAPIRUS_LIB: ${{ github.workspace }}/target/debug/libtapirus.so
+      - name: Check embedded Go C ABI example
+        working-directory: examples/go
+        run: |
+          go test ./...
+          go run .
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
 
   python-sdk:
     name: Native Python wheel (${{ matrix.os }}, Python ${{ matrix.python }})
@@ -190,15 +243,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python: ['3.10', '3.12', '3.14']
+        python: ['3.10', '3.12', '3.14', '3.15']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: python -m pip install 'maturin>=1,<2'
+      - run: python -m pip install 'maturin>=1.16,<2'
       - run: maturin build --manifest-path sdks/python/Cargo.toml --locked --out target/python-wheels
       - run: python scripts/test-python-sdk.py --wheel target/python-wheels
 
@@ -206,11 +259,11 @@ jobs:
     name: Rust WASM runtime and browser persistence
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
-      - uses: actions/setup-python@v5
+          node-version: 26
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
@@ -224,10 +277,16 @@ jobs:
       - run: node scripts/build-node-sdk.js --debug
       - run: node scripts/build-wasm.js
       - run: node scripts/test-wasm.mjs
+      - run: node scripts/test-wasm-package.mjs
+      - name: Bundle and execute the Worker locally
+        run: |
+          npm --prefix examples/cloudflare-worker ci
+          npm --prefix examples/cloudflare-worker run build
+          npm --prefix examples/cloudflare-worker test
       - run: node scripts/test-browser-workspace.mjs
         env:
           BROWSER_BIN: /usr/bin/google-chrome
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wasm-browser-evidence
           path: |
@@ -242,7 +301,7 @@ jobs:
     needs: [test, quality]
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Stable Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -262,7 +321,7 @@ jobs:
           fi
 
       - name: Upload Benchmark Telemetry Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tapirus-benchmark-telemetry
           path: |

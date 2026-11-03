@@ -1,11 +1,16 @@
 [package]
 name = "tapirus-nodejs"
 version = "1.0.2"
+publish = false
 edition = "2021"
+rust-version = "1.85"
 license = "MIT"
 
 [lib]
 crate-type = ["cdylib"]
+# The addon requires a Node-API host; exercise it with the installed npm tests.
+test = false
+doctest = false
 
 [dependencies]
 napi = { version = "2.16.4", default-features = false, features = ["napi6"] }

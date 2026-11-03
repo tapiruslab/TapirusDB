@@ -28,7 +28,7 @@ func ExampleClient_Query() {
 	// Mock server for standalone godoc example
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintln(w, `[{"id": 1, "name": "Agent-01", "role": "Orchestrator"}]`)
+		fmt.Fprintln(w, `{"rows":[{"id": 1, "name": "Agent-01", "role": "Orchestrator"}]}`)
 	}))
 	defer ts.Close()
 

@@ -3,6 +3,7 @@ package tapirus_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -96,5 +97,36 @@ func TestTapirusClient(t *testing.T) {
 	}
 	if len(rag.Nodes) != 1 {
 		t.Errorf("Expected 1 node, got %d", len(rag.Nodes))
+	}
+}
+
+func TestQueryExactIntegersAndInvalidResponses(t *testing.T) {
+	for _, test := range []struct {
+		body  string
+		fails bool
+	}{
+		{`{"rows":[{"big":9007199254740993}]}`, false},
+		{"", true},
+		{"invalid JSON", true},
+	} {
+		t.Run(test.body, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Params []interface{} `json:"params"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Params == nil {
+					t.Error("Unbound SQL must send an empty parameter array")
+				}
+				fmt.Fprint(w, test.body)
+			}))
+			defer server.Close()
+			rows, err := tapirus.NewClient(tapirus.Config{Endpoint: server.URL}).Query(context.Background(), "SELECT 1")
+			if (err != nil) != test.fails {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !test.fails && rows[0]["big"] != json.Number("9007199254740993") {
+				t.Fatalf("Lost integer precision: %#v", rows)
+			}
+		})
 	}
 }

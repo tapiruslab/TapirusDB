@@ -63,7 +63,7 @@ class Tapirus {
             $this->handle = $ffi->tapirus_open($path);
         }
 
-        if ($this->handle === null) {
+        if (\FFI::isNull($this->handle)) {
             throw new \RuntimeException("Failed to open TapirusDB database at: " . ($path ?? ':memory:'));
         }
     }
@@ -73,12 +73,13 @@ class Tapirus {
     }
 
     public function execute(string $sql): int {
+        $this->assertOpen();
         $ffi = self::ffi();
         $errPtr = $ffi->new('char*');
         $affected = $ffi->tapirus_execute($this->handle, $sql, \FFI::addr($errPtr));
         if ($affected < 0) {
-            $errMsg = $errPtr !== null ? \FFI::string($errPtr) : "Unknown error";
-            if ($errPtr !== null) {
+            $errMsg = !\FFI::isNull($errPtr) ? \FFI::string($errPtr) : "Unknown error";
+            if (!\FFI::isNull($errPtr)) {
                 $ffi->tapirus_free_string($errPtr);
             }
             throw new \RuntimeException("Execute failed: $errMsg");
@@ -87,26 +88,27 @@ class Tapirus {
     }
 
     public function query(string $sql): array {
+        $this->assertOpen();
         $ffi = self::ffi();
         $jsonPtr = $ffi->new('char*');
         $errPtr = $ffi->new('char*');
         $res = $ffi->tapirus_query_json($this->handle, $sql, \FFI::addr($jsonPtr), \FFI::addr($errPtr));
         if ($res !== 0) {
-            $errMsg = $errPtr !== null ? \FFI::string($errPtr) : "Unknown error";
-            if ($errPtr !== null) {
+            $errMsg = !\FFI::isNull($errPtr) ? \FFI::string($errPtr) : "Unknown error";
+            if (!\FFI::isNull($errPtr)) {
                 $ffi->tapirus_free_string($errPtr);
             }
             throw new \RuntimeException("Query failed: $errMsg");
         }
 
-        if ($jsonPtr === null) {
+        if (\FFI::isNull($jsonPtr)) {
             return [];
         }
 
         $jsonStr = \FFI::string($jsonPtr);
         $ffi->tapirus_free_string($jsonPtr);
 
-        $rawRows = json_decode($jsonStr, true) ?? [];
+        $rawRows = json_decode($jsonStr, true, 512, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
         $rows = [];
         foreach ($rawRows as $r) {
             $cols = $r['columns'] ?? [];
@@ -114,14 +116,21 @@ class Tapirus {
             $row = [];
             foreach ($cols as $idx => $col) {
                 $v = $vals[$idx] ?? null;
+                $isNull = $v === 'Null';
                 if (is_array($v)) {
                     $v = reset($v);
                 }
-                $row[$col] = $v;
+                $row[$col] = $isNull ? null : $v;
             }
             $rows[] = $row;
         }
         return $rows;
+    }
+
+    private function assertOpen(): void {
+        if ($this->handle === null) {
+            throw new \RuntimeException('Database connection is closed');
+        }
     }
 
     public function close(): void {

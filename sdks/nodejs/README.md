@@ -1,5 +1,10 @@
 # TapirusDB Node.js SDK
 
+The supported runtime floor is Node.js 22; CI also covers the 24 and 26 LTS
+lines. Release builds target Linux x64/ARM64 (glibc), macOS Intel/Apple Silicon,
+and Windows x64. Linux musl and Windows ARM64 addons are not produced by the
+SDK release workflow. The Rust core's broader target matrix is separate.
+
 New source APIs include upsert, atomic batches, TTL, model identity, revision
 checks and indexed retrieval diagnostics. `TapirusSessionDatabase` provides
 independently owned transactions over serialized storage. See

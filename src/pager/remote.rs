@@ -301,10 +301,11 @@ pub struct CloudS3RemoteStorage {
 impl CloudS3RemoteStorage {
     /// Construct a new Cloud S3 / R2 storage adapter from configuration
     pub fn new(config: S3StorageConfig) -> Self {
-        let agent = ureq::AgentBuilder::new()
-            .timeout_read(web_time::Duration::from_secs(30))
-            .timeout_write(web_time::Duration::from_secs(30))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_per_read(Some(web_time::Duration::from_secs(30)))
+            .timeout_per_write(Some(web_time::Duration::from_secs(30)))
+            .build()
+            .new_agent();
         Self { config, agent }
     }
 
@@ -326,13 +327,13 @@ impl RemoteRangeReader for CloudS3RemoteStorage {
     fn fetch_range(&self, offset: u64, length: usize) -> Result<Vec<u8>> {
         let url = self.object_url();
         let range_header = self.config.make_range_header(offset, length);
-        let mut req = self.agent.get(&url).set("Range", &range_header);
+        let mut req = self.agent.get(&url).header("Range", &range_header);
 
         if let Some(ref token) = self.config.auth_token {
             if token.starts_with("Bearer ") || token.starts_with("AWS ") {
-                req = req.set("Authorization", token);
+                req = req.header("Authorization", token);
             } else {
-                req = req.set("Authorization", &format!("Bearer {token}"));
+                req = req.header("Authorization", format!("Bearer {token}"));
             }
         }
 
@@ -342,7 +343,7 @@ impl RemoteRangeReader for CloudS3RemoteStorage {
             )))
         })?;
 
-        let mut reader = resp.into_reader();
+        let mut reader = resp.into_body().into_reader();
         let mut buf = Vec::with_capacity(length);
         std::io::Read::read_to_end(&mut reader, &mut buf)?;
         Ok(buf)
@@ -354,14 +355,18 @@ impl RemoteRangeReader for CloudS3RemoteStorage {
 
         if let Some(ref token) = self.config.auth_token {
             if token.starts_with("Bearer ") || token.starts_with("AWS ") {
-                req = req.set("Authorization", token);
+                req = req.header("Authorization", token);
             } else {
-                req = req.set("Authorization", &format!("Bearer {token}"));
+                req = req.header("Authorization", format!("Bearer {token}"));
             }
         }
 
         if let Ok(resp) = req.call() {
-            if let Some(cl) = resp.header("content-length") {
+            if let Some(cl) = resp
+                .headers()
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+            {
                 if let Ok(size) = cl.parse::<u64>() {
                     return Ok(size);
                 }
@@ -369,12 +374,12 @@ impl RemoteRangeReader for CloudS3RemoteStorage {
         }
 
         // Fallback: request 1-byte range to inspect Content-Range header
-        let mut req_range = self.agent.get(&url).set("Range", "bytes=0-0");
+        let mut req_range = self.agent.get(&url).header("Range", "bytes=0-0");
         if let Some(ref token) = self.config.auth_token {
             if token.starts_with("Bearer ") || token.starts_with("AWS ") {
-                req_range = req_range.set("Authorization", token);
+                req_range = req_range.header("Authorization", token);
             } else {
-                req_range = req_range.set("Authorization", &format!("Bearer {token}"));
+                req_range = req_range.header("Authorization", format!("Bearer {token}"));
             }
         }
 
@@ -384,7 +389,11 @@ impl RemoteRangeReader for CloudS3RemoteStorage {
             )))
         })?;
 
-        if let Some(cr) = resp.header("content-range") {
+        if let Some(cr) = resp
+            .headers()
+            .get("content-range")
+            .and_then(|v| v.to_str().ok())
+        {
             if let Some(slash_idx) = cr.rfind('/') {
                 let total_str = &cr[slash_idx + 1..];
                 if let Ok(size) = total_str.trim().parse::<u64>() {
@@ -393,7 +402,11 @@ impl RemoteRangeReader for CloudS3RemoteStorage {
             }
         }
 
-        if let Some(cl) = resp.header("content-length") {
+        if let Some(cl) = resp
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+        {
             if let Ok(size) = cl.parse::<u64>() {
                 return Ok(size);
             }
@@ -412,17 +425,17 @@ impl RemoteStorageAdapter for CloudS3RemoteStorage {
         let mut req = self
             .agent
             .put(&url)
-            .set("Content-Type", "application/octet-stream");
+            .header("Content-Type", "application/octet-stream");
 
         if let Some(ref token) = self.config.auth_token {
             if token.starts_with("Bearer ") || token.starts_with("AWS ") {
-                req = req.set("Authorization", token);
+                req = req.header("Authorization", token);
             } else {
-                req = req.set("Authorization", &format!("Bearer {token}"));
+                req = req.header("Authorization", format!("Bearer {token}"));
             }
         }
 
-        req.send_bytes(data).map_err(|e| {
+        req.send(data).map_err(|e| {
             Error::Io(std::io::Error::other(format!(
                 "Cloud S3 PUT request failed for {url}: {e}"
             )))

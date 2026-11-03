@@ -1,22 +1,4 @@
-from setuptools import setup, find_packages
+"""Compatibility entry point; package metadata lives in pyproject.toml."""
+from setuptools import setup
 
-setup(
-    name="tapirus",
-    version="1.0.0",
-    description="The Safe-Rust Embedded Multi-Model Database & AI Agent Memory Engine",
-    author="TapirusDB Contributors",
-    author_email="contact@tapirusdb.com",
-    url="https://github.com/tapiruslab/TapirusDB",
-    packages=find_packages(),
-    classifiers=[
-        "Development Status :: 4 - Beta",
-        "Intended Audience :: Developers",
-        "License :: Other/Proprietary License",
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Rust",
-        "Topic :: Database",
-        "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    ],
-    python_requires=">=3.8",
-    install_requires=[],
-)
+setup()

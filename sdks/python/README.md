@@ -37,7 +37,7 @@ tokenizer and NumPy dependencies are optional; install the `onnx` extra or its
 declared dependencies when using `--backend onnx`.
 
 ```sh
-python -m pip install 'maturin>=1,<2'
+python -m pip install 'maturin>=1.16,<2'
 maturin build --manifest-path sdks/python/Cargo.toml --locked --out target/python-wheels
 python scripts/test-python-sdk.py --wheel target/python-wheels
 maturin sdist --manifest-path sdks/python/Cargo.toml --out target/python-sdist

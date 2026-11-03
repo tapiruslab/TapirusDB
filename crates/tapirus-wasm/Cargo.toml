@@ -2,6 +2,7 @@
 name = "tapirus-wasm"
 version = "1.0.2"
 edition = "2024"
+rust-version = "1.85"
 authors = ["TapirusDB Contributors <contact@tapirusdb.com>"]
 license = "BUSL-1.1"
 description = "WebAssembly (WASM) bindings for TapirusDB embedded AI database engine"

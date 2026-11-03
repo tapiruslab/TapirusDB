@@ -1,16 +1,19 @@
 {
   "name": "tapirus-typescript-example",
-  "version": "1.0.1",
+  "version": "1.0.2",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
   "description": "TapirusDB Node.js and TypeScript integration example",
   "main": "index.ts",
   "scripts": {
-    "start": "ts-node index.ts"
+    "start": "node --experimental-strip-types index.ts",
+    "check": "tsc --noEmit --strict --module nodenext --target es2022 index.ts"
   },
   "dependencies": {
-    "koffi": "^2.8.0"
+    "tapirus": "file:../../sdks/nodejs"
   },
   "devDependencies": {
-    "ts-node": "^10.9.2",
-    "typescript": "^5.0.0"
+    "typescript": "^7.0.2"
   }
 }

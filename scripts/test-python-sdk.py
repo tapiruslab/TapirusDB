@@ -96,6 +96,7 @@ def main():
             with zipfile.ZipFile(args.wheel) as archive:
                 normalize_license = lambda content: b"\n".join(line.rstrip() for line in content.replace(b"\r\n", b"\n").split(b"\n"))
                 assert normalize_license(archive.read("CORE_LICENSE")) == normalize_license((Path(__file__).resolve().parents[1] / "LICENSE").read_bytes())
+                assert normalize_license(archive.read("LICENSE")) == normalize_license((Path(__file__).resolve().parents[1] / "sdks/python/LICENSE").read_bytes())
                 assert any(name.endswith((".pyd", ".so")) for name in archive.namelist())
             subprocess.run([sys.executable, "-m", "pip", "install", "--no-index", "--no-deps", "--target", str(destination / "package"), str(args.wheel.resolve())], check=True)
             env["PYTHONPATH"] = str(destination / "package")
