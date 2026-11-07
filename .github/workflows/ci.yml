@@ -217,12 +217,18 @@ jobs:
           ini-values: ffi.enable=1
           coverage: none
           tools: composer:v2
-      - run: cargo build --locked -p tapirus --bin tapirus -p tapirus-ffi
+      - run: cargo build --locked -p tapirus --bin tapirus -p tapirus-ffi --lib
       - name: Locate native FFI library
         shell: bash
         run: |
-          ffi_lib="$(find "$GITHUB_WORKSPACE/target/debug" -maxdepth 2 -type f -name 'libtapirus*.so' | head -n 1)"
-          test -n "$ffi_lib"
+          echo "Native build outputs:"
+          find "$GITHUB_WORKSPACE/target" -type f \( -name 'libtapirus*.so' -o -name 'tapirus*.so' \) -print
+          ffi_lib="$(find "$GITHUB_WORKSPACE/target" -type f \( -name 'libtapirus*.so' -o -name 'tapirus*.so' \) -print -quit)"
+          if [[ -z "$ffi_lib" ]]; then
+            echo "::error::Cargo did not produce a Tapirus FFI shared library under target/"
+            find "$GITHUB_WORKSPACE/target" -maxdepth 4 -type f -print | sort | head -n 200
+            exit 1
+          fi
           echo "TAPIRUS_LIB=$ffi_lib" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/target/debug:$GITHUB_WORKSPACE/target/debug/deps" >> "$GITHUB_ENV"
       - run: python scripts/test-http-clients.py
