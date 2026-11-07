@@ -69,7 +69,11 @@ class Tapirus {
     }
 
     public static function version(): string {
-        return self::ffi()->tapirus_version();
+        $version = self::ffi()->tapirus_version();
+        if (\FFI::isNull($version)) {
+            throw new \RuntimeException('Native library returned a null version pointer');
+        }
+        return \FFI::string($version);
     }
 
     public function execute(string $sql): int {
