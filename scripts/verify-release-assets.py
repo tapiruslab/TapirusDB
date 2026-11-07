@@ -22,6 +22,12 @@ TARGETS = {
 EDITIONS = ("lite", "document", "graph", "vector")
 
 
+def stable_sha256(path: Path) -> str:
+    """Hash text files identically on LF and CRLF workspaces."""
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
@@ -55,7 +61,7 @@ def verify(directory: Path, source_head: str) -> int:
     require(re.fullmatch(r"[a-f0-9]{40}", source_head) is not None, "Expected a full source commit SHA")
     require(directory.is_dir(), f"Missing release directory: {directory}")
     version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
-    lock_hash = hashlib.sha256((ROOT / "Cargo.lock").read_bytes()).hexdigest()
+    lock_hash = stable_sha256(ROOT / "Cargo.lock")
     expected_files = set()
     archive_count = 0
 

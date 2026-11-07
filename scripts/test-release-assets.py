@@ -38,7 +38,7 @@ class ReleaseAssetTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="tapirus-release-test-")
         self.directory = Path(self.temporary.name)
         self.version = verifier.tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
-        self.lock_hash = hashlib.sha256((ROOT / "Cargo.lock").read_bytes()).hexdigest()
+        self.lock_hash = verifier.stable_sha256(ROOT / "Cargo.lock")
         self.make_bundle()
 
     def tearDown(self):

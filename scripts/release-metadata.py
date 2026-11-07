@@ -14,6 +14,12 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def stable_sha256(path: Path) -> str:
+    """Hash text files identically on LF and CRLF workspaces."""
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
 def command(*args):
     return subprocess.check_output(args, cwd=ROOT, text=True).strip()
 
@@ -64,7 +70,7 @@ def main():
         Path(str(archive) + ".sha256").write_text(f"{digest}  {archive.name}\n", encoding="ascii")
         artifacts.append({"name": archive.name, "sha256": digest, "bytes": archive.stat().st_size})
     write_json(Path(str(prefix) + ".build.json"), {"version": manifest["package"]["version"], "target": args.target, "sourceHead": head,
-               "workingTreeDirty": dirty, "rustc": command("rustc", "--version"), "cargoLockSha256": hashlib.sha256((ROOT / "Cargo.lock").read_bytes()).hexdigest(), "artifacts": artifacts})
+               "workingTreeDirty": dirty, "rustc": command("rustc", "--version"), "cargoLockSha256": stable_sha256(ROOT / "Cargo.lock"), "artifacts": artifacts})
     print(f"Generated checksums, build metadata, and CycloneDX inventory for {len(artifacts)} archive(s)")
 
 
