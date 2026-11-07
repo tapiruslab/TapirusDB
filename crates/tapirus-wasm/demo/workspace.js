@@ -157,6 +157,21 @@ element('recall').addEventListener('click', () => action(async () => {
   status('memory-status', `${results.length} sources retrieved · scores are retrieval components, not probabilities.`);
 }, 'memory-status'));
 
+element('tap-classify').addEventListener('click', () => action(() => {
+  const input = element('tap-text').value.trim();
+  const candidates = element('tap-candidates').value.trim();
+  if (!input || !candidates) throw new Error('Enter text and at least one candidate label.');
+  element('tap-classify-result').textContent = JSON.stringify(JSON.parse(database.tap_classify(input, candidates)), null, 2);
+  status('tap-classify-status', 'TAP heuristic classification completed locally.');
+}, 'tap-classify-status'));
+element('tap-verify').addEventListener('click', () => action(() => {
+  const premise = element('tap-premise').value.trim();
+  const hypothesis = element('tap-hypothesis').value.trim();
+  if (!premise || !hypothesis) throw new Error('Enter both a premise and a hypothesis.');
+  element('tap-verify-result').textContent = JSON.stringify(JSON.parse(database.tap_verify(premise, hypothesis)), null, 2);
+  status('tap-verify-status', 'TAP heuristic hypothesis check completed locally.');
+}, 'tap-verify-status'));
+
 controls.forEach(button => { button.disabled = true; });
 try {
   const moduleUrl = new URL(document.querySelector('meta[name="tapirus-engine"]').content, document.baseURI);

@@ -67,6 +67,12 @@ try {
   const ready = "document.getElementById('engine')?.dataset.engineReady === 'true'";
   await until(ready);
   assert.equal(await evaluate("getComputedStyle(document.getElementById('database-file')).display"), 'none');
+  await evaluate("document.getElementById('tap-text').value='The local engine is useful';document.getElementById('tap-candidates').value='useful, broken';document.getElementById('tap-classify').click()");
+  await until("document.getElementById('tap-classify-status').textContent.includes('completed locally')");
+  assert.ok(JSON.parse(await evaluate("document.getElementById('tap-classify-result').textContent")));
+  await evaluate("document.getElementById('tap-premise').value='The engine runs locally';document.getElementById('tap-hypothesis').value='The engine is local';document.getElementById('tap-verify').click()");
+  await until("document.getElementById('tap-verify-status').textContent.includes('completed locally')");
+  assert.ok(JSON.parse(await evaluate("document.getElementById('tap-verify-result').textContent")));
   const run = async (sql, parameters = []) => {
     const before = await evaluate("document.getElementById('sql-status').dataset.sequence");
     await evaluate(`document.getElementById('sql').value=${JSON.stringify(sql)};document.getElementById('parameters').value=${JSON.stringify(JSON.stringify(parameters))};document.getElementById('run-sql').click()`);
@@ -106,7 +112,7 @@ try {
   await until("document.getElementById('sql-status').textContent.includes('Opened saved browser copy workspace.tapir') && !document.getElementById('open-saved').disabled");
   assert.equal((await run('SELECT * FROM documents;')).length, 1);
   assert.deepEqual(errors, []);
-  const report = { engine: await evaluate("document.getElementById('engine').textContent"), checks: ['bound SQL', 'transaction rollback', 'HTML text escaping', 'IndexedDB reload', 'AI source persistence', 'hybrid retrieval', 'separate saved databases', '390px and 1440px viewport overflow'], browser: (await call('Browser.getVersion')).product };
+  const report = { engine: await evaluate("document.getElementById('engine').textContent"), checks: ['TAP heuristic classification and hypothesis check', 'bound SQL', 'transaction rollback', 'HTML text escaping', 'IndexedDB reload', 'AI source persistence', 'hybrid retrieval', 'separate saved databases', '390px and 1440px viewport overflow'], browser: (await call('Browser.getVersion')).product };
   const destination = path.join(root, 'target', 'browser-workspace-results.json');
   fs.writeFileSync(destination, JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));

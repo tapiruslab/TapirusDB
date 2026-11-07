@@ -40,6 +40,24 @@
         <p id="memory-status" role="status" data-sequence="0">Source IDs and score components appear here.</p><pre id="memory-result" tabindex="0" aria-label="Memory retrieval results">[]</pre>
       </section>
     </div>
+    <section class="panel" aria-labelledby="tap-title">
+      <div class="section-heading"><h2 id="tap-title">TAP Lite</h2><span>LOCAL HEURISTIC INFERENCE</span></div>
+      <p class="muted">Classify text or check a hypothesis using TAP functions in the Rust WASM engine. These are heuristic results, not a trained language model; model training requires the separate desktop backend.</p>
+      <div class="workspace-grid tap-grid">
+        <div>
+          <label for="tap-text">Text to classify<textarea id="tap-text" rows="3" placeholder="A short text to classify"></textarea></label>
+          <label for="tap-candidates">Candidate labels, separated by commas<input id="tap-candidates" value="positive, negative, neutral" autocomplete="off"></label>
+          <button class="primary" id="tap-classify" type="button">Classify with TAP</button>
+          <p id="tap-classify-status" role="status"></p><pre id="tap-classify-result" tabindex="0" aria-label="TAP classification result">[]</pre>
+        </div>
+        <div>
+          <label for="tap-premise">Premise<textarea id="tap-premise" rows="3" placeholder="The engine stores data locally."></textarea></label>
+          <label for="tap-hypothesis">Hypothesis<textarea id="tap-hypothesis" rows="3" placeholder="Data is stored on this device."></textarea></label>
+          <button class="primary" id="tap-verify" type="button">Check hypothesis</button>
+          <p id="tap-verify-status" role="status"></p><pre id="tap-verify-result" tabindex="0" aria-label="TAP hypothesis result">[]</pre>
+        </div>
+      </div>
+    </section>
     <section class="panel" aria-labelledby="catalog-title"><div class="section-heading"><h2 id="catalog-title">Engine catalog</h2><button id="refresh-schema" type="button">Refresh</button></div><pre id="schema-result" tabindex="0" aria-label="Actual database schema">[]</pre></section>
     <footer>Native file format · Bound SQL parameters · Transactional AI memory<br><a href="https://github.com/tapiruslab/TapirusDB">Source and compatibility information</a> · <a href="../pkg/LICENSE">Engine license</a></footer>
   </main>
