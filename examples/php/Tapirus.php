@@ -87,8 +87,16 @@ class Tapirus {
 
     public static function version(): string {
         $version = self::ffi()->tapirus_version();
-        if (\FFI::isNull($version)) {
+        // PHP FFI may materialize a `const char*` return value as a PHP
+        // string (not FFI\CData), so only use FFI::isNull for CData values.
+        if ($version === null) {
             throw new \RuntimeException('Native library returned a null version pointer');
+        }
+        if (is_string($version)) {
+            return $version;
+        }
+        if (!($version instanceof \FFI\CData) || \FFI::isNull($version)) {
+            throw new \RuntimeException('Native library returned an invalid version pointer');
         }
         return \FFI::string($version);
     }
