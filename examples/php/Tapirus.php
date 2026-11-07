@@ -13,6 +13,8 @@ class Tapirus {
     public static function ffi(): \FFI {
         if (self::$ffi === null) {
             $cdef = "
+                typedef signed int int32_t;
+                typedef signed long long int64_t;
                 typedef struct TapirusConn TapirusConn;
                 const char* tapirus_version(void);
                 TapirusConn* tapirus_open(const char* path);
