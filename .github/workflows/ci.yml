@@ -218,16 +218,19 @@ jobs:
           coverage: none
           tools: composer:v2
       - run: cargo build --locked -p tapirus --bin tapirus -p tapirus-ffi
+      - name: Locate native FFI library
+        shell: bash
+        run: |
+          ffi_lib="$(find "$GITHUB_WORKSPACE/target/debug" -maxdepth 2 -type f -name 'libtapirus*.so' | head -n 1)"
+          test -n "$ffi_lib"
+          echo "TAPIRUS_LIB=$ffi_lib" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/target/debug:$GITHUB_WORKSPACE/target/debug/deps" >> "$GITHUB_ENV"
       - run: python scripts/test-http-clients.py
       - run: python scripts/package-go-sdk.py
       - run: composer validate --strict
       - run: composer validate --strict --working-dir=sdks/php
       - run: php -d ffi.enable=1 -d display_errors=1 examples/php/test.php
-        env:
-          TAPIRUS_LIB: ${{ github.workspace }}/target/debug/libtapirus.so
       - run: bun run examples/bun/test.ts
-        env:
-          TAPIRUS_LIB: ${{ github.workspace }}/target/debug/libtapirus.so
       - name: Check embedded Go C ABI example
         working-directory: examples/go
         run: |
