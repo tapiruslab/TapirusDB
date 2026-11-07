@@ -1,5 +1,16 @@
 <?php
 declare(strict_types=1);
+
+set_exception_handler(static function (\Throwable $error): void {
+    $message = sprintf('%s: %s at %s:%d', get_class($error), $error->getMessage(), $error->getFile(), $error->getLine());
+    fwrite(STDERR, $message . PHP_EOL);
+    if (getenv('GITHUB_ACTIONS') === 'true') {
+        $annotation = str_replace(["%", "\r", "\n"], ["%25", "%0D", "%0A"], $message);
+        fwrite(STDERR, "::error file=examples/php/test.php,line=1::{$annotation}" . PHP_EOL);
+    }
+    exit(255);
+});
+
 require __DIR__ . '/Tapirus.php';
 
 function check(bool $condition, string $message): void {
