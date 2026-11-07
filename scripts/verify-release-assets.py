@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 import tarfile
 import tomllib
 import zipfile
@@ -125,4 +126,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        # Keep the failure visible in the GitHub Checks annotation even when
+        # the Actions log itself is unavailable to unauthenticated viewers.
+        message = str(error).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error title=Release asset verification failed::{message}", file=sys.stderr)
+        raise
