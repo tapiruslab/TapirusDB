@@ -46,7 +46,8 @@ class Tapirus {
                 'libtapirus.dylib',
             ];
 
-            foreach (glob(__DIR__ . '/../../target/{release,debug}/deps/libtapirus*.so', GLOB_BRACE) ?: [] as $candidate) {
+            $globFlags = defined('GLOB_BRACE') ? GLOB_BRACE : 0;
+            foreach (glob(__DIR__ . '/../../target/{release,debug}/deps/libtapirus*.so', $globFlags) ?: [] as $candidate) {
                 $candidates[] = $candidate;
             }
 
