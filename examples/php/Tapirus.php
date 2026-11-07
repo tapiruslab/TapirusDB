@@ -50,15 +50,21 @@ class Tapirus {
                 $candidates[] = $candidate;
             }
 
-            $libPath = 'libtapirus.so';
-            foreach ($candidates as $c) {
-                if ($c && file_exists($c)) {
-                    $libPath = $c;
-                    break;
+            $errors = [];
+            foreach (array_values(array_unique(array_filter($candidates))) as $libPath) {
+                if (!file_exists($libPath)) {
+                    continue;
+                }
+                try {
+                    self::$ffi = \FFI::cdef($cdef, $libPath);
+                    return self::$ffi;
+                } catch (\Throwable $error) {
+                    $errors[] = $libPath . ': ' . $error->getMessage();
                 }
             }
 
-            self::$ffi = \FFI::cdef($cdef, $libPath);
+            $detail = $errors ? ' Tried: ' . implode(' | ', $errors) : '';
+            throw new \RuntimeException('Unable to load the TapirusDB native library.' . $detail);
         }
         return self::$ffi;
     }
