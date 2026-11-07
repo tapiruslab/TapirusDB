@@ -80,7 +80,7 @@ jobs:
           cp include/tapirus.h dist/include/
           cp LICENSE README.md dist/
           tar -czvf ${{ matrix.artifact_name }}.tar.gz -C dist .
-          powershell -Command "Compress-Archive -Path dist/* -DestinationPath ${{ matrix.artifact_name }}.zip -Force"
+          python scripts/create-release-zip.py --source dist --output ${{ matrix.artifact_name }}.zip
         shell: bash
 
 
@@ -105,7 +105,7 @@ jobs:
             cp docs/EDITIONS.md "dist-$edition/"
             tar -czf "$artifact.tar.gz" -C "dist-$edition" .
             if [ "${{ matrix.os }}" = "windows-latest" ]; then
-              powershell -Command "Compress-Archive -Path 'dist-$edition/*' -DestinationPath '$artifact.zip' -Force"
+              python scripts/create-release-zip.py --source "dist-$edition" --output "$artifact.zip"
             fi
             python scripts/release-metadata.py --artifact-glob "$artifact.*" --target '${{ matrix.target }}' --output-prefix "$artifact"
           done
