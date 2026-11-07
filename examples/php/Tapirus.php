@@ -32,15 +32,23 @@ class Tapirus {
                 getenv('TAPIRUS_LIB') ?: '',
                 $home . '/.tapirusdb-target/release/libtapirus.so',
                 __DIR__ . '/../../target/release/libtapirus.so',
+                __DIR__ . '/../../target/release/libtapirus_ffi.so',
                 __DIR__ . '/../../target/release/tapirus.dll',
                 __DIR__ . '/../../target/release/libtapirus.dylib',
                 __DIR__ . '/../../target/debug/libtapirus.so',
+                __DIR__ . '/../../target/debug/libtapirus_ffi.so',
+                __DIR__ . '/../../target/debug/deps/libtapirus.so',
+                __DIR__ . '/../../target/debug/deps/libtapirus_ffi.so',
                 __DIR__ . '/../../target/debug/tapirus.dll',
                 __DIR__ . '/../../target/debug/libtapirus.dylib',
                 'libtapirus.so',
                 'tapirus.dll',
                 'libtapirus.dylib',
             ];
+
+            foreach (glob(__DIR__ . '/../../target/{release,debug}/deps/libtapirus*.so', GLOB_BRACE) ?: [] as $candidate) {
+                $candidates[] = $candidate;
+            }
 
             $libPath = 'libtapirus.so';
             foreach ($candidates as $c) {
