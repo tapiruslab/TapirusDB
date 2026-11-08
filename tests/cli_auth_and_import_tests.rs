@@ -1,7 +1,7 @@
 //! CLI Authentication and Data Importer Integration Tests for TapirusDB
 //!
 //! Validates:
-//! - Langkah A: `tapirus serve --api-key <KEY>` token authentication (Bearer / X-API-Key / query param)
+//! - Langkah A: `tapirus serve --api-key <KEY>` token authentication (Bearer / X-API-Key)
 //! - Langkah B: `tapirus import` for CSV (relational SQL tables & type inference),
 //!   JSONL (Document collections), and Markdown (AI Agent Memory & Knowledge Graph)
 
@@ -300,18 +300,54 @@ fn test_serve_api_key_authentication() {
     );
     assert!(resp.contains("Server Online"));
 
-    // 6. Protected endpoint with valid ?api_key=<KEY> parameter must succeed (200 OK)
+    // 6. Query-string secrets are rejected because URLs can be logged by intermediaries.
     let query_sql = format!(
         "POST /api/sql?api_key={api_key} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {plen}\r\nConnection: close\r\n\r\n{payload}"
     );
     let (code, resp) = http_exchange("127.0.0.1", port, &query_sql);
-    assert_eq!(
-        code, 200,
-        "Protected route with ?api_key= query parameter must succeed: {resp}"
+    assert_eq!(code, 401, "URL credentials must not authenticate: {resp}");
+
+    // 7. Oversized declared bodies are rejected before allocation or SQL execution.
+    let oversized = format!(
+        "POST /api/sql HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n",
+        4 * 1024 * 1024 + 1
     );
-    assert!(resp.contains("Server Online"));
+    let (code, resp) = http_exchange("127.0.0.1", port, &oversized);
+    assert_eq!(code, 413, "Oversized request must fail: {resp}");
+
+    // 8. Header growth is bounded even if the delimiter has not arrived.
+    let oversized_header = format!(
+        "GET /health HTTP/1.1\r\nX-Fill: {}\r\n\r\n",
+        "x".repeat(17 * 1024)
+    );
+    let (code, resp) = http_exchange("127.0.0.1", port, &oversized_header);
+    assert_eq!(code, 431, "Oversized headers must fail: {resp}");
 
     // Clean up server process
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[test]
+fn test_serve_rejects_non_loopback_bind_without_key() {
+    let mut child = Command::new(TAPIRUS_BIN)
+        .args(["serve", "--host", "0.0.0.0", "--port", "0"])
+        .env_remove("TAPIRUS_API_KEY")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("Spawn tapirus serve");
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while child.try_wait().expect("Poll server").is_none() && std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    if child.try_wait().expect("Poll server").is_none() {
+        child
+            .kill()
+            .expect("Stop server that failed to reject public bind");
+        panic!("Server accepted an unauthenticated public bind");
+    }
+    let output = child.wait_with_output().expect("Read server result");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Non-loopback HTTP bind requires"));
 }

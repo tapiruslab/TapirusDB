@@ -12,13 +12,36 @@ use std::io::{self, BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tapirus::sql::catalog::DataType;
 use tapirus::{Connection, EmbeddingEngine, Row, Value};
 use web_time::Instant;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const HTTP_MAX_CLIENTS: usize = 64;
+const HTTP_MAX_HEADER_BYTES: usize = 16 * 1024;
+const HTTP_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(10);
+
+struct ActiveHttpClient(Arc<AtomicUsize>);
+
+impl Drop for ActiveHttpClient {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
+fn try_acquire_http_client(active: &Arc<AtomicUsize>) -> Option<ActiveHttpClient> {
+    active
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < HTTP_MAX_CLIENTS).then_some(count + 1)
+        })
+        .ok()
+        .map(|_| ActiveHttpClient(Arc::clone(active)))
+}
 
 const BANNER: &str = r#"
   ___________           .__                     ________  __________
@@ -268,7 +291,7 @@ fn print_help() {
     println!();
     println!("Server Options (for 'tapirus serve'):");
     println!("  -p, --port <PORT>                        Port to listen on (default: 3005)");
-    println!("  -b, --host <HOST>                        Host to bind to (default: 0.0.0.0)");
+    println!("  -b, --host <HOST>                        Host to bind to (default: 127.0.0.1)");
     println!("  -k, --api-key <KEY>                      Enforce API key token authentication");
     println!(
         "  --passphrase <KEY>                       Encryption passphrase (ChaCha20-Poly1305)"
@@ -288,10 +311,8 @@ fn print_serve_help() {
     println!();
     println!("Options:");
     println!("  -p, --port <PORT>        Port to listen on (default: 3005)");
-    println!("  -b, --host <HOST>        Host to bind to (default: 0.0.0.0)");
-    println!(
-        "  -k, --api-key <KEY>      Enforce API key token authentication (Bearer / X-API-Key / ?api_key=)"
-    );
+    println!("  -b, --host <HOST>        Host to bind to (default: 127.0.0.1)");
+    println!("  -k, --api-key <KEY>      Enforce API key authentication (Bearer / X-API-Key)");
     println!("  --passphrase <KEY>       Passphrase for encrypted database (ChaCha20-Poly1305)");
     println!("  -h, --help               Print this help message");
     println!();
@@ -315,7 +336,7 @@ fn run_studio_command(args: &[String]) {
 
 fn run_serve_command(args: &[String]) {
     let mut port: u16 = 3005;
-    let mut host = "0.0.0.0".to_string();
+    let mut host = "127.0.0.1".to_string();
     let mut api_key: Option<String> = env::var("TAPIRUS_API_KEY").ok();
     let mut passphrase: Option<String> = None;
     let mut db_path = "production.tapir".to_string();
@@ -373,6 +394,15 @@ fn run_serve_command(args: &[String]) {
             _ => {}
         }
         i += 1;
+    }
+
+    if api_key.as_deref().is_some_and(str::is_empty) {
+        eprintln!("TAPIRUS_API_KEY/--api-key must not be empty");
+        std::process::exit(1);
+    }
+    if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1") && api_key.is_none() {
+        eprintln!("Non-loopback HTTP bind requires TAPIRUS_API_KEY or --api-key");
+        std::process::exit(1);
     }
 
     let is_memory = db_path == ":memory:";
@@ -989,13 +1019,26 @@ fn run_http_server(
 
     let db = Arc::new(Mutex::new(conn));
     let auth_key = Arc::new(api_key);
+    let active_clients = Arc::new(AtomicUsize::new(0));
 
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => {
+            Ok(mut stream) => {
+                let Some(client_guard) = try_acquire_http_client(&active_clients) else {
+                    send_http_response(
+                        &mut stream,
+                        "503 Service Unavailable",
+                        "text/plain",
+                        "Server busy",
+                    );
+                    continue;
+                };
+                let _ = stream.set_read_timeout(Some(HTTP_IO_TIMEOUT));
+                let _ = stream.set_write_timeout(Some(HTTP_IO_TIMEOUT));
                 let db_clone = Arc::clone(&db);
                 let auth_clone = Arc::clone(&auth_key);
                 thread::spawn(move || {
+                    let _client_guard = client_guard;
                     handle_http_client(stream, db_clone, auth_clone);
                 });
             }
@@ -1012,6 +1055,26 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+fn request_content_length(headers: &[u8]) -> std::result::Result<usize, &'static str> {
+    let header_text = std::str::from_utf8(headers).map_err(|_| "Invalid HTTP headers")?;
+    let mut length = None;
+    for line in header_text.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("Transfer-Encoding is not supported");
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if length.is_some() {
+                return Err("Duplicate Content-Length");
+            }
+            length = Some(value.trim().parse().map_err(|_| "Invalid Content-Length")?);
+        }
+    }
+    Ok(length.unwrap_or(0))
+}
+
 fn constant_time_eq_str(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
@@ -1019,17 +1082,8 @@ fn constant_time_eq_str(a: &str, b: &str) -> bool {
     a.as_bytes().ct_eq(b.as_bytes()).into()
 }
 
-fn request_has_valid_api_key(
-    expected_key: &str,
-    query_str: Option<&str>,
-    header_str: &str,
-) -> bool {
-    let mut provided_key = query_str.and_then(|query| {
-        query.split('&').find_map(|param| {
-            let (key, value) = param.split_once('=')?;
-            (key == "api_key" || key == "key").then_some(value)
-        })
-    });
+fn request_has_valid_api_key(expected_key: &str, header_str: &str) -> bool {
+    let mut provided_key = None;
     for line in header_str.lines() {
         let lower = line.to_ascii_lowercase();
         if lower.starts_with("authorization:") {
@@ -1094,11 +1148,35 @@ fn handle_http_client(
     let mut buf = [0u8; 4096];
     let mut body_start = None;
     let mut content_length: usize = 0;
+    let request_started = Instant::now();
 
     loop {
+        let remaining = HTTP_IO_TIMEOUT.saturating_sub(request_started.elapsed());
+        if remaining.is_zero() {
+            send_http_response(
+                &mut stream,
+                "408 Request Timeout",
+                "text/plain",
+                "Request timed out",
+            );
+            return;
+        }
+        let _ = stream.set_read_timeout(Some(remaining));
         let n = match stream.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => n,
+            Err(error)
+                if error.kind() == io::ErrorKind::TimedOut
+                    || error.kind() == io::ErrorKind::WouldBlock =>
+            {
+                send_http_response(
+                    &mut stream,
+                    "408 Request Timeout",
+                    "text/plain",
+                    "Request timed out",
+                );
+                return;
+            }
             Err(_) => return,
         };
         request_data.extend_from_slice(&buf[..n]);
@@ -1111,24 +1189,50 @@ fn handle_http_client(
             }
 
             if let Some(start) = body_start {
-                if let Ok(header_str) = std::str::from_utf8(&request_data[..start]) {
-                    for line in header_str.lines() {
-                        if line.to_ascii_lowercase().starts_with("content-length:") {
-                            if let Some(val) = line.split(':').nth(1) {
-                                content_length = val.trim().parse().unwrap_or(0);
-                            }
-                        }
-                    }
+                if start > HTTP_MAX_HEADER_BYTES {
+                    send_http_response(
+                        &mut stream,
+                        "431 Request Header Fields Too Large",
+                        "text/plain",
+                        "Request headers too large",
+                    );
+                    return;
                 }
+                content_length = match request_content_length(&request_data[..start]) {
+                    Ok(length) => length,
+                    Err(message) => {
+                        send_http_response(&mut stream, "400 Bad Request", "text/plain", message);
+                        return;
+                    }
+                };
             }
+        }
+
+        if body_start.is_none() && request_data.len() > HTTP_MAX_HEADER_BYTES {
+            send_http_response(
+                &mut stream,
+                "431 Request Header Fields Too Large",
+                "text/plain",
+                "Request headers too large",
+            );
+            return;
+        }
+        if content_length > HTTP_MAX_BODY_BYTES
+            || request_data.len() > HTTP_MAX_HEADER_BYTES + HTTP_MAX_BODY_BYTES
+        {
+            send_http_response(
+                &mut stream,
+                "413 Content Too Large",
+                "text/plain",
+                "Request body too large",
+            );
+            return;
         }
 
         if let Some(start) = body_start {
             if request_data.len() >= start + content_length {
                 break;
             }
-        } else if request_data.len() > 65536 {
-            break;
         }
     }
 
@@ -1136,7 +1240,26 @@ fn handle_http_client(
         return;
     }
 
-    let body_offset = body_start.unwrap_or(request_data.len());
+    let Some(start) = body_start else {
+        send_http_response(
+            &mut stream,
+            "400 Bad Request",
+            "text/plain",
+            "Incomplete HTTP headers",
+        );
+        return;
+    };
+    if request_data.len() < start + content_length {
+        send_http_response(
+            &mut stream,
+            "400 Bad Request",
+            "text/plain",
+            "Incomplete request body",
+        );
+        return;
+    }
+
+    let body_offset = start;
     let header_bytes = &request_data[..body_offset];
     let body_bytes = if body_offset < request_data.len() {
         &request_data
@@ -1159,10 +1282,9 @@ fn handle_http_client(
     let mut parts = first_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let full_path = parts.next().unwrap_or("/");
-    let (route_path, query_str) = match full_path.split_once('?') {
-        Some((r, q)) => (r, Some(q)),
-        None => (full_path, None),
-    };
+    let route_path = full_path
+        .split_once('?')
+        .map_or(full_path, |(path, _)| path);
 
     // Handle CORS preflight
     if method == "OPTIONS" {
@@ -1245,7 +1367,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
         || (method == "POST" && (route_path == "/chat" || route_path == "/api/chat"));
     if protected_chat_route {
         if let Some(expected_key) = api_key.as_ref() {
-            if !request_has_valid_api_key(expected_key, query_str, header_str) {
+            if !request_has_valid_api_key(expected_key, header_str) {
                 let err_json = serde_json::json!({"error":"Unauthorized","message":"Missing or invalid API key."});
                 send_http_unauthorized_response(&mut stream, &err_json.to_string());
                 return;
@@ -1313,10 +1435,10 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
 
     // Authentication enforcement for protected endpoints
     if let Some(ref expected_key) = *api_key {
-        if !request_has_valid_api_key(expected_key, query_str, header_str) {
+        if !request_has_valid_api_key(expected_key, header_str) {
             let err_json = serde_json::json!({
                 "error": "Unauthorized",
-                "message": "Missing or invalid API key. Please provide 'Authorization: Bearer <KEY>', 'X-API-Key: <KEY>', or '?api_key=<KEY>'."
+                "message": "Missing or invalid API key. Provide Authorization: Bearer or X-API-Key."
             });
             send_http_unauthorized_response(&mut stream, &err_json.to_string());
             return;
@@ -5361,20 +5483,35 @@ mod audit_regression_tests {
     }
 
     #[test]
+    fn ambiguous_http_body_framing_is_rejected() {
+        assert_eq!(
+            request_content_length(b"POST /sql HTTP/1.1\r\nContent-Length: 3\r\n\r\n"),
+            Ok(3)
+        );
+        assert!(
+            request_content_length(
+                b"POST /sql HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 4\r\n\r\n"
+            )
+            .is_err()
+        );
+        assert!(
+            request_content_length(b"POST /sql HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .is_err()
+        );
+    }
+
+    #[test]
     fn chat_endpoints_require_the_configured_key() {
         assert!(!request_has_valid_api_key(
             "secret",
-            None,
             "GET /api/chat/logs HTTP/1.1\r\n"
         ));
         assert!(request_has_valid_api_key(
             "secret",
-            None,
             "GET /api/chat/logs HTTP/1.1\r\nAuthorization: Bearer secret\r\n"
         ));
         assert!(!request_has_valid_api_key(
             "secret",
-            None,
             "GET /api/chat/logs HTTP/1.1\r\nX-API-Key: wrong\r\n"
         ));
     }

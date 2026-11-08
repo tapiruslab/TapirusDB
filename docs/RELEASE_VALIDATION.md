@@ -1,5 +1,11 @@
 # Release validation — 16 October 2026
 
+## Distribution update — 8 November 2026
+
+The public GitHub release is now [v1.0.2](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.2), published on 7 November 2026 with 110 listed assets. The Windows x86_64, Linux x86_64/ARM64 and macOS ARM64 CLI archive SHA-256 digests were compared with GitHub's asset digests on 8 November. This confirms those published archive identifiers and digests, not every platform's runtime behavior. The earlier candidate and unpublished-release statements below are retained only as dated history; they no longer describe the release inventory.
+
+The current `main` working tree also contains later HTTP request-limit, loopback-binding, header-only API-key and TAP model-loader hardening. These changes are not part of the v1.0.2 tag or its downloadable binaries. Do not advertise them as shipped until a new tagged build passes the release workflow and downloaded-asset verification.
+
 This page preserves the 16 October validation snapshot. The 17 October AI,
 embedded and indexed memory work is documented in
 [AI and embedded workflows](AI_EMBEDDED_WORKFLOWS.md).
@@ -83,10 +89,9 @@ Installers default to verified prebuilt assets. Windows also supports `-FromSour
 
 ## Remaining acceptance work
 
-- The `release-v1.0.2` branch synchronizes the engine, native SDKs, WASM metadata and installer defaults to the 1.0.2 candidate. It is not a published release. Complete the candidate checks and publish matching artifacts before changing production installer defaults.
-- A read-only check on 30 October 2026 found no `v1.0.2` tag or GitHub release (`404`). The published `v1.0.1` release lists platform archives but no `.sha256` sidecars required by the current installers. Therefore neither the candidate default nor simply reverting it to 1.0.1 gives a verified public installation path. Publish a validated 1.0.2 release with checksums, then run clean-machine install tests before advertising the installers.
-- The candidate's hosted CI passed in run 41013988379. The tag-triggered release build, native packaged-install steps, final 110-asset gate and downloaded-draft recheck still require a successful hosted run before any public release claim.
-- Validate signed release artifacts and package installation on clean machines. The local installer test uses a fixture archive rather than a downloaded public release.
+- Validate package installation from the public v1.0.2 assets on clean target machines and record the exact downloaded archive hashes and test outputs. The local installer test below used a fixture archive.
+- Rebuild and validate the post-v1.0.2 HTTP and TAP model-loader hardening before tagging a new release. The source version string remains 1.0.2 until a versioned release candidate is prepared; it does not imply those changes shipped in the v1.0.2 binary.
+- Check Rust, Python, Node.js, Go, PHP and WASM registry versions independently of GitHub release assets. Registry publication and architecture support must be established per package.
 - Expand the recorded small-workload release benchmark to realistic datasets, repeated trials, independent hardware, memory measurements and migration workloads.
 - Extend I/O fault injection, long-running recovery/restore testing and independent security review. No cryptographic review or safety certification is claimed.
 - Evaluate SQL/API compatibility for the intended SQLite migration workload. The database has its own file format and shared-session connection model; full SQLite compatibility has not been established.

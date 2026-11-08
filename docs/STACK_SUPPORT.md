@@ -1,5 +1,9 @@
 # SDK stack and package validation
 
+## Public release update (8 November 2026)
+
+[GitHub v1.0.2](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.2) is now public with 110 listed assets. The candidate observations below are a 2–3 November snapshot and should not be read as current registry status. Version numbers in source, a GitHub release and language registries are separate distribution states. Recheck the exact registry and target platform before installation. Post-release HTTP and TAP model-loader hardening in the current source is not contained in v1.0.2 release assets.
+
 ## Candidate scope (3 November 2026)
 
 The source tree targets TapirusDB **1.0.2** across the Rust engine, native SDKs,
