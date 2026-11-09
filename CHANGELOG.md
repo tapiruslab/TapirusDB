@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No unreleased changes recorded.
+
+## [1.0.3] - 2026-11-09
+
 ### Added
 - Browser TAP Lite inference workspace and a unified TAP install/use guide.
 
