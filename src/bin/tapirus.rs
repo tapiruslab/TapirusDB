@@ -35,12 +35,16 @@ impl Drop for ActiveHttpClient {
 }
 
 fn try_acquire_http_client(active: &Arc<AtomicUsize>) -> Option<ActiveHttpClient> {
-    active
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-            (count < HTTP_MAX_CLIENTS).then_some(count + 1)
-        })
-        .ok()
-        .map(|_| ActiveHttpClient(Arc::clone(active)))
+    let mut count = active.load(Ordering::Acquire);
+    loop {
+        if count >= HTTP_MAX_CLIENTS {
+            return None;
+        }
+        match active.compare_exchange_weak(count, count + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Some(ActiveHttpClient(Arc::clone(active))),
+            Err(observed) => count = observed,
+        }
+    }
 }
 
 const BANNER: &str = r#"
@@ -5472,6 +5476,21 @@ fn run_bitnet_command(args: &[String]) {
 #[cfg(test)]
 mod audit_regression_tests {
     use super::*;
+
+    #[test]
+    fn http_client_limit_releases_slots_when_guards_drop() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let guards: Vec<_> = (0..HTTP_MAX_CLIENTS)
+            .map(|_| try_acquire_http_client(&active).expect("available HTTP client slot"))
+            .collect();
+        assert_eq!(active.load(Ordering::Acquire), HTTP_MAX_CLIENTS);
+        assert!(try_acquire_http_client(&active).is_none());
+
+        drop(guards);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+        assert!(try_acquire_http_client(&active).is_some());
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
 
     #[test]
     fn http_sql_payload_preserves_bound_parameters() {

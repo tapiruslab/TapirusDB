@@ -6,7 +6,9 @@ installing or making a support commitment.
 
 ## Source and release
 
-- Main source revision: `d1da371496618aaf16f0a142bb92486a5789f418`.
+- Current source: [main branch](https://github.com/tapiruslab/TapirusDB/tree/main).
+  Check its commit history for the exact revision; this dated snapshot does not
+  pin the moving branch to one hash.
 - Public GitHub release: [v1.0.2](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.2).
 - The current main source contains post-release HTTP and TAP hardening that is
   not present in the v1.0.2 binaries. Do not describe those source changes as
