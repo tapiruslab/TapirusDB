@@ -1,6 +1,6 @@
 [package]
 name = "tapirus-micro"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 rust-version = "1.85"
 license = "BUSL-1.1"

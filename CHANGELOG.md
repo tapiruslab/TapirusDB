@@ -11,7 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes recorded.
+### Added
+- Browser TAP Lite inference workspace and a unified TAP install/use guide.
+
+### Changed
+- Public descriptions, examples, SDK notes and website guidance now distinguish current source, GitHub release assets and registry packages.
+- The dependency advisory report distinguishes production and development-only dependency paths while retaining strict review mode.
+
+### Fixed
+- Bound HTTP request sizes, read deadlines and simultaneous clients; require API-key authentication for non-loopback server binds.
+- Reject oversized or inconsistent serialized TAP models and non-finite weights.
+- Keep the HTTP client limit compatible with the declared Rust 1.85 minimum and newer strict Clippy toolchains.
 
 ## [1.0.2] - 2026-11-07
 
