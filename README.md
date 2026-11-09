@@ -127,6 +127,7 @@ For a local Linux container build, run `docker build -t tapirusdb:local .`. The 
 - [SDKs](sdks/README.md)
 - [Stack support, versions and package validation](docs/STACK_SUPPORT.md)
 - [Transactional AI memory](docs/AI_MEMORY.md)
+- [Panduan TAP: browser, CLI, Rust dan Model Forge](docs/TAP_GUIDE.md)
 - [Release validation and packaging](docs/RELEASE_VALIDATION.md)
 
 ## Benchmark status
