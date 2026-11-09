@@ -100,7 +100,7 @@ class Client
         $headers = [
             'Content-Type: application/json',
             'Accept: application/json',
-            'User-Agent: TapirusDB-PHP/1.0.2'
+            'User-Agent: TapirusDB-PHP/1.0.3'
         ];
 
         if ($this->token !== null && $this->token !== '') {
