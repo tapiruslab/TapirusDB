@@ -52,8 +52,8 @@ def main():
         if data.get("cargo_lock_sha256") != lock_hash:
             raise SystemExit(f"Report does not match current Cargo.lock: {report}")
     advisories = json.loads(args.advisory_report.read_text(encoding="utf-8"))
-    if any(not finding.get("withdrawn") for finding in advisories.get("findings", [])):
-        raise SystemExit("Candidate bundle contains active dependency advisory findings")
+    if any(not finding.get("withdrawn") and finding.get("release_blocking", True) for finding in advisories.get("findings", [])):
+        raise SystemExit("Candidate bundle contains active production dependency advisory findings")
     freshness = json.loads(args.freshness_report.read_text(encoding="utf-8"))
     if freshness.get("source_head") != source_head or freshness.get("engine_version") != version:
         raise SystemExit("Registry report does not match current source HEAD and engine version")

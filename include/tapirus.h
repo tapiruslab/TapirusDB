@@ -2,7 +2,7 @@
  * @file tapirus.h
  * @brief TapirusDB C Application Binary Interface (ABI) Header
  *
- * TapirusDB: The Pure Safe-Rust Embedded Quad-Model AI Database Engine
+ * TapirusDB: Embedded database C ABI for local SQL and document workloads
  * (Relational SQL + Native AI Vector Search + MongoDB-style JSON Documents + Knowledge Graph)
  *
  * Copyright (c) 2026 Ahmad Faiz • Tapirus Tech Lab (TapirusDB.com). All Rights Reserved.

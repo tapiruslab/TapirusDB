@@ -2,7 +2,8 @@
 //!
 //! Stores graph edges in contiguous arrays for high-speed sequential neighbor
 //! traversal, cache locality, and worst-case optimal join (WCOJ) triangle intersections
-//! in 100% Safe Rust (`#![forbid(unsafe_code)]`).
+//! The core crate forbids explicit unsafe code; this is not a correctness or
+//! performance certification.
 
 use crate::error::{Error, Result};
 use crate::graph::GraphEngine;

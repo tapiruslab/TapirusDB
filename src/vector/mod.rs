@@ -54,8 +54,8 @@ pub enum DistanceMetric {
 
 /// Calculate Cosine Distance between two floating point slices
 ///
-/// Uses 16-lane parallel loop unrolling and multi-lane accumulators for SIMD/NEON auto-vectorization
-/// under 100% Safe Rust (`#![forbid(unsafe_code)]`).
+/// Uses 16-lane parallel loop unrolling and multi-lane accumulators that the
+/// compiler may auto-vectorize for the target architecture.
 #[inline]
 pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     simd_cosine_distance(a, b)
@@ -69,8 +69,8 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
 /// Calculate Euclidean Distance between two floating point slices
 ///
-/// Uses 16-lane parallel loop unrolling and multi-lane accumulators for SIMD/NEON auto-vectorization
-/// under 100% Safe Rust (`#![forbid(unsafe_code)]`).
+/// Uses 16-lane parallel loop unrolling and multi-lane accumulators that the
+/// compiler may auto-vectorize for the target architecture.
 #[inline]
 pub fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
     simd_euclidean_distance(a, b)

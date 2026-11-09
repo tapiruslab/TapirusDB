@@ -1,10 +1,10 @@
 # SDK stack and package validation
 
-## Public release update (8 November 2026)
+## Current public release update (9 November 2026)
 
-[GitHub v1.0.2](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.2) is now public with 110 listed assets. The candidate observations below are a 2–3 November snapshot and should not be read as current registry status. Version numbers in source, a GitHub release and language registries are separate distribution states. Recheck the exact registry and target platform before installation. Post-release HTTP and TAP model-loader hardening in the current source is not contained in v1.0.2 release assets.
+[GitHub v1.0.2](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.2) is public with 110 listed assets. The 9 November registry snapshot below records Rust 1.0.1, Python 1.0.0, Node 1.0.1 and PHP 1.0.2; these states are separate from the source and GitHub release. The public `@tapirus/db` npm artifact is legacy; new Node.js installations should use `tapirus`. Recheck the exact registry and target platform before installation. Post-release HTTP and TAP model-loader hardening in the current source is not contained in v1.0.2 release assets.
 
-## Candidate scope (3 November 2026)
+## Source and local validation scope
 
 The source tree targets TapirusDB **1.0.2** across the Rust engine, native SDKs,
 WASM package metadata, examples, and installer defaults. This is a local release
@@ -13,20 +13,22 @@ for every operating system and architecture.
 
 | Distribution | Runtime and source | Local package check | Publication evidence |
 | --- | --- | --- | --- |
-| Rust crates | Rust 1.85+; `tapirus`, `tapirus-micro`, `tapirus-ffi`, `tapirus-wasm` | Four extracted 1.0.2 crate archives compiled together offline with sibling path patches. This does not simulate installation from crates.io. | Registry report on 2 November found `tapirus` 1.0.1. |
-| Python wheel | Python 3.10+; `sdks/python/` | A Windows CPython 3.10 ABI wheel installed under Python 3.12 and passed native engine, reopen, and encryption checks. A source archive also exists. Rebuild and test each release target. | Registry report found `tapirus` 1.0.0. The separate `python/` ctypes package is not this distribution. |
-| Node.js npm | Node.js 22+; `sdks/nodejs/` | The Windows x64 native addon passed tarball installation in a separate consumer, persistence, binding, vector, constraint, and CDC checks. Other native targets require their own builds. | Registry report found `tapirus` 1.0.1. `packages/npm/` is a private synchronized legacy entry. |
+| Rust crates | Rust 1.85+; `tapirus`, `tapirus-micro`, `tapirus-ffi`, `tapirus-wasm` | Four extracted 1.0.2 crate archives compiled together offline with sibling path patches. This does not simulate installation from crates.io. | Registry snapshot on 9 November found `tapirus` 1.0.1. |
+| Python wheel | Python 3.10+; `sdks/python/` | A Windows CPython 3.10 ABI wheel installed under Python 3.12 and passed native engine, reopen, and encryption checks. A source archive also exists. Rebuild and test each release target. | Registry snapshot found `tapirus` 1.0.0. The separate `python/` ctypes package is not this distribution. |
+| Node.js npm | Node.js 22+; `sdks/nodejs/` | The Windows x64 native addon passed tarball installation in a separate consumer, persistence, binding, vector, constraint, and CDC checks. Other native targets require their own builds. | Registry snapshot found `tapirus` 1.0.1. `packages/npm/` is a private synchronized legacy entry; public `@tapirus/db` is not the supported package. |
 | WASM npm | Generated `crates/tapirus-wasm/pkg/` | The 1.0.2 tarball was installed in a separate Node.js consumer and passed SQL parameter, rollback, snapshot reopen, and error checks on this Windows host. Browser persistence is a separate check. | Registry report found no `@tapirus/wasm` package. The source manifest is private. |
-| Go module | Go 1.20+; `sdks/go/` | `scripts/package-go-sdk.py` builds a module zip and tests import through a fresh local file proxy. The HTTP client also needs a real TapirusDB daemon for data checks. | Registry report found module version v1.0.1. |
-| PHP package | PHP 8.0+, JSON and cURL; `sdks/php/` | The local package archive exists. The 2 November daemon test checked the HTTP client on PHP 8.5 and verified data after restart. This host lacks PHP CLI. | Registry report found `tapiruslab/tapirusdb` v1.0.1 and v1.0.0. |
+| Go module | Go 1.20+; `sdks/go/` | `scripts/package-go-sdk.py` builds a module zip and tests import through a fresh local file proxy. The HTTP client also needs a real TapirusDB daemon for data checks. | Source is visible on pkg.go.dev; the Go proxy `@latest` result needs verification before calling it published. |
+| PHP package | PHP 8.0+, JSON and cURL; `sdks/php/` | The local package archive exists. The 2 November daemon test checked the HTTP client on PHP 8.5 and verified data after restart. This host lacks PHP CLI. | Registry snapshot found `tapiruslab/tapirusdb` v1.0.2. |
 | CLI/FFI archive | Native release workflow and `crates/tapirus-ffi/` | Release workflow builds on native target hosts, installs each archive, and checks its checksum and SQL persistence. A local candidate covers only its build host. | A tagged 1.0.2 release needs a completed hosted run and verified downloadable assets. |
 
-The **2 November 2026** read-only registry inventory is
+The **2 November 2026** read-only registry inventory is retained as historical
 `target/stack-packages-2026-11-02.json`: 25 dependency registry queries completed
 without errors. It recorded no public `v1.0.2` GitHub release. The advisory
 report at `target/stack-advisories-2026-11-02.json` checked 141 Cargo.lock registry
-packages and found no active advisories at that time. These are dated checks,
-not a guarantee about later registry state or package compatibility.
+packages and found no active advisories at that time. The current advisory
+checker records the SQLite finding separately as a development-only dependency
+finding; it is not silently ignored. These are dated checks, not a guarantee
+about later registry state or package compatibility.
 
 ## Validation and bundle commands
 

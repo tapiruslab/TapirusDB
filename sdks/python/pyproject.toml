@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "tapirus"
 version = "1.0.2"
-description = "Official Python SDK for TapirusDB — Safe-Rust Quad-Model Embedded AI Database & Agent Memory Engine"
+description = "Official Python SDK for TapirusDB's embedded database and local AI memory APIs"
 readme = "README.md"
 authors = [{ name = "TapirusDB Contributors", email = "contact@tapirusdb.com" }]
 license = { text = "MIT AND BUSL-1.1" }

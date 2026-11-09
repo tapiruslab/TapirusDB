@@ -2,8 +2,8 @@
 //!
 //! Partitions high-dimensional vector spaces into Voronoi cells (clusters) using
 //! k-means clustering. Combines cluster pruning with 1-bit/2-bit RaBitQ quantization
-//! or full-precision vectors to enable sub-millisecond retrieval across millions of vectors
-//! on embedded memory budgets under 100% Safe Rust (`#![forbid(unsafe_code)]`).
+//! or full-precision vectors. Measure recall, memory and latency on the target
+//! dataset; this module does not establish a universal scale or timing claim.
 
 use crate::vector::DistanceMetric;
 use crate::vector::quantization::{RaBitQuantizedVector, RaBitQuantizer};

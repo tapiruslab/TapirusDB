@@ -1,6 +1,6 @@
 /**
- * TapirusDB Official JavaScript SDK (@tapirus/db)
- * Pure Safe-Rust Embedded Multi-Model AI Database Engine.
+ * TapirusDB Official JavaScript SDK (tapirus)
+ * Native embedded database and local AI memory APIs.
  */
 
 'use strict';

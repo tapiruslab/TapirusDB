@@ -1,7 +1,7 @@
 {
   "name": "tapirus",
   "version": "1.0.2",
-  "description": "Official Node.js & TypeScript SDK for TapirusDB — Embedded Safe-Rust Quad-Model Database",
+  "description": "Official Node.js and TypeScript SDK for TapirusDB's embedded database APIs",
   "main": "index.js",
   "types": "index.d.ts",
   "engines": {

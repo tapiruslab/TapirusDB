@@ -1,17 +1,17 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
 PackageIdentifier: TapirusDB.Tapirus
-PackageVersion: 1.0.1
+PackageVersion: 1.0.2
 PackageLocale: en-US
 PackageName: TapirusDB
 Publisher: Tapirus Tech Lab (TapirusDB.com)
 PublisherUrl: https://tapirusdb.com
 PublisherSupportUrl: https://github.com/tapiruslab/TapirusDB/issues
 Author: Ahmad Faiz
-ShortDescription: The Safe-Rust Embedded Quad-Model Database & AI Agent Memory Engine
+ShortDescription: Embedded database with SQL, vector search and local AI memory APIs
 Description: |
-  TapirusDB is an ultra-fast, in-process quad-model database engine written entirely in 100% Safe Rust.
-  It combines Relational SQL-92, JSON Document collections, HNSW Vector search, and Knowledge Graph (GraphRAG)
-  into a single atomic .tapir disk file.
+  TapirusDB is an in-process database for local applications.
+  It provides a documented SQL subset, JSON documents, vector search,
+  graph APIs and local AI memory in a single .tapir file.
 PackageUrl: https://tapirusdb.com
 License: BUSL-1.1
 LicenseUrl: https://github.com/tapiruslab/TapirusDB/blob/main/LICENSE
@@ -22,15 +22,15 @@ Tags:
   - in-process
   - vector
   - ai-memory
-  - safe-rust
-  - graphrag
+  - local-first
+  - ai-memory
 Commands:
   - tapirus
-ReleaseNotesUrl: https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.1
+ReleaseNotesUrl: https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.2
 Installers:
   - Architecture: x64
     InstallerType: portable
-    InstallerUrl: https://github.com/tapiruslab/TapirusDB/releases/download/v1.0.1/tapirus-windows-x86_64.zip
+    InstallerUrl: https://github.com/tapiruslab/TapirusDB/releases/download/v1.0.2/tapirus-windows-x86_64.zip
     InstallerSha256: 450E30906CD733ADEADB973B55A3954A70759BE2AC4D5459A83309C33E6C183E
 ManifestType: singleton
 ManifestVersion: 1.6.0

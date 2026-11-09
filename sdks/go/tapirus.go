@@ -1,16 +1,16 @@
 /*
-Package tapirus provides the official Go client library for TapirusDB —
-the 100% Safe-Rust Embedded Quad-Model AI Database and Memory Engine.
+Package tapirus provides the official Go HTTP client for the optional
+TapirusDB daemon. It is not an embedded Go database.
 
 # Overview
 
-TapirusDB collapses four disparate database paradigms into a unified,
-single-file in-process engine:
+The daemon exposes the implemented TapirusDB APIs over HTTP. The current
+engine scope is intentionally narrower than full SQL or full graph standards:
 
-  - Relational SQL-92 (ACID transactions, B+Tree indexing, MVCC)
-  - Dense HNSW Vector Search (Cosine, L2 Euclidean, Inner Product similarity)
-  - openCypher Knowledge Graph (CSR topology, GraphRAG, multi-hop traversals)
-  - Schemaless JSON Document Collections
+  - SQL subset with transactional writes and B-tree indexing
+  - Vector search APIs with model-supplied vectors
+  - Graph APIs and document collections
+  - AI memory retrieval with heuristic score components
 
 # Quickstart
 

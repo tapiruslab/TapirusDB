@@ -1,4 +1,4 @@
-//! # BitNet b1.58: Native 1.58-Bit Ternary Neural Engine (100% Safe Rust)
+//! # BitNet b1.58: Native 1.58-bit ternary projection engine
 //!
 //! Implements Microsoft's BitNet b1.58 architecture where all linear layer weights
 //! are constrained to ternary values: `{-1, 0, +1}`.
@@ -12,8 +12,8 @@
 //! achieving extreme CPU/Edge efficiency and zero floating-point weight multiply latency.
 //!
 //! ## Safety & Purity
-//! - **100% Safe Rust**: `#![forbid(unsafe_code)]` compliant.
-//! - **Mathematical Verification**: Computes mathematically verified ternary contractions.
+//! - The core crate forbids explicit unsafe code; this is not a safety certification.
+//! - Computes ternary contractions according to the implemented arithmetic.
 
 use crate::error::{Error, Result};
 

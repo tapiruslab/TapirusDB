@@ -1,4 +1,4 @@
-//! Safe-Rust High-Performance Tensor Inference Runtime for Tap.
+//! Tensor inference runtime for Tap.
 //!
 //! Executes non-autoregressive decision projections, categorical classifications,
 //! scalar scores, and heuristic hypothesis comparisons without a model service.

@@ -1,6 +1,6 @@
 //! # TapirusDB (`tapirus`)
 //!
-//! The Pure Safe-Rust Embedded Database Engine â€” SQLite Simplicity with Native AI Vector Search.
+//! The embedded Rust database engine with SQL, vector search and local AI memory APIs.
 //!
 //! Stored entirely in a single `.tapir` file with zero background server processes.
 
@@ -452,7 +452,7 @@ impl Connection {
         &self.memory
     }
 
-    /// Access the Tap Sub-Millisecond Cognitive Decision Engine
+    /// Access the TAP heuristic decision engine
     pub fn tap(&self) -> &'static TapEngine {
         crate::tap::sql_bridge::get_global_tap_engine()
     }
@@ -864,7 +864,7 @@ impl Connection {
 
     /// Turnkey Zero-Setup AI Agent Memory: remember plain text with automatic local embedding.
     ///
-    /// Uses the embedded safe-Rust `DeterministicHashEmbedder` to generate high-quality 128D
+    /// Uses the embedded `DeterministicHashEmbedder` to generate deterministic 128D
     /// feature-hashed vectors in sub-microsecond latency, requiring zero external API keys or PyTorch dependencies.
     pub fn memory_remember_text(
         &self,

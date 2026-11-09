@@ -1,8 +1,8 @@
 //! Native Embedded AI Agent Memory Subsystem for TapirusDB.
 //!
-//! Provides a unified, ultra-lightweight memory engine combining:
+//! Provides a unified memory engine combining:
 //! - **Episodic & Semantic Storage**: Chronological observations and facts.
-//! - **Hybrid Retrieval**: Dense Vector Similarity + Pure Safe-Rust BM25 Lexical Keyword Search.
+//! - **Hybrid Retrieval**: Dense vector similarity plus BM25 lexical keyword search.
 //! - **Temporal Recency Decay**: Time-decay scoring ($e^{-\lambda \Delta t}$) with customizable half-life.
 //! - **Graph Memory Association**: Associative links connecting related memories and entities.
 //! - Configurable admission limits and indexed retrieval for native/edge workloads.

@@ -2,8 +2,9 @@
 
 The repository contains several language integration paths. Their APIs, persistence behavior, packaging, and runtime requirements are not interchangeable or guaranteed to be equivalent.
 
-See the [stack and packaging matrix](../docs/STACK_SUPPORT.md) for the dated
-validation results, package commands, publication gaps and version policy.
+See the [current release status](../docs/CURRENT_STATUS.md) for the latest
+dated registry snapshot. The [stack and packaging matrix](../docs/STACK_SUPPORT.md)
+contains validation evidence, publication gaps and version policy.
 
 | Language | Source path | Notes |
 |---|---|---|

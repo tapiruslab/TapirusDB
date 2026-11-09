@@ -3,7 +3,7 @@
   "version": "1.0.2",
   "private": true,
   "engines": { "node": ">=22" },
-  "description": "Deploy TapirusDB serverless edge database on Cloudflare Workers",
+  "description": "Run the TapirusDB WASM demo in a Cloudflare Worker isolate; persistence requires separate validation",
   "main": "worker.js",
   "type": "module",
   "scripts": {

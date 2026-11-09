@@ -1,7 +1,7 @@
 """
 TapirusDB Python Client
-The Safe-Rust Embedded Quad-Model AI Database Engine.
-Single-file (.tapir), 100% Safe Rust, Quad-Model (SQL + Document + HNSW Vector + Property Graph).
+Legacy ctypes integration for the TapirusDB embedded database.
+This module is separate from the maintained PyO3 package under ``sdks/python``.
 """
 
 import ctypes
@@ -494,7 +494,7 @@ def tap_classify(text: str, candidates: List[str]) -> Tuple[str, float]:
 
 def tap_verify(premise: str, hypothesis: str, threshold: float = 0.50) -> bool:
     """Truth verification: determines whether a premise strictly verifies a hypothesis."""
-    # 1. Prefer native Safe-Rust engine via SQL scalar bridge
+    # 1. Prefer the native engine via the SQL scalar bridge
     db = _get_tap_db()
     if db is not None:
         try:
@@ -534,7 +534,7 @@ def tap_verify(premise: str, hypothesis: str, threshold: float = 0.50) -> bool:
 
 def tap_score(input: str, criteria: str) -> float:
     """Rubric evaluation: scores alignment of input against criteria on a continuous [0.0, 1.0] scale."""
-    # 1. Prefer native Safe-Rust engine via SQL scalar bridge
+    # 1. Prefer the native engine via the SQL scalar bridge
     db = _get_tap_db()
     if db is not None:
         try:
@@ -560,7 +560,7 @@ def tap_score(input: str, criteria: str) -> float:
 
 def tap_route(state: str, routes: List[str]) -> str:
     """Agent workflow and graph traversal branch routing."""
-    # 1. Prefer native Safe-Rust engine via SQL scalar bridge
+    # 1. Prefer the native engine via the SQL scalar bridge
     db = _get_tap_db()
     if db is not None:
         try:

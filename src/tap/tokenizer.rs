@@ -1,6 +1,6 @@
-//! High-performance, zero-allocation subword and n-gram tokenizer for the Tap Decision Engine.
+//! Deterministic subword and n-gram tokenizer for the Tap Decision Engine.
 //!
-//! Provides deterministic subword segmentation and token hashing for sub-millisecond
+//! Provides deterministic subword segmentation and token hashing for
 //! non-autoregressive decision classification and scoring.
 
 use std::collections::HashMap;

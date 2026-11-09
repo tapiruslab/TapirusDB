@@ -1,9 +1,9 @@
 class Tapirus < Formula
-  desc "Safe-Rust embedded quad-model AI database engine (SQL, Vectors, GraphRAG, Documents)"
+  desc "Embedded database with SQL, vector search and local AI memory APIs"
   homepage "https://tapirusdb.com"
-  url "https://github.com/tapiruslab/TapirusDB/archive/refs/tags/v1.0.1.tar.gz"
-  sha256 "90f2930bf449ae1ee9165d1795f0dd0fab5237d20a44da30b871e16d06e50c89"
-  version "1.0.1"
+  url "https://github.com/tapiruslab/TapirusDB/archive/refs/tags/v1.0.2.tar.gz"
+  sha256 "dbd9da35eb0acd5be79d601e2940fffb09dfffb45756e0f2a417b87dd2f133e1"
+  version "1.0.2"
   license "BUSL-1.1"
 
   depends_on "rust" => :build

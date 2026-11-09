@@ -1,13 +1,14 @@
 //! # Tap Deep: In-Process Ternary Projection & Decision Engine
 //!
-//! Provides native in-process Safe-Rust ternary projection and calibrated semantic
-//! decision execution inside TapirusDB without external Python runtimes or daemons.
+//! Provides native in-process ternary projection and heuristic semantic decision
+//! execution inside TapirusDB without an external Python runtime or daemon.
 //!
-//! ## Mathematical & Architecture Guarantees
-//! - **100% Safe Rust**: `#![forbid(unsafe_code)]` enforced.
-//! - **Hardware-Verified Execution**: Computes authentic token projections and BitNet b1.58
+//! ## Implementation notes
+//! - The core crate forbids explicit unsafe code; this is not a correctness or
+//!   security certification.
+//! - Computes token projections and BitNet-style b1.58
 //!   multiplication-free ternary additions and subtractions.
-//! - **In-Process**: Zero Python runtime, zero Docker sidecars, zero external daemon required.
+//! - Runs in-process; applications may still choose their own model or service boundaries.
 
 use crate::error::{Error, Result};
 use crate::tap::bitnet::BitNetBlock;

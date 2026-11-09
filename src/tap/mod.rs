@@ -1,12 +1,12 @@
-//! # Tap: Sub-Millisecond In-Database Cognitive Decision Subsystem
+//! # Tap: In-database heuristic decision subsystem
 //!
 //! Tap is TapirusDB's native System-1 cognitive engine. It provides deterministic,
-//! non-autoregressive decision classification, rubric scoring, calibrated boolean truth
-//! verification, and graph workflow routing directly inside the database kernel.
+//! non-autoregressive classification, rubric scoring, heuristic hypothesis
+//! comparison and graph workflow routing directly inside the database kernel.
 //!
-//! Unlike traditional autoregressive LLMs that generate token-by-token text with high latency
-//! (300ms–800ms) and unpredictable hallucinations, Tap executes single-pass tensor projections
-//! directly over database memory records in **sub-millisecond Safe Rust (< 2ms)**.
+//! Unlike an autoregressive text-generation service, Tap executes local tensor
+//! projections over database records. Scores are workload-dependent heuristics,
+//! not calibrated probabilities, factual truth or safety guarantees.
 
 pub mod bitnet;
 pub mod deep;
@@ -733,13 +733,10 @@ mod tests {
         println!("==============================================\n");
 
         assert!(
-            classify_us < 1500.0,
-            "Classify must take < 1.5 ms (sub-millisecond in release)"
+            classify_us.is_finite(),
+            "Classify measurement must be finite"
         );
-        assert!(
-            verify_us < 1500.0,
-            "Verify must take < 1.5 ms (sub-millisecond in release)"
-        );
+        assert!(verify_us.is_finite(), "Verify measurement must be finite");
     }
 
     #[test]

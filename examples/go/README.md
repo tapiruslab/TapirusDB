@@ -1,4 +1,4 @@
-# 🦛 TapirusDB on Go (Golang)
+# TapirusDB on Go (Golang)
 
 Connect to TapirusDB from Go using idiomatic CGO dynamic linking and C ABI wrappers.
 
@@ -8,10 +8,12 @@ separate from the HTTP SDK in `sdks/go`. It has no parameter-binding API; avoid
 interpolating untrusted values into SQL. `go test ./...` checks null decoding,
 exact integers, errors, close and file reopen using the real C shared library.
 
-## 🚀 Features
-- **In-Process Performance:** Eliminate network round-trips; query your database directly from Go goroutines.
-- **Quad-Model Data Engine:** Combine relational SQL queries with AI vectors and knowledge graph traversal.
-- **ChaCha20-Poly1305 Security:** Full SIMD-accelerated AEAD encryption at rest.
+## Features
+- **In-process access:** Query the native C ABI without a database network hop.
+- **Implemented data APIs:** Use the SQL, document, vector and graph entry points
+  that are present in the matching native build.
+- **Optional page encryption:** Review key handling and test the target deployment
+  before treating encryption as a complete security boundary.
 
 ## 🛠️ Requirements & Running
 

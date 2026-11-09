@@ -1,12 +1,15 @@
 """
-TapirusDB Native AI Cognitive Chatbot (Production Implementation)
-===================================================================
-A complete, runnable, production-ready chatbot powered directly by TapirusDB's
-Safe-Rust Quad-Model Engine:
-  1. TAP Cognitive Perception (Intent classification & policy verification < 2ms)
-  2. Relational SQL persistence (Automatic dialogue logging in `tap_chat_logs`)
-  3. Knowledge Retrieval (Grounded factual Q&A in `tap_knowledge_base`)
-  4. Multilingual support (Bahasa Melayu, English, French, German, Spanish)
+TapirusDB local chatbot prototype
+=================================
+A runnable example that combines TapirusDB persistence, heuristic TAP calls and
+simple keyword retrieval. It is not a production chatbot, calibrated safety
+classifier, latency benchmark, SLA or enterprise offering.
+
+The example demonstrates:
+  1. TAP heuristic classification and verification
+  2. Relational SQL persistence in `tap_chat_logs`
+  3. Local retrieval from `tap_knowledge_base`
+  4. Multilingual response plumbing (Bahasa Melayu, English, French, German, Spanish)
 
 Usage:
   Interactive CLI Mode:
@@ -39,44 +42,44 @@ DB_PATH = "chatbot_memory.tapir"
 SEEDED_KNOWLEDGE = [
     {
         "category": "tap_cognitive_engine",
-        "keywords": "tap perception cognitive inference latency sub-millisecond intent classify nli verify",
-        "title": "TAP Sub-Millisecond Cognitive Engine",
-        "content": "TAP (Tapirus Accelerated Perception) is TapirusDB's embedded cognitive perception engine. It delivers sub-millisecond (< 2ms) intent classification, NLI policy verification, and semantic routing natively in 100% Safe Rust without external GPUs or heavy Python runtimes.",
+        "keywords": "tap perception cognitive inference intent classify nli verify heuristic",
+        "title": "TAP heuristic decision functions",
+        "content": "TAP (Tapirus Accelerated Perception) provides local classification and verification functions. Scores and labels are heuristic engine outputs, not calibrated probabilities, factual truth or safety guarantees.",
         "language": "en"
     },
     {
         "category": "database_architecture_and_rag",
-        "keywords": "architecture quad-model sql vector hnsw graph opencypher json rag embedded acid",
-        "title": "TapirusDB Quad-Model Architecture",
-        "content": "TapirusDB unifies Relational SQL, native HNSW Vector search, openCypher Knowledge Graph, and Schemaless Documents into a single embedded engine with ACID compliance and zero external dependencies.",
+        "keywords": "architecture sql vector graph json rag embedded transaction",
+        "title": "TapirusDB local data APIs",
+        "content": "TapirusDB provides a documented SQL subset, vector and graph APIs, JSON documents, and local AI memory in an embedded engine. Check the matching source and package version for the exact API and transaction boundaries.",
         "language": "en"
     },
     {
         "category": "billing_and_enterprise_plans",
         "keywords": "billing enterprise plans pricing commercial license sla support cluster",
-        "title": "TapirusDB Enterprise & Licensing Plans",
-        "content": "TapirusDB is open-source under BUSL-1.1 for development. The Enterprise Plan provides dedicated 24/7 SLA production support, multi-node clustering replication, custom GraphRAG tuning, and commercial production licensing.",
+        "title": "Licensing and support status",
+        "content": "This repository does not establish an enterprise plan, SLA, clustering service, commercial support commitment or pricing. Review the current BUSL-1.1 terms and published commercial agreements before making a deployment decision.",
         "language": "en"
     },
     {
         "category": "database_architecture_and_rag",
-        "keywords": "pangkalan data seni bina quad-model vektor hnsw graf opencypher dokumen sql rag melayu",
-        "title": "Seni Bina Quad-Model TapirusDB",
-        "content": "TapirusDB adalah pangkalan data terbenam (embedded) berprestasi tinggi dalam Safe Rust yang menggabungkan SQL Relasi, carian Vektor HNSW, Graf Pengetahuan openCypher, dan Dokumen JSON dalam satu fail tunggal yang patuh ACID tanpa kebergantungan luar.",
+        "keywords": "pangkalan data seni bina vektor graf dokumen sql rag melayu",
+        "title": "API data tempatan TapirusDB",
+        "content": "TapirusDB menyediakan subset SQL yang didokumenkan, API vektor dan graf, dokumen JSON, serta memori AI tempatan dalam satu enjin terbenam. Semak versi source dan package yang digunakan untuk skop API sebenar.",
         "language": "ms"
     },
     {
         "category": "tap_cognitive_engine",
-        "keywords": "tap enjin kognitif niat klasifikasi verifikasi sub-milisaat ai memori melayu",
-        "title": "Enjin Kognitif TAP Sub-Milisaat",
-        "content": "Enjin TAP (Tapirus Accelerated Perception) memproses klasifikasi niat (intent) dan semakan polisi (verification) dalam masa kurang 2 milisaat (< 2ms) terus dalam pangkalan data tanpa memerlukan GPU atau persekitaran Python luaran.",
+        "keywords": "tap enjin kognitif niat klasifikasi verifikasi heuristik ai memori melayu",
+        "title": "Fungsi keputusan heuristik TAP",
+        "content": "TAP (Tapirus Accelerated Perception) menyediakan fungsi klasifikasi dan semakan tempatan. Skor dan labelnya ialah output heuristik, bukan kebarangkalian yang dikalibrasi, bukti fakta atau jaminan keselamatan.",
         "language": "ms"
     },
     {
         "category": "billing_and_enterprise_plans",
         "keywords": "pelan langganan enterprise harga bayaran sokongan sla lesen komersial beli pakej",
-        "title": "Pelan Enterprise & Sokongan Komersial TapirusDB",
-        "content": "Pelan Enterprise TapirusDB menawarkan sokongan teknikal 24/7 SLA, lesen komersial penuh, kluster replikasi teragih, bantuan penalaan GraphRAG tersuai, dan penyulitan ChaCha20-Poly1305 gred industri. Hubungi sales@tapirusdb.com untuk maklumat lanjut.",
+        "title": "Status lesen dan sokongan",
+        "content": "Repositori ini tidak menetapkan pelan enterprise, SLA, perkhidmatan kluster, sokongan komersial atau harga. Semak terma BUSL-1.1 dan perjanjian komersial rasmi yang sedang diterbitkan sebelum membuat keputusan.",
         "language": "ms"
     }
 ]
@@ -182,12 +185,11 @@ class TapirusChatbot:
                 grounding = "tap_policy_guardrail"
             elif intent == "general_greeting_or_help":
                 reply = (
-                    "Hai! Saya pembantu pintar TapirusDB. Dikuasakan oleh enjin kognitif TAP sub-milisaat (<2ms), "
-                    "saya bersedia membantu anda mengenai SQL, carian Vektor HNSW, Graf Pengetahuan openCypher, "
-                    "atau pelan Enterprise TapirusDB. Ada apa yang boleh saya bantu?"
+                    "Hai. Saya contoh chatbot tempatan TapirusDB. Saya boleh membantu menerangkan API SQL, "
+                    "memori dokumen dan output heuristik TAP berdasarkan knowledge base contoh. Apa yang boleh saya bantu?"
                     if lang == "ms" else
-                    "Hello! I am your TapirusDB cognitive assistant powered by our sub-millisecond (<2ms) TAP engine. "
-                    "How can I help you today with SQL, Vector search, Knowledge Graphs, or Enterprise plans?"
+                    "Hello. I am a local TapirusDB chatbot example. I can explain the SQL, document-memory and "
+                    "heuristic TAP examples from the seeded knowledge base. What would you like to inspect?"
                 )
                 grounding = "tap_conversational_core"
             else:
@@ -200,7 +202,7 @@ class TapirusChatbot:
                     reply = f"**{title}**\n\n{content}\n\n*(Disahkan melalui tap_knowledge_base)*"
                     grounding = "tap_knowledge_base"
                 else:
-                    reply = "TapirusDB adalah pangkalan data berbilang model terbenam dalam 100% Safe Rust." if lang == "ms" else "TapirusDB is an embedded quad-model database engine in Safe Rust."
+                    reply = "TapirusDB ialah pangkalan data terbenam dengan API SQL, dokumen, vektor, graf dan memori AI tempatan." if lang == "ms" else "TapirusDB is an embedded database with SQL, document, vector, graph and local AI memory APIs."
                     grounding = "tap_default"
 
             end_time = time.perf_counter_ns()

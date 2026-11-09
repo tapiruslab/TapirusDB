@@ -20,7 +20,7 @@ func TestTapirusClient(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"status":  "ok",
 				"version": "1.0.0",
-				"engine":  "Safe-Rust Quad-Model",
+				"engine":  "TapirusDB HTTP test daemon",
 			})
 		case "/api/sql":
 			var request struct {

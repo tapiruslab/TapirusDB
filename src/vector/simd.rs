@@ -1,8 +1,8 @@
 //! High-Performance SIMD-Optimized Vector Math Kernels
 //!
 //! Provides 16-lane parallel loop unrolling and multi-lane accumulator pipelines
-//! aligned with modern CPU instruction-level parallelism (AVX2, AVX-512, and ARM NEON)
-//! under 100% Safe Rust (`#![forbid(unsafe_code)]`).
+//! aligned with modern CPU instruction-level parallelism. The compiler may map
+//! these loops to the target CPU's vector instructions.
 
 #[cfg(feature = "simd")]
 /// Calculate Cosine Distance between two floating point slices using explicit AVX2/NEON SIMD registers.

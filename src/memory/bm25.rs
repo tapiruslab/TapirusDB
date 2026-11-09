@@ -1,7 +1,7 @@
-//! Pure Safe-Rust Inverted Index and BM25 Full-Text Search Engine.
+//! Inverted index and BM25 full-text search engine.
 //!
-//! Provides zero-dependency, ultra-lightweight lexical search optimized for
-//! edge microprocessors, IoT devices, and WebAssembly with zero unsafe code.
+//! Provides dependency-light lexical search for native, edge and WebAssembly
+//! builds. Measure resource use on the target device.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -30,7 +30,7 @@ pub fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Pure Safe-Rust Inverted Index with BM25 Scoring
+/// Inverted index with BM25 scoring.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Bm25Index {
     /// Mapping of term -> list of (doc_id, term_frequency)

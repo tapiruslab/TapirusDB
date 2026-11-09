@@ -1,7 +1,7 @@
 use tapirus::{Connection, Direction, Result};
 
 fn main() -> Result<()> {
-    println!("🚀 TapirusDB Native Safe-Rust Quad-Model Example");
+    println!("TapirusDB native database example");
 
     // 1. Open an encrypted database or in-memory connection
     let conn = Connection::open_in_memory()?;
@@ -41,6 +41,6 @@ fn main() -> Result<()> {
         println!(" - Node {} -> Node {} via {}", node.id, node.label, edge.label);
     }
 
-    println!("\n✓ All Quad-Models operational in pure 100% Safe Rust!");
+    println!("\nThe example completed using the APIs enabled by this build.");
     Ok(())
 }

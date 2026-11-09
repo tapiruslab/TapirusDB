@@ -120,7 +120,7 @@ def main():
         # 5. Flush WAL checkpoint
         flushed = tapirus.tapirus_checkpoint(conn)
         print(f"\nWAL Checkpoint successfully flushed {flushed} page(s).")
-        print("TapirusDB C FFI verification passed 100% successfully!")
+        print("TapirusDB C FFI example completed successfully.")
 
     finally:
         tapirus.tapirus_close(conn)

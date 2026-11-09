@@ -1,19 +1,20 @@
-# Release validation — 16 October 2026
+# Release validation — current status 9 November 2026
 
-## Distribution update — 8 November 2026
+## Public v1.0.2 distribution
 
 The public GitHub release is now [v1.0.2](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.2), published on 7 November 2026 with 110 listed assets. The Windows x86_64, Linux x86_64/ARM64 and macOS ARM64 CLI archive SHA-256 digests were compared with GitHub's asset digests on 8 November. This confirms those published archive identifiers and digests, not every platform's runtime behavior. The earlier candidate and unpublished-release statements below are retained only as dated history; they no longer describe the release inventory.
 
 The current `main` working tree also contains later HTTP request-limit, loopback-binding, header-only API-key and TAP model-loader hardening. These changes are not part of the v1.0.2 tag or its downloadable binaries. Do not advertise them as shipped until a new tagged build passes the release workflow and downloaded-asset verification.
 
-This page preserves the 16 October validation snapshot. The 17 October AI,
+The detailed evidence table below is historical. It preserves the 16 October
+validation snapshot. The 17 October AI,
 embedded and indexed memory work is documented in
 [AI and embedded workflows](AI_EMBEDDED_WORKFLOWS.md).
 The table below must not be treated as a measurement of the later source revision.
 
 The table below records the historical local Windows working tree. A later [hosted CI run for commit `8080302`](https://github.com/tapiruslab/TapirusDB/actions/runs/41013988379) finished successfully on 30 October 2026 with 28 jobs, including Linux x86_64/ARM64/musl, macOS Intel/Apple Silicon, Windows, Rust 1.85, native SDKs, WASM/browser, container persistence and benchmarks. This is CI evidence for that source commit; it is not evidence of a tagged release or published registry packages.
 
-## Evidence collected
+## Historical evidence collected
 
 | Check | Result |
 |---|---|
@@ -24,7 +25,7 @@ The table below records the historical local Windows working tree. A later [host
 | npm consumer installation | Generated tarball installed offline in a separate consumer directory, then the native SDK tests passed. |
 | Native Python wheel consumer | Actual abi3 wheel installed offline in a fresh directory. SQL typed parameters, exact integers, blobs, vectors, AI scopes/rollback, collections, close, encrypted files and second-process reopen passed on Python 3.12.10. |
 | Python source distribution | Maturin's archive retained unused workspace lock entries. Packaging now prunes 17 entries while retaining registry versions/checksums and all other archive member bytes; the extracted source compiles with `--locked --offline`. |
-| Known dependency advisories | OSV checked 159 Cargo.lock registry packages, including optional/dev/other-target dependencies; zero matching known advisories after the updates. This is a dated advisory check, not proof of exploitability or absence of unknown flaws. |
+| Known dependency advisories | The current checker reports `RUSTSEC-2026-0459` for the bundled SQLite used only by the root crate's `rusqlite` development/benchmark path; the report marks it development-only and the normal release gate does not treat it as a production dependency. Strict audit mode can still fail on it. This is not proof of exploitability or absence of unknown flaws. |
 | Actual Rust WASM runtime | Bound SQL, plain JSON rows, AI retrieval, reopen and native SDK ↔ WASM `.tapir` interchange passed. |
 | Headless Edge browser | SQL, rollback, HTML text escaping, IndexedDB reload and persisted hybrid source retrieval passed. The report is written to `target/browser-workspace-results.json`. |
 | Windows installer | Local archive installed into an isolated directory under `target`; incorrect checksum was rejected before installation. User PATH was not modified by the test. |
@@ -52,7 +53,7 @@ The native Python binding moved from PyO3 0.20.3 to 0.29.3, with Python 3.10 as 
 
 `python scripts/check-dependency-advisories.py` writes `target/dependency-advisories.json` and fails for nonwithdrawn findings or service errors. It sends public registry package names and versions to OSV. CI requires this check before release verification can succeed.
 
-On 30 October 2026, the lockfile was updated to `block-buffer 0.12.1` (via `sha2 0.11.0`), `rustls-webpki 0.103.16`, and `webpki-roots 1.0.10`. The local OSV query returned zero findings across 163 registry packages in the updated lockfile. This is a known-advisory check, not a code or container-image security audit. After the update, `cargo test --locked --offline --workspace --all-features`, `cargo clippy --locked --offline --workspace --all-features --all-targets -- -D warnings`, and `cargo fmt --all --check` passed locally on Windows.
+On 30 October 2026, the lockfile was updated to `block-buffer 0.12.1` (via `sha2 0.11.0`), `rustls-webpki 0.103.16`, and `webpki-roots 1.0.10`. The current OSV policy distinguishes development-only findings from the normal engine dependency path; it still records every finding and supports a strict failure mode. This is a known-advisory check, not a code or container-image security audit. After the update, `cargo test --locked --offline --workspace --all-features`, `cargo clippy --locked --offline --workspace --all-features --all-targets -- -D warnings`, and `cargo fmt --all --check` passed locally on Windows.
 
 A separate local Rust 1.85.0 compilation uncovered trait-object upcasting in the remote pager, which requires a newer compiler. A delegating reader replaced that coercion; `cargo +1.85.0 check --locked --offline -p tapirus --all-targets --all-features` then passed on Windows. CI now repeats the 1.85 compiler check on Linux. This validates compilation, not the entire test suite on the minimum compiler.
 

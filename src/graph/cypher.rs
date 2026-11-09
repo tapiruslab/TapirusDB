@@ -1,7 +1,8 @@
 //! Declarative openCypher Graph Pattern Matching Engine
 //!
-//! Provides native openCypher parsing and execution runtime (`MATCH ... WHERE ... RETURN ...`,
-//! `CREATE ...`, and variable-length path expansion) directly inside TapirusDB in 100% Safe Rust (`#![forbid(unsafe_code)]`).
+//! Provides a bounded openCypher parsing and execution subset (`MATCH ... WHERE ... RETURN ...`,
+//! `CREATE ...`, and selected path expansion) directly inside TapirusDB. The
+//! core crate forbids explicit unsafe code; full openCypher conformance is not claimed.
 
 use crate::Row;
 use crate::Value;

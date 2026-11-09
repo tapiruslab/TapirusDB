@@ -11,7 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Version 1.0.2 candidate. No public tag or package publication is implied by this heading.
+No unreleased changes recorded.
+
+## [1.0.2] - 2026-11-07
 
 ### Changed
 - Storage and recovery corrections, transactional AI source retrieval, independent sessions and memory lifecycle APIs.

@@ -2,7 +2,7 @@
   "name": "@tapirus/wasm",
   "private": true,
   "version": "1.0.2",
-  "description": "TapirusDB in WebAssembly: Pure Safe-Rust Multi-Model Database & AI Agent Memory Engine for Browsers, Node.js, and Cloudflare Workers",
+  "description": "TapirusDB WebAssembly workspace for browser-local SQL, document memory and file interchange",
   "main": "pkg/tapirus_wasm.js",
   "types": "pkg/tapirus_wasm.d.ts",
   "files": [

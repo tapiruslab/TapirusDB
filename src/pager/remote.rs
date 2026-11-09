@@ -8,7 +8,8 @@
 //! In serverless and edge environments (e.g. AWS Lambda, Cloudflare Workers), downloading
 //! an entire multi-gigabyte `.tapir` database file causes prohibitive cold-start latency.
 //! The `RemotePager` streams only the specific 4KB B+Tree and Vector pages accessed by
-//! the query and caches them in local memory, achieving sub-millisecond subsequent reads.
+//! the query and caches them in local memory. Cache behavior and latency depend
+//! on the remote store, network and workload.
 
 use crate::crypto::DatabaseCipher;
 use crate::error::{Error, Result};
