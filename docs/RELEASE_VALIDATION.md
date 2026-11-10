@@ -1,10 +1,10 @@
-# Release validation — current status 9 November 2026
+# Release validation — current status 10 November 2026
 
 ## Public v1.0.2 distribution
 
 The public GitHub release is now [v1.0.2](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.2), published on 7 November 2026 with 110 listed assets. The Windows x86_64, Linux x86_64/ARM64 and macOS ARM64 CLI archive SHA-256 digests were compared with GitHub's asset digests on 8 November. This confirms those published archive identifiers and digests, not every platform's runtime behavior. The earlier candidate and unpublished-release statements below are retained only as dated history; they no longer describe the release inventory.
 
-The current `main` working tree also contains later HTTP request-limit, loopback-binding, header-only API-key and TAP model-loader hardening. These changes are not part of the v1.0.2 tag or its downloadable binaries. Do not advertise them as shipped until a new tagged build passes the release workflow and downloaded-asset verification.
+The current `main` working tree is versioned 1.0.3 locally and contains later HTTP request-limit, loopback-binding, header-only API-key and TAP model-loader hardening. These changes are not verified as part of the public v1.0.2 downloadable binaries. Do not advertise them as shipped in a downloaded executable until the v1.0.3 release workflow and asset verification are complete.
 
 The detailed evidence table below is historical. It preserves the 16 October
 validation snapshot. The 17 October AI,
@@ -91,7 +91,7 @@ Installers default to verified prebuilt assets. Windows also supports `-FromSour
 ## Remaining acceptance work
 
 - Validate package installation from the public v1.0.2 assets on clean target machines and record the exact downloaded archive hashes and test outputs. The local installer test below used a fixture archive.
-- Rebuild and validate the post-v1.0.2 HTTP and TAP model-loader hardening before tagging a new release. The source version string remains 1.0.2 until a versioned release candidate is prepared; it does not imply those changes shipped in the v1.0.2 binary.
+- Complete the tag-triggered v1.0.3 release workflow and verify downloaded assets before treating the current source hardening as shipped.
 - Check Rust, Python, Node.js, Go, PHP and WASM registry versions independently of GitHub release assets. Registry publication and architecture support must be established per package.
 - Expand the recorded small-workload release benchmark to realistic datasets, repeated trials, independent hardware, memory measurements and migration workloads.
 - Extend I/O fault injection, long-running recovery/restore testing and independent security review. No cryptographic review or safety certification is claimed.

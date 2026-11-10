@@ -1,25 +1,25 @@
 # SDK stack and package validation
 
-## Current public release update (9 November 2026)
+## Current public release update (10 November 2026)
 
-[GitHub v1.0.2](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.2) is public with 110 listed assets. The 9 November registry snapshot below records Rust 1.0.1, Python 1.0.0, Node 1.0.1 and PHP 1.0.2; these states are separate from the source and GitHub release. The public `@tapirus/db` npm artifact is legacy; new Node.js installations should use `tapirus`. Recheck the exact registry and target platform before installation. Post-release HTTP and TAP model-loader hardening in the current source is not contained in v1.0.2 release assets.
+[GitHub v1.0.2](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.2) is public with 110 listed assets. The 9 November registry snapshot below records Rust 1.0.1, Python 1.0.0, Node 1.0.1 and PHP 1.0.2; these states are separate from the source and GitHub release. The public `@tapirus/db` npm artifact is legacy; new Node.js installations should use `tapirus`. Recheck the exact registry and target platform before installation. The local source candidate is 1.0.3, but its release assets and registry publications are not treated as verified here.
 
 ## Source and local validation scope
 
-The source tree targets TapirusDB **1.0.2** across the Rust engine, native SDKs,
+The source tree targets TapirusDB **1.0.3** across the Rust engine, native SDKs,
 WASM package metadata, examples, and installer defaults. This is a local release
 candidate. Version agreement does not establish registry publication or support
 for every operating system and architecture.
 
 | Distribution | Runtime and source | Local package check | Publication evidence |
 | --- | --- | --- | --- |
-| Rust crates | Rust 1.85+; `tapirus`, `tapirus-micro`, `tapirus-ffi`, `tapirus-wasm` | Four extracted 1.0.2 crate archives compiled together offline with sibling path patches. This does not simulate installation from crates.io. | Registry snapshot on 9 November found `tapirus` 1.0.1. |
+| Rust crates | Rust 1.85+; `tapirus`, `tapirus-micro`, `tapirus-ffi`, `tapirus-wasm` | Four extracted 1.0.2 crate archives compiled together offline with sibling path patches. This is the last recorded package check and does not simulate installation from crates.io. | Registry snapshot on 9 November found `tapirus` 1.0.1; 1.0.3 publication needs a fresh check. |
 | Python wheel | Python 3.10+; `sdks/python/` | A Windows CPython 3.10 ABI wheel installed under Python 3.12 and passed native engine, reopen, and encryption checks. A source archive also exists. Rebuild and test each release target. | Registry snapshot found `tapirus` 1.0.0. The separate `python/` ctypes package is not this distribution. |
 | Node.js npm | Node.js 22+; `sdks/nodejs/` | The Windows x64 native addon passed tarball installation in a separate consumer, persistence, binding, vector, constraint, and CDC checks. Other native targets require their own builds. | Registry snapshot found `tapirus` 1.0.1. `packages/npm/` is a private synchronized legacy entry; public `@tapirus/db` is not the supported package. |
-| WASM npm | Generated `crates/tapirus-wasm/pkg/` | The 1.0.2 tarball was installed in a separate Node.js consumer and passed SQL parameter, rollback, snapshot reopen, and error checks on this Windows host. Browser persistence is a separate check. | Registry report found no `@tapirus/wasm` package. The source manifest is private. |
+| WASM npm | Generated `crates/tapirus-wasm/pkg/` | The 1.0.2 tarball was installed in a separate Node.js consumer and passed SQL parameter, rollback, snapshot reopen, and error checks on this Windows host. This is the last recorded package check; browser persistence is a separate check. | Registry report found no `@tapirus/wasm` package. The source manifest is private. |
 | Go module | Go 1.20+; `sdks/go/` | `scripts/package-go-sdk.py` builds a module zip and tests import through a fresh local file proxy. The HTTP client also needs a real TapirusDB daemon for data checks. | Source is visible on pkg.go.dev; the Go proxy `@latest` result needs verification before calling it published. |
 | PHP package | PHP 8.0+, JSON and cURL; `sdks/php/` | The local package archive exists. The 2 November daemon test checked the HTTP client on PHP 8.5 and verified data after restart. This host lacks PHP CLI. | Registry snapshot found `tapiruslab/tapirusdb` v1.0.2. |
-| CLI/FFI archive | Native release workflow and `crates/tapirus-ffi/` | Release workflow builds on native target hosts, installs each archive, and checks its checksum and SQL persistence. A local candidate covers only its build host. | A tagged 1.0.2 release needs a completed hosted run and verified downloadable assets. |
+| CLI/FFI archive | Native release workflow and `crates/tapirus-ffi/` | Release workflow builds on native target hosts, installs each archive, and checks its checksum and SQL persistence. A local candidate covers only its build host. | The public v1.0.2 assets are verified in the dated record; v1.0.3 needs a completed hosted run and verified downloadable assets. |
 
 The **2 November 2026** read-only registry inventory is retained as historical
 `target/stack-packages-2026-11-02.json`: 25 dependency registry queries completed

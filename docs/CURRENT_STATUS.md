@@ -1,6 +1,6 @@
 # Current release status
 
-Last checked: **9 November 2026**. This is a dated public-status snapshot,
+Last checked: **10 November 2026**. This is a dated public-status snapshot,
 not a live registry feed. Recheck the exact package and platform before
 installing or making a support commitment.
 
@@ -9,10 +9,12 @@ installing or making a support commitment.
 - Current source: [main branch](https://github.com/tapiruslab/TapirusDB/tree/main).
   Check its commit history for the exact revision; this dated snapshot does not
   pin the moving branch to one hash.
+- Current source version: `1.0.3` in the local release candidate. Treat the
+  exact tag, workflow result and downloaded assets as separate evidence.
 - Public GitHub release: [v1.0.2](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.2).
-- The current main source contains post-release HTTP and TAP hardening that is
-  not present in the v1.0.2 binaries. Do not describe those source changes as
-  shipped until a new tagged release is built and verified.
+- The current source contains HTTP and TAP hardening beyond the public v1.0.2
+  binaries. Do not describe those source changes as shipped until the v1.0.3
+  release workflow and downloaded-asset checks are verified.
 
 ## Registry snapshot
 

@@ -29,7 +29,7 @@ the distinction between current source and published packages.
 - First-party SQL Lite, Document, Graph and Vector entry points can be built separately; the default Quad engine exposes every model in the same native file. See [edition builds and limits](docs/EDITIONS.md).
 - Page encryption is optional. Review key handling and deployment configuration for your threat model.
 - The main `tapirus` crate forbids explicit unsafe Rust. The C ABI crate contains unsafe boundary code. This does not prove functional correctness, crash safety, or bounded resource use.
-- Current source binds `tapirus serve` to loopback by default and requires an API key for a non-loopback bind. It limits service to 64 simultaneous clients, 16 KiB headers, 4 MiB bodies and a 10-second request read deadline. It accepts API keys in headers, not URL query strings. Public v1.0.2 release binaries predate this source change; validate a new release before relying on these limits in a downloaded executable.
+- Current source binds `tapirus serve` to loopback by default and requires an API key for a non-loopback bind. It limits service to 64 simultaneous clients, 16 KiB headers, 4 MiB bodies and a 10-second request read deadline. It accepts API keys in headers, not URL query strings. Pre-v1.0.3 release binaries may predate this source change; validate the exact downloaded release before relying on these limits in an executable.
 - Current source bounds serialized TAP model loads to 128 MiB and rejects inconsistent dimensions and non-finite weights. Default TAP weights are deterministic heuristic baseline weights, not trained or probability-calibrated models.
 
 ## Rust quickstart
