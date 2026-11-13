@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes recorded.
 
+## [1.0.5] - 2026-11-14
+
+### Security
+- Add `MemoryAccessScope`, `Error::PermissionDenied`, and `Connection::scoped_memory` to enforce per-owner namespace and session isolation across all AI Memory APIs.
+- Add `--namespace` / `--session-id` scoping to `tapirus mcp` (with `__sys_memory` SQL isolation) and repeatable `--api-key-namespace <KEY>=<NS>` bindings + `/api/memory*` endpoints to `tapirus serve`.
+
+### Changed
+- Add configurable external HTTP neural embedding (`--embed-endpoint`, Ollama `/api/embed` & `/api/embeddings`, OpenAI `/v1/embeddings`) and explicit caller vector support to `tapirus mcp`.
+- Tune `MemoryConfig::default()` (`ef_construction = 128`, `ef_search = 512`) and `MemorySearch::default()` (`rrf_k = 20.0`, `vector_weight = 0.65`, `lexical_weight = 0.25`) for higher Recall@10 and paraphrase Recall@5.
+
 ## [1.0.4] - 2026-11-13
 
 ### Security

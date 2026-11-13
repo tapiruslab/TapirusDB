@@ -1,6 +1,6 @@
 # AI and embedded workflows
 
-These are working-tree APIs in version 1.0.4. The public release and registry
+These are working-tree APIs in version 1.0.5. The public release and registry
 availability of these APIs must still be verified independently. Build the
 local native wheel/addon to use them.
 
