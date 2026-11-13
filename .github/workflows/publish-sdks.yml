@@ -276,7 +276,7 @@ jobs:
           name: npm-package
           path: dist
       - name: Publish to npm Registry
-        run: npm publish dist/*.tgz --access public --provenance
+        run: npm publish ./dist/*.tgz --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -311,6 +311,7 @@ jobs:
 
       - name: Build and verify @tapirus/wasm tarball
         run: |
+          cargo fetch --locked --target wasm32-unknown-unknown
           node scripts/build-wasm.js --offline
           npm --prefix crates/tapirus-wasm run test:package
 
@@ -335,6 +336,6 @@ jobs:
           name: wasm-package
           path: dist
       - name: Publish @tapirus/wasm to npm Registry
-        run: npm publish dist/*.tgz --access public --provenance
+        run: npm publish ./dist/*.tgz --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
