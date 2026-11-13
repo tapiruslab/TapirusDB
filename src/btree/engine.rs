@@ -721,6 +721,23 @@ impl BTreeStorage {
                     self.insert_into_subtree_cow(pager, target_child, key, payload, overflow_page)?;
 
                 if let Some((new_child_id, child_split_key)) = child_split {
+                    // `target_child` retains keys <= child_split_key and `new_child_id` holds
+                    // keys > child_split_key, so when an interior cell's left child split, that
+                    // existing cell must point to `new_child_id` before inserting the new left
+                    // split cell pointing to `target_child`.
+                    if let Some(idx) = child_idx {
+                        pager.modify_page(curr_page_id, |curr_buf| {
+                            let ptr = read_cell_pointer(curr_buf, curr_page_id, idx)? as usize;
+                            if ptr + 4 > curr_buf.len() {
+                                return Err(Error::Corrupted(
+                                    "Interior cell pointer out of bounds".into(),
+                                ));
+                            }
+                            curr_buf[ptr..ptr + 4].copy_from_slice(&new_child_id.to_le_bytes());
+                            Ok(())
+                        })?;
+                    }
+
                     let new_interior_cell = TableInteriorCell {
                         left_child: target_child,
                         row_id: child_split_key,
@@ -860,7 +877,10 @@ impl BTreeStorage {
         let mut all_cells = Vec::with_capacity(header.num_cells as usize + 1);
 
         for i in 0..header.num_cells as usize {
-            all_cells.push(read_leaf_cell(left_page_buf, left_page_id, i)?);
+            let cell = read_leaf_cell(left_page_buf, left_page_id, i)?;
+            if cell.row_id != new_cell.row_id {
+                all_cells.push(cell);
+            }
         }
         all_cells.push(new_cell);
         all_cells.sort_by_key(|c| c.row_id);

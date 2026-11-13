@@ -1,6 +1,6 @@
 {
   "name": "tapirus-cloudflare-worker-example",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "engines": { "node": ">=22" },
   "description": "Run the TapirusDB WASM demo in a Cloudflare Worker isolate; persistence requires separate validation",

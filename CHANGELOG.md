@@ -13,6 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes recorded.
 
+## [1.0.4] - 2026-11-13
+
+### Security
+- Remove `Clone` from `DatabaseCipher` and scrub raw key, salt, epoch, and intermediate HMAC/PBKDF2 buffers on drop using `zeroize`.
+- Disable wildcard `Access-Control-Allow-Origin: *` by default in `tapirus serve` (opt-in via `--cors-origin` or `TAPIRUS_CORS_ORIGIN`) and document TLS reverse proxy termination requirements.
+
+### Changed
+- Store AI Memory rows (`__sys_memory`) in a compact bounds-checked binary codec (`TPMEM001`) with backward-compatible JSON read fallback, and persist CRC32-validated HNSW index snapshots (`__sys_memory_index`) for fast database reopen.
+- Expand `tapirus-ffi` with `tapirus_execute_params`, `tapirus_query_params_json`, AI Memory C ABI functions, `sqlite3_bind_*`, `sqlite3_column_blob`, and deferred `sqlite3_step` execution for bound statements.
+- Add `@tapirus/wasm` CI build and npm publish support to `.github/workflows/publish-sdks.yml`.
+
+### Fixed
+- Fix B+Tree interior cell left-child pointer updates and leaf cell deduplication when non-rightmost leaf pages split during updates.
+
 ## [1.0.3] - 2026-11-09
 
 ### Added

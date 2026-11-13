@@ -21,6 +21,11 @@ on:
         required: false
         default: false
         type: boolean
+      publish_wasm:
+        description: 'Publish @tapirus/wasm package to npm'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -32,7 +37,7 @@ jobs:
 
   publication-tag:
     name: Require a version tag before publishing
-    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run && (inputs.publish_pypi || inputs.publish_npm)
+    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run && (inputs.publish_pypi || inputs.publish_npm || inputs.publish_wasm)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -271,6 +276,65 @@ jobs:
           name: npm-package
           path: dist
       - name: Publish to npm Registry
+        run: npm publish dist/*.tgz --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # ============================================================================
+  # 3. WEBASSEMBLY PACKAGE (@tapirus/wasm)
+  # ============================================================================
+  package-wasm:
+    name: Build and verify @tapirus/wasm tarball
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install Stable Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install pinned wasm-bindgen-cli
+        run: |
+          WASM_BINDGEN_VER="$(python3 -c 'import tomllib; lock = tomllib.load(open("Cargo.lock", "rb")); print(next(p["version"] for p in lock["package"] if p["name"] == "wasm-bindgen"))')"
+          cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VER"
+
+      - name: Build and verify @tapirus/wasm tarball
+        run: |
+          node scripts/build-wasm.js --offline
+          npm --prefix crates/tapirus-wasm run test:package
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wasm-package
+          path: target/stack-packages/wasm/*.tgz
+          if-no-files-found: error
+
+  publish-wasm:
+    name: Publish the verified @tapirus/wasm tarball
+    needs: [package-wasm, publication-tag]
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_wasm && !inputs.dry_run }}
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/download-artifact@v8
+        with:
+          name: wasm-package
+          path: dist
+      - name: Publish @tapirus/wasm to npm Registry
         run: npm publish dist/*.tgz --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

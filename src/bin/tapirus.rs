@@ -298,6 +298,9 @@ fn print_help() {
     println!("  -b, --host <HOST>                        Host to bind to (default: 127.0.0.1)");
     println!("  -k, --api-key <KEY>                      Enforce API key token authentication");
     println!(
+        "  --cors-origin <ORIGIN>                   Allowed CORS origin (default: none/same-origin)"
+    );
+    println!(
         "  --passphrase <KEY>                       Encryption passphrase (ChaCha20-Poly1305)"
     );
     println!();
@@ -305,6 +308,15 @@ fn print_help() {
     println!(
         "  TAPIRUS_API_KEY                          Fallback API key for 'tapirus serve' if --api-key omitted"
     );
+    println!(
+        "  TAPIRUS_CORS_ORIGIN                      Comma-separated CORS origins (default: restricted)"
+    );
+    println!();
+    println!("Transport Security:");
+    println!(
+        "  'tapirus serve' serves plaintext HTTP. Bind to 127.0.0.1 behind a TLS reverse proxy"
+    );
+    println!("  (Nginx, Caddy, Envoy, or Cloudflare Tunnel) before exposing over any network.");
     println!();
     println!("Arguments:");
     println!("  [DATABASE_FILE]                          Path to .tapir database file");
@@ -317,11 +329,19 @@ fn print_serve_help() {
     println!("  -p, --port <PORT>        Port to listen on (default: 3005)");
     println!("  -b, --host <HOST>        Host to bind to (default: 127.0.0.1)");
     println!("  -k, --api-key <KEY>      Enforce API key authentication (Bearer / X-API-Key)");
+    println!(
+        "  --cors-origin <ORIGIN>   Allow CORS origin (comma-separated or repeatable; '*' opts in)"
+    );
     println!("  --passphrase <KEY>       Passphrase for encrypted database (ChaCha20-Poly1305)");
     println!("  -h, --help               Print this help message");
     println!();
     println!("Environment Variables:");
     println!("  TAPIRUS_API_KEY          Fallback API key if --api-key is not specified");
+    println!("  TAPIRUS_CORS_ORIGIN      Comma-separated allowed CORS origins (default: disabled)");
+    println!();
+    println!("Transport Security:");
+    println!("  Plaintext HTTP only. Do not expose directly to untrusted networks; place");
+    println!("  behind a TLS reverse proxy (Nginx, Caddy, or tunnel) with HTTPS termination.");
     println!();
     println!("Arguments:");
     println!("  [DATABASE_FILE]          Path to database file (defaults to: production.tapir)");
@@ -342,6 +362,8 @@ fn run_serve_command(args: &[String]) {
     let mut port: u16 = 3005;
     let mut host = "127.0.0.1".to_string();
     let mut api_key: Option<String> = env::var("TAPIRUS_API_KEY").ok();
+    let mut cors_origins_raw: Vec<String> =
+        env::var("TAPIRUS_CORS_ORIGIN").ok().into_iter().collect();
     let mut passphrase: Option<String> = None;
     let mut db_path = "production.tapir".to_string();
 
@@ -382,6 +404,12 @@ fn run_serve_command(args: &[String]) {
                     i += 1;
                 }
             }
+            "--cors-origin" => {
+                if i + 1 < args.len() {
+                    cors_origins_raw.push(args[i + 1].clone());
+                    i += 1;
+                }
+            }
             "--passphrase" => {
                 if i + 1 < args.len() {
                     passphrase = Some(args[i + 1].clone());
@@ -408,6 +436,14 @@ fn run_serve_command(args: &[String]) {
         eprintln!("Non-loopback HTTP bind requires TAPIRUS_API_KEY or --api-key");
         std::process::exit(1);
     }
+
+    let cors_origins = match parse_cors_origins(&cors_origins_raw.join(",")) {
+        Ok(origins) => origins,
+        Err(err) => {
+            eprintln!("Invalid --cors-origin / TAPIRUS_CORS_ORIGIN: {err}");
+            std::process::exit(1);
+        }
+    };
 
     let is_memory = db_path == ":memory:";
     let conn = if let Some(ref pass) = passphrase {
@@ -436,7 +472,15 @@ fn run_serve_command(args: &[String]) {
         }
     };
 
-    run_http_server(conn, &host, port, &db_path, passphrase.is_some(), api_key);
+    run_http_server(
+        conn,
+        &host,
+        port,
+        &db_path,
+        passphrase.is_some(),
+        api_key,
+        cors_origins,
+    );
 }
 
 fn print_backup_help() {
@@ -992,6 +1036,7 @@ fn run_http_server(
     db_path: &str,
     encrypted: bool,
     api_key: Option<String>,
+    cors_origins: Vec<String>,
 ) {
     let addr = format!("{host}:{port}");
     let listener = match TcpListener::bind(&addr) {
@@ -1010,6 +1055,16 @@ fn run_http_server(
     } else {
         println!("API key authentication is disabled; restrict the bind address accordingly.");
     }
+    if cors_origins.is_empty() {
+        println!(
+            "CORS: Restricted (same-origin only; pass --cors-origin to allow cross-origin callers)."
+        );
+    } else {
+        println!("CORS Allowed Origins: {}", cors_origins.join(", "));
+    }
+    println!(
+        "TLS: Plaintext HTTP only; terminate TLS at a reverse proxy (Nginx, Caddy, Envoy, or Cloudflare Tunnel) for remote access."
+    );
     println!("📡 Endpoints:");
     println!("   • GET  /health   -> Healthcheck & Version (Public)");
     println!("   • POST /api/sql  -> Execute SQL / Vector Search (Protected)");
@@ -1023,6 +1078,7 @@ fn run_http_server(
 
     let db = Arc::new(Mutex::new(conn));
     let auth_key = Arc::new(api_key);
+    let allowed_origins = Arc::new(cors_origins);
     let active_clients = Arc::new(AtomicUsize::new(0));
 
     for stream in listener.incoming() {
@@ -1034,6 +1090,7 @@ fn run_http_server(
                         "503 Service Unavailable",
                         "text/plain",
                         "Server busy",
+                        None,
                     );
                     continue;
                 };
@@ -1041,9 +1098,10 @@ fn run_http_server(
                 let _ = stream.set_write_timeout(Some(HTTP_IO_TIMEOUT));
                 let db_clone = Arc::clone(&db);
                 let auth_clone = Arc::clone(&auth_key);
+                let cors_clone = Arc::clone(&allowed_origins);
                 thread::spawn(move || {
                     let _client_guard = client_guard;
-                    handle_http_client(stream, db_clone, auth_clone);
+                    handle_http_client(stream, db_clone, auth_clone, cors_clone);
                 });
             }
             Err(e) => {
@@ -1143,10 +1201,54 @@ fn is_sql_identifier(value: &str) -> bool {
         && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
+fn parse_cors_origins(raw: &str) -> std::result::Result<Vec<String>, String> {
+    let mut origins = Vec::new();
+    for entry in raw.split(',') {
+        let trimmed = entry.trim().trim_end_matches('/');
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.chars().any(|c| c.is_control()) {
+            return Err("origin contains control characters".to_owned());
+        }
+        if trimmed != "*" && !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+            return Err(format!(
+                "origin '{trimmed}' must be '*' or start with http:// or https://"
+            ));
+        }
+        if !origins.iter().any(|existing| existing == trimmed) {
+            origins.push(trimmed.to_owned());
+        }
+    }
+    Ok(origins)
+}
+
+fn resolve_cors_origin<'a>(header_str: &str, allowed_origins: &'a [String]) -> Option<&'a str> {
+    if allowed_origins.is_empty() {
+        return None;
+    }
+    if allowed_origins.iter().any(|o| o == "*") {
+        return Some("*");
+    }
+    let request_origin = header_str.lines().skip(1).find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.trim().eq_ignore_ascii_case("origin") {
+            Some(value.trim().trim_end_matches('/'))
+        } else {
+            None
+        }
+    })?;
+    allowed_origins
+        .iter()
+        .find(|allowed| allowed.eq_ignore_ascii_case(request_origin))
+        .map(String::as_str)
+}
+
 fn handle_http_client(
     mut stream: TcpStream,
     db: Arc<Mutex<Connection>>,
     api_key: Arc<Option<String>>,
+    allowed_origins: Arc<Vec<String>>,
 ) {
     let mut request_data = Vec::new();
     let mut buf = [0u8; 4096];
@@ -1162,6 +1264,7 @@ fn handle_http_client(
                 "408 Request Timeout",
                 "text/plain",
                 "Request timed out",
+                None,
             );
             return;
         }
@@ -1178,6 +1281,7 @@ fn handle_http_client(
                     "408 Request Timeout",
                     "text/plain",
                     "Request timed out",
+                    None,
                 );
                 return;
             }
@@ -1199,13 +1303,20 @@ fn handle_http_client(
                         "431 Request Header Fields Too Large",
                         "text/plain",
                         "Request headers too large",
+                        None,
                     );
                     return;
                 }
                 content_length = match request_content_length(&request_data[..start]) {
                     Ok(length) => length,
                     Err(message) => {
-                        send_http_response(&mut stream, "400 Bad Request", "text/plain", message);
+                        send_http_response(
+                            &mut stream,
+                            "400 Bad Request",
+                            "text/plain",
+                            message,
+                            None,
+                        );
                         return;
                     }
                 };
@@ -1218,6 +1329,7 @@ fn handle_http_client(
                 "431 Request Header Fields Too Large",
                 "text/plain",
                 "Request headers too large",
+                None,
             );
             return;
         }
@@ -1229,6 +1341,7 @@ fn handle_http_client(
                 "413 Content Too Large",
                 "text/plain",
                 "Request body too large",
+                None,
             );
             return;
         }
@@ -1250,6 +1363,7 @@ fn handle_http_client(
             "400 Bad Request",
             "text/plain",
             "Incomplete HTTP headers",
+            None,
         );
         return;
     };
@@ -1259,6 +1373,7 @@ fn handle_http_client(
             "400 Bad Request",
             "text/plain",
             "Incomplete request body",
+            None,
         );
         return;
     }
@@ -1289,10 +1404,11 @@ fn handle_http_client(
     let route_path = full_path
         .split_once('?')
         .map_or(full_path, |(path, _)| path);
+    let cors_origin = resolve_cors_origin(header_str, &allowed_origins);
 
     // Handle CORS preflight
     if method == "OPTIONS" {
-        send_http_response(&mut stream, "204 No Content", "text/plain", "");
+        send_http_response(&mut stream, "204 No Content", "text/plain", "", cors_origin);
         return;
     }
 
@@ -1303,7 +1419,13 @@ fn handle_http_client(
             "engine": "TapirusDB",
             "version": VERSION
         });
-        send_http_response(&mut stream, "200 OK", "application/json", &json.to_string());
+        send_http_response(
+            &mut stream,
+            "200 OK",
+            "application/json",
+            &json.to_string(),
+            cors_origin,
+        );
         return;
     }
 
@@ -1343,14 +1465,26 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
 </div>
 </body>
 </html>"#;
-        send_http_response(&mut stream, "200 OK", "text/html; charset=utf-8", html);
+        send_http_response(
+            &mut stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            html,
+            cors_origin,
+        );
         return;
     }
 
     // Built-in Documentation Portal - Clean Redirect (Public)
     if method == "GET" && (route_path == "/docs" || route_path == "/docs.html") {
         let html = r#"<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0; url=https://tapirusdb.com/docs.html"></head><body>Redirecting to <a href="https://tapirusdb.com/docs.html">TapirusDB Documentation</a>...</body></html>"#;
-        send_http_response(&mut stream, "200 OK", "text/html; charset=utf-8", html);
+        send_http_response(
+            &mut stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            html,
+            cors_origin,
+        );
         return;
     }
 
@@ -1361,6 +1495,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
             "200 OK",
             "text/html; charset=utf-8",
             CHATBOT_HTML,
+            cors_origin,
         );
         return;
     }
@@ -1373,7 +1508,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
         if let Some(expected_key) = api_key.as_ref() {
             if !request_has_valid_api_key(expected_key, header_str) {
                 let err_json = serde_json::json!({"error":"Unauthorized","message":"Missing or invalid API key."});
-                send_http_unauthorized_response(&mut stream, &err_json.to_string());
+                send_http_unauthorized_response(&mut stream, &err_json.to_string(), cors_origin);
                 return;
             }
         }
@@ -1397,7 +1532,13 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                     })
                     .collect();
                 let res = serde_json::json!({ "logs": clean_rows });
-                send_http_response(&mut stream, "200 OK", "application/json", &res.to_string());
+                send_http_response(
+                    &mut stream,
+                    "200 OK",
+                    "application/json",
+                    &res.to_string(),
+                    cors_origin,
+                );
             }
             Err(e) => {
                 let res = serde_json::json!({ "error": e.to_string() });
@@ -1406,6 +1547,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                     "500 Internal Server Error",
                     "application/json",
                     &res.to_string(),
+                    cors_origin,
                 );
             }
         }
@@ -1422,6 +1564,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                     "200 OK",
                     "application/json",
                     &json_res.to_string(),
+                    cors_origin,
                 );
             }
             Err(err_msg) => {
@@ -1431,6 +1574,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                     "400 Bad Request",
                     "application/json",
                     &res.to_string(),
+                    cors_origin,
                 );
             }
         }
@@ -1444,7 +1588,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                 "error": "Unauthorized",
                 "message": "Missing or invalid API key. Provide Authorization: Bearer or X-API-Key."
             });
-            send_http_unauthorized_response(&mut stream, &err_json.to_string());
+            send_http_unauthorized_response(&mut stream, &err_json.to_string(), cors_origin);
             return;
         }
     }
@@ -1461,6 +1605,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                     "400 Bad Request",
                     "application/json",
                     &res.to_string(),
+                    cors_origin,
                 );
                 return;
             }
@@ -1484,7 +1629,13 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                         .collect();
 
                     let res = serde_json::json!({ "rows": clean_rows });
-                    send_http_response(&mut stream, "200 OK", "application/json", &res.to_string());
+                    send_http_response(
+                        &mut stream,
+                        "200 OK",
+                        "application/json",
+                        &res.to_string(),
+                        cors_origin,
+                    );
                 }
                 Err(e) => {
                     let res = serde_json::json!({ "error": e.to_string() });
@@ -1493,6 +1644,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                         "400 Bad Request",
                         "application/json",
                         &res.to_string(),
+                        cors_origin,
                     );
                 }
             }
@@ -1500,7 +1652,13 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
             match conn.execute_with_params(trimmed, &params) {
                 Ok(affected) => {
                     let res = serde_json::json!({ "affected": affected });
-                    send_http_response(&mut stream, "200 OK", "application/json", &res.to_string());
+                    send_http_response(
+                        &mut stream,
+                        "200 OK",
+                        "application/json",
+                        &res.to_string(),
+                        cors_origin,
+                    );
                 }
                 Err(e) => {
                     let res = serde_json::json!({ "error": e.to_string() });
@@ -1509,6 +1667,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                         "400 Bad Request",
                         "application/json",
                         &res.to_string(),
+                        cors_origin,
                     );
                 }
             }
@@ -1527,6 +1686,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                     "400 Bad Request",
                     "application/json",
                     r#"{"error":"Invalid JSON payload. Expected {\"collection\": \"...\", \"vector\": [...], \"k\": 5}"}"#,
+                    cors_origin,
                 );
                 return;
             }
@@ -1559,6 +1719,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                     "400 Bad Request",
                     "application/json",
                     &serde_json::json!({"error": error}).to_string(),
+                    cors_origin,
                 );
                 return;
             }
@@ -1569,6 +1730,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                 "400 Bad Request",
                 "application/json",
                 r#"{"error":"collection must be an identifier, vector must be nonempty, and k must be positive"}"#,
+                cors_origin,
             );
             return;
         }
@@ -1582,13 +1744,14 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                     status,
                     "application/json",
                     &serde_json::json!({"error": error}).to_string(),
+                    cors_origin,
                 );
                 return;
             }
         };
 
         let res = serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_string());
-        send_http_response(&mut stream, "200 OK", "application/json", &res);
+        send_http_response(&mut stream, "200 OK", "application/json", &res, cors_origin);
         return;
     }
 
@@ -1603,6 +1766,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                     "400 Bad Request",
                     "application/json",
                     r#"{"error":"Invalid JSON payload. Expected {\"query\": \"...\"}"}"#,
+                    cors_origin,
                 );
                 return;
             }
@@ -1673,7 +1837,13 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                     "context": ctx.prompt_context,
                     "results": ctx.results
                 });
-                send_http_response(&mut stream, "200 OK", "application/json", &res.to_string());
+                send_http_response(
+                    &mut stream,
+                    "200 OK",
+                    "application/json",
+                    &res.to_string(),
+                    cors_origin,
+                );
             }
             Err(e) => {
                 let res = serde_json::json!({ "error": e.to_string() });
@@ -1682,45 +1852,73 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
                     "500 Internal Server Error",
                     "application/json",
                     &res.to_string(),
+                    cors_origin,
                 );
             }
         }
         return;
     }
 
-    send_http_response(&mut stream, "404 Not Found", "text/plain", "Not Found");
+    send_http_response(
+        &mut stream,
+        "404 Not Found",
+        "text/plain",
+        "Not Found",
+        cors_origin,
+    );
 }
 
-fn send_http_unauthorized_response(stream: &mut TcpStream, body: &str) {
-    let response = format!(
-        "HTTP/1.1 401 Unauthorized\r\n\
-         Content-Type: application/json\r\n\
-         Content-Length: {}\r\n\
-         WWW-Authenticate: Bearer realm=\"TapirusDB\"\r\n\
-         Access-Control-Allow-Origin: *\r\n\
-         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, Authorization, X-API-Key\r\n\
-         Connection: close\r\n\
-         \r\n\
-         {body}",
+fn format_http_response(
+    status: &str,
+    content_type: &str,
+    body: &str,
+    extra_header: Option<&str>,
+    cors_origin: Option<&str>,
+) -> String {
+    let mut headers = format!(
+        "HTTP/1.1 {status}\r\n\
+         Content-Type: {content_type}\r\n\
+         Content-Length: {}\r\n",
         body.len()
+    );
+    if let Some(extra) = extra_header {
+        headers.push_str(extra);
+        headers.push_str("\r\n");
+    }
+    if let Some(origin) = cors_origin {
+        headers.push_str(&format!(
+            "Access-Control-Allow-Origin: {origin}\r\n\
+             Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+             Access-Control-Allow-Headers: Content-Type, Authorization, X-API-Key\r\n"
+        ));
+        if origin != "*" {
+            headers.push_str("Vary: Origin\r\n");
+        }
+    }
+    headers.push_str("Connection: close\r\n\r\n");
+    headers.push_str(body);
+    headers
+}
+
+fn send_http_unauthorized_response(stream: &mut TcpStream, body: &str, cors_origin: Option<&str>) {
+    let response = format_http_response(
+        "401 Unauthorized",
+        "application/json",
+        body,
+        Some("WWW-Authenticate: Bearer realm=\"TapirusDB\""),
+        cors_origin,
     );
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn send_http_response(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) {
-    let response = format!(
-        "HTTP/1.1 {status}\r\n\
-         Content-Type: {content_type}\r\n\
-         Content-Length: {}\r\n\
-         Access-Control-Allow-Origin: *\r\n\
-         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, Authorization, X-API-Key\r\n\
-         Connection: close\r\n\
-         \r\n\
-         {body}",
-        body.len()
-    );
+fn send_http_response(
+    stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &str,
+    cors_origin: Option<&str>,
+) {
+    let response = format_http_response(status, content_type, body, None, cors_origin);
     let _ = stream.write_all(response.as_bytes());
 }
 
@@ -5552,5 +5750,51 @@ mod audit_regression_tests {
         assert_eq!(results[1]["score"].as_f64().unwrap().abs(), 0.0);
         assert_eq!(results[1]["vector"], serde_json::json!([1.0, 0.0]));
         Ok(())
+    }
+
+    #[test]
+    fn cors_policy_defaults_to_restricted_and_validates_origins() {
+        let default_origins = parse_cors_origins("").unwrap();
+        assert!(default_origins.is_empty());
+        assert_eq!(
+            resolve_cors_origin(
+                "POST /api/sql HTTP/1.1\r\nOrigin: https://evil.example\r\n",
+                &default_origins
+            ),
+            None
+        );
+
+        let restrictive_resp = format_http_response("200 OK", "application/json", "{}", None, None);
+        assert!(!restrictive_resp.contains("Access-Control-Allow-Origin"));
+
+        let allowlist =
+            parse_cors_origins("https://app.example.com/, http://localhost:5173").unwrap();
+        assert_eq!(
+            resolve_cors_origin(
+                "POST /api/sql HTTP/1.1\r\nOrigin: https://app.example.com\r\n",
+                &allowlist
+            ),
+            Some("https://app.example.com")
+        );
+        assert_eq!(
+            resolve_cors_origin(
+                "POST /api/sql HTTP/1.1\r\nOrigin: https://evil.example\r\n",
+                &allowlist
+            ),
+            None
+        );
+
+        let allowed_resp = format_http_response(
+            "200 OK",
+            "application/json",
+            "{}",
+            None,
+            Some("https://app.example.com"),
+        );
+        assert!(allowed_resp.contains("Access-Control-Allow-Origin: https://app.example.com\r\n"));
+        assert!(allowed_resp.contains("Vary: Origin\r\n"));
+
+        assert!(parse_cors_origins("https://good.example\r\nEvil: 1").is_err());
+        assert!(parse_cors_origins("file:///etc/passwd").is_err());
     }
 }

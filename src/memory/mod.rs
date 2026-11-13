@@ -18,6 +18,7 @@ pub use embedder::{
 use crate::error::{Error, Result};
 
 pub mod api;
+pub(crate) mod binary;
 mod config;
 mod indexed;
 pub use api::*;

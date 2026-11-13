@@ -1,7 +1,7 @@
 {
   "name": "@tapirus/wasm",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "TapirusDB WebAssembly workspace for browser-local SQL, document memory and file interchange",
   "main": "pkg/tapirus_wasm.js",
   "types": "pkg/tapirus_wasm.d.ts",

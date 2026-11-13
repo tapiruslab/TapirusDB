@@ -29,7 +29,7 @@ the distinction between current source and published packages.
 - First-party SQL Lite, Document, Graph and Vector entry points can be built separately; the default Quad engine exposes every model in the same native file. See [edition builds and limits](docs/EDITIONS.md).
 - Page encryption is optional. Review key handling and deployment configuration for your threat model.
 - The main `tapirus` crate forbids explicit unsafe Rust. The C ABI crate contains unsafe boundary code. This does not prove functional correctness, crash safety, or bounded resource use.
-- Current source binds `tapirus serve` to loopback by default and requires an API key for a non-loopback bind. It limits service to 64 simultaneous clients, 16 KiB headers, 4 MiB bodies and a 10-second request read deadline. It accepts API keys in headers, not URL query strings. Pre-v1.0.3 release binaries may predate this source change; validate the exact downloaded release before relying on these limits in an executable.
+- Current source binds `tapirus serve` to loopback by default, requires an API key for a non-loopback bind, and disables cross-origin CORS headers unless allowlisted via `--cors-origin` / `TAPIRUS_CORS_ORIGIN`. It limits service to 64 simultaneous clients, 16 KiB headers, 4 MiB bodies and a 10-second request read deadline. It accepts API keys in headers, not URL query strings. Pre-v1.0.4 release binaries may predate this source change; validate the exact downloaded release before relying on these limits in an executable.
 - Current source bounds serialized TAP model loads to 128 MiB and rejects inconsistent dimensions and non-finite weights. Default TAP weights are deterministic heuristic baseline weights, not trained or probability-calibrated models.
 
 ## Rust quickstart
@@ -93,7 +93,7 @@ Supply an `embedding` from your chosen model to add vector similarity. These met
 
 ## HTTP server
 
-`tapirus serve` exposes HTTP endpoints. Set an API key when the server is reachable by untrusted clients, bind to an appropriate interface, and use the documented request and response shapes. The browser chat page is public; chat and chat-log API routes require the configured key.
+`tapirus serve` exposes plaintext HTTP endpoints on `127.0.0.1:3005` by default. Set `--api-key` (or `TAPIRUS_API_KEY`) whenever reachable by untrusted callers, restrict CORS with `--cors-origin` / `TAPIRUS_CORS_ORIGIN` (disabled by default; same-origin only), and always place `tapirus serve` behind a TLS-terminating reverse proxy (Nginx, Caddy, Envoy, or Cloudflare Tunnel) before exposing it beyond loopback. See [SECURITY.md](SECURITY.md) for deployment limits and TLS reverse-proxy setup. The browser `/chat` page is public; `/api/chat` and `/api/chat/logs` require the configured API key.
 
 ## Security, performance, and formal methods
 

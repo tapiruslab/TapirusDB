@@ -120,3 +120,73 @@ fn malformed_ai_inputs_do_not_change_memory() -> tapirus::Result<()> {
     assert_eq!(db.memory_count(), 0);
     Ok(())
 }
+
+#[test]
+fn persisted_hnsw_index_cache_reopens_without_rebuild() -> tapirus::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("cached_hnsw.tapir");
+
+    {
+        let db = Connection::open(&path)?;
+        for i in 0..64u32 {
+            let angle = (i as f32) * 0.05;
+            db.store_memory(&MemoryDocument {
+                content: format!("Memory doc {i}"),
+                external_id: Some(format!("doc-{i}")),
+                embedding_model: Some("bge-test".into()),
+                embedding: Some(vec![angle.cos(), angle.sin(), 0.1, 0.0]),
+                ..Default::default()
+            })?;
+        }
+        db.close()?;
+    }
+
+    {
+        let db = Connection::open(&path)?;
+        let stats = db.memory_stats();
+        assert_eq!(stats.documents, 64);
+        assert_eq!(stats.indexed_vectors, 64);
+        assert_eq!(
+            stats.pending_index_updates, 0,
+            "Reopening after close/checkpoint must load cached HNSW topology without dirty rebuilds"
+        );
+
+        let hits = db.search_memories(&MemorySearch {
+            embedding_model: Some("bge-test".into()),
+            embedding: Some(vec![1.0, 0.0, 0.1, 0.0]),
+            limit: 3,
+            ..Default::default()
+        })?;
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].entry.content, "Memory doc 0");
+
+        // Upsert one entry and delete another, then verify delta persistence on next reopen
+        db.upsert_memory(&MemoryDocument {
+            content: "Replaced doc 0".into(),
+            external_id: Some("doc-0".into()),
+            embedding_model: Some("bge-test".into()),
+            embedding: Some(vec![-1.0, 0.0, 0.0, 0.0]),
+            ..Default::default()
+        })?;
+        db.memory_forget_checked(2)?;
+        db.close()?;
+    }
+
+    {
+        let db = Connection::open(&path)?;
+        let stats = db.memory_stats();
+        assert_eq!(stats.documents, 63);
+        assert_eq!(stats.indexed_vectors, 63);
+        assert_eq!(stats.pending_index_updates, 0);
+
+        let hits = db.search_memories(&MemorySearch {
+            embedding_model: Some("bge-test".into()),
+            embedding: Some(vec![-1.0, 0.0, 0.0, 0.0]),
+            limit: 3,
+            ..Default::default()
+        })?;
+        assert_eq!(hits[0].entry.content, "Replaced doc 0");
+    }
+
+    Ok(())
+}

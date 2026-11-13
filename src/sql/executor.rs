@@ -807,7 +807,7 @@ impl SQLExecutor {
         Ok(())
     }
 
-    /// Persist an AI Agent MemoryEntry to B+Tree disk storage
+    /// Persist an AI Agent MemoryEntry to B+Tree disk storage in compact binary format
     pub fn persist_memory_entry(
         &mut self,
         pager: &mut Pager,
@@ -815,11 +815,10 @@ impl SQLExecutor {
     ) -> Result<()> {
         let cols = vec![
             ColumnDef::new("id", DataType::Integer).primary_key(),
-            ColumnDef::new("payload", DataType::Text),
+            ColumnDef::new("payload", DataType::Blob),
         ];
         let root_page = self.ensure_system_table(pager, "__sys_memory", cols)?;
-        let payload = serde_json::to_vec(entry)
-            .map_err(|e| Error::Corrupted(format!("Failed to serialize memory entry: {e}")))?;
+        let payload = crate::memory::binary::encode_memory_entry_binary(entry)?;
         self.btree.insert(pager, root_page, entry.id, &payload)
     }
 
@@ -833,7 +832,8 @@ impl SQLExecutor {
         }
     }
 
-    /// Load persisted memory entries from B+Tree disk storage into MemoryEngine
+    /// Load persisted memory entries from B+Tree disk storage into MemoryEngine,
+    /// restoring any valid persisted HNSW topology cache from `__sys_memory_index`.
     pub fn load_memory_from_disk(
         &self,
         pager: &mut Pager,
@@ -842,8 +842,7 @@ impl SQLExecutor {
         if let Some(table) = self.catalog.get_table("__sys_memory") {
             let root_page = table.root_page;
             self.btree.scan_with_ref(pager, root_page, |id, payload| {
-                let entry = serde_json::from_slice::<crate::memory::MemoryEntry>(payload)
-                    .map_err(|e| Error::Corrupted(format!("Invalid memory record {id}: {e}")))?;
+                let entry = crate::memory::binary::decode_memory_entry_auto(id, payload)?;
                 if entry.id != id {
                     return Err(Error::Corrupted(format!(
                         "Memory record key {id} does not match payload ID {}",
@@ -853,6 +852,34 @@ impl SQLExecutor {
                 memory_engine.restore_entry(entry)?;
                 Ok(true)
             })?;
+        }
+        if let Some(idx_table) = self.catalog.get_table("__sys_memory_index") {
+            if let Ok(Some(payload)) = self.btree.search(pager, idx_table.root_page, 1) {
+                // Derived HNSW cache is best-effort: fall back cleanly to lazy rebuild if corrupted/stale.
+                let _ = memory_engine.import_cached_indexes(&payload);
+            }
+        }
+        Ok(())
+    }
+
+    /// Persist AI Memory HNSW index cache to `__sys_memory_index` when dirty or newly populated.
+    pub fn persist_memory_index_to_disk(
+        &mut self,
+        pager: &mut Pager,
+        memory_engine: &mut crate::memory::MemoryEngine,
+    ) -> Result<()> {
+        if memory_engine.stats().documents == 0 && !self.catalog.table_exists("__sys_memory_index")
+        {
+            return Ok(());
+        }
+        if let Some(payload) = memory_engine.export_cached_indexes()? {
+            let cols = vec![
+                ColumnDef::new("id", DataType::Integer).primary_key(),
+                ColumnDef::new("payload", DataType::Blob),
+            ];
+            let root_page = self.ensure_system_table(pager, "__sys_memory_index", cols)?;
+            self.btree.insert(pager, root_page, 1, &payload)?;
+            memory_engine.mark_index_cache_synced();
         }
         Ok(())
     }

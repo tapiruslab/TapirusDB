@@ -69,6 +69,17 @@ void tapirus_close(TapirusConn* conn);
 int32_t tapirus_execute(TapirusConn* conn, const char* sql, char** err_msg_out);
 
 /**
+ * @brief Execute a parameterized non-query SQL statement safely.
+ *
+ * @param conn Pointer to active TapirusConn.
+ * @param sql Null-terminated parameterized SQL statement with `?` placeholders.
+ * @param params_json Null-terminated JSON array string of parameters (or NULL for none).
+ * @param err_msg_out Optional pointer to receive a heap-allocated error string.
+ * @return Number of affected rows (>= 0) on success, or -1 on failure.
+ */
+int32_t tapirus_execute_params(TapirusConn* conn, const char* sql, const char* params_json, char** err_msg_out);
+
+/**
  * @brief Execute a SQL query and return rows formatted as a JSON array string.
  *
  * @param conn Pointer to active TapirusConn.
@@ -80,6 +91,64 @@ int32_t tapirus_execute(TapirusConn* conn, const char* sql, char** err_msg_out);
  * @return 0 on success, or -1 on failure.
  */
 int32_t tapirus_query_json(TapirusConn* conn, const char* sql, char** json_out, char** err_msg_out);
+
+/**
+ * @brief Execute a parameterized SQL query returning rows formatted as a JSON array string.
+ *
+ * @param conn Pointer to active TapirusConn.
+ * @param sql Null-terminated parameterized SQL query string.
+ * @param params_json Null-terminated JSON array string of parameters (or NULL for none).
+ * @param json_out Pointer to receive a heap-allocated JSON string representing rows.
+ *                 Must be freed using tapirus_free_string().
+ * @param err_msg_out Optional pointer to receive a heap-allocated error string.
+ * @return 0 on success, or -1 on failure.
+ */
+int32_t tapirus_query_params_json(TapirusConn* conn, const char* sql, const char* params_json, char** json_out, char** err_msg_out);
+
+/**
+ * @brief Execute an AI Memory gateway operation encoded as JSON (`store`, `upsert`,
+ *        `search`, `search_detailed`, `forget`, `stats`, `prepare`, `configure`, `delete`).
+ *
+ * @param conn Pointer to active TapirusConn.
+ * @param operation Null-terminated operation name.
+ * @param payload_json JSON payload string (or NULL for `{}`).
+ * @param json_out Pointer to receive heap-allocated JSON result (free with tapirus_free_string).
+ * @param err_msg_out Optional pointer to receive error string.
+ * @return 0 on success, or -1 on failure.
+ */
+int32_t tapirus_memory_request_json(TapirusConn* conn, const char* operation, const char* payload_json, char** json_out, char** err_msg_out);
+
+/**
+ * @brief Store an AI Memory document encoded as a JSON object (`MemoryDocument`).
+ *
+ * @param conn Pointer to active TapirusConn.
+ * @param doc_json JSON string describing the memory document.
+ * @param id_out Optional pointer to receive the assigned 64-bit memory ID.
+ * @param err_msg_out Optional pointer to receive error string.
+ * @return 0 on success, or -1 on failure.
+ */
+int32_t tapirus_store_memory_json(TapirusConn* conn, const char* doc_json, uint64_t* id_out, char** err_msg_out);
+
+/**
+ * @brief Search AI memories using a JSON `MemorySearch` query object.
+ *
+ * @param conn Pointer to active TapirusConn.
+ * @param search_json JSON search specification.
+ * @param json_out Pointer to receive heap-allocated JSON array of recall hits.
+ * @param err_msg_out Optional pointer to receive error string.
+ * @return 0 on success, or -1 on failure.
+ */
+int32_t tapirus_search_memories_json(TapirusConn* conn, const char* search_json, char** json_out, char** err_msg_out);
+
+/**
+ * @brief Delete and forget an AI memory entry by ID.
+ *
+ * @param conn Pointer to active TapirusConn.
+ * @param memory_id 64-bit memory ID to remove.
+ * @param err_msg_out Optional pointer to receive error string.
+ * @return 1 if deleted, 0 if not found, or -1 on failure.
+ */
+int32_t tapirus_forget_memory(TapirusConn* conn, uint64_t memory_id, char** err_msg_out);
 
 /**
  * @brief Manually flush the Write-Ahead Log (.tapir-wal) to the main database file.

@@ -10,6 +10,7 @@ use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce, XChaCha20Poly1305, XNonce};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
 
 /// Poly1305 MAC authentication tag size in bytes
 pub const TAG_SIZE: usize = 16;
@@ -67,6 +68,9 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
 
     let mut out = [0u8; 32];
     out.copy_from_slice(&outer_hash);
+    k_block.zeroize();
+    ipad.zeroize();
+    opad.zeroize();
     out
 }
 
@@ -87,6 +91,8 @@ pub fn pbkdf2_hmac_sha256(passphrase: &[u8], salt: &[u8], iterations: u32) -> [u
         }
     }
 
+    u_prev.zeroize();
+    salt_and_int.zeroize();
     result
 }
 
@@ -114,12 +120,29 @@ pub fn generate_random_salt() -> [u8; 16] {
     salt
 }
 
-/// Cryptographic engine managing page-level encryption and verification
-#[derive(Clone)]
+/// Cryptographic engine managing page-level encryption and verification.
+///
+/// Deliberately does not implement `Clone` so raw key material is never
+/// silently duplicated in memory; sensitive key and salt bytes are scrubbed via
+/// `zeroize` on [`Drop`].
 pub struct DatabaseCipher {
     key: [u8; 32],
     salt: [u8; 16],
     epoch: u32,
+}
+
+impl Zeroize for DatabaseCipher {
+    fn zeroize(&mut self) {
+        self.key.zeroize();
+        self.salt.zeroize();
+        self.epoch = 0;
+    }
+}
+
+impl Drop for DatabaseCipher {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
 }
 
 impl DatabaseCipher {
@@ -505,5 +528,20 @@ mod tests {
         let mut tampered_tag = ct1.clone();
         tampered_tag[4090] ^= 0x01;
         assert!(cipher.decrypt_page(4, &tampered_tag).is_err());
+    }
+
+    #[test]
+    fn test_database_cipher_zeroize_scrubs_key_and_salt() {
+        let mut cipher = DatabaseCipher::new([0xA5u8; 32], [0x5Au8; 16]);
+        cipher.set_epoch(9);
+        assert_eq!(cipher.key(), &[0xA5u8; 32]);
+        assert_eq!(cipher.salt(), &[0x5Au8; 16]);
+        assert_eq!(cipher.epoch(), 9);
+
+        cipher.zeroize();
+        assert_eq!(cipher.key(), &[0u8; 32]);
+        assert_eq!(cipher.salt(), &[0u8; 16]);
+        assert_eq!(cipher.epoch(), 0);
+        assert!(core::mem::needs_drop::<DatabaseCipher>());
     }
 }

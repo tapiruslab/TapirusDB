@@ -1281,11 +1281,14 @@ impl Connection {
         pager.apply_wal_frame(page_id, data)
     }
 
-    /// Persist all active vector index topologies directly to disk snapshot table
+    /// Persist all active vector index topologies and AI memory HNSW caches to disk snapshots
     pub fn persist_vector_snapshots(&self) -> Result<()> {
         let mut pager = self.pager.write();
         let mut executor = self.executor.write();
-        executor.persist_vector_indexes_to_disk(&mut pager)
+        executor.persist_vector_indexes_to_disk(&mut pager)?;
+        let mut memory = self.memory.write();
+        executor.persist_memory_index_to_disk(&mut pager, &mut memory)?;
+        Ok(())
     }
 
     /// Check if currently in an active transaction

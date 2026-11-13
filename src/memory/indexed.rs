@@ -84,6 +84,32 @@ fn unit_vector(vector: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+fn doc_vector_fingerprint(entry: &MemoryEntry) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mix = |h: &mut u64, bytes: &[u8]| {
+        for &b in bytes {
+            *h ^= u64::from(b);
+            *h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    mix(&mut hash, &entry.id.to_le_bytes());
+    mix(&mut hash, &entry.revision.to_le_bytes());
+    if let Some(model) = &entry.embedding_model {
+        mix(&mut hash, &[1]);
+        mix(&mut hash, &(model.len() as u32).to_le_bytes());
+        mix(&mut hash, model.as_bytes());
+    } else {
+        mix(&mut hash, &[0]);
+    }
+    if let Some(vec) = &entry.vector {
+        mix(&mut hash, &(vec.len() as u32).to_le_bytes());
+        for &val in vec {
+            mix(&mut hash, &val.to_bits().to_le_bytes());
+        }
+    }
+    hash
+}
+
 #[derive(Debug, Clone)]
 struct RecordMeta {
     external: Option<ExternalKey>,
@@ -109,10 +135,12 @@ pub(super) struct MemoryRuntime {
     dirty: HashSet<u64>,
     indexes: HashMap<Space, VectorSpace>,
     locations: HashMap<u64, (Space, u64)>,
+    cache_synced: bool,
 }
 
 impl MemoryRuntime {
     pub fn changed(&mut self, id: u64, entry: Option<&MemoryEntry>) {
+        self.cache_synced = false;
         if let Some(old) = self.records.remove(&id) {
             self.estimated_bytes = self.estimated_bytes.saturating_sub(old.bytes);
             if let Some(key) = old.external {
@@ -268,6 +296,7 @@ impl MemoryEngine {
         }
         self.runtime.indexes.clear();
         self.runtime.locations.clear();
+        self.runtime.cache_synced = false;
         self.runtime.dirty.extend(self.entries.keys().copied());
         Ok(())
     }
@@ -538,6 +567,133 @@ impl MemoryEngine {
             }
         }
         Ok(self.stats())
+    }
+
+    /// Build any pending HNSW updates and encode the persistent index cache when out of sync.
+    ///
+    /// Returns `Ok(None)` when the in-memory index cache already matches what is synced on disk.
+    pub(crate) fn export_cached_indexes(&mut self) -> Result<Option<Vec<u8>>> {
+        if !self.runtime.dirty.is_empty() {
+            self.prepare_indexes()?;
+        } else {
+            self.ensure_runtime()?;
+        }
+        if self.runtime.cache_synced {
+            return Ok(None);
+        }
+
+        let mut spaces: Vec<_> = self.runtime.indexes.iter().collect();
+        spaces.sort_by_key(|(a, _)| *a);
+
+        let mut encoded_spaces = Vec::with_capacity(spaces.len());
+        for ((model, dims), space) in spaces {
+            let mut docs = Vec::with_capacity(space.documents.len());
+            for (&node_id, &doc_id) in &space.documents {
+                if let Some(entry) = self.entries.get(&doc_id) {
+                    docs.push((node_id, doc_id, doc_vector_fingerprint(entry)));
+                }
+            }
+            docs.sort_unstable_by_key(|&(node_id, _, _)| node_id);
+            encoded_spaces.push(super::binary::CachedVectorSpace {
+                model: model.clone(),
+                dims: *dims,
+                next_node: space.next_node,
+                documents: docs,
+                snapshot: space.index.export_snapshot(),
+            });
+        }
+
+        let cache = super::binary::CachedMemoryIndexes {
+            hnsw_m: self.runtime.config.hnsw_m,
+            ef_construction: self.runtime.config.ef_construction,
+            ef_search: self.runtime.config.ef_search,
+            spaces: encoded_spaces,
+        };
+        let bytes = super::binary::encode_cached_memory_indexes(&cache)?;
+        Ok(Some(bytes))
+    }
+
+    pub(crate) fn mark_index_cache_synced(&mut self) {
+        self.runtime.cache_synced = self.runtime.dirty.is_empty();
+    }
+
+    /// Restore cached HNSW vector topologies and rehydrate live node vectors from loaded entries.
+    ///
+    /// Returns `Ok(false)` when configuration changed and a rebuild is required. Any stale or
+    /// modified document is selectively left dirty so only changed entries are re-indexed.
+    pub(crate) fn import_cached_indexes(&mut self, bytes: &[u8]) -> Result<bool> {
+        self.ensure_runtime()?;
+        let cache = super::binary::decode_cached_memory_indexes(bytes)?;
+        let cfg = &self.runtime.config;
+        if cache.hnsw_m != cfg.hnsw_m
+            || cache.ef_construction != cfg.ef_construction
+            || cache.ef_search != cfg.ef_search
+        {
+            return Ok(false);
+        }
+
+        self.runtime.indexes.clear();
+        self.runtime.locations.clear();
+
+        let mut exact_match = true;
+        for cached_space in cache.spaces {
+            let key = (cached_space.model.clone(), cached_space.dims);
+            let mut index = HnswIndex::import_snapshot(cached_space.snapshot);
+            if let Some(ep) = index.entry_point {
+                if !index.nodes.contains_key(&ep) {
+                    self.runtime.indexes.clear();
+                    self.runtime.locations.clear();
+                    return Ok(false);
+                }
+            }
+
+            let mut documents = HashMap::with_capacity(cached_space.documents.len());
+            for (node_id, doc_id, cached_fp) in cached_space.documents {
+                let valid = self.entries.get(&doc_id).filter(|entry| {
+                    entry.embedding_model == key.0
+                        && entry.vector.as_ref().is_some_and(|v| v.len() == key.1)
+                        && doc_vector_fingerprint(entry) == cached_fp
+                });
+                if let (Some(entry), Some(node)) = (valid, index.nodes.get_mut(&node_id)) {
+                    let vec = entry
+                        .vector
+                        .as_deref()
+                        .expect("validated vector presence above");
+                    node.vector = unit_vector(vec);
+                    documents.insert(node_id, doc_id);
+                    self.runtime
+                        .locations
+                        .insert(doc_id, (key.clone(), node_id));
+                    self.runtime.dirty.remove(&doc_id);
+                } else {
+                    index.mark_deleted(node_id);
+                    exact_match = false;
+                }
+            }
+
+            if !documents.is_empty() {
+                self.runtime.indexes.insert(
+                    key,
+                    VectorSpace {
+                        index,
+                        documents,
+                        next_node: cached_space.next_node,
+                    },
+                );
+            }
+        }
+
+        // Non-vector entries need no HNSW indexing; remove them from dirty after cache load
+        // if they weren't modified, or keep dirty if we only care about vector entries?
+        // Actually prepare_indexes skips vector==None cheaply anyway, and clearing non-vector
+        // entries when cache loaded makes pending_index_updates == 0 after clean reopen!
+        let entries = &self.entries;
+        self.runtime
+            .dirty
+            .retain(|id| entries.get(id).is_some_and(|e| e.vector.is_some()));
+
+        self.runtime.cache_synced = exact_match && self.runtime.dirty.is_empty();
+        Ok(true)
     }
     /// Search bounded channel candidates using indexed lexical/vector retrieval.
     pub fn search_indexed(

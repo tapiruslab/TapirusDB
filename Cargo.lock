@@ -922,7 +922,7 @@ dependencies = [
 
 [[package]]
 name = "tapirus"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "chacha20poly1305",
  "crc32fast",
@@ -940,22 +940,24 @@ dependencies = [
  "ureq",
  "web-time",
  "wide",
+ "zeroize",
 ]
 
 [[package]]
 name = "tapirus-ffi"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
+ "serde_json",
  "tapirus",
 ]
 
 [[package]]
 name = "tapirus-micro"
-version = "1.0.3"
+version = "1.0.4"
 
 [[package]]
 name = "tapirus-nodejs"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "napi",
  "napi-build",
@@ -966,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "tapirus-python"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "pyo3",
  "serde",
@@ -976,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "tapirus-wasm"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "getrandom 0.4.3",
  "serde_json",
