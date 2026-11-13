@@ -1,6 +1,6 @@
 [package]
 name = "tapirus"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2024"
 authors = ["TapirusDB Contributors <contact@tapirusdb.com>"]
 license = "BUSL-1.1"
@@ -80,7 +80,7 @@ name = "memory_scale"
 harness = false
 
 [dependencies]
-tapirus-micro = { version = "1.0.4", path = "crates/tapirus-micro", optional = true }
+tapirus-micro = { version = "1.0.5", path = "crates/tapirus-micro", optional = true }
 # Concurrency & Locks
 parking_lot = "0.12"
 

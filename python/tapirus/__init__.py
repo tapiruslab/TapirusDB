@@ -10,7 +10,7 @@ import os
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 __all__ = [
     "Tapirus",
     "Connection",

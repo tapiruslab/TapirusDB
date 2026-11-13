@@ -326,25 +326,41 @@ fn print_serve_help() {
     println!("Usage: tapirus serve [OPTIONS] [DATABASE_FILE]");
     println!();
     println!("Options:");
-    println!("  -p, --port <PORT>        Port to listen on (default: 3005)");
-    println!("  -b, --host <HOST>        Host to bind to (default: 127.0.0.1)");
-    println!("  -k, --api-key <KEY>      Enforce API key authentication (Bearer / X-API-Key)");
+    println!("  -p, --port <PORT>                Port to listen on (default: 3005)");
+    println!("  -b, --host <HOST>                Host to bind to (default: 127.0.0.1)");
     println!(
-        "  --cors-origin <ORIGIN>   Allow CORS origin (comma-separated or repeatable; '*' opts in)"
+        "  -k, --api-key <KEY>              Enforce master API key authentication (Bearer / X-API-Key)"
     );
-    println!("  --passphrase <KEY>       Passphrase for encrypted database (ChaCha20-Poly1305)");
-    println!("  -h, --help               Print this help message");
+    println!(
+        "  --api-key-namespace <KEY>=<NS>   Bind an API key to a single isolated memory namespace (repeatable)"
+    );
+    println!(
+        "  --cors-origin <ORIGIN>           Allow CORS origin (comma-separated or repeatable; '*' opts in)"
+    );
+    println!(
+        "  --passphrase <KEY>               Passphrase for encrypted database (ChaCha20-Poly1305)"
+    );
+    println!("  -h, --help                       Print this help message");
     println!();
     println!("Environment Variables:");
-    println!("  TAPIRUS_API_KEY          Fallback API key if --api-key is not specified");
-    println!("  TAPIRUS_CORS_ORIGIN      Comma-separated allowed CORS origins (default: disabled)");
+    println!(
+        "  TAPIRUS_API_KEY                  Fallback master API key if --api-key is not specified"
+    );
+    println!(
+        "  TAPIRUS_API_KEY_NAMESPACES       Comma-separated KEY=NAMESPACE bindings for tenant isolation"
+    );
+    println!(
+        "  TAPIRUS_CORS_ORIGIN              Comma-separated allowed CORS origins (default: disabled)"
+    );
     println!();
     println!("Transport Security:");
     println!("  Plaintext HTTP only. Do not expose directly to untrusted networks; place");
     println!("  behind a TLS reverse proxy (Nginx, Caddy, or tunnel) with HTTPS termination.");
     println!();
     println!("Arguments:");
-    println!("  [DATABASE_FILE]          Path to database file (defaults to: production.tapir)");
+    println!(
+        "  [DATABASE_FILE]                  Path to database file (defaults to: production.tapir)"
+    );
 }
 
 fn run_studio_command(args: &[String]) {
@@ -358,10 +374,45 @@ fn run_studio_command(args: &[String]) {
     run_serve_command(args);
 }
 
+fn parse_api_key_namespace_bindings(
+    raw_entries: &[String],
+) -> std::result::Result<Vec<(String, String)>, String> {
+    let mut bindings = Vec::new();
+    for entry in raw_entries {
+        for item in entry.split(',') {
+            let trimmed = item.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Some((key, namespace)) = trimmed.split_once('=') else {
+                return Err(format!(
+                    "Invalid API key namespace binding '{trimmed}'; expected KEY=NAMESPACE"
+                ));
+            };
+            let key = key.trim();
+            let namespace = namespace.trim();
+            if key.is_empty() {
+                return Err("API key in KEY=NAMESPACE binding must not be empty".to_string());
+            }
+            tapirus::MemoryAccessScope::new(namespace, None)
+                .map_err(|err| format!("Invalid namespace '{namespace}': {err}"))?;
+            if bindings.iter().any(|(existing_key, _)| existing_key == key) {
+                return Err(format!("Duplicate API key in namespace bindings: '{key}'"));
+            }
+            bindings.push((key.to_string(), namespace.to_string()));
+        }
+    }
+    Ok(bindings)
+}
+
 fn run_serve_command(args: &[String]) {
     let mut port: u16 = 3005;
     let mut host = "127.0.0.1".to_string();
     let mut api_key: Option<String> = env::var("TAPIRUS_API_KEY").ok();
+    let mut api_key_ns_raw: Vec<String> = env::var("TAPIRUS_API_KEY_NAMESPACES")
+        .ok()
+        .into_iter()
+        .collect();
     let mut cors_origins_raw: Vec<String> =
         env::var("TAPIRUS_CORS_ORIGIN").ok().into_iter().collect();
     let mut passphrase: Option<String> = None;
@@ -404,6 +455,12 @@ fn run_serve_command(args: &[String]) {
                     i += 1;
                 }
             }
+            "--api-key-namespace" => {
+                if i + 1 < args.len() {
+                    api_key_ns_raw.push(args[i + 1].clone());
+                    i += 1;
+                }
+            }
             "--cors-origin" => {
                 if i + 1 < args.len() {
                     cors_origins_raw.push(args[i + 1].clone());
@@ -432,8 +489,26 @@ fn run_serve_command(args: &[String]) {
         eprintln!("TAPIRUS_API_KEY/--api-key must not be empty");
         std::process::exit(1);
     }
-    if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1") && api_key.is_none() {
-        eprintln!("Non-loopback HTTP bind requires TAPIRUS_API_KEY or --api-key");
+    let api_key_scopes = match parse_api_key_namespace_bindings(&api_key_ns_raw) {
+        Ok(bindings) => bindings,
+        Err(err) => {
+            eprintln!("Invalid --api-key-namespace / TAPIRUS_API_KEY_NAMESPACES: {err}");
+            std::process::exit(1);
+        }
+    };
+    if let Some(ref master) = api_key {
+        if api_key_scopes.iter().any(|(k, _)| k == master) {
+            eprintln!("Master --api-key cannot also be bound in --api-key-namespace");
+            std::process::exit(1);
+        }
+    }
+    if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1")
+        && api_key.is_none()
+        && api_key_scopes.is_empty()
+    {
+        eprintln!(
+            "Non-loopback HTTP bind requires TAPIRUS_API_KEY/--api-key or --api-key-namespace"
+        );
         std::process::exit(1);
     }
 
@@ -474,12 +549,15 @@ fn run_serve_command(args: &[String]) {
 
     run_http_server(
         conn,
-        &host,
-        port,
-        &db_path,
-        passphrase.is_some(),
-        api_key,
-        cors_origins,
+        HttpServerConfig {
+            host: &host,
+            port,
+            db_path: &db_path,
+            encrypted: passphrase.is_some(),
+            api_key,
+            api_key_scopes,
+            cors_origins,
+        },
     );
 }
 
@@ -1029,15 +1107,26 @@ fn run_verify_command(args: &[String]) {
     }
 }
 
-fn run_http_server(
-    conn: Connection,
-    host: &str,
+struct HttpServerConfig<'a> {
+    host: &'a str,
     port: u16,
-    db_path: &str,
+    db_path: &'a str,
     encrypted: bool,
     api_key: Option<String>,
+    api_key_scopes: Vec<(String, String)>,
     cors_origins: Vec<String>,
-) {
+}
+
+fn run_http_server(conn: Connection, cfg: HttpServerConfig<'_>) {
+    let HttpServerConfig {
+        host,
+        port,
+        db_path,
+        encrypted,
+        api_key,
+        api_key_scopes,
+        cors_origins,
+    } = cfg;
     let addr = format!("{host}:{port}");
     let listener = match TcpListener::bind(&addr) {
         Ok(l) => l,
@@ -1050,8 +1139,11 @@ fn run_http_server(
     println!("{BANNER}");
     println!("TapirusDB HTTP server listening at http://{addr}");
     println!("Database: {db_path} (Encrypted: {encrypted})");
-    if api_key.is_some() {
-        println!("API key authentication is enabled (Bearer / X-API-Key).");
+    if api_key.is_some() || !api_key_scopes.is_empty() {
+        println!(
+            "API key authentication is enabled (Bearer / X-API-Key; {} scoped namespace key(s)).",
+            api_key_scopes.len()
+        );
     } else {
         println!("API key authentication is disabled; restrict the bind address accordingly.");
     }
@@ -1067,17 +1159,19 @@ fn run_http_server(
     );
     println!("📡 Endpoints:");
     println!("   • GET  /health   -> Healthcheck & Version (Public)");
-    println!("   • POST /api/sql  -> Execute SQL / Vector Search (Protected)");
+    println!("   • POST /api/sql  -> Execute SQL / Vector Search (Master Key)");
+    println!(
+        "   • POST /api/memory[/store|/search|/forget] -> AI Memory API (Protected, Namespace-Scoped)"
+    );
     println!("   • GET  /         -> Built-in Web UI Console (Public)");
     println!("   • GET  /chat     -> Chat demo page (Public)");
-    println!("   • POST /api/chat -> Chat handler (Protected when API key is configured)");
-    println!(
-        "   • GET  /api/chat/logs -> Inspect chat logs (Protected when API key is configured)"
-    );
+    println!("   • POST /api/chat -> Chat handler (Master Key)");
+    println!("   • GET  /api/chat/logs -> Inspect chat logs (Master Key)");
     println!("\nPress Ctrl+C to stop.\n");
 
     let db = Arc::new(Mutex::new(conn));
     let auth_key = Arc::new(api_key);
+    let auth_scopes = Arc::new(api_key_scopes);
     let allowed_origins = Arc::new(cors_origins);
     let active_clients = Arc::new(AtomicUsize::new(0));
 
@@ -1098,10 +1192,11 @@ fn run_http_server(
                 let _ = stream.set_write_timeout(Some(HTTP_IO_TIMEOUT));
                 let db_clone = Arc::clone(&db);
                 let auth_clone = Arc::clone(&auth_key);
+                let auth_scopes_clone = Arc::clone(&auth_scopes);
                 let cors_clone = Arc::clone(&allowed_origins);
                 thread::spawn(move || {
                     let _client_guard = client_guard;
-                    handle_http_client(stream, db_clone, auth_clone, cors_clone);
+                    handle_http_client(stream, db_clone, auth_clone, auth_scopes_clone, cors_clone);
                 });
             }
             Err(e) => {
@@ -1144,7 +1239,13 @@ fn constant_time_eq_str(a: &str, b: &str) -> bool {
     a.as_bytes().ct_eq(b.as_bytes()).into()
 }
 
-fn request_has_valid_api_key(expected_key: &str, header_str: &str) -> bool {
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HttpAuthScope {
+    Unrestricted,
+    Namespace(String),
+}
+
+fn extract_request_api_key(header_str: &str) -> Option<&str> {
     let mut provided_key = None;
     for line in header_str.lines() {
         let lower = line.to_ascii_lowercase();
@@ -1163,7 +1264,35 @@ fn request_has_valid_api_key(expected_key: &str, header_str: &str) -> bool {
             }
         }
     }
-    provided_key.is_some_and(|key| constant_time_eq_str(key, expected_key))
+    provided_key
+}
+
+#[cfg(test)]
+fn request_has_valid_api_key(expected_key: &str, header_str: &str) -> bool {
+    extract_request_api_key(header_str).is_some_and(|key| constant_time_eq_str(key, expected_key))
+}
+
+fn authenticate_http_request(
+    master_key: Option<&str>,
+    scoped_keys: &[(String, String)],
+    header_str: &str,
+) -> Option<HttpAuthScope> {
+    if master_key.is_none() && scoped_keys.is_empty() {
+        return Some(HttpAuthScope::Unrestricted);
+    }
+    let provided = extract_request_api_key(header_str)?;
+    let mut resolved = None;
+    if let Some(expected) = master_key {
+        if constant_time_eq_str(provided, expected) {
+            resolved = Some(HttpAuthScope::Unrestricted);
+        }
+    }
+    for (key, namespace) in scoped_keys {
+        if constant_time_eq_str(provided, key) && resolved.is_none() {
+            resolved = Some(HttpAuthScope::Namespace(namespace.clone()));
+        }
+    }
+    resolved
 }
 
 fn parse_http_sql_payload(body: &str) -> std::result::Result<(String, Vec<Value>), String> {
@@ -1244,10 +1373,112 @@ fn resolve_cors_origin<'a>(header_str: &str, allowed_origins: &'a [String]) -> O
         .map(String::as_str)
 }
 
+fn map_memory_error_status(err: &tapirus::Error) -> &'static str {
+    match err {
+        tapirus::Error::PermissionDenied(_) => "403 Forbidden",
+        tapirus::Error::ConstraintViolation(_) => "400 Bad Request",
+        _ => "500 Internal Server Error",
+    }
+}
+
+fn handle_http_memory_route(
+    conn: &Connection,
+    route_path: &str,
+    body_str: &str,
+    auth_scope: &HttpAuthScope,
+) -> std::result::Result<String, (&'static str, String)> {
+    let effective_conn = match auth_scope {
+        HttpAuthScope::Unrestricted => conn.clone(),
+        HttpAuthScope::Namespace(ns) => conn
+            .scoped_memory(ns, None)
+            .map_err(|err| (map_memory_error_status(&err), err.to_string()))?,
+    };
+    match route_path {
+        "/api/memory" => {
+            let envelope: serde_json::Value = serde_json::from_str(body_str).map_err(|err| {
+                (
+                    "400 Bad Request",
+                    format!("Invalid memory request JSON: {err}"),
+                )
+            })?;
+            let operation = envelope
+                .get("operation")
+                .or_else(|| envelope.get("action"))
+                .and_then(|v| v.as_str())
+                .ok_or((
+                    "400 Bad Request",
+                    "Missing string 'operation' (or 'action') field".to_string(),
+                ))?;
+            let payload_str = match envelope.get("payload") {
+                Some(serde_json::Value::String(raw)) => raw.clone(),
+                Some(other) => other.to_string(),
+                None => "{}".to_string(),
+            };
+            effective_conn
+                .memory_request_json(operation, &payload_str)
+                .map_err(|err| (map_memory_error_status(&err), err.to_string()))
+        }
+        "/api/memory/store" => {
+            #[derive(serde::Deserialize)]
+            struct HttpStorePayload {
+                #[serde(flatten)]
+                document: tapirus::MemoryDocument,
+                #[serde(default)]
+                upsert: bool,
+            }
+            let payload: HttpStorePayload = serde_json::from_str(body_str)
+                .map_err(|err| ("400 Bad Request", format!("Invalid memory document: {err}")))?;
+            let id = if payload.upsert {
+                effective_conn.upsert_memory(&payload.document)
+            } else {
+                effective_conn.store_memory(&payload.document)
+            }
+            .map_err(|err| (map_memory_error_status(&err), err.to_string()))?;
+            Ok(serde_json::json!({
+                "status": "success",
+                "memory_id": id,
+                "namespace": effective_conn.memory_scope().map(|s| s.namespace.as_str()).or(payload.document.namespace.as_deref()),
+            })
+            .to_string())
+        }
+        "/api/memory/search" => {
+            let search: tapirus::MemorySearch = serde_json::from_str(body_str)
+                .map_err(|err| ("400 Bad Request", format!("Invalid memory search: {err}")))?;
+            let response = effective_conn
+                .search_memories_detailed(&search)
+                .map_err(|err| (map_memory_error_status(&err), err.to_string()))?;
+            serde_json::to_string(&response)
+                .map_err(|err| ("500 Internal Server Error", err.to_string()))
+        }
+        "/api/memory/forget" => {
+            let id = if let Ok(id) = serde_json::from_str::<u64>(body_str) {
+                id
+            } else {
+                let value: serde_json::Value = serde_json::from_str(body_str)
+                    .map_err(|err| ("400 Bad Request", format!("Invalid forget payload: {err}")))?;
+                value
+                    .get("id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or(("400 Bad Request", "Missing numeric memory 'id'".to_string()))?
+            };
+            let deleted = effective_conn
+                .memory_forget_checked(id)
+                .map_err(|err| (map_memory_error_status(&err), err.to_string()))?;
+            Ok(serde_json::json!({
+                "status": "success",
+                "deleted": deleted,
+            })
+            .to_string())
+        }
+        _ => Err(("404 Not Found", "Not Found".to_string())),
+    }
+}
+
 fn handle_http_client(
     mut stream: TcpStream,
     db: Arc<Mutex<Connection>>,
     api_key: Arc<Option<String>>,
+    api_key_scopes: Arc<Vec<(String, String)>>,
     allowed_origins: Arc<Vec<String>>,
 ) {
     let mut request_data = Vec::new();
@@ -1500,13 +1731,28 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
         return;
     }
 
-    // User chat and persisted chat logs share the same API-key boundary as SQL/vector APIs.
+    // User chat and persisted chat logs require unrestricted master access when auth is enabled.
     let protected_chat_route = (method == "GET"
         && (route_path == "/api/chat/logs" || route_path == "/chat/logs"))
         || (method == "POST" && (route_path == "/chat" || route_path == "/api/chat"));
     if protected_chat_route {
-        if let Some(expected_key) = api_key.as_ref() {
-            if !request_has_valid_api_key(expected_key, header_str) {
+        match authenticate_http_request(api_key.as_deref(), &api_key_scopes, header_str) {
+            Some(HttpAuthScope::Unrestricted) => {}
+            Some(HttpAuthScope::Namespace(_)) => {
+                let err_json = serde_json::json!({
+                    "error": "Forbidden",
+                    "message": "Tenant-scoped API keys may only access /api/memory endpoints."
+                });
+                send_http_response(
+                    &mut stream,
+                    "403 Forbidden",
+                    "application/json",
+                    &err_json.to_string(),
+                    cors_origin,
+                );
+                return;
+            }
+            None => {
                 let err_json = serde_json::json!({"error":"Unauthorized","message":"Missing or invalid API key."});
                 send_http_unauthorized_response(&mut stream, &err_json.to_string(), cors_origin);
                 return;
@@ -1582,8 +1828,13 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
     }
 
     // Authentication enforcement for protected endpoints
-    if let Some(ref expected_key) = *api_key {
-        if !request_has_valid_api_key(expected_key, header_str) {
+    let auth_scope = match authenticate_http_request(
+        api_key.as_deref(),
+        &api_key_scopes,
+        header_str,
+    ) {
+        Some(scope) => scope,
+        None => {
             let err_json = serde_json::json!({
                 "error": "Unauthorized",
                 "message": "Missing or invalid API key. Provide Authorization: Bearer or X-API-Key."
@@ -1591,6 +1842,61 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
             send_http_unauthorized_response(&mut stream, &err_json.to_string(), cors_origin);
             return;
         }
+    };
+
+    // AI Memory API endpoints (enforcing owner isolation when authenticated via --api-key-namespace)
+    if method == "POST"
+        && matches!(
+            route_path,
+            "/api/memory" | "/api/memory/store" | "/api/memory/search" | "/api/memory/forget"
+        )
+    {
+        let body_str = std::str::from_utf8(body_bytes).unwrap_or("").trim();
+        let conn = db.lock();
+        match handle_http_memory_route(&conn, route_path, body_str, &auth_scope) {
+            Ok(json_body) => {
+                send_http_response(
+                    &mut stream,
+                    "200 OK",
+                    "application/json",
+                    &json_body,
+                    cors_origin,
+                );
+            }
+            Err((status, err_msg)) => {
+                let label = if status.starts_with("403") {
+                    "Forbidden"
+                } else if status.starts_with("400") {
+                    "Bad Request"
+                } else {
+                    "Error"
+                };
+                let res = serde_json::json!({ "error": label, "message": err_msg });
+                send_http_response(
+                    &mut stream,
+                    status,
+                    "application/json",
+                    &res.to_string(),
+                    cors_origin,
+                );
+            }
+        }
+        return;
+    }
+
+    if matches!(auth_scope, HttpAuthScope::Namespace(_)) {
+        let err_json = serde_json::json!({
+            "error": "Forbidden",
+            "message": "Tenant-scoped API keys may only access /api/memory endpoints."
+        });
+        send_http_response(
+            &mut stream,
+            "403 Forbidden",
+            "application/json",
+            &err_json.to_string(),
+            cors_origin,
+        );
+        return;
     }
 
     // SQL execution endpoint (Protected)
@@ -4896,6 +5202,14 @@ fn handle_memory_command(conn: &Connection, parts: &[&str]) {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct McpServerConfig {
+    embed_endpoint: Option<String>,
+    embed_model: Option<String>,
+    embed_dims: Option<usize>,
+    embed_api_key: Option<String>,
+}
+
 fn print_mcp_help() {
     println!("Usage: tapirus mcp [OPTIONS] [DATABASE_FILE]");
     println!();
@@ -4903,12 +5217,36 @@ fn print_mcp_help() {
     println!("Compatible with Claude Desktop, Cursor, Gemini, and any MCP client.");
     println!();
     println!("Options:");
-    println!("  --config-claude          Print ready-to-paste Claude Desktop JSON configuration");
-    println!("  --passphrase <KEY>       Passphrase for encrypted database (ChaCha20-Poly1305)");
-    println!("  -h, --help               Print this help message");
+    println!("  --config-claude            Print ready-to-paste Claude Desktop JSON configuration");
+    println!("  --passphrase <KEY>         Passphrase for encrypted database (ChaCha20-Poly1305)");
+    println!(
+        "  --embed-endpoint <URL>     External neural embedding endpoint (Ollama /api/embed or OpenAI /v1/embeddings)"
+    );
+    println!(
+        "  --embed-model <NAME>       Embedding model identifier (default: nomic-embed-text when endpoint set)"
+    );
+    println!("  --embed-dims <N>           Expected embedding dimension for validation");
+    println!(
+        "  --embed-api-key <KEY>      Optional Bearer API key for external embedding endpoint"
+    );
+    println!(
+        "  --namespace <NS>           Enforce strict owner namespace isolation across MCP calls"
+    );
+    println!("  --session-id <ID>          Bind an optional owner session within --namespace");
+    println!("  -h, --help                 Print this help message");
+    println!();
+    println!("Environment Variables:");
+    println!("  TAPIRUS_EMBED_ENDPOINT     Default --embed-endpoint");
+    println!("  TAPIRUS_EMBED_MODEL        Default --embed-model");
+    println!("  TAPIRUS_EMBED_DIMS         Default --embed-dims");
+    println!("  TAPIRUS_EMBED_API_KEY      Default --embed-api-key");
+    println!("  TAPIRUS_MCP_NAMESPACE      Default --namespace");
+    println!("  TAPIRUS_MCP_SESSION_ID     Default --session-id");
     println!();
     println!("Arguments:");
-    println!("  [DATABASE_FILE]          Path to database file (defaults to: agent_memory.tapir)");
+    println!(
+        "  [DATABASE_FILE]            Path to database file (defaults to: agent_memory.tapir)"
+    );
 }
 
 fn print_claude_config(db_path: &str) {
@@ -4935,6 +5273,26 @@ fn run_mcp_command(args: &[String]) {
     let mut db_path = "agent_memory.tapir".to_string();
     let mut passphrase: Option<String> = None;
     let mut show_claude_config = false;
+    let mut mcp_cfg = McpServerConfig {
+        embed_endpoint: env::var("TAPIRUS_EMBED_ENDPOINT")
+            .ok()
+            .filter(|s| !s.trim().is_empty()),
+        embed_model: env::var("TAPIRUS_EMBED_MODEL")
+            .ok()
+            .filter(|s| !s.trim().is_empty()),
+        embed_dims: env::var("TAPIRUS_EMBED_DIMS")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok()),
+        embed_api_key: env::var("TAPIRUS_EMBED_API_KEY")
+            .ok()
+            .filter(|s| !s.trim().is_empty()),
+    };
+    let mut mcp_namespace: Option<String> = env::var("TAPIRUS_MCP_NAMESPACE")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let mut mcp_session_id: Option<String> = env::var("TAPIRUS_MCP_SESSION_ID")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
 
     let mut i = 0;
     while i < args.len() {
@@ -4949,6 +5307,50 @@ fn run_mcp_command(args: &[String]) {
             "--passphrase" => {
                 if i + 1 < args.len() {
                     passphrase = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--embed-endpoint" => {
+                if i + 1 < args.len() {
+                    mcp_cfg.embed_endpoint = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--embed-model" => {
+                if i + 1 < args.len() {
+                    mcp_cfg.embed_model = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--embed-dims" => {
+                if i + 1 < args.len() {
+                    let parsed = args[i + 1].parse::<usize>().unwrap_or_else(|_| {
+                        eprintln!("Invalid --embed-dims value '{}'", args[i + 1]);
+                        std::process::exit(1);
+                    });
+                    if parsed == 0 || parsed > 4096 {
+                        eprintln!("--embed-dims must be between 1 and 4096");
+                        std::process::exit(1);
+                    }
+                    mcp_cfg.embed_dims = Some(parsed);
+                    i += 1;
+                }
+            }
+            "--embed-api-key" => {
+                if i + 1 < args.len() {
+                    mcp_cfg.embed_api_key = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--namespace" => {
+                if i + 1 < args.len() {
+                    mcp_namespace = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--session-id" => {
+                if i + 1 < args.len() {
+                    mcp_session_id = Some(args[i + 1].clone());
                     i += 1;
                 }
             }
@@ -4970,8 +5372,14 @@ fn run_mcp_command(args: &[String]) {
         print_claude_config(&db_path);
         return;
     }
+    if mcp_session_id.is_some() && mcp_namespace.is_none() {
+        eprintln!(
+            "--session-id / TAPIRUS_MCP_SESSION_ID requires --namespace / TAPIRUS_MCP_NAMESPACE"
+        );
+        std::process::exit(1);
+    }
 
-    let conn = if let Some(pass) = passphrase {
+    let base_conn = if let Some(pass) = passphrase {
         match Connection::open_encrypted(Path::new(&db_path), &pass) {
             Ok(c) => c,
             Err(e) => {
@@ -4987,6 +5395,17 @@ fn run_mcp_command(args: &[String]) {
                 std::process::exit(1);
             }
         }
+    };
+    let conn = if let Some(ref ns) = mcp_namespace {
+        match base_conn.scoped_memory(ns, mcp_session_id.as_deref()) {
+            Ok(scoped) => scoped,
+            Err(e) => {
+                eprintln!("Invalid MCP memory scope: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        base_conn
     };
 
     let stdin = io::stdin();
@@ -5053,22 +5472,30 @@ fn run_mcp_command(args: &[String]) {
                                     "properties": {
                                         "content": { "type": "string", "description": "The memory content or fact to remember" },
                                         "importance": { "type": "number", "description": "Priority score between 0.0 and 1.0 (default: 0.5)" },
-                                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional category tags" }
+                                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional category tags" },
+                                        "namespace": { "type": "string", "description": "Optional owner namespace filter/scope" },
+                                        "session_id": { "type": "string", "description": "Optional session/thread identifier" },
+                                        "external_id": { "type": "string", "description": "Optional idempotency key for upsert within namespace+session" },
+                                        "embedding": { "type": "array", "items": { "type": "number" }, "description": "Optional dense neural embedding supplied directly by the caller" },
+                                        "embedding_model": { "type": "string", "description": "Optional embedding model identifier to isolate vector spaces" }
                                     },
                                     "required": ["content"]
                                 }
                             },
                             {
                                 "name": "tapirus_recall",
-                                "description": "Retrieve relevant memories using hybrid BM25 full-text keyword matching, semantic vectors, and temporal recency decay.",
+                                "description": "Retrieve relevant memories using hybrid BM25 full-text keyword matching, dense neural vectors (when configured or supplied), and temporal recency decay.",
                                 "inputSchema": {
                                     "type": "object",
                                     "properties": {
                                         "query": { "type": "string", "description": "Search query or topic to recall" },
                                         "limit": { "type": "integer", "description": "Maximum number of memories to return (default: 5)" },
-                                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags" }
-                                    },
-                                    "required": ["query"]
+                                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags" },
+                                        "namespace": { "type": "string", "description": "Optional owner namespace filter/scope" },
+                                        "session_id": { "type": "string", "description": "Optional session/thread identifier" },
+                                        "embedding": { "type": "array", "items": { "type": "number" }, "description": "Optional dense neural query embedding supplied directly by the caller" },
+                                        "embedding_model": { "type": "string", "description": "Optional embedding model identifier matching the stored vector space" }
+                                    }
                                 }
                             },
                             {
@@ -5116,7 +5543,8 @@ fn run_mcp_command(args: &[String]) {
                     .cloned()
                     .unwrap_or(serde_json::json!({}));
 
-                let tool_result = handle_mcp_tool_call(&conn, tool_name, &tool_args);
+                let tool_result =
+                    handle_mcp_tool_call_with_config(&conn, tool_name, &tool_args, &mcp_cfg);
                 let resp = serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -5150,76 +5578,511 @@ fn run_mcp_command(args: &[String]) {
     }
 }
 
+struct ResolvedMcpEmbedding {
+    vector: Vec<f32>,
+    model: String,
+    mode: &'static str,
+}
+
+fn parse_embedding_array_arg(
+    raw: &serde_json::Value,
+    expected_dims: Option<usize>,
+) -> std::result::Result<Vec<f32>, String> {
+    let arr = raw
+        .as_array()
+        .ok_or_else(|| "embedding must be a JSON array of finite numbers".to_string())?;
+    if arr.is_empty() || arr.len() > 4096 {
+        return Err("embedding length must be between 1 and 4096".to_string());
+    }
+    let mut vec = Vec::with_capacity(arr.len());
+    for item in arr {
+        let val = item
+            .as_f64()
+            .ok_or_else(|| "embedding elements must be numbers".to_string())?;
+        let f = val as f32;
+        if !f.is_finite() {
+            return Err("embedding contains non-finite values".to_string());
+        }
+        vec.push(f);
+    }
+    if let Some(dims) = expected_dims {
+        if vec.len() != dims {
+            return Err(format!(
+                "embedding dimension mismatch: got {}, expected {}",
+                vec.len(),
+                dims
+            ));
+        }
+    }
+    Ok(vec)
+}
+
+fn decode_http_chunked_body(raw: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < raw.len() {
+        let Some(rel_end) = find_subsequence(&raw[cursor..], b"\r\n") else {
+            return Err("Malformed chunked HTTP response from embedding server".to_string());
+        };
+        let size_line = std::str::from_utf8(&raw[cursor..cursor + rel_end])
+            .map_err(|_| "Invalid UTF-8 in chunked embedding response".to_string())?
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim();
+        let chunk_size = usize::from_str_radix(size_line, 16)
+            .map_err(|_| "Invalid chunk size from embedding server".to_string())?;
+        cursor += rel_end + 2;
+        if chunk_size == 0 {
+            return Ok(out);
+        }
+        if cursor + chunk_size + 2 > raw.len() {
+            return Err("Truncated chunked HTTP body from embedding server".to_string());
+        }
+        out.extend_from_slice(&raw[cursor..cursor + chunk_size]);
+        cursor += chunk_size + 2;
+    }
+    Ok(out)
+}
+
+fn parse_http_endpoint_authority_and_path(
+    endpoint: &str,
+) -> std::result::Result<(String, String), String> {
+    let rest = endpoint.strip_prefix("http://").ok_or_else(|| {
+        "Only plain http:// endpoints are handled by built-in TCP client".to_string()
+    })?;
+    let (authority, path) = match rest.split_once('/') {
+        Some((auth, tail)) => (auth, format!("/{}", tail.trim_start_matches('/'))),
+        None => (rest, "/api/embed".to_string()),
+    };
+    let authority = authority.trim();
+    if authority.is_empty() {
+        return Err("Embedding endpoint host must not be empty".to_string());
+    }
+    let normalized_path = if path == "/" {
+        "/api/embed".to_string()
+    } else {
+        path
+    };
+    let connect_addr = if authority.starts_with('[') {
+        if authority.contains("]:") {
+            authority.to_string()
+        } else {
+            format!("{authority}:80")
+        }
+    } else if authority.contains(':') {
+        authority.to_string()
+    } else {
+        format!("{authority}:80")
+    };
+    Ok((connect_addr, normalized_path))
+}
+
+fn fetch_http_embedding_plain(
+    endpoint: &str,
+    model: &str,
+    text: &str,
+    expected_dims: Option<usize>,
+    api_key: Option<&str>,
+) -> std::result::Result<Vec<f32>, String> {
+    let (connect_addr, path) = parse_http_endpoint_authority_and_path(endpoint)?;
+    let payload = if path.ends_with("/api/embeddings") {
+        serde_json::json!({ "model": model, "prompt": text })
+    } else {
+        serde_json::json!({ "model": model, "input": text })
+    };
+    let body_bytes = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
+    let mut req = format!(
+        "POST {path} HTTP/1.1\r\nHost: {connect_addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+        body_bytes.len()
+    );
+    if let Some(key) = api_key {
+        if !key.trim().is_empty() {
+            req.push_str(&format!("Authorization: Bearer {}\r\n", key.trim()));
+        }
+    }
+    req.push_str("\r\n");
+
+    let mut full_req = req.into_bytes();
+    full_req.extend_from_slice(&body_bytes);
+
+    let mut stream = TcpStream::connect(&connect_addr)
+        .map_err(|e| format!("Failed connecting to embedding endpoint '{endpoint}': {e}"))?;
+    let _ = stream.set_read_timeout(Some(HTTP_IO_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(HTTP_IO_TIMEOUT));
+    stream
+        .write_all(&full_req)
+        .and_then(|_| stream.flush())
+        .map_err(|e| format!("Failed sending embedding request: {e}"))?;
+
+    let mut raw_resp = Vec::new();
+    let mut header_end_opt = None;
+    let mut expected_len = None;
+    let mut is_chunked = false;
+    let mut buf = [0u8; 4096];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                raw_resp.extend_from_slice(&buf[..n]);
+                if header_end_opt.is_none() {
+                    if let Some(end) = find_subsequence(&raw_resp, b"\r\n\r\n") {
+                        header_end_opt = Some(end);
+                        let headers_str = String::from_utf8_lossy(&raw_resp[..end]);
+                        for line in headers_str.lines() {
+                            let lower = line.to_ascii_lowercase();
+                            if let Some((_, v)) = lower.split_once("content-length:") {
+                                expected_len = v.trim().parse::<usize>().ok();
+                            } else if lower.starts_with("transfer-encoding:")
+                                && lower.contains("chunked")
+                            {
+                                is_chunked = true;
+                            }
+                        }
+                    }
+                }
+                if let Some(end) = header_end_opt {
+                    let body_len = raw_resp.len().saturating_sub(end + 4);
+                    if let Some(len) = expected_len {
+                        if body_len >= len {
+                            break;
+                        }
+                    } else if is_chunked
+                        && find_subsequence(&raw_resp[end + 4..], b"0\r\n\r\n").is_some()
+                    {
+                        break;
+                    }
+                }
+            }
+            Err(e) if !raw_resp.is_empty() && e.kind() == io::ErrorKind::ConnectionReset => {
+                break;
+            }
+            Err(e) => return Err(format!("Failed reading embedding response: {e}")),
+        }
+    }
+    let header_end = header_end_opt
+        .ok_or_else(|| "Invalid HTTP response from embedding endpoint".to_string())?;
+    let headers = std::str::from_utf8(&raw_resp[..header_end])
+        .map_err(|_| "Non-UTF-8 HTTP headers from embedding endpoint".to_string())?;
+    let status_line = headers.lines().next().unwrap_or("");
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    let body_slice = &raw_resp[header_end + 4..];
+    let body = if is_chunked {
+        decode_http_chunked_body(body_slice)?
+    } else if let Some(len) = expected_len {
+        body_slice[..len.min(body_slice.len())].to_vec()
+    } else {
+        body_slice.to_vec()
+    };
+    if !(200..300).contains(&status_code) {
+        let preview = String::from_utf8_lossy(&body);
+        return Err(format!(
+            "Embedding endpoint returned HTTP {status_code}: {}",
+            preview.trim()
+        ));
+    }
+    let json: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| format!("Invalid JSON from embedding endpoint: {e}"))?;
+    let vec_val = json
+        .get("embeddings")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .or_else(|| {
+            json.get("data")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|item| item.get("embedding"))
+        })
+        .or_else(|| json.get("embedding"))
+        .ok_or_else(|| {
+            "Embedding response missing 'embeddings[0]', 'data[0].embedding', or 'embedding'"
+                .to_string()
+        })?;
+    parse_embedding_array_arg(vec_val, expected_dims)
+}
+
+#[cfg(feature = "http-embeddings")]
+fn fetch_http_embedding(
+    endpoint: &str,
+    model: &str,
+    text: &str,
+    expected_dims: Option<usize>,
+    api_key: Option<&str>,
+) -> std::result::Result<Vec<f32>, String> {
+    if endpoint.starts_with("http://") {
+        return fetch_http_embedding_plain(endpoint, model, text, expected_dims, api_key);
+    }
+    if endpoint.starts_with("https://") {
+        let dims = expected_dims.ok_or_else(|| {
+            "HTTPS embedding endpoints require --embed-dims / TAPIRUS_EMBED_DIMS".to_string()
+        })?;
+        let engine = tapirus::HttpEmbeddingEngine::new(endpoint, model, dims);
+        return engine
+            .try_embed_text(text)
+            .map_err(|e| format!("HTTPS embedding request failed: {e}"));
+    }
+    Err(format!(
+        "Unsupported embedding endpoint URL scheme '{endpoint}'; expected http:// or https://"
+    ))
+}
+
+#[cfg(not(feature = "http-embeddings"))]
+fn fetch_http_embedding(
+    endpoint: &str,
+    model: &str,
+    text: &str,
+    expected_dims: Option<usize>,
+    api_key: Option<&str>,
+) -> std::result::Result<Vec<f32>, String> {
+    if endpoint.starts_with("http://") {
+        return fetch_http_embedding_plain(endpoint, model, text, expected_dims, api_key);
+    }
+    if endpoint.starts_with("https://") {
+        return Err(
+            "HTTPS embedding endpoints require building TapirusDB with '--features http-embeddings' (or point --embed-endpoint at a local http:// Ollama/TEI proxy)".to_string(),
+        );
+    }
+    Err(format!(
+        "Unsupported embedding endpoint URL scheme '{endpoint}'; expected http:// or https://"
+    ))
+}
+
+fn resolve_mcp_embedding(
+    text: &str,
+    args: &serde_json::Value,
+    cfg: &McpServerConfig,
+) -> std::result::Result<ResolvedMcpEmbedding, String> {
+    let explicit_model = args
+        .get("embedding_model")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+
+    if let Some(raw_vec) = args.get("embedding") {
+        if !raw_vec.is_null() {
+            let vector = parse_embedding_array_arg(raw_vec, cfg.embed_dims)?;
+            let model = explicit_model
+                .or_else(|| cfg.embed_model.clone())
+                .unwrap_or_else(|| format!("caller-{}d", vector.len()));
+            return Ok(ResolvedMcpEmbedding {
+                vector,
+                model,
+                mode: "caller-vector",
+            });
+        }
+    }
+
+    if let Some(ref endpoint) = cfg.embed_endpoint {
+        let model = explicit_model
+            .or_else(|| cfg.embed_model.clone())
+            .unwrap_or_else(|| "nomic-embed-text".to_string());
+        let vector = fetch_http_embedding(
+            endpoint,
+            &model,
+            text,
+            cfg.embed_dims,
+            cfg.embed_api_key.as_deref(),
+        )?;
+        return Ok(ResolvedMcpEmbedding {
+            vector,
+            model,
+            mode: "neural-http",
+        });
+    }
+
+    let embedder = tapirus::DeterministicHashEmbedder::default();
+    Ok(ResolvedMcpEmbedding {
+        vector: embedder.embed_text(text),
+        model: explicit_model.unwrap_or_else(|| "deterministic-hash-128d".to_string()),
+        mode: "deterministic-hash-fallback",
+    })
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 fn handle_mcp_tool_call(conn: &Connection, tool_name: &str, args: &serde_json::Value) -> String {
+    handle_mcp_tool_call_with_config(conn, tool_name, args, &McpServerConfig::default())
+}
+
+fn handle_mcp_tool_call_with_config(
+    conn: &Connection,
+    tool_name: &str,
+    args: &serde_json::Value,
+    cfg: &McpServerConfig,
+) -> String {
     match tool_name {
         "tapirus_remember" => {
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let importance = args.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
-            let namespace = args.get("namespace").and_then(|v| v.as_str());
-            let session_id = args.get("session_id").and_then(|v| v.as_str());
-            let tags: Vec<String> = args.get("tags")
+            if content.trim().is_empty() {
+                return serde_json::json!({
+                    "status": "error",
+                    "message": "Memory content must not be empty"
+                })
+                .to_string();
+            }
+            let importance = args
+                .get("importance")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.5) as f32;
+            let namespace = args
+                .get("namespace")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            let session_id = args
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            let external_id = args
+                .get("external_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            let tags: Vec<String> = args
+                .get("tags")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
-            let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
 
-            match conn.memory_remember_text_scoped(content, importance, &tag_refs, namespace, session_id) {
-                Ok(id) => serde_json::json!({
-                    "status": "success",
-                    "memory_id": id,
-                    "stored_content": content,
-                    "importance": importance,
-                    "tags": tags,
-                    "namespace": namespace,
-                    "session_id": session_id,
-                    "embedding": "auto-embedded (128D)"
-                }).to_string(),
-                Err(e) => serde_json::json!({ "status": "error", "message": format!("{e}") }).to_string(),
+            let resolved = match resolve_mcp_embedding(content, args, cfg) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    return serde_json::json!({ "status": "error", "message": err }).to_string();
+                }
+            };
+            let dims = resolved.vector.len();
+            let doc = tapirus::MemoryDocument {
+                content: content.to_string(),
+                embedding: Some(resolved.vector),
+                importance,
+                tags: tags.clone(),
+                namespace,
+                session_id,
+                external_id: external_id.clone(),
+                embedding_model: Some(resolved.model.clone()),
+                ..Default::default()
+            };
+            let write_res = if external_id.is_some() {
+                conn.upsert_memory(&doc)
+            } else {
+                conn.store_memory(&doc)
+            };
+            match write_res {
+                Ok(id) => {
+                    let stored = conn.memory_get(id);
+                    serde_json::json!({
+                        "status": "success",
+                        "memory_id": id,
+                        "stored_content": content,
+                        "importance": importance,
+                        "tags": tags,
+                        "namespace": stored.as_ref().and_then(|e| e.namespace.clone()),
+                        "session_id": stored.as_ref().and_then(|e| e.session_id.clone()),
+                        "embedding_model": resolved.model,
+                        "embedding_dims": dims,
+                        "embedding_mode": resolved.mode,
+                    })
+                    .to_string()
+                }
+                Err(e) => {
+                    serde_json::json!({ "status": "error", "message": format!("{e}") }).to_string()
+                }
             }
         }
         "tapirus_recall" => {
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
-            let namespace = args.get("namespace").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let session_id = args.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let tags: Vec<String> = args.get("tags")
+            let namespace = args
+                .get("namespace")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            let session_id = args
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            let tags: Vec<String> = args
+                .get("tags")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect())
-                .unwrap_or_default();
-            let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
-
-            let mut filter = tapirus::MemoryRecallFilter::default().with_tags(&tag_refs);
-            filter.namespace = namespace;
-            filter.session_id = session_id;
-
-            let embedder = tapirus::DeterministicHashEmbedder::default();
-            let vector = embedder.embed_text(query);
-            let results = conn.memory_recall(Some(query), Some(&vector), limit, &filter);
-
-            let formatted: Vec<serde_json::Value> = results.into_iter().map(|r| {
-                serde_json::json!({
-                    "id": r.entry.id,
-                    "content": r.entry.content,
-                    "combined_score": r.combined_score,
-                    "semantic_score": r.semantic_score,
-                    "lexical_score": r.lexical_score,
-                    "recency_score": r.recency_score,
-                    "timestamp": r.entry.timestamp,
-                    "tags": r.entry.tags,
-                    "namespace": r.entry.namespace,
-                    "session_id": r.entry.session_id,
-                    "is_associative": r.is_associative,
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                        .collect()
                 })
-            }).collect();
+                .unwrap_or_default();
 
-            serde_json::json!({
-                "status": "success",
-                "count": formatted.len(),
-                "memories": formatted
-            }).to_string()
+            let resolved = match resolve_mcp_embedding(query, args, cfg) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    return serde_json::json!({ "status": "error", "message": err }).to_string();
+                }
+            };
+            let dims = resolved.vector.len();
+            let search = tapirus::MemorySearch {
+                query: (!query.trim().is_empty()).then(|| query.to_string()),
+                embedding: Some(resolved.vector),
+                limit,
+                namespace,
+                session_id,
+                tags,
+                embedding_model: Some(resolved.model.clone()),
+                ..Default::default()
+            };
+            match conn.search_memories_detailed(&search) {
+                Ok(response) => {
+                    let formatted: Vec<serde_json::Value> = response
+                        .results
+                        .into_iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "id": r.entry.id,
+                                "content": r.entry.content,
+                                "combined_score": r.combined_score,
+                                "semantic_score": r.semantic_score,
+                                "lexical_score": r.lexical_score,
+                                "recency_score": r.recency_score,
+                                "timestamp": r.entry.timestamp,
+                                "tags": r.entry.tags,
+                                "namespace": r.entry.namespace,
+                                "session_id": r.entry.session_id,
+                                "is_associative": r.is_associative,
+                            })
+                        })
+                        .collect();
+
+                    serde_json::json!({
+                        "status": "success",
+                        "count": formatted.len(),
+                        "embedding_model": resolved.model,
+                        "embedding_dims": dims,
+                        "embedding_mode": resolved.mode,
+                        "vector_candidates": response.diagnostics.vector_candidates,
+                        "lexical_candidates": response.diagnostics.lexical_candidates,
+                        "memories": formatted
+                    })
+                    .to_string()
+                }
+                Err(e) => {
+                    serde_json::json!({ "status": "error", "message": format!("{e}") }).to_string()
+                }
+            }
         }
         "tapirus_sql" => {
             let sql = args.get("sql").and_then(|v| v.as_str()).unwrap_or("");
+            if conn.memory_scope().is_some()
+                && sql.to_ascii_lowercase().contains("__sys_memory")
+            {
+                return serde_json::json!({
+                    "status": "error",
+                    "message": "Permission denied: direct SQL access to __sys_memory is forbidden on a namespace-scoped MCP server"
+                })
+                .to_string();
+            }
             if sql.trim_start().to_uppercase().starts_with("SELECT") {
                 match conn.query(sql) {
                     Ok(rows) => {
@@ -5796,5 +6659,307 @@ mod audit_regression_tests {
 
         assert!(parse_cors_origins("https://good.example\r\nEvil: 1").is_err());
         assert!(parse_cors_origins("file:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn mcp_supports_caller_and_external_http_neural_embeddings()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let db = Connection::open_in_memory()?;
+
+        // 1. Caller-supplied explicit embedding works without external server or keyword overlap
+        let store_resp: serde_json::Value = serde_json::from_str(&handle_mcp_tool_call(
+            &db,
+            "tapirus_remember",
+            &serde_json::json!({
+                "content": "Kubernetes pod evicted due to OOMKilled limit",
+                "namespace": "infra",
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "embedding_model": "bge-small"
+            }),
+        ))?;
+        assert_eq!(store_resp["status"], "success");
+        assert_eq!(store_resp["embedding_mode"], "caller-vector");
+        assert_eq!(store_resp["embedding_dims"], 4);
+
+        let recall_resp: serde_json::Value = serde_json::from_str(&handle_mcp_tool_call(
+            &db,
+            "tapirus_recall",
+            &serde_json::json!({
+                "query": "container out of memory crash",
+                "namespace": "infra",
+                "embedding": [0.99, 0.1, 0.0, 0.0],
+                "embedding_model": "bge-small"
+            }),
+        ))?;
+        assert_eq!(recall_resp["status"], "success");
+        assert_eq!(recall_resp["embedding_mode"], "caller-vector");
+        assert_eq!(recall_resp["count"], 1);
+
+        // 2. Local HTTP Ollama-compatible /api/embed server provides neural embeddings
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let server_thread = thread::spawn(move || {
+            for stream in listener.incoming().take(3) {
+                let Ok(mut stream) = stream else { break };
+                let mut req_buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while let Ok(n) = stream.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    req_buf.extend_from_slice(&chunk[..n]);
+                    if let Some(end) = find_subsequence(&req_buf, b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&req_buf[..end]);
+                        let content_len = headers
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if req_buf.len() >= end + 4 + content_len {
+                            break;
+                        }
+                    }
+                }
+                let req_text = String::from_utf8_lossy(&req_buf);
+                let body = req_text.split("\r\n\r\n").nth(1).unwrap_or("{}");
+                let vec = if body.contains("laptop battery") || body.contains("notebook power") {
+                    serde_json::json!([0.0, 1.0, 0.0, 0.0])
+                } else {
+                    serde_json::json!([0.0, 0.0, 1.0, 0.0])
+                };
+                let payload = serde_json::json!({
+                    "model": "nomic-embed-text",
+                    "embeddings": [vec]
+                })
+                .to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+
+        let cfg = McpServerConfig {
+            embed_endpoint: Some(format!("http://{addr}/api/embed")),
+            embed_model: Some("nomic-embed-text".to_string()),
+            embed_dims: Some(4),
+            embed_api_key: Some("embed-secret".to_string()),
+        };
+
+        // Semantic hit (no keyword overlap with query "notebook power drain")
+        let s1: serde_json::Value = serde_json::from_str(&handle_mcp_tool_call_with_config(
+            &db,
+            "tapirus_remember",
+            &serde_json::json!({
+                "content": "Replace laptop battery cell when runtime drops below 20 minutes",
+                "namespace": "support"
+            }),
+            &cfg,
+        ))?;
+        assert_eq!(s1["status"], "success");
+        assert_eq!(s1["embedding_mode"], "neural-http");
+        assert_eq!(s1["embedding_dims"], 4);
+
+        // Unrelated lexical distractor
+        let _s2 = handle_mcp_tool_call_with_config(
+            &db,
+            "tapirus_remember",
+            &serde_json::json!({
+                "content": "Firewall power adapter rack notebook inventory",
+                "namespace": "support"
+            }),
+            &cfg,
+        );
+
+        let r_neural: serde_json::Value = serde_json::from_str(&handle_mcp_tool_call_with_config(
+            &db,
+            "tapirus_recall",
+            &serde_json::json!({
+                "query": "notebook power drain",
+                "namespace": "support",
+                "limit": 2
+            }),
+            &cfg,
+        ))?;
+        assert_eq!(r_neural["status"], "success");
+        assert_eq!(r_neural["embedding_mode"], "neural-http");
+        assert_eq!(
+            r_neural["memories"][0]["content"],
+            "Replace laptop battery cell when runtime drops below 20 minutes"
+        );
+        let _ = server_thread.join();
+
+        // 3. Configured endpoint failures fail loudly instead of silently downgrading to hash
+        let err_resp: serde_json::Value = serde_json::from_str(&handle_mcp_tool_call_with_config(
+            &db,
+            "tapirus_remember",
+            &serde_json::json!({ "content": "should fail loudly" }),
+            &cfg,
+        ))?;
+        assert_eq!(err_resp["status"], "error");
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_namespace_scope_isolates_tools_and_blocks_sys_memory_sql()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let db = Connection::open_in_memory()?;
+        db.store_memory(&tapirus::MemoryDocument {
+            content: "Secret beta memory".into(),
+            namespace: Some("tenant_beta".into()),
+            ..Default::default()
+        })?;
+
+        let scoped_alpha = db.scoped_memory("tenant_alpha", Some("sess_1"))?;
+        let ok_remember: serde_json::Value = serde_json::from_str(&handle_mcp_tool_call(
+            &scoped_alpha,
+            "tapirus_remember",
+            &serde_json::json!({ "content": "Alpha note" }),
+        ))?;
+        assert_eq!(ok_remember["status"], "success");
+        assert_eq!(ok_remember["namespace"], "tenant_alpha");
+        assert_eq!(ok_remember["session_id"], "sess_1");
+
+        let denied_remember: serde_json::Value = serde_json::from_str(&handle_mcp_tool_call(
+            &scoped_alpha,
+            "tapirus_remember",
+            &serde_json::json!({ "content": "Escape attempt", "namespace": "tenant_beta" }),
+        ))?;
+        assert_eq!(denied_remember["status"], "error");
+
+        let recall_alpha: serde_json::Value = serde_json::from_str(&handle_mcp_tool_call(
+            &scoped_alpha,
+            "tapirus_recall",
+            &serde_json::json!({ "query": "Secret beta memory" }),
+        ))?;
+        let memories = recall_alpha["memories"].as_array().unwrap();
+        assert!(
+            memories.iter().all(|m| {
+                m["namespace"] == "tenant_alpha" && m["content"] != "Secret beta memory"
+            }),
+            "Scoped MCP recall leaked cross-tenant data: {recall_alpha}"
+        );
+
+        let denied_sql: serde_json::Value = serde_json::from_str(&handle_mcp_tool_call(
+            &scoped_alpha,
+            "tapirus_sql",
+            &serde_json::json!({ "sql": "SELECT * FROM __sys_memory;" }),
+        ))?;
+        assert_eq!(denied_sql["status"], "error");
+        assert!(
+            denied_sql["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Permission denied")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn http_api_key_namespace_enforces_tenant_isolation()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let bindings = parse_api_key_namespace_bindings(&[
+            "key-alpha=tenant_alpha, key-beta=tenant_beta".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            authenticate_http_request(
+                Some("master-key"),
+                &bindings,
+                "POST /api/memory/store HTTP/1.1\r\nAuthorization: Bearer key-alpha\r\n"
+            ),
+            Some(HttpAuthScope::Namespace("tenant_alpha".to_string()))
+        );
+        assert_eq!(
+            authenticate_http_request(
+                Some("master-key"),
+                &bindings,
+                "POST /api/sql HTTP/1.1\r\nX-API-Key: master-key\r\n"
+            ),
+            Some(HttpAuthScope::Unrestricted)
+        );
+        assert_eq!(
+            authenticate_http_request(
+                Some("master-key"),
+                &bindings,
+                "POST /api/memory/store HTTP/1.1\r\nX-API-Key: invalid\r\n"
+            ),
+            None
+        );
+
+        let conn = Connection::open_in_memory()?;
+        let store_b = handle_http_memory_route(
+            &conn,
+            "/api/memory/store",
+            r#"{"content":"Beta confidential roadmap","embedding":[0.0,1.0]}"#,
+            &HttpAuthScope::Namespace("tenant_beta".to_string()),
+        )
+        .unwrap();
+        let store_b_json: serde_json::Value = serde_json::from_str(&store_b)?;
+        let beta_id = store_b_json["memory_id"].as_u64().unwrap();
+
+        let err_cross_ns = handle_http_memory_route(
+            &conn,
+            "/api/memory/store",
+            r#"{"content":"Write into beta","namespace":"tenant_beta"}"#,
+            &HttpAuthScope::Namespace("tenant_alpha".to_string()),
+        )
+        .unwrap_err();
+        assert_eq!(err_cross_ns.0, "403 Forbidden");
+
+        let search_alpha: serde_json::Value = serde_json::from_str(
+            &handle_http_memory_route(
+                &conn,
+                "/api/memory/search",
+                r#"{"query":"Beta confidential","embedding":[0.0,1.0]}"#,
+                &HttpAuthScope::Namespace("tenant_alpha".to_string()),
+            )
+            .unwrap(),
+        )?;
+        assert_eq!(search_alpha["results"].as_array().unwrap().len(), 0);
+
+        let forget_err = handle_http_memory_route(
+            &conn,
+            "/api/memory/forget",
+            &serde_json::json!({ "id": beta_id }).to_string(),
+            &HttpAuthScope::Namespace("tenant_alpha".to_string()),
+        )
+        .unwrap_err();
+        assert_eq!(forget_err.0, "403 Forbidden");
+        assert!(conn.memory_get(beta_id).is_some());
+
+        // End-to-end HTTP check: tenant key is rejected on /api/sql (403 Forbidden)
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let db_arc = Arc::new(Mutex::new(conn));
+        let db_srv = Arc::clone(&db_arc);
+        let master = Arc::new(Some("master-key".to_string()));
+        let scopes = Arc::new(bindings);
+        let cors = Arc::new(Vec::new());
+        let srv = thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                handle_http_client(stream, db_srv, master, scopes, cors);
+            }
+        });
+        let mut client = TcpStream::connect(addr)?;
+        let req_body = r#"{"sql":"SELECT * FROM __sys_memory;"}"#;
+        let raw_req = format!(
+            "POST /api/sql HTTP/1.1\r\nHost: localhost\r\nX-API-Key: key-alpha\r\nContent-Length: {}\r\n\r\n{}",
+            req_body.len(),
+            req_body
+        );
+        client.write_all(raw_req.as_bytes())?;
+        let mut resp = String::new();
+        client.read_to_string(&mut resp)?;
+        assert!(resp.starts_with("HTTP/1.1 403 Forbidden"));
+        let _ = srv.join();
+        Ok(())
     }
 }

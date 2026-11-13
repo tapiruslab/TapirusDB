@@ -84,6 +84,10 @@ pub enum Error {
     #[error("Tap decision error: {0}")]
     DecisionError(String),
 
+    /// Access rejected by an enforced owner/namespace boundary
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(String),

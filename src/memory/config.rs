@@ -39,8 +39,8 @@ impl Default for MemoryConfig {
             max_batch_documents: 10_000,
             max_candidates: 4096,
             hnsw_m: 16,
-            ef_construction: 96,
-            ef_search: 64,
+            ef_construction: 128,
+            ef_search: 512,
         }
     }
 }
@@ -66,7 +66,7 @@ impl MemoryConfig {
         Self {
             max_estimated_bytes: usize::try_from(4u64 * 1024 * 1024 * 1024).unwrap_or(usize::MAX),
             max_vector_dimensions: 8192,
-            ef_construction: 128,
+            ef_construction: 192,
             // High-dimensional vector search needs a wider graph traversal.
             // Candidate retention remains independently bounded per request.
             ef_search: 1024,

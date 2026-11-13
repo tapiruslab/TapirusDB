@@ -513,14 +513,42 @@ impl MemoryEngine {
         rrf_k: f32,
         now_ts: u64,
     ) -> Vec<MemoryRecallResult> {
+        self.recall_rrf_scoped(query_text, query_vector, limit, rrf_k, now_ts, None)
+    }
+
+    pub(crate) fn recall_rrf_scoped(
+        &mut self,
+        query_text: &str,
+        query_vector: Option<&[f32]>,
+        limit: usize,
+        rrf_k: f32,
+        now_ts: u64,
+        scope: Option<&MemoryAccessScope>,
+    ) -> Vec<MemoryRecallResult> {
         // 1. BM25 search
         let bm25_hits = self.bm25.search(query_text, self.entries.len());
-        let bm25_ids: Vec<u64> = bm25_hits.iter().map(|(id, _)| *id).collect();
+        let bm25_ids: Vec<u64> = bm25_hits
+            .iter()
+            .filter_map(|(id, _)| {
+                let entry = self.entries.get(id)?;
+                if scope.is_some_and(|s| !s.matches_entry(entry))
+                    || entry.expires_at.is_some_and(|expiry| now_ts >= expiry)
+                {
+                    return None;
+                }
+                Some(*id)
+            })
+            .collect();
 
         // 2. Vector search (if vector is provided)
         let mut vector_hits: Vec<(u64, f32)> = Vec::new();
         if let Some(q_vec) = query_vector {
             for (id, entry) in &self.entries {
+                if scope.is_some_and(|s| !s.matches_entry(entry))
+                    || entry.expires_at.is_some_and(|expiry| now_ts >= expiry)
+                {
+                    continue;
+                }
                 if let Some(e_vec) = &entry.vector {
                     if e_vec.len() == q_vec.len() {
                         let dot: f32 = q_vec.iter().zip(e_vec.iter()).map(|(a, b)| a * b).sum();
@@ -575,6 +603,16 @@ impl MemoryEngine {
         half_life_seconds: u64,
         now_ts: u64,
     ) -> Vec<u64> {
+        self.prune_decayed_ids_at_scoped(decay_threshold, half_life_seconds, now_ts, None)
+    }
+
+    pub(crate) fn prune_decayed_ids_at_scoped(
+        &mut self,
+        decay_threshold: f32,
+        half_life_seconds: u64,
+        now_ts: u64,
+        scope: Option<&MemoryAccessScope>,
+    ) -> Vec<u64> {
         let lambda = if half_life_seconds > 0 {
             2.0f32.ln() / (half_life_seconds as f32)
         } else {
@@ -583,6 +621,9 @@ impl MemoryEngine {
 
         let mut to_remove: Vec<u64> = Vec::new();
         for (&id, entry) in &self.entries {
+            if scope.is_some_and(|s| !s.matches_entry(entry)) {
+                continue;
+            }
             let dt = now_ts.saturating_sub(entry.timestamp) as f32;
             let recency = (-lambda * dt).exp();
             let retention_score = 0.6 * entry.importance + 0.4 * recency;

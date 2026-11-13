@@ -53,6 +53,130 @@ impl Default for MemoryDocument {
     }
 }
 
+/// Hard owner boundary enforced across every memory operation of a scoped [`Connection`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryAccessScope {
+    /// Mandatory owner namespace (compared case-insensitively).
+    pub namespace: String,
+    /// Optional session identifier bound to this owner (compared exactly).
+    pub session_id: Option<String>,
+}
+
+fn validate_scope_token(label: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
+        return Err(Error::ConstraintViolation(format!(
+            "Invalid memory scope {label}"
+        )));
+    }
+    Ok(())
+}
+
+impl MemoryAccessScope {
+    /// Validate and construct an owner memory isolation scope.
+    pub fn new(namespace: impl Into<String>, session_id: Option<String>) -> Result<Self> {
+        let namespace = namespace.into();
+        validate_scope_token("namespace", &namespace)?;
+        if let Some(ref session) = session_id {
+            validate_scope_token("session_id", session)?;
+        }
+        Ok(Self {
+            namespace,
+            session_id,
+        })
+    }
+
+    /// Return whether an entry belongs to this owner boundary.
+    pub fn matches_entry(&self, entry: &super::MemoryEntry) -> bool {
+        entry
+            .namespace
+            .as_ref()
+            .is_some_and(|ns| ns.eq_ignore_ascii_case(&self.namespace))
+            && self
+                .session_id
+                .as_ref()
+                .is_none_or(|sess| entry.session_id.as_ref() == Some(sess))
+    }
+
+    /// Resolve effective write/query `(namespace, session_id)` or reject cross-owner access.
+    pub fn resolve_target(
+        &self,
+        requested_namespace: Option<&str>,
+        requested_session_id: Option<&str>,
+    ) -> Result<(String, Option<String>)> {
+        if let Some(ns) = requested_namespace {
+            if !ns.eq_ignore_ascii_case(&self.namespace) {
+                return Err(Error::PermissionDenied(format!(
+                    "Namespace '{ns}' is outside scoped owner boundary '{}'",
+                    self.namespace
+                )));
+            }
+        }
+        let session = if let Some(bound_session) = &self.session_id {
+            if let Some(req_session) = requested_session_id {
+                if req_session != bound_session {
+                    return Err(Error::PermissionDenied(format!(
+                        "Session '{req_session}' is outside scoped owner session boundary"
+                    )));
+                }
+            }
+            Some(bound_session.clone())
+        } else {
+            requested_session_id.map(str::to_owned)
+        };
+        Ok((self.namespace.clone(), session))
+    }
+
+    /// Enforce this boundary onto a document before persistence.
+    pub fn enforce_document(&self, document: &MemoryDocument) -> Result<MemoryDocument> {
+        let (ns, sess) = self.resolve_target(
+            document.namespace.as_deref(),
+            document.session_id.as_deref(),
+        )?;
+        let mut scoped = document.clone();
+        scoped.namespace = Some(ns);
+        scoped.session_id = sess;
+        Ok(scoped)
+    }
+
+    /// Enforce this boundary onto a structured search query.
+    pub fn enforce_search(&self, search: &MemorySearch) -> Result<MemorySearch> {
+        let (ns, sess) =
+            self.resolve_target(search.namespace.as_deref(), search.session_id.as_deref())?;
+        let mut scoped = search.clone();
+        scoped.namespace = Some(ns);
+        scoped.session_id = sess;
+        Ok(scoped)
+    }
+
+    /// Enforce this boundary onto a legacy recall filter.
+    pub fn enforce_recall_filter(
+        &self,
+        filter: &super::MemoryRecallFilter,
+    ) -> Result<super::MemoryRecallFilter> {
+        let (ns, sess) =
+            self.resolve_target(filter.namespace.as_deref(), filter.session_id.as_deref())?;
+        let mut scoped = filter.clone();
+        scoped.namespace = Some(ns);
+        scoped.session_id = sess;
+        Ok(scoped)
+    }
+
+    /// Enforce this boundary onto a deletion scope after structural validation.
+    pub fn enforce_delete_scope(&self, scope: &MemoryDeleteScope) -> Result<MemoryDeleteScope> {
+        if scope.all {
+            return Err(Error::PermissionDenied(
+                "Global all=true deletion is forbidden on a scoped memory connection".into(),
+            ));
+        }
+        let (ns, sess) =
+            self.resolve_target(scope.namespace.as_deref(), scope.session_id.as_deref())?;
+        let mut scoped = scope.clone();
+        scoped.namespace = Some(ns);
+        scoped.session_id = sess;
+        Ok(scoped)
+    }
+}
+
 /// Search text, supplied embeddings, or both, with explicit source filters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -105,11 +229,11 @@ impl Default for MemorySearch {
             embedding_model: None,
             candidate_limit: 128,
             fusion: MemoryFusion::Rrf,
-            rrf_k: 60.0,
-            vector_weight: 0.45,
-            lexical_weight: 0.35,
-            recency_weight: 0.10,
-            importance_weight: 0.10,
+            rrf_k: 20.0,
+            vector_weight: 0.65,
+            lexical_weight: 0.25,
+            recency_weight: 0.05,
+            importance_weight: 0.05,
             half_life_seconds: 30 * 86400,
             min_score: 0.0,
             exact: false,
@@ -231,6 +355,13 @@ impl Connection {
         self.mutate_memory(|memory, executor, pager| {
             let mut ids = Vec::with_capacity(documents.len());
             for document in documents {
+                let scoped_document;
+                let document = if let Some(scope) = self.memory_scope.as_ref() {
+                    scoped_document = scope.enforce_document(document)?;
+                    &scoped_document
+                } else {
+                    document
+                };
                 let id = memory.write_document(document, upsert, now)?;
                 executor
                     .persist_memory_entry(pager, memory.get_memory(id).expect("stored source"))?;
@@ -243,6 +374,11 @@ impl Connection {
     /// Configure resource limits for this open connection and its cloned handles.
     /// Reapply on reopen, or specify Config::memory when opening the database.
     pub fn configure_memory(&self, config: MemoryConfig) -> Result<()> {
+        if self.memory_scope.is_some() {
+            return Err(Error::PermissionDenied(
+                "Scoped memory connections cannot alter global memory configuration".into(),
+            ));
+        }
         self.memory.write().configure(config)
     }
 
@@ -263,11 +399,15 @@ impl Connection {
 
     /// Purge expiry using an explicit Unix timestamp for deterministic maintenance.
     pub fn purge_expired_memories_at(&self, now: u64) -> Result<usize> {
+        let scope = self.memory_scope.as_ref();
         self.mutate_memory(|memory, executor, pager| {
             let ids: Vec<_> = memory
                 .all_entries()
                 .values()
-                .filter(|entry| entry.expires_at.is_some_and(|expiry| expiry <= now))
+                .filter(|entry| {
+                    entry.expires_at.is_some_and(|expiry| expiry <= now)
+                        && scope.is_none_or(|s| s.matches_entry(entry))
+                })
                 .map(|entry| entry.id)
                 .collect();
             let (removed, updated) = memory.remove_ids(&ids);
@@ -288,11 +428,18 @@ impl Connection {
     /// Empty scopes are rejected unless all=true is deliberately supplied.
     pub fn delete_memories(&self, scope: &MemoryDeleteScope) -> Result<usize> {
         scope.validate()?;
+        let scoped_delete;
+        let effective_scope = if let Some(owner_scope) = self.memory_scope.as_ref() {
+            scoped_delete = owner_scope.enforce_delete_scope(scope)?;
+            &scoped_delete
+        } else {
+            scope
+        };
         self.mutate_memory(|memory, executor, pager| {
             let ids: Vec<_> = memory
                 .all_entries()
                 .values()
-                .filter(|entry| scope.matches(entry))
+                .filter(|entry| effective_scope.matches(entry))
                 .map(|entry| entry.id)
                 .collect();
             let (removed, updated) = memory.remove_ids(&ids);
@@ -326,8 +473,15 @@ impl Connection {
         search: &MemorySearch,
         now: u64,
     ) -> Result<MemorySearchResponse> {
+        let scoped_search;
+        let effective_search = if let Some(scope) = self.memory_scope.as_ref() {
+            scoped_search = scope.enforce_search(search)?;
+            &scoped_search
+        } else {
+            search
+        };
         self.pager.read().ensure_io_ready()?;
-        self.memory.write().search_indexed(search, now)
+        self.memory.write().search_indexed(effective_search, now)
     }
 }
 

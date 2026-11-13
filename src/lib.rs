@@ -39,8 +39,8 @@ pub use graph::{
 };
 pub use memory::{
     Bm25Index, Bm25Params, DeterministicHashEmbedder, EmbeddingEngine, HttpEmbeddingEngine,
-    MemoryConfig, MemoryDeleteScope, MemoryDocument, MemoryEngine, MemoryEntry, MemoryFusion,
-    MemoryRecallFilter, MemoryRecallResult, MemorySearch, MemorySearchDiagnostics,
+    MemoryAccessScope, MemoryConfig, MemoryDeleteScope, MemoryDocument, MemoryEngine, MemoryEntry,
+    MemoryFusion, MemoryRecallFilter, MemoryRecallResult, MemorySearch, MemorySearchDiagnostics,
     MemorySearchResponse, MemoryStats, reciprocal_rank_fusion,
 };
 #[cfg(feature = "cloud-s3")]
@@ -157,6 +157,7 @@ pub struct Connection {
     realtime: Arc<RealtimeBus>,
     pending_changes: Arc<parking_lot::Mutex<Vec<(usize, ChangeEvent)>>>,
     config: Config,
+    memory_scope: Option<MemoryAccessScope>,
 }
 
 /// A wrapper that distributes cloned handles to one shared connection.
@@ -302,6 +303,7 @@ impl Connection {
             realtime: Arc::new(RealtimeBus::new()),
             pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
             config,
+            memory_scope: None,
         })
     }
 
@@ -332,6 +334,7 @@ impl Connection {
             realtime: Arc::new(RealtimeBus::new()),
             pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
             config,
+            memory_scope: None,
         })
     }
 
@@ -374,6 +377,7 @@ impl Connection {
             realtime: Arc::new(RealtimeBus::new()),
             pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
             config,
+            memory_scope: None,
         })
     }
 
@@ -403,6 +407,7 @@ impl Connection {
             realtime: Arc::new(RealtimeBus::new()),
             pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
             config,
+            memory_scope: None,
         })
     }
 
@@ -424,6 +429,7 @@ impl Connection {
             realtime: Arc::new(RealtimeBus::new()),
             pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
             config,
+            memory_scope: None,
         })
     }
 
@@ -435,6 +441,30 @@ impl Connection {
     /// Return reference to active configuration
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Return a cloned connection handle strictly confined to a single owner namespace and optional session.
+    ///
+    /// Already-scoped handles can only narrow (for example binding a session inside the same namespace)
+    /// and cannot escalate across namespaces or remove an existing session bound.
+    pub fn scoped_memory(&self, namespace: &str, session_id: Option<&str>) -> Result<Self> {
+        let next = MemoryAccessScope::new(namespace, session_id.map(str::to_owned))?;
+        if let Some(existing) = &self.memory_scope {
+            existing.resolve_target(Some(&next.namespace), next.session_id.as_deref())?;
+            if existing.session_id.is_some() && next.session_id.is_none() {
+                return Err(Error::PermissionDenied(
+                    "Cannot broaden session scope on an already session-scoped connection".into(),
+                ));
+            }
+        }
+        let mut scoped = self.clone();
+        scoped.memory_scope = Some(next);
+        Ok(scoped)
+    }
+
+    /// Return the active owner isolation boundary, if this connection is memory-scoped.
+    pub fn memory_scope(&self) -> Option<&MemoryAccessScope> {
+        self.memory_scope.as_ref()
     }
 
     /// Return reference to internal pager lock
@@ -783,20 +813,22 @@ impl Connection {
             .duration_since(web_time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        let doc = MemoryDocument {
+            content: content.into(),
+            embedding: vector.map(<[f32]>::to_vec),
+            importance,
+            tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+            namespace: namespace.map(str::to_owned),
+            session_id: session_id.map(str::to_owned),
+            ..Default::default()
+        };
+        let effective_doc = if let Some(scope) = self.memory_scope.as_ref() {
+            scope.enforce_document(&doc)?
+        } else {
+            doc
+        };
         self.mutate_memory(|mem, executor, pager| {
-            let id = mem.write_document(
-                &MemoryDocument {
-                    content: content.into(),
-                    embedding: vector.map(<[f32]>::to_vec),
-                    importance,
-                    tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
-                    namespace: namespace.map(str::to_owned),
-                    session_id: session_id.map(str::to_owned),
-                    ..Default::default()
-                },
-                false,
-                now_ts,
-            )?;
+            let id = mem.write_document(&effective_doc, false, now_ts)?;
             let entry = mem.get_memory(id).expect("newly inserted memory");
             executor.persist_memory_entry(pager, entry)?;
             Ok(id)
@@ -813,18 +845,20 @@ impl Connection {
         timestamp: u64,
     ) -> Result<u64> {
         Self::validate_memory_input(vector, importance)?;
+        let doc = MemoryDocument {
+            content: content.into(),
+            embedding: vector.map(<[f32]>::to_vec),
+            importance,
+            tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+            ..Default::default()
+        };
+        let effective_doc = if let Some(scope) = self.memory_scope.as_ref() {
+            scope.enforce_document(&doc)?
+        } else {
+            doc
+        };
         self.mutate_memory(|mem, executor, pager| {
-            let id = mem.write_document(
-                &MemoryDocument {
-                    content: content.into(),
-                    embedding: vector.map(<[f32]>::to_vec),
-                    importance,
-                    tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
-                    ..Default::default()
-                },
-                false,
-                timestamp,
-            )?;
+            let id = mem.write_document(&effective_doc, false, timestamp)?;
             let entry = mem.get_memory(id).expect("newly inserted memory");
             executor.persist_memory_entry(pager, entry)?;
             Ok(id)
@@ -859,7 +893,14 @@ impl Connection {
             .unwrap_or_default()
             .as_secs();
         let mut mem = self.memory.write();
-        mem.recall_rrf(query_text, query_vector, limit, rrf_k, now_ts)
+        mem.recall_rrf_scoped(
+            query_text,
+            query_vector,
+            limit,
+            rrf_k,
+            now_ts,
+            self.memory_scope.as_ref(),
+        )
     }
 
     /// Turnkey Zero-Setup AI Agent Memory: remember plain text with automatic local embedding.
@@ -994,13 +1035,43 @@ impl Connection {
         filter: &crate::memory::MemoryRecallFilter,
         eval_timestamp: u64,
     ) -> Vec<crate::memory::MemoryRecallResult> {
+        let scoped_filter;
+        let effective_filter = if let Some(scope) = self.memory_scope.as_ref() {
+            match scope.enforce_recall_filter(filter) {
+                Ok(enforced) => {
+                    scoped_filter = enforced;
+                    &scoped_filter
+                }
+                Err(_) => return Vec::new(),
+            }
+        } else {
+            filter
+        };
         let mut mem = self.memory.write();
-        mem.recall(query_text, query_vector, limit, filter, eval_timestamp)
+        mem.recall(
+            query_text,
+            query_vector,
+            limit,
+            effective_filter,
+            eval_timestamp,
+        )
     }
 
     /// Link two memories together as an associative connection.
     pub fn memory_link(&self, id_a: u64, id_b: u64) -> Result<()> {
+        let scope = self.memory_scope.as_ref();
         self.mutate_memory(|mem, executor, pager| {
+            if let Some(scope) = scope {
+                for id in [id_a, id_b] {
+                    if let Some(entry) = mem.get_memory(id) {
+                        if !scope.matches_entry(entry) {
+                            return Err(Error::PermissionDenied(format!(
+                                "Memory #{id} is outside scoped owner boundary"
+                            )));
+                        }
+                    }
+                }
+            }
             mem.associate(id_a, id_b)?;
             for id in [id_a, id_b] {
                 let entry = mem.get_memory(id).expect("validated associated memory");
@@ -1013,13 +1084,26 @@ impl Connection {
     /// Retrieve a single memory by ID.
     pub fn memory_get(&self, id: u64) -> Option<crate::memory::MemoryEntry> {
         let mem = self.memory.read();
-        mem.get_memory(id).cloned()
+        mem.get_memory(id)
+            .filter(|entry| {
+                self.memory_scope
+                    .as_ref()
+                    .is_none_or(|scope| scope.matches_entry(entry))
+            })
+            .cloned()
     }
 
     /// Total count of memories currently held in the memory engine.
     pub fn memory_count(&self) -> usize {
         let mem = self.memory.read();
-        mem.memory_count()
+        if let Some(scope) = self.memory_scope.as_ref() {
+            mem.all_entries()
+                .values()
+                .filter(|entry| scope.matches_entry(entry))
+                .count()
+        } else {
+            mem.memory_count()
+        }
     }
 
     /// Prune old or decayed memories below the given retention threshold using system time.
@@ -1054,9 +1138,14 @@ impl Connection {
                 "Retention threshold must be finite".into(),
             ));
         }
+        let scope = self.memory_scope.as_ref();
         self.mutate_memory(|mem, executor, pager| {
-            let removed_ids =
-                mem.prune_decayed_ids_at(decay_threshold, half_life_seconds, eval_timestamp);
+            let removed_ids = mem.prune_decayed_ids_at_scoped(
+                decay_threshold,
+                half_life_seconds,
+                eval_timestamp,
+                scope,
+            );
             for &id in &removed_ids {
                 executor.delete_memory_entry(pager, id)?;
             }
@@ -1071,7 +1160,17 @@ impl Connection {
 
     /// Atomically delete a memory and propagate storage errors to the caller.
     pub fn memory_forget_checked(&self, id: u64) -> Result<bool> {
+        let scope = self.memory_scope.as_ref();
         self.mutate_memory(|mem, executor, pager| {
+            if let Some(scope) = scope {
+                if let Some(entry) = mem.get_memory(id) {
+                    if !scope.matches_entry(entry) {
+                        return Err(Error::PermissionDenied(format!(
+                            "Memory #{id} is outside scoped owner boundary"
+                        )));
+                    }
+                }
+            }
             let (removed, updated) = mem.remove_ids(&[id]);
             for id in &removed {
                 executor.delete_memory_entry(pager, *id)?;
