@@ -112,11 +112,13 @@ impl IntegrityReport {
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use parking_lot::RwLock;
+use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
+use zeroize::Zeroize;
 
 /// Configuration options for opening a TapirusDB connection
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     /// Size of each database page in bytes (default: 4096)
     pub page_size: u16,
@@ -152,6 +154,63 @@ impl Default for Config {
             busy_timeout: std::time::Duration::ZERO,
         }
     }
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("page_size", &self.page_size)
+            .field("page_cache_capacity", &self.page_cache_capacity)
+            .field("auto_checkpoint", &self.auto_checkpoint)
+            .field(
+                "passphrase",
+                &self.passphrase.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "encryption_key",
+                &self.encryption_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("memory", &self.memory)
+            .field("read_only", &self.read_only)
+            .field("concurrent_access", &self.concurrent_access)
+            .field("busy_timeout", &self.busy_timeout)
+            .finish()
+    }
+}
+
+impl Zeroize for Config {
+    fn zeroize(&mut self) {
+        if let Some(ref mut passphrase) = self.passphrase {
+            passphrase.zeroize();
+        }
+        self.passphrase = None;
+        if let Some(ref mut key) = self.encryption_key {
+            key.zeroize();
+        }
+        self.encryption_key = None;
+    }
+}
+
+fn take_cipher_from_config(
+    config: &mut Config,
+    get_salt: impl FnOnce() -> Result<[u8; 16]>,
+) -> Result<Option<DatabaseCipher>> {
+    let cipher = if let Some(mut key) = config.encryption_key.take() {
+        let salt = get_salt()?;
+        let cipher = DatabaseCipher::new(key, salt);
+        key.zeroize();
+        config.zeroize();
+        Some(cipher)
+    } else if let Some(mut pass) = config.passphrase.take() {
+        let salt = get_salt()?;
+        let cipher = DatabaseCipher::from_passphrase(&pass, salt);
+        pass.zeroize();
+        config.zeroize();
+        Some(cipher)
+    } else {
+        None
+    };
+    Ok(cipher)
 }
 
 /// An open connection to a TapirusDB single-file database.
@@ -316,7 +375,7 @@ impl Connection {
     }
 
     /// Open a database file with custom configuration options
-    pub fn open_with_config<P: AsRef<Path>>(path: P, config: Config) -> Result<Self> {
+    pub fn open_with_config<P: AsRef<Path>>(path: P, mut config: Config) -> Result<Self> {
         if config.read_only && !path.as_ref().exists() {
             return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -324,15 +383,7 @@ impl Connection {
             )));
         }
 
-        let cipher = if let Some(key) = config.encryption_key {
-            let salt = read_or_generate_salt(path.as_ref())?;
-            Some(DatabaseCipher::new(key, salt))
-        } else if let Some(ref pass) = config.passphrase {
-            let salt = read_or_generate_salt(path.as_ref())?;
-            Some(DatabaseCipher::from_passphrase(pass, salt))
-        } else {
-            None
-        };
+        let cipher = take_cipher_from_config(&mut config, || read_or_generate_salt(path.as_ref()))?;
 
         let mut pager = if config.read_only {
             Pager::open_read_only_with_cipher(path.as_ref(), config.page_cache_capacity, cipher)?
@@ -374,15 +425,36 @@ impl Connection {
         Self::open_in_memory_with_config(Config::default())
     }
 
-    /// Open temporary storage with explicit admission and cache limits.
-    /// Encryption credentials require a file-backed connection.
-    pub fn open_in_memory_with_config(config: Config) -> Result<Self> {
-        if config.passphrase.is_some() || config.encryption_key.is_some() {
-            return Err(Error::ConstraintViolation(
-                "Encryption credentials require file-backed storage".into(),
-            ));
-        }
-        let mut pager = Pager::open_in_memory(config.page_size, config.page_cache_capacity)?;
+    /// Open a temporary encrypted in-memory database using a user passphrase.
+    /// Exported snapshots (`export_bytes`) remain encrypted at rest with ChaCha20-Poly1305.
+    pub fn open_encrypted_in_memory(passphrase: &str) -> Result<Self> {
+        let config = Config {
+            passphrase: Some(passphrase.to_string()),
+            ..Default::default()
+        };
+        Self::open_in_memory_with_config(config)
+    }
+
+    /// Open a temporary encrypted in-memory database using a raw 256-bit key.
+    /// Exported snapshots (`export_bytes`) remain encrypted at rest with ChaCha20-Poly1305.
+    pub fn open_encrypted_in_memory_with_key(mut key: [u8; 32]) -> Result<Self> {
+        let config = Config {
+            encryption_key: Some(key),
+            ..Default::default()
+        };
+        key.zeroize();
+        Self::open_in_memory_with_config(config)
+    }
+
+    /// Open temporary storage with explicit admission, cache, and optional encryption limits.
+    pub fn open_in_memory_with_config(mut config: Config) -> Result<Self> {
+        let cipher =
+            take_cipher_from_config(&mut config, || Ok(crate::crypto::generate_random_salt()))?;
+        let mut pager = Pager::open_in_memory_with_cipher(
+            config.page_size,
+            config.page_cache_capacity,
+            cipher,
+        )?;
         pager.set_auto_checkpoint(config.auto_checkpoint);
         let mut executor = SQLExecutor::new(&mut pager)?;
         let mut memory = MemoryEngine::with_config(config.memory.clone())?;
@@ -503,6 +575,11 @@ impl Connection {
     /// Return reference to active configuration
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Return `true` when page-level ChaCha20-Poly1305 encryption is active on this connection.
+    pub fn is_encrypted(&self) -> bool {
+        self.pager.read().header().encryption_flags != 0
     }
 
     /// Return a cloned connection handle strictly confined to a single owner namespace and optional session.
@@ -2621,5 +2698,63 @@ mod tests {
         assert_eq!(q_2bit.num_bits(), 2);
         let sim_2bit = conn.rabitq_similarity(&q_2bit, &vec_a);
         assert!(sim_2bit > 0.75);
+    }
+
+    #[test]
+    fn test_config_scrubs_and_redacts_secrets() {
+        let mut cfg = Config {
+            passphrase: Some("my-top-secret-passphrase".to_string()),
+            encryption_key: Some([0x42u8; 32]),
+            ..Default::default()
+        };
+        let dbg_str = format!("{cfg:?}");
+        assert!(!dbg_str.contains("my-top-secret-passphrase"));
+        assert!(dbg_str.contains("[REDACTED]"));
+
+        cfg.zeroize();
+        assert!(cfg.passphrase.is_none());
+        assert!(cfg.encryption_key.is_none());
+
+        let conn = Connection::open_encrypted_in_memory_with_key([0x7Au8; 32]).unwrap();
+        assert!(conn.is_encrypted());
+        assert!(conn.config().passphrase.is_none());
+        assert!(conn.config().encryption_key.is_none());
+    }
+
+    #[test]
+    fn test_encrypted_in_memory_export_and_import_roundtrip() {
+        let conn = Connection::open_encrypted_in_memory("browser-opfs-secret").unwrap();
+        assert!(conn.is_encrypted());
+        conn.execute("CREATE TABLE vault (id INTEGER PRIMARY KEY, secret TEXT);")
+            .unwrap();
+        conn.execute("INSERT INTO vault VALUES (1, 'super-confidential-token');")
+            .unwrap();
+
+        let bytes = conn.export_bytes().unwrap();
+        assert!(!bytes.is_empty());
+        assert_eq!(bytes.len() % 4096, 0);
+        // Raw plaintext must never appear in encrypted exported bytes
+        assert!(
+            !bytes
+                .windows(b"super-confidential-token".len())
+                .any(|w| w == b"super-confidential-token")
+        );
+
+        // Plaintext import must fail because encryption_flags == 1
+        assert!(Connection::open_from_bytes(&bytes).is_err());
+        // Wrong passphrase must fail KCV/AEAD
+        assert!(Connection::open_encrypted_from_bytes(&bytes, "wrong-pass").is_err());
+
+        // Correct passphrase decrypts cleanly
+        let restored =
+            Connection::open_encrypted_from_bytes(&bytes, "browser-opfs-secret").unwrap();
+        assert!(restored.is_encrypted());
+        let rows = restored
+            .query("SELECT secret FROM vault WHERE id = 1;")
+            .unwrap();
+        assert_eq!(
+            rows[0].get::<String>("secret").unwrap(),
+            "super-confidential-token"
+        );
     }
 }

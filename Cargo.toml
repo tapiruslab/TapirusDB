@@ -116,14 +116,16 @@ getrandom = { version = "0.4.3", features = ["wasm_js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tempfile = "3.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls-pki-types = { version = "1.15", optional = true }
 
 [dev-dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3.14"
 
 [features]
-# Flagship Default: Complete Quad-Model Engine
-default = ["quad"]
+# Flagship Default: Complete Quad-Model Engine + Native TLS Server Support
+default = ["quad", "tls"]
 
 # Core Data Model Building Blocks
 sql = []
@@ -132,7 +134,7 @@ graphs = []
 documents = []
 realtime = []
 tap = []
-server = []
+server = ["tls"]
 
 # =========================================================================
 # Official Brand-Sovereign Edition Profiles
@@ -162,6 +164,7 @@ quad = ["sql", "vectors", "graphs", "documents", "realtime", "tap", "simd", "std
 edition-enterprise = ["quad", "server"]
 enterprise = ["edition-enterprise"]
 
+tls = ["dep:rustls", "dep:rustls-pki-types"]
 std = []
 simd = ["dep:wide"]
 tap-deep = []

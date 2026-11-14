@@ -70,6 +70,21 @@ impl TapirusWasm {
         Ok(Self { conn })
     }
 
+    /// Create a new encrypted in-memory TapirusDB instance in WebAssembly using ChaCha20-Poly1305.
+    /// `export_bytes()` produces an encrypted `.tapir` snapshot ready for OPFS/IndexedDB persistence.
+    #[wasm_bindgen]
+    pub fn new_encrypted(passphrase: &str) -> Result<TapirusWasm, JsValue> {
+        let conn = Connection::open_encrypted_in_memory(passphrase)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(Self { conn })
+    }
+
+    /// Return `true` when page-level ChaCha20-Poly1305 encryption is active.
+    #[wasm_bindgen]
+    pub fn is_encrypted(&self) -> bool {
+        self.conn.is_encrypted()
+    }
+
     /// Return engine version string
     #[wasm_bindgen]
     pub fn version() -> String {

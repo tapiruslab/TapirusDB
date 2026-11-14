@@ -145,6 +145,21 @@ impl Drop for DatabaseCipher {
     }
 }
 
+fn build_page_aad(page_id: PageId, page_bytes: &[u8]) -> ([u8; 49], usize) {
+    let mut aad = [0u8; 49];
+    aad[0..4].copy_from_slice(&page_id.to_le_bytes());
+    if page_id == 1 && page_bytes.len() >= 81 {
+        // Authenticate immutable Page 1 header metadata (magic, page_size, version,
+        // encryption_flags, salt, kcv) with Poly1305 AEAD while allowing mutable
+        // commit counters in [12..48] to flush independently.
+        aad[4..16].copy_from_slice(&page_bytes[0..12]);
+        aad[16..49].copy_from_slice(&page_bytes[48..81]);
+        (aad, 49)
+    } else {
+        (aad, 4)
+    }
+}
+
 impl DatabaseCipher {
     /// Initialize cipher with raw 256-bit key and 16-byte salt
     pub fn new(key: [u8; 32], salt: [u8; 16]) -> Self {
@@ -281,9 +296,10 @@ impl DatabaseCipher {
         };
 
         let pt_slice = &plaintext[pt_start..pt_end];
+        let (aad_buf, aad_len) = build_page_aad(page_id, plaintext);
         let payload = Payload {
             msg: pt_slice,
-            aad: &page_id.to_le_bytes(),
+            aad: &aad_buf[..aad_len],
         };
 
         let ct = cipher
@@ -355,9 +371,10 @@ impl DatabaseCipher {
         combined.extend_from_slice(ct_slice);
         combined.extend_from_slice(tag_slice);
 
+        let (aad_buf, aad_len) = build_page_aad(page_id, disk_page);
         let payload = Payload {
             msg: &combined,
-            aad: &page_id.to_le_bytes(),
+            aad: &aad_buf[..aad_len],
         };
 
         let pt = cipher
@@ -543,5 +560,36 @@ mod tests {
         assert_eq!(cipher.salt(), &[0u8; 16]);
         assert_eq!(cipher.epoch(), 0);
         assert!(core::mem::needs_drop::<DatabaseCipher>());
+    }
+
+    #[test]
+    fn test_page1_immutable_header_authenticated_by_aead() {
+        let salt = [9u8; 16];
+        let cipher = DatabaseCipher::from_passphrase_with_iterations(
+            "header-auth-secret",
+            salt,
+            PBKDF2_FAST_ITERATIONS,
+        );
+        let mut page1 = vec![0u8; 4096];
+        page1[0..8].copy_from_slice(b"TAPIRUS\0");
+        page1[8..10].copy_from_slice(&4096u16.to_le_bytes());
+        page1[10..12].copy_from_slice(&1u16.to_le_bytes());
+        page1[48] = 1;
+        page1[49..65].copy_from_slice(&salt);
+        page1[65..81].copy_from_slice(&cipher.generate_kcv().unwrap());
+        page1[200] = 0x7E;
+
+        let encrypted = cipher.encrypt_page(1, &page1).unwrap();
+        assert!(cipher.decrypt_page(1, &encrypted).is_ok());
+
+        // Tampering with plaintext Page 1 security/format header fields must fail AEAD
+        for offset in [0usize, 8, 10, 48, 50, 70] {
+            let mut tampered = encrypted.clone();
+            tampered[offset] ^= 0x01;
+            assert!(
+                cipher.decrypt_page(1, &tampered).is_err(),
+                "Page 1 header tampering at byte {offset} must fail AEAD"
+            );
+        }
     }
 }

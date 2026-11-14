@@ -17,8 +17,11 @@ use std::thread;
 use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tapirus::sql::catalog::DataType;
-use tapirus::{Connection, EmbeddingEngine, Row, Value};
+use tapirus::sql::lexer::{Token, tokenize};
+use tapirus::sql::parser::WhereExpr;
+use tapirus::{Connection, EmbeddingEngine, Row, Statement, Value, bind_parameters, parse_tokens};
 use web_time::Instant;
+use zeroize::Zeroize;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const HTTP_MAX_CLIENTS: usize = 64;
@@ -335,6 +338,13 @@ fn print_serve_help() {
         "  --api-key-namespace <KEY>=<NS>   Bind an API key to a single isolated memory namespace (repeatable)"
     );
     println!(
+        "  --api-key-role <KEY>=<RULE>      Bind a scoped SQL RBAC key: readonly|readwrite[:t1+t2] (repeatable)"
+    );
+    println!(
+        "  --tls-cert <CERT_PEM>            Enable native Rustls HTTPS with PEM certificate chain"
+    );
+    println!("  --tls-key <KEY_PEM>              Enable native Rustls HTTPS with PEM private key");
+    println!(
         "  --cors-origin <ORIGIN>           Allow CORS origin (comma-separated or repeatable; '*' opts in)"
     );
     println!(
@@ -350,12 +360,19 @@ fn print_serve_help() {
         "  TAPIRUS_API_KEY_NAMESPACES       Comma-separated KEY=NAMESPACE bindings for tenant isolation"
     );
     println!(
+        "  TAPIRUS_API_KEY_ROLES            Comma-separated KEY=readonly|readwrite[:t1+t2] SQL RBAC bindings"
+    );
+    println!(
+        "  TAPIRUS_TLS_CERT                 Fallback PEM certificate chain path for native TLS"
+    );
+    println!("  TAPIRUS_TLS_KEY                  Fallback PEM private key path for native TLS");
+    println!(
         "  TAPIRUS_CORS_ORIGIN              Comma-separated allowed CORS origins (default: disabled)"
     );
     println!();
     println!("Transport Security:");
-    println!("  Plaintext HTTP only. Do not expose directly to untrusted networks; place");
-    println!("  behind a TLS reverse proxy (Nginx, Caddy, or tunnel) with HTTPS termination.");
+    println!("  Pass --tls-cert and --tls-key to serve native HTTPS via Rustls, or bind to");
+    println!("  127.0.0.1 behind a TLS-terminating reverse proxy (Nginx, Caddy, or tunnel).");
     println!();
     println!("Arguments:");
     println!(
@@ -372,6 +389,95 @@ fn run_studio_command(args: &[String]) {
     println!("  -> Press Ctrl+C to stop server cleanly.");
     println!("===============================================================\n");
     run_serve_command(args);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SqlRoleAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ApiKeyRoleBinding {
+    key: String,
+    access: SqlRoleAccess,
+    allowed_tables: Option<Vec<String>>,
+}
+
+fn parse_api_key_role_bindings(
+    raw_entries: &[String],
+) -> std::result::Result<Vec<ApiKeyRoleBinding>, String> {
+    let mut bindings = Vec::new();
+    for entry in raw_entries {
+        for item in entry.split(',') {
+            let trimmed = item.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Some((key, rule)) = trimmed.split_once('=') else {
+                return Err(format!(
+                    "Invalid API key role binding '{trimmed}'; expected KEY=readonly|readwrite[:table1+table2]"
+                ));
+            };
+            let key = key.trim();
+            let rule = rule.trim();
+            if key.is_empty() {
+                return Err("API key in KEY=ROLE binding must not be empty".to_string());
+            }
+            let (role_part, tables_part) = match rule.split_once(':') {
+                Some((r, t)) => (r.trim(), Some(t.trim())),
+                None => (rule, None),
+            };
+            let access = match role_part.to_ascii_lowercase().as_str() {
+                "readonly" | "read" | "ro" => SqlRoleAccess::ReadOnly,
+                "readwrite" | "rw" => SqlRoleAccess::ReadWrite,
+                other => {
+                    return Err(format!(
+                        "Unknown SQL role '{other}'; expected 'readonly' or 'readwrite'"
+                    ));
+                }
+            };
+            let allowed_tables = if let Some(tables_raw) = tables_part {
+                if tables_raw == "*" {
+                    None
+                } else {
+                    let mut tables = Vec::new();
+                    for tbl in tables_raw
+                        .split('+')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        if !is_sql_identifier(tbl) {
+                            return Err(format!(
+                                "Invalid SQL table identifier '{tbl}' in RBAC rule"
+                            ));
+                        }
+                        let lower = tbl.to_ascii_lowercase();
+                        if !tables.contains(&lower) {
+                            tables.push(lower);
+                        }
+                    }
+                    if tables.is_empty() {
+                        return Err(format!(
+                            "Role binding '{trimmed}' specified ':' with an empty table allowlist"
+                        ));
+                    }
+                    Some(tables)
+                }
+            } else {
+                None
+            };
+            if bindings.iter().any(|b: &ApiKeyRoleBinding| b.key == key) {
+                return Err(format!("Duplicate API key in role bindings: '{key}'"));
+            }
+            bindings.push(ApiKeyRoleBinding {
+                key: key.to_string(),
+                access,
+                allowed_tables,
+            });
+        }
+    }
+    Ok(bindings)
 }
 
 fn parse_api_key_namespace_bindings(
@@ -413,6 +519,14 @@ fn run_serve_command(args: &[String]) {
         .ok()
         .into_iter()
         .collect();
+    let mut api_key_roles_raw: Vec<String> =
+        env::var("TAPIRUS_API_KEY_ROLES").ok().into_iter().collect();
+    let mut tls_cert: Option<String> = env::var("TAPIRUS_TLS_CERT")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let mut tls_key: Option<String> = env::var("TAPIRUS_TLS_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
     let mut cors_origins_raw: Vec<String> =
         env::var("TAPIRUS_CORS_ORIGIN").ok().into_iter().collect();
     let mut passphrase: Option<String> = None;
@@ -461,6 +575,24 @@ fn run_serve_command(args: &[String]) {
                     i += 1;
                 }
             }
+            "--api-key-role" => {
+                if i + 1 < args.len() {
+                    api_key_roles_raw.push(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--tls-cert" => {
+                if i + 1 < args.len() {
+                    tls_cert = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--tls-key" => {
+                if i + 1 < args.len() {
+                    tls_key = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
             "--cors-origin" => {
                 if i + 1 < args.len() {
                     cors_origins_raw.push(args[i + 1].clone());
@@ -496,18 +628,45 @@ fn run_serve_command(args: &[String]) {
             std::process::exit(1);
         }
     };
+    let api_key_roles = match parse_api_key_role_bindings(&api_key_roles_raw) {
+        Ok(bindings) => bindings,
+        Err(err) => {
+            eprintln!("Invalid --api-key-role / TAPIRUS_API_KEY_ROLES: {err}");
+            std::process::exit(1);
+        }
+    };
     if let Some(ref master) = api_key {
         if api_key_scopes.iter().any(|(k, _)| k == master) {
             eprintln!("Master --api-key cannot also be bound in --api-key-namespace");
             std::process::exit(1);
         }
+        if api_key_roles.iter().any(|r| &r.key == master) {
+            eprintln!("Master --api-key cannot also be bound in --api-key-role");
+            std::process::exit(1);
+        }
+    }
+    for role in &api_key_roles {
+        if api_key_scopes.iter().any(|(k, _)| k == &role.key) {
+            eprintln!(
+                "API key '{}' cannot appear in both --api-key-namespace and --api-key-role",
+                role.key
+            );
+            std::process::exit(1);
+        }
+    }
+    if tls_cert.is_some() != tls_key.is_some() {
+        eprintln!(
+            "Both --tls-cert and --tls-key (or TAPIRUS_TLS_CERT and TAPIRUS_TLS_KEY) must be provided together."
+        );
+        std::process::exit(1);
     }
     if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1")
         && api_key.is_none()
         && api_key_scopes.is_empty()
+        && api_key_roles.is_empty()
     {
         eprintln!(
-            "Non-loopback HTTP bind requires TAPIRUS_API_KEY/--api-key or --api-key-namespace"
+            "Non-loopback HTTP bind requires TAPIRUS_API_KEY/--api-key, --api-key-namespace, or --api-key-role"
         );
         std::process::exit(1);
     }
@@ -521,8 +680,13 @@ fn run_serve_command(args: &[String]) {
     };
 
     let is_memory = db_path == ":memory:";
+    let is_encrypted = passphrase.is_some();
     let conn = if let Some(ref pass) = passphrase {
-        match Connection::open_encrypted(Path::new(&db_path), pass) {
+        match if is_memory {
+            Connection::open_encrypted_in_memory(pass)
+        } else {
+            Connection::open_encrypted(Path::new(&db_path), pass)
+        } {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Error opening encrypted database at '{db_path}': {e}");
@@ -546,6 +710,9 @@ fn run_serve_command(args: &[String]) {
             }
         }
     };
+    if let Some(ref mut pass) = passphrase {
+        pass.zeroize();
+    }
 
     run_http_server(
         conn,
@@ -553,10 +720,13 @@ fn run_serve_command(args: &[String]) {
             host: &host,
             port,
             db_path: &db_path,
-            encrypted: passphrase.is_some(),
+            encrypted: is_encrypted,
             api_key,
             api_key_scopes,
+            api_key_roles,
             cors_origins,
+            tls_cert,
+            tls_key,
         },
     );
 }
@@ -1107,6 +1277,67 @@ fn run_verify_command(args: &[String]) {
     }
 }
 
+trait HttpTransportStream: Read + Write {
+    fn set_io_read_timeout(&mut self, timeout: Duration);
+}
+
+impl HttpTransportStream for TcpStream {
+    fn set_io_read_timeout(&mut self, timeout: Duration) {
+        let _ = self.set_read_timeout(Some(timeout));
+    }
+}
+
+#[cfg(feature = "tls")]
+impl HttpTransportStream for rustls::StreamOwned<rustls::ServerConnection, TcpStream> {
+    fn set_io_read_timeout(&mut self, timeout: Duration) {
+        let _ = self.sock.set_read_timeout(Some(timeout));
+    }
+}
+
+#[cfg(feature = "tls")]
+fn load_tls_server_config(
+    cert_path: &Path,
+    key_path: &Path,
+) -> std::result::Result<Arc<rustls::ServerConfig>, String> {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(cert_path)
+        .map_err(|e| {
+            format!(
+                "Failed to read TLS certificate '{}': {e}",
+                cert_path.display()
+            )
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| {
+            format!(
+                "Failed to parse TLS certificate '{}': {e}",
+                cert_path.display()
+            )
+        })?;
+    if certs.is_empty() {
+        return Err(format!(
+            "No certificates found in '{}'",
+            cert_path.display()
+        ));
+    }
+    let key = PrivateKeyDer::from_pem_file(key_path).map_err(|e| {
+        format!(
+            "Failed to read TLS private key '{}': {e}",
+            key_path.display()
+        )
+    })?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("TLS protocol configuration error: {e}"))?
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| format!("Invalid TLS certificate/key pair: {e}"))?;
+    Ok(Arc::new(config))
+}
+
 struct HttpServerConfig<'a> {
     host: &'a str,
     port: u16,
@@ -1114,7 +1345,10 @@ struct HttpServerConfig<'a> {
     encrypted: bool,
     api_key: Option<String>,
     api_key_scopes: Vec<(String, String)>,
+    api_key_roles: Vec<ApiKeyRoleBinding>,
     cors_origins: Vec<String>,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
 }
 
 fn run_http_server(conn: Connection, cfg: HttpServerConfig<'_>) {
@@ -1125,8 +1359,35 @@ fn run_http_server(conn: Connection, cfg: HttpServerConfig<'_>) {
         encrypted,
         api_key,
         api_key_scopes,
+        api_key_roles,
         cors_origins,
+        tls_cert,
+        tls_key,
     } = cfg;
+
+    #[cfg(feature = "tls")]
+    let tls_config = match (&tls_cert, &tls_key) {
+        (Some(cert), Some(key)) => match load_tls_server_config(Path::new(cert), Path::new(key)) {
+            Ok(cfg) => Some(cfg),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        },
+        (None, None) => None,
+        _ => {
+            eprintln!("Both --tls-cert and --tls-key must be supplied together.");
+            std::process::exit(1);
+        }
+    };
+    #[cfg(not(feature = "tls"))]
+    if tls_cert.is_some() || tls_key.is_some() {
+        eprintln!(
+            "Native TLS requested (--tls-cert/--tls-key), but this binary was built without the 'tls' feature."
+        );
+        std::process::exit(1);
+    }
+
     let addr = format!("{host}:{port}");
     let listener = match TcpListener::bind(&addr) {
         Ok(l) => l,
@@ -1136,13 +1397,23 @@ fn run_http_server(conn: Connection, cfg: HttpServerConfig<'_>) {
         }
     };
 
+    #[cfg(feature = "tls")]
+    let scheme = if tls_config.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+    #[cfg(not(feature = "tls"))]
+    let scheme = "http";
+
     println!("{BANNER}");
-    println!("TapirusDB HTTP server listening at http://{addr}");
+    println!("TapirusDB HTTP server listening at {scheme}://{addr}");
     println!("Database: {db_path} (Encrypted: {encrypted})");
-    if api_key.is_some() || !api_key_scopes.is_empty() {
+    if api_key.is_some() || !api_key_scopes.is_empty() || !api_key_roles.is_empty() {
         println!(
-            "API key authentication is enabled (Bearer / X-API-Key; {} scoped namespace key(s)).",
-            api_key_scopes.len()
+            "API key authentication is enabled (Bearer / X-API-Key; {} scoped namespace key(s), {} SQL RBAC key(s)).",
+            api_key_scopes.len(),
+            api_key_roles.len()
         );
     } else {
         println!("API key authentication is disabled; restrict the bind address accordingly.");
@@ -1154,12 +1425,21 @@ fn run_http_server(conn: Connection, cfg: HttpServerConfig<'_>) {
     } else {
         println!("CORS Allowed Origins: {}", cors_origins.join(", "));
     }
+    #[cfg(feature = "tls")]
+    if let Some(cert) = tls_cert.as_deref() {
+        println!("TLS: Native Rustls HTTPS enabled (certificate: {cert}).");
+    } else {
+        println!(
+            "TLS: Plaintext HTTP only; pass --tls-cert/--tls-key or terminate TLS at a reverse proxy for remote access."
+        );
+    }
+    #[cfg(not(feature = "tls"))]
     println!(
-        "TLS: Plaintext HTTP only; terminate TLS at a reverse proxy (Nginx, Caddy, Envoy, or Cloudflare Tunnel) for remote access."
+        "TLS: Plaintext HTTP only; rebuild with '--features tls' or terminate TLS at a reverse proxy for remote access."
     );
     println!("📡 Endpoints:");
     println!("   • GET  /health   -> Healthcheck & Version (Public)");
-    println!("   • POST /api/sql  -> Execute SQL / Vector Search (Master Key)");
+    println!("   • POST /api/sql  -> Execute SQL / Vector Search (Master Key or --api-key-role)");
     println!(
         "   • POST /api/memory[/store|/search|/forget] -> AI Memory API (Protected, Namespace-Scoped)"
     );
@@ -1172,6 +1452,7 @@ fn run_http_server(conn: Connection, cfg: HttpServerConfig<'_>) {
     let db = Arc::new(Mutex::new(conn));
     let auth_key = Arc::new(api_key);
     let auth_scopes = Arc::new(api_key_scopes);
+    let auth_roles = Arc::new(api_key_roles);
     let allowed_origins = Arc::new(cors_origins);
     let active_clients = Arc::new(AtomicUsize::new(0));
 
@@ -1193,10 +1474,36 @@ fn run_http_server(conn: Connection, cfg: HttpServerConfig<'_>) {
                 let db_clone = Arc::clone(&db);
                 let auth_clone = Arc::clone(&auth_key);
                 let auth_scopes_clone = Arc::clone(&auth_scopes);
+                let auth_roles_clone = Arc::clone(&auth_roles);
                 let cors_clone = Arc::clone(&allowed_origins);
+                #[cfg(feature = "tls")]
+                let tls_clone = tls_config.clone();
                 thread::spawn(move || {
                     let _client_guard = client_guard;
-                    handle_http_client(stream, db_clone, auth_clone, auth_scopes_clone, cors_clone);
+                    #[cfg(feature = "tls")]
+                    if let Some(cfg) = tls_clone {
+                        let Ok(tls_conn) = rustls::ServerConnection::new(cfg) else {
+                            return;
+                        };
+                        let tls_stream = rustls::StreamOwned::new(tls_conn, stream);
+                        handle_http_client(
+                            tls_stream,
+                            db_clone,
+                            auth_clone,
+                            auth_scopes_clone,
+                            auth_roles_clone,
+                            cors_clone,
+                        );
+                        return;
+                    }
+                    handle_http_client(
+                        stream,
+                        db_clone,
+                        auth_clone,
+                        auth_scopes_clone,
+                        auth_roles_clone,
+                        cors_clone,
+                    );
                 });
             }
             Err(e) => {
@@ -1243,6 +1550,222 @@ fn constant_time_eq_str(a: &str, b: &str) -> bool {
 enum HttpAuthScope {
     Unrestricted,
     Namespace(String),
+    SqlRole {
+        access: SqlRoleAccess,
+        allowed_tables: Option<Vec<String>>,
+    },
+}
+
+fn check_allowed_table(
+    table: &str,
+    cte_names: &[String],
+    allowed_tables: Option<&[String]>,
+) -> std::result::Result<(), String> {
+    let lower = table.to_ascii_lowercase();
+    if cte_names.iter().any(|c| c == &lower) {
+        return Ok(());
+    }
+    if let Some(allowed) = allowed_tables {
+        if !allowed.iter().any(|a| a == &lower) {
+            return Err(format!(
+                "Table '{table}' is outside this API key's RBAC allowlist."
+            ));
+        }
+    } else if lower.starts_with("__sys_") {
+        return Err(format!(
+            "Internal system table '{table}' requires an unrestricted master API key."
+        ));
+    }
+    Ok(())
+}
+
+fn authorize_where_subqueries(
+    expr: &WhereExpr,
+    cte_names: &[String],
+    allowed_tables: Option<&[String]>,
+) -> std::result::Result<(), String> {
+    match expr {
+        WhereExpr::Condition(_) | WhereExpr::InList { .. } => Ok(()),
+        WhereExpr::And(left, right) | WhereExpr::Or(left, right) => {
+            authorize_where_subqueries(left, cte_names, allowed_tables)?;
+            authorize_where_subqueries(right, cte_names, allowed_tables)
+        }
+        WhereExpr::InSubquery { subquery, .. } | WhereExpr::Exists { subquery, .. } => {
+            authorize_sql_statement_ast(
+                subquery,
+                SqlRoleAccess::ReadOnly,
+                cte_names,
+                allowed_tables,
+            )
+        }
+    }
+}
+
+fn authorize_sql_statement_ast(
+    stmt: &Statement,
+    access: SqlRoleAccess,
+    cte_names: &[String],
+    allowed_tables: Option<&[String]>,
+) -> std::result::Result<(), String> {
+    match stmt {
+        Statement::Select {
+            table,
+            from_subquery,
+            join,
+            where_clause,
+            having,
+            ..
+        } => {
+            if let Some((sub, _alias)) = from_subquery {
+                authorize_sql_statement_ast(
+                    sub,
+                    SqlRoleAccess::ReadOnly,
+                    cte_names,
+                    allowed_tables,
+                )?;
+            } else {
+                check_allowed_table(table, cte_names, allowed_tables)?;
+            }
+            if let Some(j) = join {
+                check_allowed_table(&j.table, cte_names, allowed_tables)?;
+            }
+            if let Some(w) = where_clause {
+                authorize_where_subqueries(w, cte_names, allowed_tables)?;
+            }
+            if let Some(h) = having {
+                authorize_where_subqueries(h, cte_names, allowed_tables)?;
+            }
+            Ok(())
+        }
+        Statement::VectorSearch {
+            table,
+            where_clause,
+            ..
+        } => {
+            check_allowed_table(table, cte_names, allowed_tables)?;
+            if let Some(w) = where_clause {
+                authorize_where_subqueries(w, cte_names, allowed_tables)?;
+            }
+            Ok(())
+        }
+        Statement::WithCte { ctes, main_query } => {
+            let mut combined_ctes = cte_names.to_vec();
+            for cte in ctes {
+                authorize_sql_statement_ast(
+                    &cte.query,
+                    SqlRoleAccess::ReadOnly,
+                    &combined_ctes,
+                    allowed_tables,
+                )?;
+                combined_ctes.push(cte.name.to_ascii_lowercase());
+            }
+            authorize_sql_statement_ast(main_query, access, &combined_ctes, allowed_tables)
+        }
+        Statement::Explain { statement, .. } => {
+            authorize_sql_statement_ast(statement, access, cte_names, allowed_tables)
+        }
+        Statement::GraphTraverse { where_clause, .. }
+        | Statement::GraphMatch { where_clause, .. } => {
+            if allowed_tables.is_some() {
+                return Err(
+                    "Table-scoped SQL API keys cannot run unscoped graph queries.".to_string(),
+                );
+            }
+            if let Some(w) = where_clause {
+                authorize_where_subqueries(w, cte_names, allowed_tables)?;
+            }
+            Ok(())
+        }
+        Statement::GraphShortestPath { .. } | Statement::GraphAlgorithm { .. } => {
+            if allowed_tables.is_some() {
+                return Err(
+                    "Table-scoped SQL API keys cannot run unscoped graph queries.".to_string(),
+                );
+            }
+            Ok(())
+        }
+        Statement::Pragma { value: None, .. } => {
+            if allowed_tables.is_some() {
+                return Err("Table-scoped SQL API keys cannot run PRAGMA statements.".to_string());
+            }
+            Ok(())
+        }
+        Statement::Insert { table, .. } | Statement::InsertMany { table, .. } => {
+            if access == SqlRoleAccess::ReadOnly {
+                return Err("Read-only API key cannot execute INSERT statements.".to_string());
+            }
+            check_allowed_table(table, cte_names, allowed_tables)
+        }
+        Statement::Update {
+            table,
+            where_clause,
+            ..
+        } => {
+            if access == SqlRoleAccess::ReadOnly {
+                return Err("Read-only API key cannot execute UPDATE statements.".to_string());
+            }
+            check_allowed_table(table, cte_names, allowed_tables)?;
+            if let Some(w) = where_clause {
+                authorize_where_subqueries(w, cte_names, allowed_tables)?;
+            }
+            Ok(())
+        }
+        Statement::Delete {
+            table,
+            where_clause,
+            ..
+        } => {
+            if access == SqlRoleAccess::ReadOnly {
+                return Err("Read-only API key cannot execute DELETE statements.".to_string());
+            }
+            check_allowed_table(table, cte_names, allowed_tables)?;
+            if let Some(w) = where_clause {
+                authorize_where_subqueries(w, cte_names, allowed_tables)?;
+            }
+            Ok(())
+        }
+        Statement::BeginTransaction
+        | Statement::CommitTransaction
+        | Statement::RollbackTransaction
+        | Statement::Savepoint { .. }
+        | Statement::RollbackToSavepoint { .. }
+        | Statement::ReleaseSavepoint { .. } => {
+            if access == SqlRoleAccess::ReadOnly {
+                return Err(
+                    "Read-only API key cannot open write transaction control statements."
+                        .to_string(),
+                );
+            }
+            Ok(())
+        }
+        _ => Err(
+            "DDL and administrative SQL statements require an unrestricted master API key."
+                .to_string(),
+        ),
+    }
+}
+
+fn authorize_sql_for_role(
+    sql: &str,
+    params: &[Value],
+    access: SqlRoleAccess,
+    allowed_tables: Option<&[String]>,
+) -> std::result::Result<(), String> {
+    let tokens = tokenize(sql).map_err(|e| format!("Invalid SQL syntax: {e}"))?;
+    let mut seen_semicolon = false;
+    for tok in &tokens {
+        if matches!(tok, Token::Semicolon) {
+            seen_semicolon = true;
+        } else if seen_semicolon {
+            return Err(
+                "Scoped SQL API keys only permit one SQL statement per HTTP request.".to_string(),
+            );
+        }
+    }
+    let bound =
+        bind_parameters(&tokens, params).map_err(|e| format!("Invalid SQL parameters: {e}"))?;
+    let stmt = parse_tokens(&bound).map_err(|e| format!("Invalid SQL statement: {e}"))?;
+    authorize_sql_statement_ast(&stmt, access, &[], allowed_tables)
 }
 
 fn extract_request_api_key(header_str: &str) -> Option<&str> {
@@ -1275,9 +1798,10 @@ fn request_has_valid_api_key(expected_key: &str, header_str: &str) -> bool {
 fn authenticate_http_request(
     master_key: Option<&str>,
     scoped_keys: &[(String, String)],
+    role_keys: &[ApiKeyRoleBinding],
     header_str: &str,
 ) -> Option<HttpAuthScope> {
-    if master_key.is_none() && scoped_keys.is_empty() {
+    if master_key.is_none() && scoped_keys.is_empty() && role_keys.is_empty() {
         return Some(HttpAuthScope::Unrestricted);
     }
     let provided = extract_request_api_key(header_str)?;
@@ -1290,6 +1814,14 @@ fn authenticate_http_request(
     for (key, namespace) in scoped_keys {
         if constant_time_eq_str(provided, key) && resolved.is_none() {
             resolved = Some(HttpAuthScope::Namespace(namespace.clone()));
+        }
+    }
+    for binding in role_keys {
+        if constant_time_eq_str(provided, &binding.key) && resolved.is_none() {
+            resolved = Some(HttpAuthScope::SqlRole {
+                access: binding.access,
+                allowed_tables: binding.allowed_tables.clone(),
+            });
         }
     }
     resolved
@@ -1392,6 +1924,12 @@ fn handle_http_memory_route(
         HttpAuthScope::Namespace(ns) => conn
             .scoped_memory(ns, None)
             .map_err(|err| (map_memory_error_status(&err), err.to_string()))?,
+        HttpAuthScope::SqlRole { .. } => {
+            return Err((
+                "403 Forbidden",
+                "SQL-role API keys cannot access /api/memory endpoints.".to_string(),
+            ));
+        }
     };
     match route_path {
         "/api/memory" => {
@@ -1474,11 +2012,12 @@ fn handle_http_memory_route(
     }
 }
 
-fn handle_http_client(
-    mut stream: TcpStream,
+fn handle_http_client<S: HttpTransportStream>(
+    mut stream: S,
     db: Arc<Mutex<Connection>>,
     api_key: Arc<Option<String>>,
     api_key_scopes: Arc<Vec<(String, String)>>,
+    api_key_roles: Arc<Vec<ApiKeyRoleBinding>>,
     allowed_origins: Arc<Vec<String>>,
 ) {
     let mut request_data = Vec::new();
@@ -1499,7 +2038,7 @@ fn handle_http_client(
             );
             return;
         }
-        let _ = stream.set_read_timeout(Some(remaining));
+        stream.set_io_read_timeout(remaining);
         let n = match stream.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => n,
@@ -1736,12 +2275,17 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
         && (route_path == "/api/chat/logs" || route_path == "/chat/logs"))
         || (method == "POST" && (route_path == "/chat" || route_path == "/api/chat"));
     if protected_chat_route {
-        match authenticate_http_request(api_key.as_deref(), &api_key_scopes, header_str) {
+        match authenticate_http_request(
+            api_key.as_deref(),
+            &api_key_scopes,
+            &api_key_roles,
+            header_str,
+        ) {
             Some(HttpAuthScope::Unrestricted) => {}
-            Some(HttpAuthScope::Namespace(_)) => {
+            Some(HttpAuthScope::Namespace(_) | HttpAuthScope::SqlRole { .. }) => {
                 let err_json = serde_json::json!({
                     "error": "Forbidden",
-                    "message": "Tenant-scoped API keys may only access /api/memory endpoints."
+                    "message": "Scoped API keys may not access master chat endpoints."
                 });
                 send_http_response(
                     &mut stream,
@@ -1831,6 +2375,7 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
     let auth_scope = match authenticate_http_request(
         api_key.as_deref(),
         &api_key_scopes,
+        &api_key_roles,
         header_str,
     ) {
         Some(scope) => scope,
@@ -1918,6 +2463,29 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
         };
 
         let trimmed = sql.trim();
+        if let HttpAuthScope::SqlRole {
+            access,
+            ref allowed_tables,
+        } = auth_scope
+        {
+            if let Err(reason) =
+                authorize_sql_for_role(trimmed, &params, access, allowed_tables.as_deref())
+            {
+                let err_json = serde_json::json!({
+                    "error": "Forbidden",
+                    "message": reason
+                });
+                send_http_response(
+                    &mut stream,
+                    "403 Forbidden",
+                    "application/json",
+                    &err_json.to_string(),
+                    cors_origin,
+                );
+                return;
+            }
+        }
+
         let conn = db.lock();
 
         if trimmed.to_uppercase().starts_with("SELECT") {
@@ -2040,6 +2608,25 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
             );
             return;
         }
+        if let HttpAuthScope::SqlRole {
+            ref allowed_tables, ..
+        } = auth_scope
+        {
+            if let Err(reason) = check_allowed_table(collection, &[], allowed_tables.as_deref()) {
+                let err_json = serde_json::json!({
+                    "error": "Forbidden",
+                    "message": reason
+                });
+                send_http_response(
+                    &mut stream,
+                    "403 Forbidden",
+                    "application/json",
+                    &err_json.to_string(),
+                    cors_origin,
+                );
+                return;
+            }
+        }
 
         let conn = db.lock();
         let results = match vector_search_results(&conn, collection, &query_vec, k) {
@@ -2061,8 +2648,22 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
         return;
     }
 
-    // GraphRAG traversal endpoint (Protected)
+    // GraphRAG traversal endpoint (Protected — requires Unrestricted master key)
     if method == "POST" && (route_path == "/api/graph/rag" || route_path == "/graph/rag") {
+        if !matches!(auth_scope, HttpAuthScope::Unrestricted) {
+            let err_json = serde_json::json!({
+                "error": "Forbidden",
+                "message": "GraphRAG endpoint requires an unrestricted master API key."
+            });
+            send_http_response(
+                &mut stream,
+                "403 Forbidden",
+                "application/json",
+                &err_json.to_string(),
+                cors_origin,
+            );
+            return;
+        }
         let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
         let parsed: serde_json::Value = match serde_json::from_str(body_str) {
             Ok(v) => v,
@@ -2184,9 +2785,15 @@ fn format_http_response(
     let mut headers = format!(
         "HTTP/1.1 {status}\r\n\
          Content-Type: {content_type}\r\n\
-         Content-Length: {}\r\n",
+         Content-Length: {}\r\n\
+         X-Content-Type-Options: nosniff\r\n\
+         X-Frame-Options: DENY\r\n\
+         Referrer-Policy: no-referrer\r\n",
         body.len()
     );
+    if content_type.starts_with("application/json") {
+        headers.push_str("Cache-Control: no-store\r\n");
+    }
     if let Some(extra) = extra_header {
         headers.push_str(extra);
         headers.push_str("\r\n");
@@ -2206,7 +2813,11 @@ fn format_http_response(
     headers
 }
 
-fn send_http_unauthorized_response(stream: &mut TcpStream, body: &str, cors_origin: Option<&str>) {
+fn send_http_unauthorized_response<W: Write>(
+    stream: &mut W,
+    body: &str,
+    cors_origin: Option<&str>,
+) {
     let response = format_http_response(
         "401 Unauthorized",
         "application/json",
@@ -2215,10 +2826,11 @@ fn send_http_unauthorized_response(stream: &mut TcpStream, body: &str, cors_orig
         cors_origin,
     );
     let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
 }
 
-fn send_http_response(
-    stream: &mut TcpStream,
+fn send_http_response<W: Write>(
+    stream: &mut W,
     status: &str,
     content_type: &str,
     body: &str,
@@ -2226,6 +2838,7 @@ fn send_http_response(
 ) {
     let response = format_http_response(status, content_type, body, None, cors_origin);
     let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
 }
 
 fn vector_search_results(
@@ -6873,6 +7486,7 @@ mod audit_regression_tests {
             authenticate_http_request(
                 Some("master-key"),
                 &bindings,
+                &[],
                 "POST /api/memory/store HTTP/1.1\r\nAuthorization: Bearer key-alpha\r\n"
             ),
             Some(HttpAuthScope::Namespace("tenant_alpha".to_string()))
@@ -6881,6 +7495,7 @@ mod audit_regression_tests {
             authenticate_http_request(
                 Some("master-key"),
                 &bindings,
+                &[],
                 "POST /api/sql HTTP/1.1\r\nX-API-Key: master-key\r\n"
             ),
             Some(HttpAuthScope::Unrestricted)
@@ -6889,6 +7504,7 @@ mod audit_regression_tests {
             authenticate_http_request(
                 Some("master-key"),
                 &bindings,
+                &[],
                 "POST /api/memory/store HTTP/1.1\r\nX-API-Key: invalid\r\n"
             ),
             None
@@ -6945,7 +7561,7 @@ mod audit_regression_tests {
         let cors = Arc::new(Vec::new());
         let srv = thread::spawn(move || {
             if let Ok((stream, _)) = listener.accept() {
-                handle_http_client(stream, db_srv, master, scopes, cors);
+                handle_http_client(stream, db_srv, master, scopes, Arc::new(Vec::new()), cors);
             }
         });
         let mut client = TcpStream::connect(addr)?;
@@ -6959,7 +7575,122 @@ mod audit_regression_tests {
         let mut resp = String::new();
         client.read_to_string(&mut resp)?;
         assert!(resp.starts_with("HTTP/1.1 403 Forbidden"));
+        assert!(resp.contains("X-Content-Type-Options: nosniff"));
+        assert!(resp.contains("Cache-Control: no-store"));
         let _ = srv.join();
         Ok(())
+    }
+
+    #[test]
+    fn http_api_key_sql_rbac_enforces_roles_and_table_allowlists()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let role_bindings = parse_api_key_role_bindings(&[
+            "ro-public=readonly:public_items+orders, rw-orders=readwrite:orders".to_string(),
+        ])
+        .unwrap();
+
+        let conn = Connection::open_in_memory()?;
+        conn.execute("CREATE TABLE public_items (id INTEGER PRIMARY KEY, label TEXT);")?;
+        conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, total INTEGER);")?;
+        conn.execute("CREATE TABLE secrets (id INTEGER PRIMARY KEY, secret TEXT);")?;
+        conn.execute("INSERT INTO public_items VALUES (1, 'tapir-book');")?;
+        conn.execute("INSERT INTO secrets VALUES (1, 'master-secret');")?;
+
+        let db_arc = Arc::new(Mutex::new(conn));
+        let master = Arc::new(Some("master-key".to_string()));
+        let scopes = Arc::new(Vec::new());
+        let roles = Arc::new(role_bindings);
+        let cors = Arc::new(Vec::new());
+
+        let send_sql = |key: &str, sql: &str| -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let db_srv = Arc::clone(&db_arc);
+            let master_srv = Arc::clone(&master);
+            let scopes_srv = Arc::clone(&scopes);
+            let roles_srv = Arc::clone(&roles);
+            let cors_srv = Arc::clone(&cors);
+            let srv = thread::spawn(move || {
+                if let Ok((stream, _)) = listener.accept() {
+                    handle_http_client(stream, db_srv, master_srv, scopes_srv, roles_srv, cors_srv);
+                }
+            });
+            let mut client = TcpStream::connect(addr).unwrap();
+            let req_body = serde_json::json!({ "sql": sql }).to_string();
+            let raw_req = format!(
+                "POST /api/sql HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {key}\r\nContent-Length: {}\r\n\r\n{}",
+                req_body.len(),
+                req_body
+            );
+            client.write_all(raw_req.as_bytes()).unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).unwrap();
+            let _ = srv.join();
+            resp
+        };
+
+        // 1. Read-only key can SELECT from allowlisted table (including parameterized queries)
+        let ok_select = send_sql("ro-public", "SELECT id, label FROM public_items;");
+        assert!(ok_select.starts_with("HTTP/1.1 200 OK"), "{ok_select}");
+        assert!(ok_select.contains("tapir-book"));
+        assert!(ok_select.contains("X-Frame-Options: DENY"));
+
+        assert!(
+            authorize_sql_for_role(
+                "SELECT id FROM public_items WHERE id = ?;",
+                &[Value::Integer(1)],
+                SqlRoleAccess::ReadOnly,
+                Some(&["public_items".to_string()])
+            )
+            .is_ok()
+        );
+
+        // 2. Read-only key cannot access non-allowlisted table directly, via JOIN, or via subquery
+        assert!(
+            send_sql("ro-public", "SELECT * FROM secrets;").starts_with("HTTP/1.1 403 Forbidden")
+        );
+        assert!(
+            send_sql(
+                "ro-public",
+                "SELECT p.id FROM public_items p WHERE EXISTS (SELECT id FROM secrets);"
+            )
+            .starts_with("HTTP/1.1 403 Forbidden")
+        );
+
+        // 3. Read-only key cannot write or smuggle multiple statements
+        assert!(
+            send_sql("ro-public", "INSERT INTO public_items VALUES (2, 'bad');")
+                .starts_with("HTTP/1.1 403 Forbidden")
+        );
+        assert!(
+            send_sql(
+                "ro-public",
+                "SELECT id FROM public_items; DROP TABLE public_items;"
+            )
+            .starts_with("HTTP/1.1 403 Forbidden")
+        );
+
+        // 4. ReadWrite key can mutate allowlisted table `orders`, cannot touch `secrets`, cannot DROP
+        assert!(
+            send_sql("rw-orders", "INSERT INTO orders VALUES (10, 500);")
+                .starts_with("HTTP/1.1 200 OK")
+        );
+        assert!(
+            send_sql("rw-orders", "INSERT INTO public_items VALUES (2, 'nope');")
+                .starts_with("HTTP/1.1 403 Forbidden")
+        );
+        assert!(send_sql("rw-orders", "DROP TABLE orders;").starts_with("HTTP/1.1 403 Forbidden"));
+
+        Ok(())
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn tls_config_loader_rejects_missing_files() {
+        let missing = load_tls_server_config(
+            Path::new("nonexistent-cert.pem"),
+            Path::new("nonexistent-key.pem"),
+        );
+        assert!(missing.is_err());
     }
 }

@@ -930,6 +930,8 @@ dependencies = [
  "getrandom 0.4.3",
  "parking_lot",
  "rusqlite",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2",
