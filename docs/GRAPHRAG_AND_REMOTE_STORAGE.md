@@ -1,4 +1,4 @@
-﻿# GraphRAG & Remote Range Storage
+# GraphRAG & Remote Range Storage
 
 TapirusDB unifies property-graph traversal, HNSW vector search, and BM25 lexical scoring in a single embedded runtime while offering pluggable remote range-storage interfaces (`src/pager/remote.rs`) for object/blob-backed deployments.
 

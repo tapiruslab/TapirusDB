@@ -1,4 +1,4 @@
-﻿# Storage Pages and WAL: Engine Architecture
+# Storage Pages and WAL: Engine Architecture
 
 ## Page & File Layout
 

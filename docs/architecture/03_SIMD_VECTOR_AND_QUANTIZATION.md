@@ -1,4 +1,4 @@
-﻿# Vector Search, HNSW & Quantization Architecture
+# Vector Search, HNSW & Quantization Architecture
 
 TapirusDB natively integrates vector similarity search directly inside relational SQL queries, graph traversals, and transactional AI Memory without an external sidecar vector service.
 

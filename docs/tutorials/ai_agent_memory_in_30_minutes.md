@@ -1,4 +1,4 @@
-﻿# Agent Memory Quickstart with TapirusDB
+# Agent Memory Quickstart with TapirusDB
 
 Store agent context, user preferences, and source citations inside a single ACID `.tapir` database using either TapirusDB's lightweight text memory helpers or indexed hybrid HNSW + BM25 retrieval (`store_memory` / `search_memories`).
 

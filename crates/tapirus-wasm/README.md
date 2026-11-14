@@ -1,4 +1,4 @@
-﻿# TapirusDB WASM Crate (`@tapirus/wasm`)
+# TapirusDB WASM Crate (`@tapirus/wasm`)
 
 `@tapirus/wasm` compiles the full Safe-Rust TapirusDB Quad engine (`sql`, `vector`, `graph`, `document`, `ai-memory`, and `XChaCha20-Poly1305` encryption) to WebAssembly via `wasm-bindgen`, exposing JavaScript bindings and the compiled `.wasm` binary inside `pkg/`.
 

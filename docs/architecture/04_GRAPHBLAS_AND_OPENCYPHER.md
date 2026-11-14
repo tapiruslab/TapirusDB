@@ -1,4 +1,4 @@
-﻿# Property Graph, GraphBLAS CSR & openCypher Support
+# Property Graph, GraphBLAS CSR & openCypher Support
 
 TapirusDB stores property graphs natively inside the `.tapir` engine, combining labeled nodes, weighted typed edges, Compressed Sparse Row (`CsrGraph`) analytics, openCypher pattern queries, and hybrid GraphRAG traversal.
 
