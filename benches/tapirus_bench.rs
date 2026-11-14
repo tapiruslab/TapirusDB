@@ -135,11 +135,11 @@ fn main() {
     all_stats.extend(bench_rabitq_vector_scale_and_popcnt());
 
     // Export raw JSON output from this local harness.
-    if let Ok(json) = serde_json::to_string_pretty(&all_stats) {
-        if let Ok(mut f) = File::create("target/tapirus_bench_results.json") {
-            let _ = f.write_all(json.as_bytes());
-            println!("Local harness telemetry exported to target/tapirus_bench_results.json");
-        }
+    if let Ok(json) = serde_json::to_string_pretty(&all_stats)
+        && let Ok(mut f) = File::create("target/tapirus_bench_results.json")
+    {
+        let _ = f.write_all(json.as_bytes());
+        println!("Local harness telemetry exported to target/tapirus_bench_results.json");
     }
 
     println!("\n==========================================================================");

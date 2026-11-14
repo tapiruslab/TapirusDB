@@ -281,18 +281,18 @@ impl GraphRagEngine {
                 if !is_node_permitted(config, node) {
                     continue;
                 }
-                if let Some(ref n_vec) = node.vector {
-                    if n_vec.len() == q_vec.len() {
-                        let sim = if let Some(quantizer) = pq {
-                            // PQ-accelerated asymmetric distance: convert L2 distance to [0, 1] similarity
-                            let code = quantizer.encode(n_vec);
-                            let dist = quantizer.asymmetric_distance(&code, q_vec);
-                            1.0 / (1.0 + dist)
-                        } else {
-                            cosine_similarity(q_vec, n_vec).max(0.0)
-                        };
-                        seed_candidates.push((node.id, sim));
-                    }
+                if let Some(ref n_vec) = node.vector
+                    && n_vec.len() == q_vec.len()
+                {
+                    let sim = if let Some(quantizer) = pq {
+                        // PQ-accelerated asymmetric distance: convert L2 distance to [0, 1] similarity
+                        let code = quantizer.encode(n_vec);
+                        let dist = quantizer.asymmetric_distance(&code, q_vec);
+                        1.0 / (1.0 + dist)
+                    } else {
+                        cosine_similarity(q_vec, n_vec).max(0.0)
+                    };
+                    seed_candidates.push((node.id, sim));
                 }
             }
         }

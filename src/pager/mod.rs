@@ -353,10 +353,10 @@ impl Pager {
             Ok(header) => Ok(Some(header)),
             Err(error @ Error::UnsupportedFormat(_)) => Err(error),
             Err(original) => {
-                if wal_path.exists() {
-                    if let Some(page) = Wal::read_committed_page(&wal_path, 1)? {
-                        return DatabaseHeader::from_bytes(&page).map(Some);
-                    }
+                if wal_path.exists()
+                    && let Some(page) = Wal::read_committed_page(&wal_path, 1)?
+                {
+                    return DatabaseHeader::from_bytes(&page).map(Some);
                 }
                 if length == 0 { Ok(None) } else { Err(original) }
             }
@@ -812,7 +812,7 @@ impl Pager {
         }
         let header = DatabaseHeader::from_bytes(&bytes[0..DATABASE_HEADER_SIZE])?;
         let page_size = header.page_size as usize;
-        if page_size == 0 || bytes.len() % page_size != 0 {
+        if page_size == 0 || !bytes.len().is_multiple_of(page_size) {
             return Err(Error::Corrupted(
                 "Byte buffer length is not a valid multiple of page size".into(),
             ));
@@ -1282,19 +1282,19 @@ impl Pager {
         }
 
         // 2b. Check active WAL index (latest version)
-        if let Some(wal) = &self.wal {
-            if let Some(raw) = wal.read_page(page_id) {
-                let plaintext = if let Some(cipher) = &self.cipher {
-                    cipher.decrypt_page(page_id, &raw)?
-                } else {
-                    raw
-                };
-                let final_page = self.decompress_if_needed(page_id, plaintext)?;
-                self.in_memory_pages.insert(page_id, final_page.clone());
-                self.touch_lru(page_id);
-                self.evict_if_needed();
-                return Ok(final_page);
-            }
+        if let Some(wal) = &self.wal
+            && let Some(raw) = wal.read_page(page_id)
+        {
+            let plaintext = if let Some(cipher) = &self.cipher {
+                cipher.decrypt_page(page_id, &raw)?
+            } else {
+                raw
+            };
+            let final_page = self.decompress_if_needed(page_id, plaintext)?;
+            self.in_memory_pages.insert(page_id, final_page.clone());
+            self.touch_lru(page_id);
+            self.evict_if_needed();
+            return Ok(final_page);
         }
 
         // 3. Fall back to reading from base disk file
@@ -1430,11 +1430,11 @@ impl Pager {
             if let Some(sp) = self.named_savepoints.last_mut() {
                 sp.undo_pages.entry(page_id).or_insert(prev_data);
             }
-        } else if let Some(sp) = self.named_savepoints.last_mut() {
-            if let std::collections::hash_map::Entry::Vacant(e) = sp.undo_pages.entry(page_id) {
-                let prev_data = self.in_memory_pages.get(&page_id).cloned();
-                e.insert(prev_data);
-            }
+        } else if let Some(sp) = self.named_savepoints.last_mut()
+            && let std::collections::hash_map::Entry::Vacant(e) = sp.undo_pages.entry(page_id)
+        {
+            let prev_data = self.in_memory_pages.get(&page_id).cloned();
+            e.insert(prev_data);
         }
 
         let is_in_tx = self.is_in_transaction();
@@ -1524,11 +1524,11 @@ impl Pager {
             if let Some(sp) = self.named_savepoints.last_mut() {
                 sp.undo_pages.entry(page_id).or_insert(prev_data);
             }
-        } else if let Some(sp) = self.named_savepoints.last_mut() {
-            if let std::collections::hash_map::Entry::Vacant(e) = sp.undo_pages.entry(page_id) {
-                let prev_data = self.in_memory_pages.get(&page_id).cloned();
-                e.insert(prev_data);
-            }
+        } else if let Some(sp) = self.named_savepoints.last_mut()
+            && let std::collections::hash_map::Entry::Vacant(e) = sp.undo_pages.entry(page_id)
+        {
+            let prev_data = self.in_memory_pages.get(&page_id).cloned();
+            e.insert(prev_data);
         }
 
         // Cache plaintext in memory for O(1) reads
@@ -1668,14 +1668,15 @@ impl Pager {
                 self.sync_header_into_page1_cache();
                 return Ok(allocated_id);
             }
-            if !is_in_tx && self.wal.is_none() {
-                if let Some(file) = &mut self.file {
-                    // Write the new empty page to extend the physical file
-                    let offset = (allocated_id as u64 - 1) * page_size as u64;
-                    file.seek(SeekFrom::Start(offset))?;
-                    file.write_all(&empty_page)?;
-                    file.sync_data()?;
-                }
+            if !is_in_tx
+                && self.wal.is_none()
+                && let Some(file) = &mut self.file
+            {
+                // Write the new empty page to extend the physical file
+                let offset = (allocated_id as u64 - 1) * page_size as u64;
+                file.seek(SeekFrom::Start(offset))?;
+                file.write_all(&empty_page)?;
+                file.sync_data()?;
             }
         }
 
@@ -2314,10 +2315,10 @@ impl Pager {
             };
 
             self.header = new_header;
-            if let Some(sz) = wal_db_size {
-                if sz > self.header.total_pages {
-                    self.header.total_pages = sz;
-                }
+            if let Some(sz) = wal_db_size
+                && sz > self.header.total_pages
+            {
+                self.header.total_pages = sz;
             }
             self.wal_overlay = overlay;
             self.in_memory_pages.clear();
@@ -2411,10 +2412,10 @@ impl Pager {
                 .map(|m| m.len())
                 .unwrap_or(0);
         }
-        if self._lock_file.take().is_some() {
-            if let Some(ref lock_path) = self._lock_path {
-                let _ = std::fs::remove_file(lock_path);
-            }
+        if self._lock_file.take().is_some()
+            && let Some(ref lock_path) = self._lock_path
+        {
+            let _ = std::fs::remove_file(lock_path);
         }
         Ok(())
     }
@@ -2459,10 +2460,10 @@ impl Pager {
 impl Drop for Pager {
     fn drop(&mut self) {
         // Only remove .tapir-lock when this Pager actually holds the OS lock file handle.
-        if self._lock_file.take().is_some() {
-            if let Some(ref lock_path) = self._lock_path {
-                let _ = std::fs::remove_file(lock_path);
-            }
+        if self._lock_file.take().is_some()
+            && let Some(ref lock_path) = self._lock_path
+        {
+            let _ = std::fs::remove_file(lock_path);
         }
     }
 }

@@ -285,15 +285,15 @@ impl MemoryEngine {
             return Err(Error::Corrupted(format!("Memory #{id_b} not found")));
         }
 
-        if let Some(entry_a) = self.entries.get_mut(&id_a) {
-            if !entry_a.associations.contains(&id_b) {
-                entry_a.associations.push(id_b);
-            }
+        if let Some(entry_a) = self.entries.get_mut(&id_a)
+            && !entry_a.associations.contains(&id_b)
+        {
+            entry_a.associations.push(id_b);
         }
-        if let Some(entry_b) = self.entries.get_mut(&id_b) {
-            if !entry_b.associations.contains(&id_a) {
-                entry_b.associations.push(id_a);
-            }
+        if let Some(entry_b) = self.entries.get_mut(&id_b)
+            && !entry_b.associations.contains(&id_a)
+        {
+            entry_b.associations.push(id_a);
         }
 
         Ok(())
@@ -438,38 +438,38 @@ impl MemoryEngine {
             for &(parent_id, parent_score, ..) in scored_candidates.iter().take(base_count) {
                 if let Some(parent_entry) = self.entries.get(&parent_id) {
                     for &assoc_id in &parent_entry.associations {
-                        if !existing_ids.contains(&assoc_id) {
-                            if let Some(assoc_entry) = self.entries.get(&assoc_id) {
-                                if assoc_entry
-                                    .expires_at
-                                    .is_some_and(|expiry| now_ts >= expiry)
-                                {
-                                    continue;
-                                }
-                                if let Some(ref req_ns) = filter.namespace {
-                                    match &assoc_entry.namespace {
-                                        Some(ns) if ns.eq_ignore_ascii_case(req_ns) => {}
-                                        _ => continue,
-                                    }
-                                }
-                                if let Some(ref req_sess) = filter.session_id {
-                                    match &assoc_entry.session_id {
-                                        Some(sess) if sess == req_sess => {}
-                                        _ => continue,
-                                    }
-                                }
-
-                                existing_ids.insert(assoc_id);
-                                let assoc_score = parent_score * 0.85;
-                                associative_candidates.push((
-                                    assoc_id,
-                                    assoc_score,
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    true,
-                                ));
+                        if !existing_ids.contains(&assoc_id)
+                            && let Some(assoc_entry) = self.entries.get(&assoc_id)
+                        {
+                            if assoc_entry
+                                .expires_at
+                                .is_some_and(|expiry| now_ts >= expiry)
+                            {
+                                continue;
                             }
+                            if let Some(ref req_ns) = filter.namespace {
+                                match &assoc_entry.namespace {
+                                    Some(ns) if ns.eq_ignore_ascii_case(req_ns) => {}
+                                    _ => continue,
+                                }
+                            }
+                            if let Some(ref req_sess) = filter.session_id {
+                                match &assoc_entry.session_id {
+                                    Some(sess) if sess == req_sess => {}
+                                    _ => continue,
+                                }
+                            }
+
+                            existing_ids.insert(assoc_id);
+                            let assoc_score = parent_score * 0.85;
+                            associative_candidates.push((
+                                assoc_id,
+                                assoc_score,
+                                0.0,
+                                0.0,
+                                0.0,
+                                true,
+                            ));
                         }
                     }
                 }
@@ -549,18 +549,18 @@ impl MemoryEngine {
                 {
                     continue;
                 }
-                if let Some(e_vec) = &entry.vector {
-                    if e_vec.len() == q_vec.len() {
-                        let dot: f32 = q_vec.iter().zip(e_vec.iter()).map(|(a, b)| a * b).sum();
-                        let norm_q: f32 = q_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
-                        let norm_e: f32 = e_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
-                        let sim = if norm_q > 1e-9 && norm_e > 1e-9 {
-                            dot / (norm_q * norm_e)
-                        } else {
-                            0.0
-                        };
-                        vector_hits.push((*id, sim));
-                    }
+                if let Some(e_vec) = &entry.vector
+                    && e_vec.len() == q_vec.len()
+                {
+                    let dot: f32 = q_vec.iter().zip(e_vec.iter()).map(|(a, b)| a * b).sum();
+                    let norm_q: f32 = q_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+                    let norm_e: f32 = e_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+                    let sim = if norm_q > 1e-9 && norm_e > 1e-9 {
+                        dot / (norm_q * norm_e)
+                    } else {
+                        0.0
+                    };
+                    vector_hits.push((*id, sim));
                 }
             }
             vector_hits.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));

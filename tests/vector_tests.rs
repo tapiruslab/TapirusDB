@@ -23,10 +23,10 @@ fn test_hnsw_random_levels_distribution() {
 
     // Inspect levels of indexed vectors
     for i in 1..=num_vectors {
-        if let Some(node) = index.nodes.get(&(i as u64)) {
-            if node.top_layer < 16 {
-                level_counts[node.top_layer] += 1;
-            }
+        if let Some(node) = index.nodes.get(&(i as u64))
+            && node.top_layer < 16
+        {
+            level_counts[node.top_layer] += 1;
         }
     }
 

@@ -92,14 +92,14 @@ impl BitNetLinear {
                 weights.len()
             )));
         }
-        if let Some(ref b) = bias {
-            if b.len() != out_features {
-                return Err(Error::Internal(format!(
-                    "BitNetLinear bias size mismatch: expected {}, got {}",
-                    out_features,
-                    b.len()
-                )));
-            }
+        if let Some(ref b) = bias
+            && b.len() != out_features
+        {
+            return Err(Error::Internal(format!(
+                "BitNetLinear bias size mismatch: expected {}, got {}",
+                out_features,
+                b.len()
+            )));
         }
         Ok(Self {
             in_features,

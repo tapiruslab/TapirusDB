@@ -154,12 +154,12 @@ impl MemoryRuntime {
                     }
                 }
             }
-            if let Some(space) = old.space {
-                if let Some(count) = self.spaces.get_mut(&space) {
-                    *count -= 1;
-                    if *count == 0 {
-                        self.spaces.remove(&space);
-                    }
+            if let Some(space) = old.space
+                && let Some(count) = self.spaces.get_mut(&space)
+            {
+                *count -= 1;
+                if *count == 0 {
+                    self.spaces.remove(&space);
                 }
             }
         }
@@ -349,15 +349,14 @@ impl MemoryEngine {
                     "Embedding dimensions/components exceed memory limits",
                 ));
             }
-            if let Some(model) = &entry.embedding_model {
-                if let Some(((_, dimension), _)) = self
+            if let Some(model) = &entry.embedding_model
+                && let Some(((_, dimension), _)) = self
                     .runtime
                     .spaces
                     .iter()
                     .find(|((m, d), _)| m.as_ref() == Some(model) && *d != vector.len())
-                {
-                    return Err(Error::DimensionMismatch(*dimension, vector.len()));
-                }
+            {
+                return Err(Error::DimensionMismatch(*dimension, vector.len()));
             }
             let space = (entry.embedding_model.clone(), vector.len());
             if !self.runtime.spaces.contains_key(&space)
@@ -366,15 +365,14 @@ impl MemoryEngine {
                 return Err(reject("Memory vector-space budget exceeded"));
             }
         }
-        if let Some(key) = external_key(entry) {
-            if self
+        if let Some(key) = external_key(entry)
+            && self
                 .runtime
                 .external
                 .get(&key)
                 .is_some_and(|id| *id != entry.id)
-            {
-                return Err(reject("Duplicate external_id within namespace/session"));
-            }
+        {
+            return Err(reject("Duplicate external_id within namespace/session"));
         }
         let replacing = self.runtime.records.get(&entry.id);
         if self.entries.len() + usize::from(!self.entries.contains_key(&entry.id))
@@ -517,44 +515,44 @@ impl MemoryEngine {
         let mut dirty: Vec<_> = self.runtime.dirty.iter().copied().collect();
         dirty.sort_unstable();
         for id in dirty {
-            if let Some((space, node)) = self.runtime.locations.remove(&id) {
-                if let Some(index) = self.runtime.indexes.get_mut(&space) {
-                    index.index.mark_deleted(node);
-                    index.documents.remove(&node);
-                }
+            if let Some((space, node)) = self.runtime.locations.remove(&id)
+                && let Some(index) = self.runtime.indexes.get_mut(&space)
+            {
+                index.index.mark_deleted(node);
+                index.documents.remove(&node);
             }
-            if let Some(entry) = self.entries.get(&id) {
-                if let Some(vector) = &entry.vector {
-                    let key = (entry.embedding_model.clone(), vector.len());
-                    let config = &self.runtime.config;
-                    let index =
-                        self.runtime
-                            .indexes
-                            .entry(key.clone())
-                            .or_insert_with(|| VectorSpace {
-                                index: HnswIndex::with_config_and_seed(
-                                    vector.len(),
-                                    DistanceMetric::Cosine,
-                                    HnswConfig {
-                                        m: config.hnsw_m,
-                                        m0: config.hnsw_m * 2,
-                                        ef_construction: config.ef_construction,
-                                        ef_search: config.ef_search,
-                                        quantize_sq8: false,
-                                    },
-                                    20_261_016,
-                                ),
-                                documents: HashMap::new(),
-                                next_node: 1,
-                            });
-                    let node = index.next_node;
-                    index.next_node = node.checked_add(1).ok_or_else(|| {
-                        Error::ConstraintViolation("Memory index node space exhausted".into())
-                    })?;
-                    index.index.insert_vector(node, &unit_vector(vector))?;
-                    index.documents.insert(node, id);
-                    self.runtime.locations.insert(id, (key, node));
-                }
+            if let Some(entry) = self.entries.get(&id)
+                && let Some(vector) = &entry.vector
+            {
+                let key = (entry.embedding_model.clone(), vector.len());
+                let config = &self.runtime.config;
+                let index =
+                    self.runtime
+                        .indexes
+                        .entry(key.clone())
+                        .or_insert_with(|| VectorSpace {
+                            index: HnswIndex::with_config_and_seed(
+                                vector.len(),
+                                DistanceMetric::Cosine,
+                                HnswConfig {
+                                    m: config.hnsw_m,
+                                    m0: config.hnsw_m * 2,
+                                    ef_construction: config.ef_construction,
+                                    ef_search: config.ef_search,
+                                    quantize_sq8: false,
+                                },
+                                20_261_016,
+                            ),
+                            documents: HashMap::new(),
+                            next_node: 1,
+                        });
+                let node = index.next_node;
+                index.next_node = node.checked_add(1).ok_or_else(|| {
+                    Error::ConstraintViolation("Memory index node space exhausted".into())
+                })?;
+                index.index.insert_vector(node, &unit_vector(vector))?;
+                index.documents.insert(node, id);
+                self.runtime.locations.insert(id, (key, node));
             }
             self.runtime.dirty.remove(&id);
         }
@@ -639,12 +637,12 @@ impl MemoryEngine {
         for cached_space in cache.spaces {
             let key = (cached_space.model.clone(), cached_space.dims);
             let mut index = HnswIndex::import_snapshot(cached_space.snapshot);
-            if let Some(ep) = index.entry_point {
-                if !index.nodes.contains_key(&ep) {
-                    self.runtime.indexes.clear();
-                    self.runtime.locations.clear();
-                    return Ok(false);
-                }
+            if let Some(ep) = index.entry_point
+                && !index.nodes.contains_key(&ep)
+            {
+                self.runtime.indexes.clear();
+                self.runtime.locations.clear();
+                return Ok(false);
             }
 
             let mut documents = HashMap::with_capacity(cached_space.documents.len());
@@ -721,17 +719,15 @@ impl MemoryEngine {
         let mut vector_indexes_used = 0;
         if let Some(vector) = &search.embedding {
             let normalized_query = unit_vector(vector);
-            if let Some(model) = &search.embedding_model {
-                if let Some(((_, dimension), _)) = self
+            if let Some(model) = &search.embedding_model
+                && let Some(((_, dimension), _)) = self
                     .runtime
                     .spaces
                     .iter()
                     .find(|((m, _), _)| m.as_ref() == Some(model))
-                {
-                    if *dimension != vector.len() {
-                        return Err(Error::DimensionMismatch(*dimension, vector.len()));
-                    }
-                }
+                && *dimension != vector.len()
+            {
+                return Err(Error::DimensionMismatch(*dimension, vector.len()));
             }
             let key = (search.embedding_model.clone(), vector.len());
             if let Some(space) = self.runtime.indexes.get(&key) {

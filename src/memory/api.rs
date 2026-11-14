@@ -103,21 +103,21 @@ impl MemoryAccessScope {
         requested_namespace: Option<&str>,
         requested_session_id: Option<&str>,
     ) -> Result<(String, Option<String>)> {
-        if let Some(ns) = requested_namespace {
-            if !ns.eq_ignore_ascii_case(&self.namespace) {
-                return Err(Error::PermissionDenied(format!(
-                    "Namespace '{ns}' is outside scoped owner boundary '{}'",
-                    self.namespace
-                )));
-            }
+        if let Some(ns) = requested_namespace
+            && !ns.eq_ignore_ascii_case(&self.namespace)
+        {
+            return Err(Error::PermissionDenied(format!(
+                "Namespace '{ns}' is outside scoped owner boundary '{}'",
+                self.namespace
+            )));
         }
         let session = if let Some(bound_session) = &self.session_id {
-            if let Some(req_session) = requested_session_id {
-                if req_session != bound_session {
-                    return Err(Error::PermissionDenied(format!(
-                        "Session '{req_session}' is outside scoped owner session boundary"
-                    )));
-                }
+            if let Some(req_session) = requested_session_id
+                && req_session != bound_session
+            {
+                return Err(Error::PermissionDenied(format!(
+                    "Session '{req_session}' is outside scoped owner session boundary"
+                )));
             }
             Some(bound_session.clone())
         } else {

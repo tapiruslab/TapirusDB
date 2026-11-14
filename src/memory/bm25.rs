@@ -149,11 +149,11 @@ impl Bm25Index {
     pub fn search(&self, query: &str, top_k: usize) -> Vec<(u64, f32)> {
         let mut result = self.search_filtered(query, top_k, None);
         // Preserve the legacy API's query-relative score normalization.
-        if let Some(&(_, max_score)) = result.first() {
-            if max_score > 0.0 {
-                for (_, score) in &mut result {
-                    *score /= max_score;
-                }
+        if let Some(&(_, max_score)) = result.first()
+            && max_score > 0.0
+        {
+            for (_, score) in &mut result {
+                *score /= max_score;
             }
         }
         result

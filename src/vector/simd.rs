@@ -12,18 +12,16 @@ pub fn simd_cosine_distance(a: &[f32], b: &[f32]) -> f32 {
         return 1.0;
     }
 
-    let chunks_a = a.chunks_exact(8);
-    let chunks_b = b.chunks_exact(8);
-    let rem_a = chunks_a.remainder();
-    let rem_b = chunks_b.remainder();
+    let (chunks_a, rem_a) = a.as_chunks::<8>();
+    let (chunks_b, rem_b) = b.as_chunks::<8>();
 
     let mut dot_acc = wide::f32x8::ZERO;
     let mut norm_a_acc = wide::f32x8::ZERO;
     let mut norm_b_acc = wide::f32x8::ZERO;
 
-    for (ca, cb) in chunks_a.zip(chunks_b) {
-        let va = wide::f32x8::from(<[f32; 8]>::try_from(ca).unwrap());
-        let vb = wide::f32x8::from(<[f32; 8]>::try_from(cb).unwrap());
+    for (ca, cb) in chunks_a.iter().zip(chunks_b.iter()) {
+        let va = wide::f32x8::from(*ca);
+        let vb = wide::f32x8::from(*cb);
         dot_acc += va * vb;
         norm_a_acc += va * va;
         norm_b_acc += vb * vb;
@@ -177,15 +175,13 @@ pub fn simd_euclidean_distance_squared(a: &[f32], b: &[f32]) -> f32 {
         return f32::MAX;
     }
 
-    let chunks_a = a.chunks_exact(8);
-    let chunks_b = b.chunks_exact(8);
-    let rem_a = chunks_a.remainder();
-    let rem_b = chunks_b.remainder();
+    let (chunks_a, rem_a) = a.as_chunks::<8>();
+    let (chunks_b, rem_b) = b.as_chunks::<8>();
 
     let mut acc = wide::f32x8::ZERO;
-    for (ca, cb) in chunks_a.zip(chunks_b) {
-        let va = wide::f32x8::from(<[f32; 8]>::try_from(ca).unwrap());
-        let vb = wide::f32x8::from(<[f32; 8]>::try_from(cb).unwrap());
+    for (ca, cb) in chunks_a.iter().zip(chunks_b.iter()) {
+        let va = wide::f32x8::from(*ca);
+        let vb = wide::f32x8::from(*cb);
         let diff = va - vb;
         acc += diff * diff;
     }
@@ -302,15 +298,13 @@ pub fn simd_dot_product(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
 
-    let chunks_a = a.chunks_exact(8);
-    let chunks_b = b.chunks_exact(8);
-    let rem_a = chunks_a.remainder();
-    let rem_b = chunks_b.remainder();
+    let (chunks_a, rem_a) = a.as_chunks::<8>();
+    let (chunks_b, rem_b) = b.as_chunks::<8>();
 
     let mut acc = wide::f32x8::ZERO;
-    for (ca, cb) in chunks_a.zip(chunks_b) {
-        let va = wide::f32x8::from(<[f32; 8]>::try_from(ca).unwrap());
-        let vb = wide::f32x8::from(<[f32; 8]>::try_from(cb).unwrap());
+    for (ca, cb) in chunks_a.iter().zip(chunks_b.iter()) {
+        let va = wide::f32x8::from(*ca);
+        let vb = wide::f32x8::from(*cb);
         acc += va * vb;
     }
 

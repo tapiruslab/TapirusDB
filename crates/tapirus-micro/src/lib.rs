@@ -84,7 +84,7 @@ impl<F: Flash, const BLOCK: usize> Store<F, BLOCK> {
             || BLOCK != flash.erase_size()
             || write_size == 0
             || write_size > BLOCK - HEADER
-            || BLOCK % write_size != 0
+            || !BLOCK.is_multiple_of(write_size)
             || slots
                 .checked_mul(2)
                 .and_then(|n| n.checked_mul(BLOCK))

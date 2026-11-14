@@ -275,10 +275,10 @@ impl GraphEngine {
         let mut results = Vec::new();
         let mut check_edge = |eid: u64| {
             if let Some(edge) = self.edges.get(&eid) {
-                if let Some(filter_label) = edge_label {
-                    if !edge.label.eq_ignore_ascii_case(filter_label) {
-                        return;
-                    }
+                if let Some(filter_label) = edge_label
+                    && !edge.label.eq_ignore_ascii_case(filter_label)
+                {
+                    return;
                 }
 
                 let neighbor_id = if edge.from_id == node_id {
@@ -509,10 +509,10 @@ impl GraphEngine {
                 break;
             }
 
-            if let Some(&d) = dist.get(&node) {
-                if cost > d {
-                    continue;
-                }
+            if let Some(&d) = dist.get(&node)
+                && cost > d
+            {
+                continue;
             }
 
             if let Some(edge_ids) = self.outgoing.get(&node) {
@@ -811,21 +811,21 @@ impl GraphEngine {
                 let mut neighbor_comms: HashMap<usize, f32> = HashMap::new();
                 if let Some(edge_ids) = self.outgoing.get(&u) {
                     for &eid in edge_ids {
-                        if let Some(edge) = self.edges.get(&eid) {
-                            if let Some(&target_comm) = communities.get(&edge.to_id) {
-                                *neighbor_comms.entry(target_comm).or_insert(0.0) +=
-                                    edge.weight.max(0.001);
-                            }
+                        if let Some(edge) = self.edges.get(&eid)
+                            && let Some(&target_comm) = communities.get(&edge.to_id)
+                        {
+                            *neighbor_comms.entry(target_comm).or_insert(0.0) +=
+                                edge.weight.max(0.001);
                         }
                     }
                 }
                 if let Some(edge_ids) = self.incoming.get(&u) {
                     for &eid in edge_ids {
-                        if let Some(edge) = self.edges.get(&eid) {
-                            if let Some(&source_comm) = communities.get(&edge.from_id) {
-                                *neighbor_comms.entry(source_comm).or_insert(0.0) +=
-                                    edge.weight.max(0.001);
-                            }
+                        if let Some(edge) = self.edges.get(&eid)
+                            && let Some(&source_comm) = communities.get(&edge.from_id)
+                        {
+                            *neighbor_comms.entry(source_comm).or_insert(0.0) +=
+                                edge.weight.max(0.001);
                         }
                     }
                 }

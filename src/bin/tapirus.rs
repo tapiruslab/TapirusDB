@@ -1781,10 +1781,10 @@ fn extract_request_api_key(header_str: &str) -> Option<&str> {
                     value
                 });
             }
-        } else if lower.starts_with("x-api-key:") {
-            if let Some((_, value)) = line.split_once(':') {
-                provided_key = Some(value.trim());
-            }
+        } else if lower.starts_with("x-api-key:")
+            && let Some((_, value)) = line.split_once(':')
+        {
+            provided_key = Some(value.trim());
         }
     }
     provided_key
@@ -1806,10 +1806,10 @@ fn authenticate_http_request(
     }
     let provided = extract_request_api_key(header_str)?;
     let mut resolved = None;
-    if let Some(expected) = master_key {
-        if constant_time_eq_str(provided, expected) {
-            resolved = Some(HttpAuthScope::Unrestricted);
-        }
+    if let Some(expected) = master_key
+        && constant_time_eq_str(provided, expected)
+    {
+        resolved = Some(HttpAuthScope::Unrestricted);
     }
     for (key, namespace) in scoped_keys {
         if constant_time_eq_str(provided, key) && resolved.is_none() {
@@ -2116,10 +2116,10 @@ fn handle_http_client<S: HttpTransportStream>(
             return;
         }
 
-        if let Some(start) = body_start {
-            if request_data.len() >= start + content_length {
-                break;
-            }
+        if let Some(start) = body_start
+            && request_data.len() >= start + content_length
+        {
+            break;
         }
     }
 
@@ -2467,23 +2467,21 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
             access,
             ref allowed_tables,
         } = auth_scope
-        {
-            if let Err(reason) =
+            && let Err(reason) =
                 authorize_sql_for_role(trimmed, &params, access, allowed_tables.as_deref())
-            {
-                let err_json = serde_json::json!({
-                    "error": "Forbidden",
-                    "message": reason
-                });
-                send_http_response(
-                    &mut stream,
-                    "403 Forbidden",
-                    "application/json",
-                    &err_json.to_string(),
-                    cors_origin,
-                );
-                return;
-            }
+        {
+            let err_json = serde_json::json!({
+                "error": "Forbidden",
+                "message": reason
+            });
+            send_http_response(
+                &mut stream,
+                "403 Forbidden",
+                "application/json",
+                &err_json.to_string(),
+                cors_origin,
+            );
+            return;
         }
 
         let conn = db.lock();
@@ -2611,21 +2609,20 @@ code { background: #0f172a; color: #38bdf8; padding: 2px 6px; border-radius: 4px
         if let HttpAuthScope::SqlRole {
             ref allowed_tables, ..
         } = auth_scope
+            && let Err(reason) = check_allowed_table(collection, &[], allowed_tables.as_deref())
         {
-            if let Err(reason) = check_allowed_table(collection, &[], allowed_tables.as_deref()) {
-                let err_json = serde_json::json!({
-                    "error": "Forbidden",
-                    "message": reason
-                });
-                send_http_response(
-                    &mut stream,
-                    "403 Forbidden",
-                    "application/json",
-                    &err_json.to_string(),
-                    cors_origin,
-                );
-                return;
-            }
+            let err_json = serde_json::json!({
+                "error": "Forbidden",
+                "message": reason
+            });
+            send_http_response(
+                &mut stream,
+                "403 Forbidden",
+                "application/json",
+                &err_json.to_string(),
+                cors_origin,
+            );
+            return;
         }
 
         let conn = db.lock();
@@ -3078,10 +3075,10 @@ fn ensure_chatbot_schema(conn: &Connection) -> Result<(), String> {
         .query("SELECT COUNT(*) FROM tap_knowledge_base;")
         .unwrap_or_default();
     let mut count = 0i64;
-    if let Some(row) = count_rows.first() {
-        if let Some(Value::Integer(i)) = row.values().first() {
-            count = *i;
-        }
+    if let Some(row) = count_rows.first()
+        && let Some(Value::Integer(i)) = row.values().first()
+    {
+        count = *i;
     }
 
     if count == 0 {
@@ -5319,36 +5316,36 @@ fn import_jsonl_file(conn: &Connection, json_path: &str, collection_name: &str, 
 
     // Check if whole file is a single JSON array
     let trimmed = content.trim();
-    if trimmed.starts_with('[') {
-        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str(trimmed) {
-            let _ = conn.begin_transaction();
-            let mut batch_count = 0;
-            for doc in arr {
-                if col.insert_with_id(next_id, &doc).is_ok() {
-                    next_id += 1;
-                    total_imported += 1;
-                    batch_count += 1;
-                    if batch_count >= batch_size {
-                        let _ = conn.commit();
-                        let _ = conn.begin_transaction();
-                        batch_count = 0;
-                    }
+    if trimmed.starts_with('[')
+        && let Ok(serde_json::Value::Array(arr)) = serde_json::from_str(trimmed)
+    {
+        let _ = conn.begin_transaction();
+        let mut batch_count = 0;
+        for doc in arr {
+            if col.insert_with_id(next_id, &doc).is_ok() {
+                next_id += 1;
+                total_imported += 1;
+                batch_count += 1;
+                if batch_count >= batch_size {
+                    let _ = conn.commit();
+                    let _ = conn.begin_transaction();
+                    batch_count = 0;
                 }
             }
-            let _ = conn.commit();
-
-            let elapsed = start.elapsed();
-            let rate = if elapsed.as_secs_f64() > 0.0 {
-                total_imported as f64 / elapsed.as_secs_f64()
-            } else {
-                total_imported as f64
-            };
-            println!(
-                "\x1b[1;32m✓\x1b[0m Successfully imported \x1b[1m{}\x1b[0m documents into collection '\x1b[36m{}\x1b[0m' in {:.2?} ({:.0} docs/sec)",
-                total_imported, collection_name, elapsed, rate
-            );
-            return;
         }
+        let _ = conn.commit();
+
+        let elapsed = start.elapsed();
+        let rate = if elapsed.as_secs_f64() > 0.0 {
+            total_imported as f64 / elapsed.as_secs_f64()
+        } else {
+            total_imported as f64
+        };
+        println!(
+            "\x1b[1;32m✓\x1b[0m Successfully imported \x1b[1m{}\x1b[0m documents into collection '\x1b[36m{}\x1b[0m' in {:.2?} ({:.0} docs/sec)",
+            total_imported, collection_name, elapsed, rate
+        );
+        return;
     }
 
     // Line-delimited JSON (JSONL)
@@ -5514,13 +5511,12 @@ fn import_markdown_file(
                 edges_created += 1;
             }
 
-            if let Some(prev_id) = prev_section_node_id {
-                if conn
+            if let Some(prev_id) = prev_section_node_id
+                && conn
                     .graph_add_edge(prev_id, sec_node_id, "PRECEDES", 1.0, "{}")
                     .is_ok()
-                {
-                    edges_created += 1;
-                }
+            {
+                edges_created += 1;
             }
             prev_section_node_id = Some(sec_node_id);
         }
@@ -6218,14 +6214,14 @@ fn parse_embedding_array_arg(
         }
         vec.push(f);
     }
-    if let Some(dims) = expected_dims {
-        if vec.len() != dims {
-            return Err(format!(
-                "embedding dimension mismatch: got {}, expected {}",
-                vec.len(),
-                dims
-            ));
-        }
+    if let Some(dims) = expected_dims
+        && vec.len() != dims
+    {
+        return Err(format!(
+            "embedding dimension mismatch: got {}, expected {}",
+            vec.len(),
+            dims
+        ));
     }
     Ok(vec)
 }
@@ -6309,10 +6305,10 @@ fn fetch_http_embedding_plain(
         "POST {path} HTTP/1.1\r\nHost: {connect_addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
         body_bytes.len()
     );
-    if let Some(key) = api_key {
-        if !key.trim().is_empty() {
-            req.push_str(&format!("Authorization: Bearer {}\r\n", key.trim()));
-        }
+    if let Some(key) = api_key
+        && !key.trim().is_empty()
+    {
+        req.push_str(&format!("Authorization: Bearer {}\r\n", key.trim()));
     }
     req.push_str("\r\n");
 
@@ -6338,19 +6334,19 @@ fn fetch_http_embedding_plain(
             Ok(0) => break,
             Ok(n) => {
                 raw_resp.extend_from_slice(&buf[..n]);
-                if header_end_opt.is_none() {
-                    if let Some(end) = find_subsequence(&raw_resp, b"\r\n\r\n") {
-                        header_end_opt = Some(end);
-                        let headers_str = String::from_utf8_lossy(&raw_resp[..end]);
-                        for line in headers_str.lines() {
-                            let lower = line.to_ascii_lowercase();
-                            if let Some((_, v)) = lower.split_once("content-length:") {
-                                expected_len = v.trim().parse::<usize>().ok();
-                            } else if lower.starts_with("transfer-encoding:")
-                                && lower.contains("chunked")
-                            {
-                                is_chunked = true;
-                            }
+                if header_end_opt.is_none()
+                    && let Some(end) = find_subsequence(&raw_resp, b"\r\n\r\n")
+                {
+                    header_end_opt = Some(end);
+                    let headers_str = String::from_utf8_lossy(&raw_resp[..end]);
+                    for line in headers_str.lines() {
+                        let lower = line.to_ascii_lowercase();
+                        if let Some((_, v)) = lower.split_once("content-length:") {
+                            expected_len = v.trim().parse::<usize>().ok();
+                        } else if lower.starts_with("transfer-encoding:")
+                            && lower.contains("chunked")
+                        {
+                            is_chunked = true;
                         }
                     }
                 }
@@ -6476,18 +6472,18 @@ fn resolve_mcp_embedding(
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
 
-    if let Some(raw_vec) = args.get("embedding") {
-        if !raw_vec.is_null() {
-            let vector = parse_embedding_array_arg(raw_vec, cfg.embed_dims)?;
-            let model = explicit_model
-                .or_else(|| cfg.embed_model.clone())
-                .unwrap_or_else(|| format!("caller-{}d", vector.len()));
-            return Ok(ResolvedMcpEmbedding {
-                vector,
-                model,
-                mode: "caller-vector",
-            });
-        }
+    if let Some(raw_vec) = args.get("embedding")
+        && !raw_vec.is_null()
+    {
+        let vector = parse_embedding_array_arg(raw_vec, cfg.embed_dims)?;
+        let model = explicit_model
+            .or_else(|| cfg.embed_model.clone())
+            .unwrap_or_else(|| format!("caller-{}d", vector.len()));
+        return Ok(ResolvedMcpEmbedding {
+            vector,
+            model,
+            mode: "caller-vector",
+        });
     }
 
     if let Some(ref endpoint) = cfg.embed_endpoint {
@@ -6894,15 +6890,14 @@ fn run_grep_command(args: &[String]) {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.')
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && (name.starts_with('.')
                     || name == "target"
                     || name == "node_modules"
                     || name == "dist"
-                    || name == "__pycache__"
-                {
-                    continue;
-                }
+                    || name == "__pycache__")
+            {
+                continue;
             }
 
             if path.is_dir() {
@@ -6956,12 +6951,12 @@ fn run_grep_command(args: &[String]) {
                         }
 
                         let mut vector_sim = 0.0f32;
-                        if let (Some(emb), Some(qv)) = (embedder, query_vector) {
-                            if line.trim().len() > 3 {
-                                let lv = emb.embed_text(&line);
-                                let dist = tapirus::vector::simd::simd_cosine_distance(qv, &lv);
-                                vector_sim = (1.0 - dist).max(0.0);
-                            }
+                        if let (Some(emb), Some(qv)) = (embedder, query_vector)
+                            && line.trim().len() > 3
+                        {
+                            let lv = emb.embed_text(&line);
+                            let dist = tapirus::vector::simd::simd_cosine_distance(qv, &lv);
+                            vector_sim = (1.0 - dist).max(0.0);
                         }
 
                         if has_substring || token_score > 0.0 || vector_sim > 0.75 {

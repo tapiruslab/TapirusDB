@@ -75,8 +75,7 @@ impl VectorizedAccumulator {
             None => {
                 self.count += values.len();
                 // 4x unrolled accumulation loop
-                let chunks = values.chunks_exact(4);
-                let remainder = chunks.remainder();
+                let (chunks, remainder) = values.as_chunks::<4>();
                 let mut s0 = 0i64;
                 let mut s1 = 0i64;
                 let mut s2 = 0i64;
@@ -129,8 +128,7 @@ impl VectorizedAccumulator {
             }
             None => {
                 self.count += values.len();
-                let chunks = values.chunks_exact(4);
-                let remainder = chunks.remainder();
+                let (chunks, remainder) = values.as_chunks::<4>();
                 let mut s0 = 0.0f64;
                 let mut s1 = 0.0f64;
                 let mut s2 = 0.0f64;

@@ -132,13 +132,13 @@ impl SessionDatabase {
             return Err(Error::TransactionError("Session database is closed".into()));
         }
         let target_epoch = self.shared.mvcc_epoch.load(Ordering::Acquire);
-        if let Some(snap) = self.shared.latest_snapshot.read().as_ref().cloned() {
-            if snap.epoch == target_epoch {
-                return Ok(SnapshotSession {
-                    connection: snap.connection.clone(),
-                    epoch: snap.epoch,
-                });
-            }
+        if let Some(snap) = self.shared.latest_snapshot.read().as_ref().cloned()
+            && snap.epoch == target_epoch
+        {
+            return Ok(SnapshotSession {
+                connection: snap.connection.clone(),
+                epoch: snap.epoch,
+            });
         }
         let state = self.shared.state.lock();
         if state.poisoned {
@@ -298,11 +298,10 @@ impl Session {
                 .read()
                 .as_ref()
                 .is_none_or(|s| s.epoch != epoch);
-            if needs_capture {
-                if let Ok(snap) = SessionDatabase::build_snapshot(&connection, &state.config, epoch)
-                {
-                    *shared.latest_snapshot.write() = Some(snap);
-                }
+            if needs_capture
+                && let Ok(snap) = SessionDatabase::build_snapshot(&connection, &state.config, epoch)
+            {
+                *shared.latest_snapshot.write() = Some(snap);
             }
         } else if !now_in_tx {
             let cur_gen = connection.write_generation();
@@ -426,10 +425,10 @@ impl Drop for SessionHandle {
     fn drop(&mut self) {
         let mut state = self.shared.state.lock();
         if state.owner == Some(self.id) {
-            if let Some(connection) = &state.connection {
-                if connection.rollback().is_err() {
-                    state.poisoned = true;
-                }
+            if let Some(connection) = &state.connection
+                && connection.rollback().is_err()
+            {
+                state.poisoned = true;
             }
             state.owner = None;
             self.shared.changed.notify_all();

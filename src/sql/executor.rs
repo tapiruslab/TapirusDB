@@ -384,23 +384,24 @@ fn substitute_trigger_row_tokens(
     let mut out = Vec::with_capacity(tokens.len());
     let mut i = 0usize;
     while i < tokens.len() {
-        if i + 2 < tokens.len() && tokens[i + 1] == Token::Dot {
-            if let Token::Ident(qualifier) = &tokens[i] {
-                let target_row = if qualifier.eq_ignore_ascii_case("NEW") {
-                    new_row
-                } else if qualifier.eq_ignore_ascii_case("OLD") {
-                    old_row
-                } else {
-                    None
-                };
-                if let Some(row) = target_row {
-                    if let Some(col_name) = token_as_col_name(&tokens[i + 2]) {
-                        let val = row.get_value(&col_name).cloned().unwrap_or(Value::Null);
-                        out.extend(value_to_tokens(&val));
-                        i += 3;
-                        continue;
-                    }
-                }
+        if i + 2 < tokens.len()
+            && tokens[i + 1] == Token::Dot
+            && let Token::Ident(qualifier) = &tokens[i]
+        {
+            let target_row = if qualifier.eq_ignore_ascii_case("NEW") {
+                new_row
+            } else if qualifier.eq_ignore_ascii_case("OLD") {
+                old_row
+            } else {
+                None
+            };
+            if let Some(row) = target_row
+                && let Some(col_name) = token_as_col_name(&tokens[i + 2])
+            {
+                let val = row.get_value(&col_name).cloned().unwrap_or(Value::Null);
+                out.extend(value_to_tokens(&val));
+                i += 3;
+                continue;
             }
         }
         out.push(tokens[i].clone());
@@ -601,14 +602,14 @@ impl SQLExecutor {
         let cols = index_def.target_columns();
         if let Some((val, _)) = extract_index_key_value(row, &cols) {
             let key = value_to_index_key(&val);
-            if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                if let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
-                    bucket.remove_row_id(&val, row_id);
-                    if bucket.is_empty() {
-                        let _ = self.btree.delete(pager, index_def.root_page, key);
-                    } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                        let _ = self.btree.insert(pager, index_def.root_page, key, &new_pl);
-                    }
+            if let Some(payload) = self.btree.search(pager, index_def.root_page, key)?
+                && let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload)
+            {
+                bucket.remove_row_id(&val, row_id);
+                if bucket.is_empty() {
+                    let _ = self.btree.delete(pager, index_def.root_page, key);
+                } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
+                    let _ = self.btree.insert(pager, index_def.root_page, key, &new_pl);
                 }
             }
         }
@@ -656,22 +657,20 @@ impl SQLExecutor {
         for index_def in self.catalog.indexes() {
             if index_def.unique && index_def.table.eq_ignore_ascii_case(&table_def.name) {
                 let cols = index_def.target_columns();
-                if let Some((val, all_non_null)) = extract_index_key_value(candidate_row, &cols) {
-                    if all_non_null {
-                        let key = value_to_index_key(&val);
-                        if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
-                            if let Ok(bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
-                                if let Some(rids) = bucket.get_row_ids(&val) {
-                                    if rids.iter().any(|&rid| Some(rid) != exclude_row_id) {
-                                        return Err(Error::ConstraintViolation(format!(
-                                            "UNIQUE constraint failed: {}.{}",
-                                            table_def.name,
-                                            cols.join(", ")
-                                        )));
-                                    }
-                                }
-                            }
-                        }
+                if let Some((val, all_non_null)) = extract_index_key_value(candidate_row, &cols)
+                    && all_non_null
+                {
+                    let key = value_to_index_key(&val);
+                    if let Some(payload) = self.btree.search(pager, index_def.root_page, key)?
+                        && let Ok(bucket) = serde_json::from_slice::<IndexBucket>(&payload)
+                        && let Some(rids) = bucket.get_row_ids(&val)
+                        && rids.iter().any(|&rid| Some(rid) != exclude_row_id)
+                    {
+                        return Err(Error::ConstraintViolation(format!(
+                            "UNIQUE constraint failed: {}.{}",
+                            table_def.name,
+                            cols.join(", ")
+                        )));
                     }
                 }
             }
@@ -806,23 +805,22 @@ impl SQLExecutor {
                     .primary_key_index()
                     .and_then(|idx| parent_def.columns.get(idx))
                     .is_some_and(|pk| pk.name.eq_ignore_ascii_case(&parent_cols[0]))
+                && let Value::Integer(pk_id) = child_vals[0]
             {
-                if let Value::Integer(pk_id) = child_vals[0] {
-                    if self
-                        .btree
-                        .search(pager, parent_def.root_page, pk_id as u64)?
-                        .is_some()
-                    {
-                        continue;
-                    } else {
-                        return Err(Error::ConstraintViolation(format!(
-                            "FOREIGN KEY constraint failed: {}.{} -> {}.{}",
-                            table_def.name,
-                            fk.columns.join(","),
-                            fk.ref_table,
-                            parent_cols.join(",")
-                        )));
-                    }
+                if self
+                    .btree
+                    .search(pager, parent_def.root_page, pk_id as u64)?
+                    .is_some()
+                {
+                    continue;
+                } else {
+                    return Err(Error::ConstraintViolation(format!(
+                        "FOREIGN KEY constraint failed: {}.{} -> {}.{}",
+                        table_def.name,
+                        fk.columns.join(","),
+                        fk.ref_table,
+                        parent_cols.join(",")
+                    )));
                 }
             }
 
@@ -1138,10 +1136,10 @@ impl SQLExecutor {
     }
 
     fn fts_remove_row(&mut self, table_def: &TableDef, row_id: u64) {
-        if table_def.fts_config.is_some() {
-            if let Some(idx) = self.fts_indexes.get_mut(&table_def.name.to_lowercase()) {
-                idx.remove_document(row_id);
-            }
+        if table_def.fts_config.is_some()
+            && let Some(idx) = self.fts_indexes.get_mut(&table_def.name.to_lowercase())
+        {
+            idx.remove_document(row_id);
         }
     }
 
@@ -1239,10 +1237,10 @@ impl SQLExecutor {
             return Ok(None);
         }
         let stmt = crate::sql::parser::parse_tokens(&tokens)?;
-        if self.statement_cache.len() >= 256 {
-            if let Some(oldest) = self.statement_cache_order.pop_front() {
-                self.statement_cache.remove(&oldest);
-            }
+        if self.statement_cache.len() >= 256
+            && let Some(oldest) = self.statement_cache_order.pop_front()
+        {
+            self.statement_cache.remove(&oldest);
         }
         self.statement_cache.insert(sql.to_string(), stmt.clone());
         self.statement_cache_order.push_back(sql.to_string());
@@ -1695,26 +1693,25 @@ impl SQLExecutor {
 
         let mut results = Vec::new();
         for eid in candidate_edges {
-            if let Some(edge_bytes) = self.btree.search(pager, edges_root, eid)? {
-                if let Ok(edge) = serde_json::from_slice::<crate::graph::Edge>(&edge_bytes) {
-                    if let Some(filter_label) = edge_label {
-                        if !edge.label.eq_ignore_ascii_case(filter_label) {
-                            continue;
-                        }
-                    }
+            if let Some(edge_bytes) = self.btree.search(pager, edges_root, eid)?
+                && let Ok(edge) = serde_json::from_slice::<crate::graph::Edge>(&edge_bytes)
+            {
+                if let Some(filter_label) = edge_label
+                    && !edge.label.eq_ignore_ascii_case(filter_label)
+                {
+                    continue;
+                }
 
-                    let neighbor_id = if edge.from_id == node_id {
-                        edge.to_id
-                    } else {
-                        edge.from_id
-                    };
+                let neighbor_id = if edge.from_id == node_id {
+                    edge.to_id
+                } else {
+                    edge.from_id
+                };
 
-                    if let Some(node_bytes) = self.btree.search(pager, nodes_root, neighbor_id)? {
-                        if let Ok(node) = serde_json::from_slice::<crate::graph::Node>(&node_bytes)
-                        {
-                            results.push((node, edge));
-                        }
-                    }
+                if let Some(node_bytes) = self.btree.search(pager, nodes_root, neighbor_id)?
+                    && let Ok(node) = serde_json::from_slice::<crate::graph::Node>(&node_bytes)
+                {
+                    results.push((node, edge));
                 }
             }
         }
@@ -1793,11 +1790,11 @@ impl SQLExecutor {
                 Ok(true)
             })?;
         }
-        if let Some(idx_table) = self.catalog.get_table("__sys_memory_index") {
-            if let Ok(Some(payload)) = self.btree.search(pager, idx_table.root_page, 1) {
-                // Derived HNSW cache is best-effort: fall back cleanly to lazy rebuild if corrupted/stale.
-                let _ = memory_engine.import_cached_indexes(&payload);
-            }
+        if let Some(idx_table) = self.catalog.get_table("__sys_memory_index")
+            && let Ok(Some(payload)) = self.btree.search(pager, idx_table.root_page, 1)
+        {
+            // Derived HNSW cache is best-effort: fall back cleanly to lazy rebuild if corrupted/stale.
+            let _ = memory_engine.import_cached_indexes(&payload);
         }
         Ok(())
     }
@@ -1896,19 +1893,18 @@ impl SQLExecutor {
             let root_page = tdef.root_page;
             let cells = self.btree.scan(pager, root_page)?;
             for cell in cells {
-                if let Ok(mut record) = serde_json::from_slice::<TemporalRecord>(&cell.payload) {
-                    if record.table_name.eq_ignore_ascii_case(table)
-                        && record.row_id == row_id
-                        && record.valid_to == u64::MAX
-                    {
-                        record.valid_to = end_time;
-                        let updated_payload = serde_json::to_vec(&record).map_err(|e| {
-                            Error::Corrupted(format!("Failed to serialize temporal record: {e}"))
-                        })?;
-                        self.btree
-                            .insert(pager, root_page, cell.row_id, &updated_payload)?;
-                        break;
-                    }
+                if let Ok(mut record) = serde_json::from_slice::<TemporalRecord>(&cell.payload)
+                    && record.table_name.eq_ignore_ascii_case(table)
+                    && record.row_id == row_id
+                    && record.valid_to == u64::MAX
+                {
+                    record.valid_to = end_time;
+                    let updated_payload = serde_json::to_vec(&record).map_err(|e| {
+                        Error::Corrupted(format!("Failed to serialize temporal record: {e}"))
+                    })?;
+                    self.btree
+                        .insert(pager, root_page, cell.row_id, &updated_payload)?;
+                    break;
                 }
             }
         }
@@ -1976,21 +1972,21 @@ impl SQLExecutor {
                 let p = pager.vector_index_page();
                 if p != 0 { Some(p) } else { None }
             });
-        if let Some(root_page) = snap_root {
-            if let Ok(cells) = self.btree.scan(pager, root_page) {
-                for cell in cells {
-                    if let Ok(rec) = serde_json::from_slice::<VectorSnapshotRecord>(&cell.payload) {
-                        if !self.catalog.table_exists(&rec.table_name)
-                            || rec.table_fingerprint
-                                != Some(self.table_fingerprint(pager, &rec.table_name)?)
-                        {
-                            continue;
-                        }
-                        let index = HnswIndex::import_snapshot(rec.snapshot);
-                        self.vector_indexes
-                            .insert(rec.table_name.to_lowercase(), index);
-                        loaded_tables.insert(rec.table_name.to_lowercase());
+        if let Some(root_page) = snap_root
+            && let Ok(cells) = self.btree.scan(pager, root_page)
+        {
+            for cell in cells {
+                if let Ok(rec) = serde_json::from_slice::<VectorSnapshotRecord>(&cell.payload) {
+                    if !self.catalog.table_exists(&rec.table_name)
+                        || rec.table_fingerprint
+                            != Some(self.table_fingerprint(pager, &rec.table_name)?)
+                    {
+                        continue;
                     }
+                    let index = HnswIndex::import_snapshot(rec.snapshot);
+                    self.vector_indexes
+                        .insert(rec.table_name.to_lowercase(), index);
+                    loaded_tables.insert(rec.table_name.to_lowercase());
                 }
             }
         }
@@ -1998,22 +1994,20 @@ impl SQLExecutor {
         // 2. Fallback: for any vector table lacking a persistent snapshot, construct from rows
         for table in self.catalog.tables() {
             let tname = table.name.to_lowercase();
-            if !loaded_tables.contains(&tname) {
-                if let Some((vec_idx, dims)) = table.vector_column() {
-                    let mut index = HnswIndex::new(dims, DistanceMetric::Cosine);
-                    let cells = self.btree.scan(pager, table.root_page)?;
-                    let all_col_names = table.column_names();
-                    for cell in cells {
-                        if let Ok(row) = decode_row(&cell.payload, &all_col_names) {
-                            if let Some(crate::traits::Value::Vector(vec)) =
-                                row.values().get(vec_idx)
-                            {
-                                index.insert_vector(cell.row_id, vec)?;
-                            }
-                        }
+            if !loaded_tables.contains(&tname)
+                && let Some((vec_idx, dims)) = table.vector_column()
+            {
+                let mut index = HnswIndex::new(dims, DistanceMetric::Cosine);
+                let cells = self.btree.scan(pager, table.root_page)?;
+                let all_col_names = table.column_names();
+                for cell in cells {
+                    if let Ok(row) = decode_row(&cell.payload, &all_col_names)
+                        && let Some(crate::traits::Value::Vector(vec)) = row.values().get(vec_idx)
+                    {
+                        index.insert_vector(cell.row_id, vec)?;
                     }
-                    self.vector_indexes.insert(tname, index);
                 }
+                self.vector_indexes.insert(tname, index);
             }
         }
         Ok(())
@@ -2582,30 +2576,26 @@ impl SQLExecutor {
             Statement::AlterTableAddColumn { table, column } => {
                 let default_fill = column.default_value.as_ref().map(DefaultValue::materialize);
                 self.catalog.add_column(pager, &table, column)?;
-                if let Some(fill_val) = default_fill {
-                    if let Some(tdef) = self.catalog.get_table(&table).cloned() {
-                        let col_count = tdef.columns.len();
-                        let prev_cols: Vec<String> = tdef
-                            .columns
-                            .iter()
-                            .take(col_count.saturating_sub(1))
-                            .map(|c| c.name.clone())
-                            .collect();
-                        let cells = self.btree.scan(pager, tdef.root_page)?;
-                        for cell in cells {
-                            let row = decode_row(&cell.payload, &prev_cols)?;
-                            let mut vals = row.values().to_vec();
-                            if vals.len() < col_count {
-                                vals.resize(col_count - 1, Value::Null);
-                                vals.push(fill_val.clone());
-                                let new_payload = encode_row(&vals);
-                                self.btree.insert(
-                                    pager,
-                                    tdef.root_page,
-                                    cell.row_id,
-                                    &new_payload,
-                                )?;
-                            }
+                if let Some(fill_val) = default_fill
+                    && let Some(tdef) = self.catalog.get_table(&table).cloned()
+                {
+                    let col_count = tdef.columns.len();
+                    let prev_cols: Vec<String> = tdef
+                        .columns
+                        .iter()
+                        .take(col_count.saturating_sub(1))
+                        .map(|c| c.name.clone())
+                        .collect();
+                    let cells = self.btree.scan(pager, tdef.root_page)?;
+                    for cell in cells {
+                        let row = decode_row(&cell.payload, &prev_cols)?;
+                        let mut vals = row.values().to_vec();
+                        if vals.len() < col_count {
+                            vals.resize(col_count - 1, Value::Null);
+                            vals.push(fill_val.clone());
+                            let new_payload = encode_row(&vals);
+                            self.btree
+                                .insert(pager, tdef.root_page, cell.row_id, &new_payload)?;
                         }
                     }
                 }
@@ -2984,10 +2974,10 @@ impl SQLExecutor {
                             continue;
                         }
                         result_rows.push(projected);
-                        if let Some(lim) = limit {
-                            if result_rows.len() >= lim {
-                                break;
-                            }
+                        if let Some(lim) = limit
+                            && result_rows.len() >= lim
+                        {
+                            break;
                         }
                     }
 
@@ -3043,34 +3033,30 @@ impl SQLExecutor {
                     && join.is_none()
                     && order_by.is_none()
                     && group_by.is_none()
-                {
-                    if let (Some(pk_col_idx), Some(WhereExpr::Condition(cond))) =
+                    && let (Some(pk_col_idx), Some(WhereExpr::Condition(cond))) =
                         (pk_idx, &where_clause)
+                    && cond.op == BinaryOp::Equals
+                {
+                    let pk_name = &table_def.columns[pk_col_idx].name;
+                    if pk_name.eq_ignore_ascii_case(&cond.column)
+                        && let Value::Integer(target_key) = cond.value
                     {
-                        if cond.op == BinaryOp::Equals {
-                            let pk_name = &table_def.columns[pk_col_idx].name;
-                            if pk_name.eq_ignore_ascii_case(&cond.column) {
-                                if let Value::Integer(target_key) = cond.value {
-                                    if offset.unwrap_or(0) > 0 || limit == Some(0) {
-                                        return Ok(Vec::new());
-                                    }
-                                    if let Some(payload) =
-                                        self.btree.search(pager, root_page, target_key as u64)?
-                                    {
-                                        let full_row = decode_row(&payload, &all_col_names)?;
-                                        let output_col_names = if columns.is_empty() {
-                                            all_col_names.clone()
-                                        } else {
-                                            columns.clone()
-                                        };
-                                        let projected =
-                                            self.project_row(&full_row, &output_col_names)?;
-                                        return Ok(vec![projected]);
-                                    } else {
-                                        return Ok(Vec::new());
-                                    }
-                                }
-                            }
+                        if offset.unwrap_or(0) > 0 || limit == Some(0) {
+                            return Ok(Vec::new());
+                        }
+                        if let Some(payload) =
+                            self.btree.search(pager, root_page, target_key as u64)?
+                        {
+                            let full_row = decode_row(&payload, &all_col_names)?;
+                            let output_col_names = if columns.is_empty() {
+                                all_col_names.clone()
+                            } else {
+                                columns.clone()
+                            };
+                            let projected = self.project_row(&full_row, &output_col_names)?;
+                            return Ok(vec![projected]);
+                        } else {
+                            return Ok(Vec::new());
                         }
                     }
                 }
@@ -3080,98 +3066,91 @@ impl SQLExecutor {
                     && join.is_none()
                     && order_by.is_none()
                     && group_by.is_none()
+                    && let Some(ref expr) = where_clause
                 {
-                    if let Some(ref expr) = where_clause {
-                        let mut and_eqs = HashMap::new();
-                        collect_and_eq_conditions(expr, &mut and_eqs);
-                        if and_eqs.len() >= 2 {
-                            let matched_comp_idx = self
-                                .catalog
-                                .indexes()
-                                .into_iter()
-                                .filter(|idx| idx.table.eq_ignore_ascii_case(&table))
-                                .filter_map(|idx| {
-                                    let cols = idx.target_columns();
-                                    if cols.len() >= 2
-                                        && cols
-                                            .iter()
-                                            .all(|c| and_eqs.contains_key(&c.to_lowercase()))
-                                    {
-                                        Some((cols.len(), idx))
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .max_by_key(|(len, _)| *len)
-                                .map(|(_, idx)| idx);
-
-                            if let Some(index_def) = matched_comp_idx {
-                                let tcols = index_def.target_columns();
-                                let dummy_cols: Vec<String> =
-                                    tcols.iter().map(|c| (*c).to_string()).collect();
-                                let dummy_vals: Vec<Value> = tcols
-                                    .iter()
-                                    .map(|c| {
-                                        and_eqs
-                                            .get(&c.to_lowercase())
-                                            .cloned()
-                                            .unwrap_or(Value::Null)
-                                    })
-                                    .collect();
-                                let dummy_row = Row::new(dummy_cols, dummy_vals);
-                                if let Some((comp_val, _)) =
-                                    extract_index_key_value(&dummy_row, &tcols)
+                    let mut and_eqs = HashMap::new();
+                    collect_and_eq_conditions(expr, &mut and_eqs);
+                    if and_eqs.len() >= 2 {
+                        let matched_comp_idx = self
+                            .catalog
+                            .indexes()
+                            .into_iter()
+                            .filter(|idx| idx.table.eq_ignore_ascii_case(&table))
+                            .filter_map(|idx| {
+                                let cols = idx.target_columns();
+                                if cols.len() >= 2
+                                    && cols.iter().all(|c| and_eqs.contains_key(&c.to_lowercase()))
                                 {
-                                    let key = value_to_index_key(&comp_val);
-                                    let mut matched_row_ids = Vec::new();
-                                    if let Some(payload) =
-                                        self.btree.search(pager, index_def.root_page, key)?
-                                    {
-                                        if let Ok(bucket) =
-                                            serde_json::from_slice::<IndexBucket>(&payload)
-                                        {
-                                            if let Some(rids) = bucket.get_row_ids(&comp_val) {
-                                                matched_row_ids.extend_from_slice(rids);
-                                            }
-                                        }
-                                    }
-                                    let output_col_names = if columns.is_empty() {
-                                        all_col_names.clone()
-                                    } else {
-                                        columns.clone()
-                                    };
-                                    let mut result_rows = Vec::new();
-                                    let skip_count = offset.unwrap_or(0);
-                                    let mut skipped = 0;
-                                    for rid in matched_row_ids {
-                                        if let Some(payload) =
-                                            self.btree.search(pager, root_page, rid)?
-                                        {
-                                            let full_row = decode_row(&payload, &all_col_names)?;
-                                            if let Some(ref r_expr) = resolved_where {
-                                                if !row_matches_resolved(&full_row, r_expr) {
-                                                    continue;
-                                                }
-                                            }
-                                            let projected =
-                                                self.project_row(&full_row, &output_col_names)?;
-                                            if distinct && result_rows.contains(&projected) {
-                                                continue;
-                                            }
-                                            if skipped < skip_count {
-                                                skipped += 1;
-                                                continue;
-                                            }
-                                            result_rows.push(projected);
-                                            if let Some(lim) = limit {
-                                                if result_rows.len() >= lim {
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    return Ok(result_rows);
+                                    Some((cols.len(), idx))
+                                } else {
+                                    None
                                 }
+                            })
+                            .max_by_key(|(len, _)| *len)
+                            .map(|(_, idx)| idx);
+
+                        if let Some(index_def) = matched_comp_idx {
+                            let tcols = index_def.target_columns();
+                            let dummy_cols: Vec<String> =
+                                tcols.iter().map(|c| (*c).to_string()).collect();
+                            let dummy_vals: Vec<Value> = tcols
+                                .iter()
+                                .map(|c| {
+                                    and_eqs
+                                        .get(&c.to_lowercase())
+                                        .cloned()
+                                        .unwrap_or(Value::Null)
+                                })
+                                .collect();
+                            let dummy_row = Row::new(dummy_cols, dummy_vals);
+                            if let Some((comp_val, _)) = extract_index_key_value(&dummy_row, &tcols)
+                            {
+                                let key = value_to_index_key(&comp_val);
+                                let mut matched_row_ids = Vec::new();
+                                if let Some(payload) =
+                                    self.btree.search(pager, index_def.root_page, key)?
+                                    && let Ok(bucket) =
+                                        serde_json::from_slice::<IndexBucket>(&payload)
+                                    && let Some(rids) = bucket.get_row_ids(&comp_val)
+                                {
+                                    matched_row_ids.extend_from_slice(rids);
+                                }
+                                let output_col_names = if columns.is_empty() {
+                                    all_col_names.clone()
+                                } else {
+                                    columns.clone()
+                                };
+                                let mut result_rows = Vec::new();
+                                let skip_count = offset.unwrap_or(0);
+                                let mut skipped = 0;
+                                for rid in matched_row_ids {
+                                    if let Some(payload) =
+                                        self.btree.search(pager, root_page, rid)?
+                                    {
+                                        let full_row = decode_row(&payload, &all_col_names)?;
+                                        if let Some(ref r_expr) = resolved_where
+                                            && !row_matches_resolved(&full_row, r_expr)
+                                        {
+                                            continue;
+                                        }
+                                        let projected =
+                                            self.project_row(&full_row, &output_col_names)?;
+                                        if distinct && result_rows.contains(&projected) {
+                                            continue;
+                                        }
+                                        if skipped < skip_count {
+                                            skipped += 1;
+                                            continue;
+                                        }
+                                        result_rows.push(projected);
+                                        if let Some(lim) = limit
+                                            && result_rows.len() >= lim
+                                        {
+                                            break;
+                                        }
+                                    }
+                                }
+                                return Ok(result_rows);
                             }
                         }
                     }
@@ -3182,79 +3161,62 @@ impl SQLExecutor {
                     && join.is_none()
                     && order_by.is_none()
                     && group_by.is_none()
+                    && let Some(WhereExpr::Condition(cond)) = &where_clause
+                    && cond.op == BinaryOp::Equals
+                    && let Some(index_def) = self
+                        .catalog
+                        .find_index_for_column(&table, &cond.column)
+                        .cloned()
                 {
-                    if let Some(WhereExpr::Condition(cond)) = &where_clause {
-                        if cond.op == BinaryOp::Equals {
-                            if let Some(index_def) = self
-                                .catalog
-                                .find_index_for_column(&table, &cond.column)
-                                .cloned()
-                            {
-                                let optimizer = crate::sql::planner::CostOptimizer::new();
-                                let default_stats =
-                                    crate::sql::planner::TableStats::new(&table, 100, 10);
-                                let stats = self
-                                    .catalog
-                                    .get_table_stats(&table)
-                                    .unwrap_or(&default_stats);
-                                let sel = stats.estimate_selectivity(&cond.column, true);
-                                let index_cost = optimizer.estimate_index_scan(
-                                    stats,
-                                    &index_def.name,
-                                    &cond.column,
-                                    sel,
-                                );
-                                let seq_cost = optimizer.estimate_seq_scan(stats, sel);
+                    let optimizer = crate::sql::planner::CostOptimizer::new();
+                    let default_stats = crate::sql::planner::TableStats::new(&table, 100, 10);
+                    let stats = self
+                        .catalog
+                        .get_table_stats(&table)
+                        .unwrap_or(&default_stats);
+                    let sel = stats.estimate_selectivity(&cond.column, true);
+                    let index_cost =
+                        optimizer.estimate_index_scan(stats, &index_def.name, &cond.column, sel);
+                    let seq_cost = optimizer.estimate_seq_scan(stats, sel);
 
-                                // Execute Index Scan if Cost-Based Optimizer determines lower or equal cost
-                                if index_cost.total_cost <= seq_cost.total_cost {
-                                    let key = value_to_index_key(&cond.value);
-                                    let mut matched_row_ids = Vec::new();
-                                    if let Some(payload) =
-                                        self.btree.search(pager, index_def.root_page, key)?
-                                    {
-                                        if let Ok(bucket) =
-                                            serde_json::from_slice::<IndexBucket>(&payload)
-                                        {
-                                            if let Some(rids) = bucket.get_row_ids(&cond.value) {
-                                                matched_row_ids.extend_from_slice(rids);
-                                            }
-                                        }
-                                    }
-                                    let output_col_names = if columns.is_empty() {
-                                        all_col_names.clone()
-                                    } else {
-                                        columns.clone()
-                                    };
-                                    let mut result_rows = Vec::new();
-                                    let skip_count = offset.unwrap_or(0);
-                                    let mut skipped = 0;
-                                    for rid in matched_row_ids {
-                                        if let Some(payload) =
-                                            self.btree.search(pager, root_page, rid)?
-                                        {
-                                            let full_row = decode_row(&payload, &all_col_names)?;
-                                            let projected =
-                                                self.project_row(&full_row, &output_col_names)?;
-                                            if distinct && result_rows.contains(&projected) {
-                                                continue;
-                                            }
-                                            if skipped < skip_count {
-                                                skipped += 1;
-                                                continue;
-                                            }
-                                            result_rows.push(projected);
-                                            if let Some(lim) = limit {
-                                                if result_rows.len() >= lim {
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    return Ok(result_rows);
+                    // Execute Index Scan if Cost-Based Optimizer determines lower or equal cost
+                    if index_cost.total_cost <= seq_cost.total_cost {
+                        let key = value_to_index_key(&cond.value);
+                        let mut matched_row_ids = Vec::new();
+                        if let Some(payload) = self.btree.search(pager, index_def.root_page, key)?
+                            && let Ok(bucket) = serde_json::from_slice::<IndexBucket>(&payload)
+                            && let Some(rids) = bucket.get_row_ids(&cond.value)
+                        {
+                            matched_row_ids.extend_from_slice(rids);
+                        }
+                        let output_col_names = if columns.is_empty() {
+                            all_col_names.clone()
+                        } else {
+                            columns.clone()
+                        };
+                        let mut result_rows = Vec::new();
+                        let skip_count = offset.unwrap_or(0);
+                        let mut skipped = 0;
+                        for rid in matched_row_ids {
+                            if let Some(payload) = self.btree.search(pager, root_page, rid)? {
+                                let full_row = decode_row(&payload, &all_col_names)?;
+                                let projected = self.project_row(&full_row, &output_col_names)?;
+                                if distinct && result_rows.contains(&projected) {
+                                    continue;
+                                }
+                                if skipped < skip_count {
+                                    skipped += 1;
+                                    continue;
+                                }
+                                result_rows.push(projected);
+                                if let Some(lim) = limit
+                                    && result_rows.len() >= lim
+                                {
+                                    break;
                                 }
                             }
                         }
+                        return Ok(result_rows);
                     }
                 }
 
@@ -3277,25 +3239,25 @@ impl SQLExecutor {
                     let mut aggs: Vec<PushdownAgg> = Vec::new();
                     for col in &columns {
                         let upper = col.to_uppercase();
-                        if let Some(open_p) = upper.find('(') {
-                            if let Some(close_p) = upper.rfind(')') {
-                                let func = upper[..open_p].trim().to_string();
-                                let arg = col[open_p + 1..close_p].trim();
-                                let is_star = arg == "*" || arg.parse::<i64>().is_ok();
-                                let col_idx = if is_star {
-                                    None
-                                } else {
-                                    table_def.column_index(arg)
-                                };
-                                aggs.push(PushdownAgg {
-                                    col_name: parse_col_and_alias(col).1.unwrap_or(col).to_string(),
-                                    func,
-                                    col_idx,
-                                    is_star,
-                                    acc: crate::sql::vectorized::VectorizedAccumulator::new(),
-                                });
-                                continue;
-                            }
+                        if let Some(open_p) = upper.find('(')
+                            && let Some(close_p) = upper.rfind(')')
+                        {
+                            let func = upper[..open_p].trim().to_string();
+                            let arg = col[open_p + 1..close_p].trim();
+                            let is_star = arg == "*" || arg.parse::<i64>().is_ok();
+                            let col_idx = if is_star {
+                                None
+                            } else {
+                                table_def.column_index(arg)
+                            };
+                            aggs.push(PushdownAgg {
+                                col_name: parse_col_and_alias(col).1.unwrap_or(col).to_string(),
+                                func,
+                                col_idx,
+                                is_star,
+                                acc: crate::sql::vectorized::VectorizedAccumulator::new(),
+                            });
+                            continue;
                         }
                         aggs.push(PushdownAgg {
                             col_name: parse_col_and_alias(col).1.unwrap_or(col).to_string(),
@@ -3308,10 +3270,10 @@ impl SQLExecutor {
 
                     let mut needed_mask = vec![false; all_col_names.len()];
                     for agg in &aggs {
-                        if let Some(idx) = agg.col_idx {
-                            if idx < needed_mask.len() {
-                                needed_mask[idx] = true;
-                            }
+                        if let Some(idx) = agg.col_idx
+                            && idx < needed_mask.len()
+                        {
+                            needed_mask[idx] = true;
                         }
                     }
 
@@ -3327,10 +3289,10 @@ impl SQLExecutor {
                                     if agg.is_star {
                                         agg.acc.count_all += 1;
                                         agg.acc.count += 1;
-                                    } else if let Some(idx) = agg.col_idx {
-                                        if let Some(val) = full_row.values().get(idx) {
-                                            agg.acc.accumulate_values(std::iter::once(val));
-                                        }
+                                    } else if let Some(idx) = agg.col_idx
+                                        && let Some(val) = full_row.values().get(idx)
+                                    {
+                                        agg.acc.accumulate_values(std::iter::once(val));
                                     }
                                 }
                             } else {
@@ -3343,10 +3305,10 @@ impl SQLExecutor {
                                     if agg.is_star {
                                         agg.acc.count_all += 1;
                                         agg.acc.count += 1;
-                                    } else if let Some(idx) = agg.col_idx {
-                                        if let Some(val) = row_vals.get(idx) {
-                                            agg.acc.accumulate_values(std::iter::once(val));
-                                        }
+                                    } else if let Some(idx) = agg.col_idx
+                                        && let Some(val) = row_vals.get(idx)
+                                    {
+                                        agg.acc.accumulate_values(std::iter::once(val));
                                     }
                                 }
                             }
@@ -3385,19 +3347,17 @@ impl SQLExecutor {
                         let cells = self.btree.scan(pager, sys_table.root_page)?;
                         for cell in cells {
                             if let Ok(rec) = serde_json::from_slice::<TemporalRecord>(&cell.payload)
+                                && rec.table_name.eq_ignore_ascii_case(&table)
+                                && rec.valid_from <= ts
+                                && rec.valid_to > ts
                             {
-                                if rec.table_name.eq_ignore_ascii_case(&table)
-                                    && rec.valid_from <= ts
-                                    && rec.valid_to > ts
+                                let full_row = decode_row(&rec.payload, &all_col_names)?;
+                                if let Some(ref r_expr) = resolved_where
+                                    && !row_matches_resolved(&full_row, r_expr)
                                 {
-                                    let full_row = decode_row(&rec.payload, &all_col_names)?;
-                                    if let Some(ref r_expr) = resolved_where {
-                                        if !row_matches_resolved(&full_row, r_expr) {
-                                            continue;
-                                        }
-                                    }
-                                    left_rows.push(full_row);
+                                    continue;
                                 }
+                                left_rows.push(full_row);
                             }
                         }
                     }
@@ -3429,11 +3389,11 @@ impl SQLExecutor {
                                             sources.push(JoinOutputCol::Left(idx));
                                             continue;
                                         }
-                                    } else if tbl.eq_ignore_ascii_case(&jc.table) {
-                                        if let Some(idx) = right_table_def.column_index(c) {
-                                            sources.push(JoinOutputCol::Right(idx));
-                                            continue;
-                                        }
+                                    } else if tbl.eq_ignore_ascii_case(&jc.table)
+                                        && let Some(idx) = right_table_def.column_index(c)
+                                    {
+                                        sources.push(JoinOutputCol::Right(idx));
+                                        continue;
                                     }
                                     ok = false;
                                     break;
@@ -3456,16 +3416,15 @@ impl SQLExecutor {
                                 let mut mask = vec![false; all_col_names.len()];
                                 if let Some(l_idx) =
                                     resolve_table_col_index(&table_def, &jc.left_col)
+                                    && l_idx < mask.len()
                                 {
-                                    if l_idx < mask.len() {
-                                        mask[l_idx] = true;
-                                    }
+                                    mask[l_idx] = true;
                                 }
                                 for src in &sources {
-                                    if let JoinOutputCol::Left(idx) = src {
-                                        if *idx < mask.len() {
-                                            mask[*idx] = true;
-                                        }
+                                    if let JoinOutputCol::Left(idx) = src
+                                        && *idx < mask.len()
+                                    {
+                                        mask[*idx] = true;
                                     }
                                 }
                                 (Some(sources), Some(mask))
@@ -3486,188 +3445,180 @@ impl SQLExecutor {
                 // When an INNER JOIN has a Primary Key on either the left or right table,
                 // we bypass the full table scan and hash table construction entirely,
                 // streaming the driving table and performing O(log N) point lookups into the PK B-Tree.
-                if let (Some(jc), Some(sources)) = (join.as_ref(), direct_join_sources.as_ref()) {
-                    if as_of_timestamp.is_none()
-                        && where_clause.is_none()
-                        && jc.join_type == JoinType::Inner
-                    {
-                        if let Some(right_table_def) = self.catalog.get_table(&jc.table) {
-                            let l_col_idx = resolve_table_col_index(&table_def, &jc.left_col);
-                            let r_col_idx = resolve_table_col_index(right_table_def, &jc.right_col);
+                if let (Some(jc), Some(sources)) = (join.as_ref(), direct_join_sources.as_ref())
+                    && as_of_timestamp.is_none()
+                    && where_clause.is_none()
+                    && jc.join_type == JoinType::Inner
+                    && let Some(right_table_def) = self.catalog.get_table(&jc.table)
+                {
+                    let l_col_idx = resolve_table_col_index(&table_def, &jc.left_col);
+                    let r_col_idx = resolve_table_col_index(right_table_def, &jc.right_col);
 
-                            if let (Some(l_idx), Some(r_idx)) = (l_col_idx, r_col_idx) {
-                                let output_col_shared = Arc::new(columns.clone());
-                                let left_col_shared = Arc::new(all_col_names.clone());
-                                let right_col_names = right_table_def.column_names();
-                                let right_col_shared = Arc::new(right_col_names.clone());
-                                let skip_count = offset.unwrap_or(0);
+                    if let (Some(l_idx), Some(r_idx)) = (l_col_idx, r_col_idx) {
+                        let output_col_shared = Arc::new(columns.clone());
+                        let left_col_shared = Arc::new(all_col_names.clone());
+                        let right_col_names = right_table_def.column_names();
+                        let right_col_shared = Arc::new(right_col_names.clone());
+                        let skip_count = offset.unwrap_or(0);
 
-                                // Case A: Left table join key is its PRIMARY KEY
-                                // Driving table: right table (e.g. orders). Seek target: left table (users).
-                                if table_def.primary_key_index() == Some(l_idx) {
-                                    let mut right_mask = vec![false; right_col_names.len()];
-                                    right_mask[r_idx] = true;
-                                    for src in sources {
-                                        if let JoinOutputCol::Right(idx) = src {
-                                            if *idx < right_mask.len() {
-                                                right_mask[*idx] = true;
-                                            }
-                                        }
-                                    }
-
-                                    let mut driving_tuples: Vec<(i64, Row)> = Vec::new();
-                                    self.btree.scan_with(
-                                        pager,
-                                        right_table_def.root_page,
-                                        |r_cell| {
-                                            let r_row = decode_row_shared_projected(
-                                                &r_cell.payload,
-                                                &right_col_shared,
-                                                &right_mask,
-                                            )?;
-                                            if let Some(Value::Integer(k)) =
-                                                r_row.values().get(r_idx)
-                                            {
-                                                driving_tuples.push((*k, r_row));
-                                            }
-                                            Ok(true)
-                                        },
-                                    )?;
-
-                                    let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
-                                    let mut final_rows = Vec::with_capacity(
-                                        driving_tuples.len().min(limit.unwrap_or(usize::MAX)),
-                                    );
-                                    let mut skipped = 0;
-
-                                    for (k, r_row) in driving_tuples {
-                                        if let Some(l_payload) =
-                                            self.btree.search(pager, root_page, k as u64)?
-                                        {
-                                            if skipped < skip_count {
-                                                skipped += 1;
-                                                continue;
-                                            }
-                                            let l_row = decode_row_shared_projected(
-                                                &l_payload,
-                                                &left_col_shared,
-                                                left_mask,
-                                            )?;
-                                            let mut vals = Vec::with_capacity(sources.len());
-                                            for src in sources {
-                                                match src {
-                                                    JoinOutputCol::Left(idx) => vals.push(
-                                                        l_row
-                                                            .values()
-                                                            .get(*idx)
-                                                            .cloned()
-                                                            .unwrap_or(Value::Null),
-                                                    ),
-                                                    JoinOutputCol::Right(idx) => vals.push(
-                                                        r_row
-                                                            .values()
-                                                            .get(*idx)
-                                                            .cloned()
-                                                            .unwrap_or(Value::Null),
-                                                    ),
-                                                }
-                                            }
-                                            final_rows.push(Row::with_shared_columns(
-                                                output_col_shared.clone(),
-                                                vals,
-                                            ));
-                                            if let Some(lim) = limit {
-                                                if final_rows.len() >= lim {
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    return Ok(final_rows);
-                                }
-
-                                // Case B: Right table join key is its PRIMARY KEY
-                                // Driving table: left table. Seek target: right table.
-                                if right_table_def.primary_key_index() == Some(r_idx) {
-                                    let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
-                                    let mut driving_tuples: Vec<(i64, Row)> = Vec::new();
-                                    self.btree.scan_with(pager, root_page, |l_cell| {
-                                        let l_row = decode_row_shared_projected(
-                                            &l_cell.payload,
-                                            &left_col_shared,
-                                            left_mask,
-                                        )?;
-                                        if let Some(Value::Integer(k)) = l_row.values().get(l_idx) {
-                                            driving_tuples.push((*k, l_row));
-                                        }
-                                        Ok(true)
-                                    })?;
-
-                                    let mut right_mask = vec![false; right_col_names.len()];
-                                    right_mask[r_idx] = true;
-                                    for src in sources {
-                                        if let JoinOutputCol::Right(idx) = src {
-                                            if *idx < right_mask.len() {
-                                                right_mask[*idx] = true;
-                                            }
-                                        }
-                                    }
-
-                                    let mut final_rows = Vec::with_capacity(
-                                        driving_tuples.len().min(limit.unwrap_or(usize::MAX)),
-                                    );
-                                    let mut skipped = 0;
-
-                                    for (k, l_row) in driving_tuples {
-                                        if let Some(r_payload) = self.btree.search(
-                                            pager,
-                                            right_table_def.root_page,
-                                            k as u64,
-                                        )? {
-                                            if skipped < skip_count {
-                                                skipped += 1;
-                                                continue;
-                                            }
-                                            let r_row = decode_row_shared_projected(
-                                                &r_payload,
-                                                &right_col_shared,
-                                                &right_mask,
-                                            )?;
-                                            let mut vals = Vec::with_capacity(sources.len());
-                                            for src in sources {
-                                                match src {
-                                                    JoinOutputCol::Left(idx) => vals.push(
-                                                        l_row
-                                                            .values()
-                                                            .get(*idx)
-                                                            .cloned()
-                                                            .unwrap_or(Value::Null),
-                                                    ),
-                                                    JoinOutputCol::Right(idx) => vals.push(
-                                                        r_row
-                                                            .values()
-                                                            .get(*idx)
-                                                            .cloned()
-                                                            .unwrap_or(Value::Null),
-                                                    ),
-                                                }
-                                            }
-                                            final_rows.push(Row::with_shared_columns(
-                                                output_col_shared.clone(),
-                                                vals,
-                                            ));
-                                            if let Some(lim) = limit {
-                                                if final_rows.len() >= lim {
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    return Ok(final_rows);
+                        // Case A: Left table join key is its PRIMARY KEY
+                        // Driving table: right table (e.g. orders). Seek target: left table (users).
+                        if table_def.primary_key_index() == Some(l_idx) {
+                            let mut right_mask = vec![false; right_col_names.len()];
+                            right_mask[r_idx] = true;
+                            for src in sources {
+                                if let JoinOutputCol::Right(idx) = src
+                                    && *idx < right_mask.len()
+                                {
+                                    right_mask[*idx] = true;
                                 }
                             }
+
+                            let mut driving_tuples: Vec<(i64, Row)> = Vec::new();
+                            self.btree
+                                .scan_with(pager, right_table_def.root_page, |r_cell| {
+                                    let r_row = decode_row_shared_projected(
+                                        &r_cell.payload,
+                                        &right_col_shared,
+                                        &right_mask,
+                                    )?;
+                                    if let Some(Value::Integer(k)) = r_row.values().get(r_idx) {
+                                        driving_tuples.push((*k, r_row));
+                                    }
+                                    Ok(true)
+                                })?;
+
+                            let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
+                            let mut final_rows = Vec::with_capacity(
+                                driving_tuples.len().min(limit.unwrap_or(usize::MAX)),
+                            );
+                            let mut skipped = 0;
+
+                            for (k, r_row) in driving_tuples {
+                                if let Some(l_payload) =
+                                    self.btree.search(pager, root_page, k as u64)?
+                                {
+                                    if skipped < skip_count {
+                                        skipped += 1;
+                                        continue;
+                                    }
+                                    let l_row = decode_row_shared_projected(
+                                        &l_payload,
+                                        &left_col_shared,
+                                        left_mask,
+                                    )?;
+                                    let mut vals = Vec::with_capacity(sources.len());
+                                    for src in sources {
+                                        match src {
+                                            JoinOutputCol::Left(idx) => vals.push(
+                                                l_row
+                                                    .values()
+                                                    .get(*idx)
+                                                    .cloned()
+                                                    .unwrap_or(Value::Null),
+                                            ),
+                                            JoinOutputCol::Right(idx) => vals.push(
+                                                r_row
+                                                    .values()
+                                                    .get(*idx)
+                                                    .cloned()
+                                                    .unwrap_or(Value::Null),
+                                            ),
+                                        }
+                                    }
+                                    final_rows.push(Row::with_shared_columns(
+                                        output_col_shared.clone(),
+                                        vals,
+                                    ));
+                                    if let Some(lim) = limit
+                                        && final_rows.len() >= lim
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+
+                            return Ok(final_rows);
+                        }
+
+                        // Case B: Right table join key is its PRIMARY KEY
+                        // Driving table: left table. Seek target: right table.
+                        if right_table_def.primary_key_index() == Some(r_idx) {
+                            let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
+                            let mut driving_tuples: Vec<(i64, Row)> = Vec::new();
+                            self.btree.scan_with(pager, root_page, |l_cell| {
+                                let l_row = decode_row_shared_projected(
+                                    &l_cell.payload,
+                                    &left_col_shared,
+                                    left_mask,
+                                )?;
+                                if let Some(Value::Integer(k)) = l_row.values().get(l_idx) {
+                                    driving_tuples.push((*k, l_row));
+                                }
+                                Ok(true)
+                            })?;
+
+                            let mut right_mask = vec![false; right_col_names.len()];
+                            right_mask[r_idx] = true;
+                            for src in sources {
+                                if let JoinOutputCol::Right(idx) = src
+                                    && *idx < right_mask.len()
+                                {
+                                    right_mask[*idx] = true;
+                                }
+                            }
+
+                            let mut final_rows = Vec::with_capacity(
+                                driving_tuples.len().min(limit.unwrap_or(usize::MAX)),
+                            );
+                            let mut skipped = 0;
+
+                            for (k, l_row) in driving_tuples {
+                                if let Some(r_payload) =
+                                    self.btree
+                                        .search(pager, right_table_def.root_page, k as u64)?
+                                {
+                                    if skipped < skip_count {
+                                        skipped += 1;
+                                        continue;
+                                    }
+                                    let r_row = decode_row_shared_projected(
+                                        &r_payload,
+                                        &right_col_shared,
+                                        &right_mask,
+                                    )?;
+                                    let mut vals = Vec::with_capacity(sources.len());
+                                    for src in sources {
+                                        match src {
+                                            JoinOutputCol::Left(idx) => vals.push(
+                                                l_row
+                                                    .values()
+                                                    .get(*idx)
+                                                    .cloned()
+                                                    .unwrap_or(Value::Null),
+                                            ),
+                                            JoinOutputCol::Right(idx) => vals.push(
+                                                r_row
+                                                    .values()
+                                                    .get(*idx)
+                                                    .cloned()
+                                                    .unwrap_or(Value::Null),
+                                            ),
+                                        }
+                                    }
+                                    final_rows.push(Row::with_shared_columns(
+                                        output_col_shared.clone(),
+                                        vals,
+                                    ));
+                                    if let Some(lim) = limit
+                                        && final_rows.len() >= lim
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+
+                            return Ok(final_rows);
                         }
                     }
                 }
@@ -3736,10 +3687,10 @@ impl SQLExecutor {
                         }
 
                         left_rows.push(full_row);
-                        if let Some(needed) = needed_rows {
-                            if left_rows.len() >= needed {
-                                return Ok(false);
-                            }
+                        if let Some(needed) = needed_rows
+                            && left_rows.len() >= needed
+                        {
+                            return Ok(false);
                         }
                         Ok(true)
                     })?;
@@ -3777,15 +3728,12 @@ impl SQLExecutor {
                             self.btree.scan_with(pager, sys_table.root_page, |cell| {
                                 if let Ok(rec) =
                                     serde_json::from_slice::<TemporalRecord>(&cell.payload)
+                                    && rec.table_name.eq_ignore_ascii_case(&join_clause.table)
+                                    && rec.valid_from <= ts
+                                    && rec.valid_to > ts
                                 {
-                                    if rec.table_name.eq_ignore_ascii_case(&join_clause.table)
-                                        && rec.valid_from <= ts
-                                        && rec.valid_to > ts
-                                    {
-                                        let r_row =
-                                            decode_row_shared(&rec.payload, &right_col_shared)?;
-                                        right_rows.push(r_row);
-                                    }
+                                    let r_row = decode_row_shared(&rec.payload, &right_col_shared)?;
+                                    right_rows.push(r_row);
                                 }
                                 Ok(true)
                             })?;
@@ -3793,16 +3741,16 @@ impl SQLExecutor {
                     } else {
                         let right_mask = if let Some(ref sources) = direct_join_sources {
                             let mut mask = vec![false; right_col_names.len()];
-                            if let Some(r_idx) = r_col_idx {
-                                if r_idx < mask.len() {
-                                    mask[r_idx] = true;
-                                }
+                            if let Some(r_idx) = r_col_idx
+                                && r_idx < mask.len()
+                            {
+                                mask[r_idx] = true;
                             }
                             for src in sources {
-                                if let JoinOutputCol::Right(idx) = src {
-                                    if *idx < mask.len() {
-                                        mask[*idx] = true;
-                                    }
+                                if let JoinOutputCol::Right(idx) = src
+                                    && *idx < mask.len()
+                                {
+                                    mask[*idx] = true;
                                 }
                             }
                             Some(mask)
@@ -3878,43 +3826,43 @@ impl SQLExecutor {
 
                             for l_row in &left_rows {
                                 let mut matched = false;
-                                if let Some(Value::Integer(lk)) = l_row.values().get(l_idx_col) {
-                                    if let Some(entry) = int_hash.get(lk) {
-                                        matched = true;
-                                        let r_slice = match entry {
-                                            IntEntry::One(idx) => std::slice::from_ref(idx),
-                                            IntEntry::Many(v) => v.as_slice(),
-                                        };
-                                        for &r_idx in r_slice {
-                                            let r_row = &right_rows[r_idx];
-                                            let mut vals = Vec::with_capacity(direct_sources.len());
-                                            for src in direct_sources {
-                                                match src {
-                                                    JoinOutputCol::Left(idx) => {
-                                                        vals.push(
-                                                            l_row
-                                                                .values()
-                                                                .get(*idx)
-                                                                .cloned()
-                                                                .unwrap_or(Value::Null),
-                                                        );
-                                                    }
-                                                    JoinOutputCol::Right(idx) => {
-                                                        vals.push(
-                                                            r_row
-                                                                .values()
-                                                                .get(*idx)
-                                                                .cloned()
-                                                                .unwrap_or(Value::Null),
-                                                        );
-                                                    }
+                                if let Some(Value::Integer(lk)) = l_row.values().get(l_idx_col)
+                                    && let Some(entry) = int_hash.get(lk)
+                                {
+                                    matched = true;
+                                    let r_slice = match entry {
+                                        IntEntry::One(idx) => std::slice::from_ref(idx),
+                                        IntEntry::Many(v) => v.as_slice(),
+                                    };
+                                    for &r_idx in r_slice {
+                                        let r_row = &right_rows[r_idx];
+                                        let mut vals = Vec::with_capacity(direct_sources.len());
+                                        for src in direct_sources {
+                                            match src {
+                                                JoinOutputCol::Left(idx) => {
+                                                    vals.push(
+                                                        l_row
+                                                            .values()
+                                                            .get(*idx)
+                                                            .cloned()
+                                                            .unwrap_or(Value::Null),
+                                                    );
+                                                }
+                                                JoinOutputCol::Right(idx) => {
+                                                    vals.push(
+                                                        r_row
+                                                            .values()
+                                                            .get(*idx)
+                                                            .cloned()
+                                                            .unwrap_or(Value::Null),
+                                                    );
                                                 }
                                             }
-                                            final_rows.push(Row::with_shared_columns(
-                                                output_col_shared.clone(),
-                                                vals,
-                                            ));
                                         }
+                                        final_rows.push(Row::with_shared_columns(
+                                            output_col_shared.clone(),
+                                            vals,
+                                        ));
                                     }
                                 }
                                 if !matched
@@ -3956,10 +3904,10 @@ impl SQLExecutor {
                                         continue;
                                     }
                                     sliced.push(r);
-                                    if let Some(lim) = limit {
-                                        if sliced.len() >= lim {
-                                            break;
-                                        }
+                                    if let Some(lim) = limit
+                                        && sliced.len() >= lim
+                                    {
+                                        break;
                                     }
                                 }
                                 return Ok(sliced);
@@ -3970,25 +3918,25 @@ impl SQLExecutor {
                         // Fallback within integer path when direct_sources is None (e.g. ORDER BY present)
                         for l_row in &left_rows {
                             let mut matched = false;
-                            if let Some(Value::Integer(lk)) = l_row.values().get(l_idx_col) {
-                                if let Some(entry) = int_hash.get(lk) {
-                                    matched = true;
-                                    let r_slice = match entry {
-                                        IntEntry::One(idx) => std::slice::from_ref(idx),
-                                        IntEntry::Many(v) => v.as_slice(),
-                                    };
-                                    for &r_idx in r_slice {
-                                        let r_row = &right_rows[r_idx];
-                                        let mut merged_vals = Vec::with_capacity(
-                                            l_row.values().len() + r_row.values().len(),
-                                        );
-                                        merged_vals.extend_from_slice(l_row.values());
-                                        merged_vals.extend_from_slice(r_row.values());
-                                        joined_rows.push(Row::with_shared_columns(
-                                            merged_cols_shared.clone(),
-                                            merged_vals,
-                                        ));
-                                    }
+                            if let Some(Value::Integer(lk)) = l_row.values().get(l_idx_col)
+                                && let Some(entry) = int_hash.get(lk)
+                            {
+                                matched = true;
+                                let r_slice = match entry {
+                                    IntEntry::One(idx) => std::slice::from_ref(idx),
+                                    IntEntry::Many(v) => v.as_slice(),
+                                };
+                                for &r_idx in r_slice {
+                                    let r_row = &right_rows[r_idx];
+                                    let mut merged_vals = Vec::with_capacity(
+                                        l_row.values().len() + r_row.values().len(),
+                                    );
+                                    merged_vals.extend_from_slice(l_row.values());
+                                    merged_vals.extend_from_slice(r_row.values());
+                                    joined_rows.push(Row::with_shared_columns(
+                                        merged_cols_shared.clone(),
+                                        merged_vals,
+                                    ));
                                 }
                             }
                             if !matched
@@ -4017,13 +3965,13 @@ impl SQLExecutor {
                             } else {
                                 r_row.get_value(&join_clause.right_col)
                             };
-                            if let Some(r_val) = r_val {
-                                if !r_val.is_null() {
-                                    right_hash_table
-                                        .entry(HashableValue::from(r_val))
-                                        .or_default()
-                                        .push(r_idx);
-                                }
+                            if let Some(r_val) = r_val
+                                && !r_val.is_null()
+                            {
+                                right_hash_table
+                                    .entry(HashableValue::from(r_val))
+                                    .or_default()
+                                    .push(r_idx);
                             }
                         }
 
@@ -4041,28 +3989,26 @@ impl SQLExecutor {
                             };
                             let mut matched = false;
 
-                            if let Some(lv) = l_val {
-                                if !lv.is_null() {
-                                    if let Some(matching_r_indices) =
-                                        right_hash_table.get(&HashableValue::from(lv))
-                                    {
-                                        matched = true;
-                                        for &r_idx in matching_r_indices {
-                                            let r_row = &right_rows[r_idx];
-                                            if is_right_or_full {
-                                                matched_right_indices.insert(r_idx);
-                                            }
-                                            let mut merged_vals = Vec::with_capacity(
-                                                l_row.values().len() + r_row.values().len(),
-                                            );
-                                            merged_vals.extend_from_slice(l_row.values());
-                                            merged_vals.extend_from_slice(r_row.values());
-                                            joined_rows.push(Row::with_shared_columns(
-                                                merged_cols_shared.clone(),
-                                                merged_vals,
-                                            ));
-                                        }
+                            if let Some(lv) = l_val
+                                && !lv.is_null()
+                                && let Some(matching_r_indices) =
+                                    right_hash_table.get(&HashableValue::from(lv))
+                            {
+                                matched = true;
+                                for &r_idx in matching_r_indices {
+                                    let r_row = &right_rows[r_idx];
+                                    if is_right_or_full {
+                                        matched_right_indices.insert(r_idx);
                                     }
+                                    let mut merged_vals = Vec::with_capacity(
+                                        l_row.values().len() + r_row.values().len(),
+                                    );
+                                    merged_vals.extend_from_slice(l_row.values());
+                                    merged_vals.extend_from_slice(r_row.values());
+                                    joined_rows.push(Row::with_shared_columns(
+                                        merged_cols_shared.clone(),
+                                        merged_vals,
+                                    ));
                                 }
                             }
 
@@ -4136,15 +4082,15 @@ impl SQLExecutor {
 
                         for col in &output_cols {
                             let upper = col.to_uppercase();
-                            if let Some(open_p) = upper.find('(') {
-                                if let Some(close_p) = upper.rfind(')') {
-                                    let func = &upper[..open_p];
-                                    let arg = col[open_p + 1..close_p].trim();
-                                    let computed = compute_aggregate(func, arg, &g_rows);
-                                    g_cols.push(col.clone());
-                                    g_vals.push(computed);
-                                    continue;
-                                }
+                            if let Some(open_p) = upper.find('(')
+                                && let Some(close_p) = upper.rfind(')')
+                            {
+                                let func = &upper[..open_p];
+                                let arg = col[open_p + 1..close_p].trim();
+                                let computed = compute_aggregate(func, arg, &g_rows);
+                                g_cols.push(col.clone());
+                                g_vals.push(computed);
+                                continue;
                             }
                             if let Some(pos) = gb_cols.iter().position(|c| c == col) {
                                 g_cols.push(col.clone());
@@ -4161,10 +4107,10 @@ impl SQLExecutor {
                         }
 
                         let g_row = Row::new(g_cols, g_vals);
-                        if let Some(ref h_expr) = resolved_having {
-                            if !row_matches_resolved(&g_row, h_expr) {
-                                continue;
-                            }
+                        if let Some(ref h_expr) = resolved_having
+                            && !row_matches_resolved(&g_row, h_expr)
+                        {
+                            continue;
                         }
                         grouped_rows.push(g_row);
                     }
@@ -4176,16 +4122,15 @@ impl SQLExecutor {
 
                     for col in &columns {
                         let upper = col.to_uppercase();
-                        if let Some(open_p) = upper.find('(') {
-                            if let Some(close_p) = upper.rfind(')') {
-                                let func = &upper[..open_p];
-                                let arg = col[open_p + 1..close_p].trim();
-                                let computed = compute_aggregate(func, arg, &left_rows);
-                                agg_cols
-                                    .push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
-                                agg_vals.push(computed);
-                                continue;
-                            }
+                        if let Some(open_p) = upper.find('(')
+                            && let Some(close_p) = upper.rfind(')')
+                        {
+                            let func = &upper[..open_p];
+                            let arg = col[open_p + 1..close_p].trim();
+                            let computed = compute_aggregate(func, arg, &left_rows);
+                            agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
+                            agg_vals.push(computed);
+                            continue;
                         }
                         agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
                         agg_vals.push(Value::Null);
@@ -4279,10 +4224,10 @@ impl SQLExecutor {
                     }
                     rows.push(projected);
 
-                    if let Some(lim) = limit {
-                        if rows.len() >= lim {
-                            break;
-                        }
+                    if let Some(lim) = limit
+                        && rows.len() >= lim
+                    {
+                        break;
                     }
                 }
 
@@ -4317,39 +4262,32 @@ impl SQLExecutor {
                     let mut matched = std::collections::HashSet::new();
 
                     let mut used_index = false;
-                    if let ResolvedWhereExpr::Condition(cond) = &resolved {
-                        if cond.op == BinaryOp::Equals {
-                            if let Some(index_def) = self
-                                .catalog
-                                .find_index_for_column(&table, &cond.column)
-                                .cloned()
-                            {
-                                let key = value_to_index_key(&cond.value);
-                                if let Some(payload) =
-                                    self.btree.search(pager, index_def.root_page, key)?
-                                {
-                                    if let Ok(bucket) =
-                                        serde_json::from_slice::<IndexBucket>(&payload)
-                                    {
-                                        if let Some(rids) = bucket.get_row_ids(&cond.value) {
-                                            for &rid in rids {
-                                                matched.insert(rid);
-                                            }
-                                            used_index = true;
-                                        }
-                                    }
-                                }
+                    if let ResolvedWhereExpr::Condition(cond) = &resolved
+                        && cond.op == BinaryOp::Equals
+                        && let Some(index_def) = self
+                            .catalog
+                            .find_index_for_column(&table, &cond.column)
+                            .cloned()
+                    {
+                        let key = value_to_index_key(&cond.value);
+                        if let Some(payload) = self.btree.search(pager, index_def.root_page, key)?
+                            && let Ok(bucket) = serde_json::from_slice::<IndexBucket>(&payload)
+                            && let Some(rids) = bucket.get_row_ids(&cond.value)
+                        {
+                            for &rid in rids {
+                                matched.insert(rid);
                             }
+                            used_index = true;
                         }
                     }
 
                     if !used_index {
                         let cells = self.btree.scan(pager, root_page)?;
                         for cell in cells {
-                            if let Ok(full_row) = decode_row(&cell.payload, &all_col_names) {
-                                if row_matches_resolved(&full_row, &resolved) {
-                                    matched.insert(cell.row_id);
-                                }
+                            if let Ok(full_row) = decode_row(&cell.payload, &all_col_names)
+                                && row_matches_resolved(&full_row, &resolved)
+                            {
+                                matched.insert(cell.row_id);
                             }
                         }
                     }
@@ -4379,20 +4317,18 @@ impl SQLExecutor {
                     if let Some((vec_idx, _)) = table_def.vector_column() {
                         let mut scored_rows: Vec<(f32, Row)> = Vec::new();
                         for cell in cells {
-                            if let Some(ref allowed) = candidate_ids {
-                                if !allowed.contains(&cell.row_id) {
-                                    continue;
-                                }
+                            if let Some(ref allowed) = candidate_ids
+                                && !allowed.contains(&cell.row_id)
+                            {
+                                continue;
                             }
-                            if let Ok(full_row) = decode_row(&cell.payload, &all_col_names) {
-                                if let Some(crate::traits::Value::Vector(v)) =
+                            if let Ok(full_row) = decode_row(&cell.payload, &all_col_names)
+                                && let Some(crate::traits::Value::Vector(v)) =
                                     full_row.values().get(vec_idx)
-                                {
-                                    let dist = crate::vector::cosine_distance(&query_vector, v);
-                                    let projected =
-                                        self.project_row(&full_row, &output_col_names)?;
-                                    scored_rows.push((dist, projected));
-                                }
+                            {
+                                let dist = crate::vector::cosine_distance(&query_vector, v);
+                                let projected = self.project_row(&full_row, &output_col_names)?;
+                                scored_rows.push((dist, projected));
                             }
                         }
                         scored_rows.sort_by(|a, b| {
@@ -4403,10 +4339,10 @@ impl SQLExecutor {
                         }
                     } else {
                         for cell in cells.into_iter() {
-                            if let Some(ref allowed) = candidate_ids {
-                                if !allowed.contains(&cell.row_id) {
-                                    continue;
-                                }
+                            if let Some(ref allowed) = candidate_ids
+                                && !allowed.contains(&cell.row_id)
+                            {
+                                continue;
                             }
                             let full_row = decode_row(&cell.payload, &all_col_names)?;
                             let projected = self.project_row(&full_row, &output_col_names)?;
@@ -4598,10 +4534,10 @@ impl SQLExecutor {
 
                 for edge in self.graph.all_edges() {
                     // Filter edge label
-                    if let Some(ref rl) = rel_label {
-                        if !edge.label.eq_ignore_ascii_case(rl) {
-                            continue;
-                        }
+                    if let Some(ref rl) = rel_label
+                        && !edge.label.eq_ignore_ascii_case(rl)
+                    {
+                        continue;
                     }
 
                     // Source node
@@ -4609,10 +4545,10 @@ impl SQLExecutor {
                         Some(n) => n,
                         None => continue,
                     };
-                    if let Some(ref sl) = source_label {
-                        if !source_node.label.eq_ignore_ascii_case(sl) {
-                            continue;
-                        }
+                    if let Some(ref sl) = source_label
+                        && !source_node.label.eq_ignore_ascii_case(sl)
+                    {
+                        continue;
                     }
 
                     // Target node
@@ -4620,10 +4556,10 @@ impl SQLExecutor {
                         Some(n) => n,
                         None => continue,
                     };
-                    if let Some(ref tl) = target_label {
-                        if !target_node.label.eq_ignore_ascii_case(tl) {
-                            continue;
-                        }
+                    if let Some(ref tl) = target_label
+                        && !target_node.label.eq_ignore_ascii_case(tl)
+                    {
+                        continue;
                     }
 
                     // Build column-value test environment for WHERE filter
@@ -4718,10 +4654,10 @@ impl SQLExecutor {
 
                     let test_row = Row::new(test_cols, test_vals);
 
-                    if let Some(ref rw) = resolved_where {
-                        if !row_matches_resolved(&test_row, rw) {
-                            continue;
-                        }
+                    if let Some(ref rw) = resolved_where
+                        && !row_matches_resolved(&test_row, rw)
+                    {
+                        continue;
                     }
 
                     // Build projected row values
@@ -5000,34 +4936,30 @@ impl SQLExecutor {
 
                 // Check if fast point lookup by PK is used
                 let mut is_pk_search = false;
-                if join.is_none() && order_by.is_none() {
-                    if let (Some(pk_col_idx), Some(WhereExpr::Condition(cond))) =
+                if join.is_none()
+                    && order_by.is_none()
+                    && let (Some(pk_col_idx), Some(WhereExpr::Condition(cond))) =
                         (pk_idx, &where_clause)
-                    {
-                        if cond.op == BinaryOp::Equals {
-                            if let Some(tdef) = table_def {
-                                if tdef.columns[pk_col_idx]
-                                    .name
-                                    .eq_ignore_ascii_case(&cond.column)
-                                {
-                                    is_pk_search = true;
-                                    let cost = optimizer.estimate_pk_lookup(stats);
-                                    rows.push(Row::new(
-                                        cols.clone(),
-                                        vec![
-                                            Value::Integer(id),
-                                            Value::Integer(0),
-                                            Value::Text(format!(
-                                                "SEARCH TABLE {} USING PRIMARY KEY ({} = {:?}) {}",
-                                                table, cond.column, cond.value, cost
-                                            )),
-                                        ],
-                                    ));
-                                    id += 1;
-                                }
-                            }
-                        }
-                    }
+                    && cond.op == BinaryOp::Equals
+                    && let Some(tdef) = table_def
+                    && tdef.columns[pk_col_idx]
+                        .name
+                        .eq_ignore_ascii_case(&cond.column)
+                {
+                    is_pk_search = true;
+                    let cost = optimizer.estimate_pk_lookup(stats);
+                    rows.push(Row::new(
+                        cols.clone(),
+                        vec![
+                            Value::Integer(id),
+                            Value::Integer(0),
+                            Value::Text(format!(
+                                "SEARCH TABLE {} USING PRIMARY KEY ({} = {:?}) {}",
+                                table, cond.column, cond.value, cost
+                            )),
+                        ],
+                    ));
+                    id += 1;
                 }
 
                 let mut is_index_search = false;
@@ -5035,8 +4967,8 @@ impl SQLExecutor {
                     if let Some(ref expr) = where_clause {
                         let mut and_eqs = HashMap::new();
                         collect_and_eq_conditions(expr, &mut and_eqs);
-                        if and_eqs.len() >= 2 {
-                            if let Some(idx_def) = self
+                        if and_eqs.len() >= 2
+                            && let Some(idx_def) = self
                                 .catalog
                                 .indexes()
                                 .into_iter()
@@ -5049,53 +4981,45 @@ impl SQLExecutor {
                                             .all(|c| and_eqs.contains_key(&c.to_lowercase()))
                                 })
                                 .max_by_key(|idx| idx.target_columns().len())
-                            {
-                                is_index_search = true;
-                                let tcols = idx_def.target_columns().join(", ");
-                                rows.push(Row::new(
-                                    cols.clone(),
-                                    vec![
-                                        Value::Integer(id),
-                                        Value::Integer(0),
-                                        Value::Text(format!(
-                                            "SEARCH TABLE {} USING COMPOSITE INDEX {} ({})",
-                                            table, idx_def.name, tcols
-                                        )),
-                                    ],
-                                ));
-                                id += 1;
-                            }
+                        {
+                            is_index_search = true;
+                            let tcols = idx_def.target_columns().join(", ");
+                            rows.push(Row::new(
+                                cols.clone(),
+                                vec![
+                                    Value::Integer(id),
+                                    Value::Integer(0),
+                                    Value::Text(format!(
+                                        "SEARCH TABLE {} USING COMPOSITE INDEX {} ({})",
+                                        table, idx_def.name, tcols
+                                    )),
+                                ],
+                            ));
+                            id += 1;
                         }
                     }
-                    if !is_index_search {
-                        if let Some(WhereExpr::Condition(cond)) = &where_clause {
-                            if cond.op == BinaryOp::Equals {
-                                if let Some(idx_def) =
-                                    self.catalog.find_index_for_column(&table, &cond.column)
-                                {
-                                    is_index_search = true;
-                                    let sel = stats.estimate_selectivity(&cond.column, true);
-                                    let cost = optimizer.estimate_index_scan(
-                                        stats,
-                                        &idx_def.name,
-                                        &cond.column,
-                                        sel,
-                                    );
-                                    rows.push(Row::new(
-                                        cols.clone(),
-                                        vec![
-                                            Value::Integer(id),
-                                            Value::Integer(0),
-                                            Value::Text(format!(
-                                                "SEARCH TABLE {} USING INDEX {} ({} = {:?}) {}",
-                                                table, idx_def.name, cond.column, cond.value, cost
-                                            )),
-                                        ],
-                                    ));
-                                    id += 1;
-                                }
-                            }
-                        }
+                    if !is_index_search
+                        && let Some(WhereExpr::Condition(cond)) = &where_clause
+                        && cond.op == BinaryOp::Equals
+                        && let Some(idx_def) =
+                            self.catalog.find_index_for_column(&table, &cond.column)
+                    {
+                        is_index_search = true;
+                        let sel = stats.estimate_selectivity(&cond.column, true);
+                        let cost =
+                            optimizer.estimate_index_scan(stats, &idx_def.name, &cond.column, sel);
+                        rows.push(Row::new(
+                            cols.clone(),
+                            vec![
+                                Value::Integer(id),
+                                Value::Integer(0),
+                                Value::Text(format!(
+                                    "SEARCH TABLE {} USING INDEX {} ({} = {:?}) {}",
+                                    table, idx_def.name, cond.column, cond.value, cost
+                                )),
+                            ],
+                        ));
+                        id += 1;
                     }
                 }
 
@@ -5312,23 +5236,22 @@ impl SQLExecutor {
                     for right_r in &right_rows {
                         let left_v = left_r.get_value(&j.left_col);
                         let right_v = right_r.get_value(&j.right_col);
-                        if let (Some(lv), Some(rv)) = (left_v, right_v) {
-                            if lv == rv && !lv.is_null() {
-                                matched = true;
-                                let mut j_cols = left_r.columns().to_vec();
-                                let mut j_vals = left_r.values().to_vec();
-                                for (rc, rv) in
-                                    right_r.columns().iter().zip(right_r.values().iter())
-                                {
-                                    j_cols.push(format!("{}.{}", j.table, rc));
+                        if let (Some(lv), Some(rv)) = (left_v, right_v)
+                            && lv == rv
+                            && !lv.is_null()
+                        {
+                            matched = true;
+                            let mut j_cols = left_r.columns().to_vec();
+                            let mut j_vals = left_r.values().to_vec();
+                            for (rc, rv) in right_r.columns().iter().zip(right_r.values().iter()) {
+                                j_cols.push(format!("{}.{}", j.table, rc));
+                                j_vals.push(rv.clone());
+                                if !j_cols.contains(rc) {
+                                    j_cols.push(rc.clone());
                                     j_vals.push(rv.clone());
-                                    if !j_cols.contains(rc) {
-                                        j_cols.push(rc.clone());
-                                        j_vals.push(rv.clone());
-                                    }
                                 }
-                                joined_rows.push(Row::new(j_cols, j_vals));
                             }
+                            joined_rows.push(Row::new(j_cols, j_vals));
                         }
                     }
                     if !matched && j.is_left {
@@ -5376,15 +5299,15 @@ impl SQLExecutor {
 
                 for col in &columns {
                     let upper = col.to_uppercase();
-                    if let Some(open_p) = upper.find('(') {
-                        if let Some(close_p) = upper.rfind(')') {
-                            let func = &upper[..open_p];
-                            let arg = col[open_p + 1..close_p].trim();
-                            let computed = compute_aggregate(func, arg, &rows);
-                            agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
-                            agg_vals.push(computed);
-                            continue;
-                        }
+                    if let Some(open_p) = upper.find('(')
+                        && let Some(close_p) = upper.rfind(')')
+                    {
+                        let func = &upper[..open_p];
+                        let arg = col[open_p + 1..close_p].trim();
+                        let computed = compute_aggregate(func, arg, &rows);
+                        agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
+                        agg_vals.push(computed);
+                        continue;
                     }
                     agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
                     agg_vals.push(Value::Null);
@@ -5579,15 +5502,14 @@ impl SQLExecutor {
 
         // Enforce NOT NULL constraints
         for (col_idx, col_def) in table_cols.iter().enumerate() {
-            if col_def.not_null {
-                if let Some(val) = aligned_values.get(col_idx) {
-                    if val.is_null() {
-                        return Err(Error::ConstraintViolation(format!(
-                            "NOT NULL constraint failed: {table}.{}",
-                            col_def.name
-                        )));
-                    }
-                }
+            if col_def.not_null
+                && let Some(val) = aligned_values.get(col_idx)
+                && val.is_null()
+            {
+                return Err(Error::ConstraintViolation(format!(
+                    "NOT NULL constraint failed: {table}.{}",
+                    col_def.name
+                )));
             }
         }
 
@@ -5654,10 +5576,9 @@ impl SQLExecutor {
                         if let Some(col_idx) = table_cols
                             .iter()
                             .position(|c| c.name.eq_ignore_ascii_case(&col_name))
+                            && col_idx < values.len()
                         {
-                            if col_idx < values.len() {
-                                values[col_idx] = new_val;
-                            }
+                            values[col_idx] = new_val;
                         }
                     }
                     for (col_idx, col_def) in table_cols.iter().enumerate() {
@@ -5736,14 +5657,14 @@ impl SQLExecutor {
         }
 
         // Update vector index if present
-        if let Some((v_idx, _)) = vector_col {
-            if let Some(Value::Vector(vec_data)) = aligned_values.get(v_idx) {
-                let index = self
-                    .vector_indexes
-                    .entry(table.to_lowercase())
-                    .or_insert_with(|| HnswIndex::new(vec_data.len(), DistanceMetric::Cosine));
-                index.insert_vector(row_id, vec_data)?;
-            }
+        if let Some((v_idx, _)) = vector_col
+            && let Some(Value::Vector(vec_data)) = aligned_values.get(v_idx)
+        {
+            let index = self
+                .vector_indexes
+                .entry(table.to_lowercase())
+                .or_insert_with(|| HnswIndex::new(vec_data.len(), DistanceMetric::Cosine));
+            index.insert_vector(row_id, vec_data)?;
         }
 
         let final_row = Row::new(all_col_names, aligned_values);
@@ -5823,10 +5744,10 @@ impl SQLExecutor {
             if matches {
                 let mut values: Vec<Value> = full_row.values().to_vec();
                 for (col_name, new_val) in &assignments {
-                    if let Some(col_idx) = table_def.column_index(col_name) {
-                        if col_idx < values.len() {
-                            values[col_idx] = new_val.clone();
-                        }
+                    if let Some(col_idx) = table_def.column_index(col_name)
+                        && col_idx < values.len()
+                    {
+                        values[col_idx] = new_val.clone();
                     }
                 }
 
@@ -5849,15 +5770,14 @@ impl SQLExecutor {
 
                 // Enforce NOT NULL constraints
                 for (col_idx, col_def) in table_def.columns.iter().enumerate() {
-                    if col_def.not_null {
-                        if let Some(val) = values.get(col_idx) {
-                            if val.is_null() {
-                                return Err(Error::ConstraintViolation(format!(
-                                    "NOT NULL constraint failed: {table}.{}",
-                                    col_def.name
-                                )));
-                            }
-                        }
+                    if col_def.not_null
+                        && let Some(val) = values.get(col_idx)
+                        && val.is_null()
+                    {
+                        return Err(Error::ConstraintViolation(format!(
+                            "NOT NULL constraint failed: {table}.{}",
+                            col_def.name
+                        )));
                     }
                 }
 
@@ -5873,18 +5793,18 @@ impl SQLExecutor {
                 };
 
                 // If primary key was modified to a different ID, ensure it does not collide
-                if new_row_id != cell.row_id {
-                    if let Some(_existing) = self.btree.search(pager, root_page, new_row_id)? {
-                        let pk_col_name = table_def
-                            .columns
-                            .iter()
-                            .find(|c| c.primary_key)
-                            .map(|c| c.name.as_str())
-                            .unwrap_or("id");
-                        return Err(Error::ConstraintViolation(format!(
-                            "UNIQUE constraint failed: {table}.{pk_col_name} (key {new_row_id} already exists)"
-                        )));
-                    }
+                if new_row_id != cell.row_id
+                    && let Some(_existing) = self.btree.search(pager, root_page, new_row_id)?
+                {
+                    let pk_col_name = table_def
+                        .columns
+                        .iter()
+                        .find(|c| c.primary_key)
+                        .map(|c| c.name.as_str())
+                        .unwrap_or("id");
+                    return Err(Error::ConstraintViolation(format!(
+                        "UNIQUE constraint failed: {table}.{pk_col_name} (key {new_row_id} already exists)"
+                    )));
                 }
 
                 let updated_row = Row::new(all_col_names.clone(), values.clone());
@@ -5940,10 +5860,10 @@ impl SQLExecutor {
                             });
                         index.remove_vector(cell.row_id);
                         index.insert_vector(new_row_id, vec_data)?;
-                    } else if new_row_id != cell.row_id {
-                        if let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase()) {
-                            index.remove_vector(cell.row_id);
-                        }
+                    } else if new_row_id != cell.row_id
+                        && let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase())
+                    {
+                        index.remove_vector(cell.row_id);
                     }
                 }
 
@@ -5955,10 +5875,10 @@ impl SQLExecutor {
                 }
                 self.fts_upsert_row(pager, &table_def, &updated_row, new_row_id)?;
 
-                if new_row_id >= table_def.next_row_id {
-                    if let Some(tdef_mut) = self.catalog.get_table_mut(&table) {
-                        tdef_mut.next_row_id = new_row_id + 1;
-                    }
+                if new_row_id >= table_def.next_row_id
+                    && let Some(tdef_mut) = self.catalog.get_table_mut(&table)
+                {
+                    tdef_mut.next_row_id = new_row_id + 1;
                 }
 
                 self.fire_triggers(
@@ -6286,10 +6206,10 @@ fn parse_window_function(col_str: &str) -> Option<ParsedWindowCol> {
                 offset = n;
             }
         }
-    } else if func == "NTILE" {
-        if let Ok(n) = arg_inner.parse::<usize>() {
-            offset = n.max(1);
-        }
+    } else if func == "NTILE"
+        && let Ok(n) = arg_inner.parse::<usize>()
+    {
+        offset = n.max(1);
     }
 
     let spec_part = &expr[over_pos..];
@@ -6386,12 +6306,11 @@ fn evaluate_window_functions(rows: &mut [Row], columns: &[String]) -> Result<()>
                                     .get_value(o_col)
                                     .cloned()
                                     .unwrap_or(Value::Null);
-                                if pos > 0 {
-                                    if let Some(ref prev) = prev_order_val {
-                                        if prev != &cur_val {
-                                            current_rank = pos + 1;
-                                        }
-                                    }
+                                if pos > 0
+                                    && let Some(ref prev) = prev_order_val
+                                    && prev != &cur_val
+                                {
+                                    current_rank = pos + 1;
                                 }
                                 prev_order_val = Some(cur_val);
                             } else {
@@ -6405,12 +6324,11 @@ fn evaluate_window_functions(rows: &mut [Row], columns: &[String]) -> Result<()>
                                     .get_value(o_col)
                                     .cloned()
                                     .unwrap_or(Value::Null);
-                                if pos > 0 {
-                                    if let Some(ref prev) = prev_order_val {
-                                        if prev != &cur_val {
-                                            current_dense_rank += 1;
-                                        }
-                                    }
+                                if pos > 0
+                                    && let Some(ref prev) = prev_order_val
+                                    && prev != &cur_val
+                                {
+                                    current_dense_rank += 1;
                                 }
                                 prev_order_val = Some(cur_val);
                             } else {
@@ -6452,10 +6370,10 @@ fn evaluate_window_functions(rows: &mut [Row], columns: &[String]) -> Result<()>
                             } else {
                                 let mut count = 0i64;
                                 for &idx in &p_indices {
-                                    if let Some(v) = rows[idx].get_value(&w.arg) {
-                                        if v != &Value::Null {
-                                            count += 1;
-                                        }
+                                    if let Some(v) = rows[idx].get_value(&w.arg)
+                                        && v != &Value::Null
+                                    {
+                                        count += 1;
                                     }
                                 }
                                 Value::Integer(count)
@@ -6509,16 +6427,15 @@ fn evaluate_window_functions(rows: &mut [Row], columns: &[String]) -> Result<()>
                         "MIN" => {
                             let mut min_val: Option<Value> = None;
                             for &idx in &p_indices {
-                                if let Some(v) = rows[idx].get_value(&w.arg) {
-                                    if v != &Value::Null
-                                        && (min_val.is_none()
-                                            || min_val
-                                                .as_ref()
-                                                .map(|m| v.compare(m).is_lt())
-                                                .unwrap_or(false))
-                                    {
-                                        min_val = Some(v.clone());
-                                    }
+                                if let Some(v) = rows[idx].get_value(&w.arg)
+                                    && v != &Value::Null
+                                    && (min_val.is_none()
+                                        || min_val
+                                            .as_ref()
+                                            .map(|m| v.compare(m).is_lt())
+                                            .unwrap_or(false))
+                                {
+                                    min_val = Some(v.clone());
                                 }
                             }
                             min_val.unwrap_or(Value::Null)
@@ -6526,16 +6443,15 @@ fn evaluate_window_functions(rows: &mut [Row], columns: &[String]) -> Result<()>
                         "MAX" => {
                             let mut max_val: Option<Value> = None;
                             for &idx in &p_indices {
-                                if let Some(v) = rows[idx].get_value(&w.arg) {
-                                    if v != &Value::Null
-                                        && (max_val.is_none()
-                                            || max_val
-                                                .as_ref()
-                                                .map(|m| v.compare(m).is_gt())
-                                                .unwrap_or(false))
-                                    {
-                                        max_val = Some(v.clone());
-                                    }
+                                if let Some(v) = rows[idx].get_value(&w.arg)
+                                    && v != &Value::Null
+                                    && (max_val.is_none()
+                                        || max_val
+                                            .as_ref()
+                                            .map(|m| v.compare(m).is_gt())
+                                            .unwrap_or(false))
+                                {
+                                    max_val = Some(v.clone());
                                 }
                             }
                             max_val.unwrap_or(Value::Null)
@@ -6653,10 +6569,11 @@ fn eval_func_arg(
     if let Ok(f) = trimmed.parse::<f64>() {
         return Ok(Value::Real(f));
     }
-    if trimmed.contains('(') && trimmed.ends_with(')') {
-        if let Some(val) = try_eval_scalar_expr(row, trimmed, udfs)? {
-            return Ok(val);
-        }
+    if trimmed.contains('(')
+        && trimmed.ends_with(')')
+        && let Some(val) = try_eval_scalar_expr(row, trimmed, udfs)?
+    {
+        return Ok(val);
     }
     if let Some(val) = row
         .get_field_or_json_path(trimmed)
@@ -6695,10 +6612,10 @@ pub fn try_eval_scalar_expr(
         evaluated_args.push(eval_func_arg(row, raw_arg, udfs)?);
     }
 
-    if let Some(registry) = udfs {
-        if let Some(res) = registry.try_call(func_name, &evaluated_args)? {
-            return Ok(Some(res));
-        }
+    if let Some(registry) = udfs
+        && let Some(res) = registry.try_call(func_name, &evaluated_args)?
+    {
+        return Ok(Some(res));
     }
 
     let standard = crate::sql::udf::UdfRegistry::new();
@@ -6843,10 +6760,10 @@ fn resolve_vector_arg(row: &Row, raw_arg: &str) -> Result<Vec<f32>> {
         let mut vec = Vec::new();
         for item in inner.split(',') {
             let item_t = item.trim();
-            if !item_t.is_empty() {
-                if let Ok(f) = item_t.parse::<f32>() {
-                    vec.push(f);
-                }
+            if !item_t.is_empty()
+                && let Ok(f) = item_t.parse::<f32>()
+            {
+                vec.push(f);
             }
         }
         Ok(vec)

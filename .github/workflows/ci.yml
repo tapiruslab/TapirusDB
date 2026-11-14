@@ -12,12 +12,23 @@ permissions:
 
 jobs:
   msrv:
-    name: Rust 1.85 minimum-version compile
+    name: Rust 1.88 minimum-version compile
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install 1.85.0 --profile minimal
-      - run: cargo +1.85.0 check --locked --workspace --all-targets --all-features
+      - run: rustup toolchain install 1.88.0 --profile minimal
+      - run: cargo +1.88.0 check --locked --workspace --all-targets --all-features
+
+  formal-verification:
+    name: TLA+ TLC WAL Crash-Safety Model Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install JRE and run TLC on TAPIRUS_WAL.tla
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq default-jre-headless curl
+          curl -fsSL -o tla2tools.jar https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
+          java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC -workers auto -config docs/formal_verification/TAPIRUS_WAL.cfg docs/formal_verification/TAPIRUS_WAL.tla
 
   micro:
     name: Bare-metal component compile and host fault simulation

@@ -585,10 +585,10 @@ pub fn tokens_to_sql(tokens: &[Token]) -> String {
                 | Token::CloseBracket
                 | Token::Dot => {}
                 _ => {
-                    if let Some(prev) = tokens.get(i - 1) {
-                        if !matches!(prev, Token::OpenParen | Token::OpenBracket | Token::Dot) {
-                            s.push(' ');
-                        }
+                    if let Some(prev) = tokens.get(i - 1)
+                        && !matches!(prev, Token::OpenParen | Token::OpenBracket | Token::Dot)
+                    {
+                        s.push(' ');
                     }
                 }
             }
@@ -2997,11 +2997,11 @@ fn parse_explain(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             if check_token(tokens, *cursor, &Token::Plan) {
                 *cursor += 1;
                 query_plan = true;
-            } else if let Ok(Token::Ident(p)) = get_token_peek(tokens, *cursor) {
-                if p.eq_ignore_ascii_case("PLAN") {
-                    *cursor += 1;
-                    query_plan = true;
-                }
+            } else if let Ok(Token::Ident(p)) = get_token_peek(tokens, *cursor)
+                && p.eq_ignore_ascii_case("PLAN")
+            {
+                *cursor += 1;
+                query_plan = true;
             }
         } else if s.eq_ignore_ascii_case("PLAN") {
             *cursor += 1;
@@ -3065,10 +3065,10 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     if check_token(tokens, *cursor, &Token::Match) {
         return parse_graph_match(tokens, cursor);
     }
-    if let Ok(Token::Ident(s)) = get_token_peek(tokens, *cursor) {
-        if s.eq_ignore_ascii_case("MATCH") {
-            return parse_graph_match(tokens, cursor);
-        }
+    if let Ok(Token::Ident(s)) = get_token_peek(tokens, *cursor)
+        && s.eq_ignore_ascii_case("MATCH")
+    {
+        return parse_graph_match(tokens, cursor);
     }
 
     if check_token(tokens, *cursor, &Token::Algorithm)
@@ -3118,32 +3118,32 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 
             // Optional LABEL
             let mut label = "Default".to_string();
-            if let Ok(Token::Ident(s)) = get_token_peek(tokens, *cursor) {
-                if s.eq_ignore_ascii_case("LABEL") {
-                    *cursor += 1;
-                    match get_token(tokens, cursor)? {
-                        Token::Ident(l) | Token::StringLit(l) => label = l.clone(),
-                        other => {
-                            return Err(Error::SqlSyntax(format!(
-                                "Expected label name, got {other:?}"
-                            )));
-                        }
+            if let Ok(Token::Ident(s)) = get_token_peek(tokens, *cursor)
+                && s.eq_ignore_ascii_case("LABEL")
+            {
+                *cursor += 1;
+                match get_token(tokens, cursor)? {
+                    Token::Ident(l) | Token::StringLit(l) => label = l.clone(),
+                    other => {
+                        return Err(Error::SqlSyntax(format!(
+                            "Expected label name, got {other:?}"
+                        )));
                     }
                 }
             }
 
             // Optional PROPERTIES
             let mut properties = String::new();
-            if let Ok(Token::Ident(s)) = get_token_peek(tokens, *cursor) {
-                if s.eq_ignore_ascii_case("PROPERTIES") {
-                    *cursor += 1;
-                    match get_token(tokens, cursor)? {
-                        Token::StringLit(p) => properties = p.clone(),
-                        other => {
-                            return Err(Error::SqlSyntax(format!(
-                                "Expected properties string, got {other:?}"
-                            )));
-                        }
+            if let Ok(Token::Ident(s)) = get_token_peek(tokens, *cursor)
+                && s.eq_ignore_ascii_case("PROPERTIES")
+            {
+                *cursor += 1;
+                match get_token(tokens, cursor)? {
+                    Token::StringLit(p) => properties = p.clone(),
+                    other => {
+                        return Err(Error::SqlSyntax(format!(
+                            "Expected properties string, got {other:?}"
+                        )));
                     }
                 }
             }
@@ -3174,10 +3174,10 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                 *cursor += 2;
             } else if check_token(tokens, *cursor, &Token::To) {
                 *cursor += 1;
-            } else if let Ok(Token::Ident(to_kw)) = get_token_peek(tokens, *cursor) {
-                if to_kw.eq_ignore_ascii_case("TO") {
-                    *cursor += 1;
-                }
+            } else if let Ok(Token::Ident(to_kw)) = get_token_peek(tokens, *cursor)
+                && to_kw.eq_ignore_ascii_case("TO")
+            {
+                *cursor += 1;
             }
 
             let to_id = match get_token(tokens, cursor)? {
@@ -3341,10 +3341,10 @@ fn parse_graph(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                 || check_token(tokens, *cursor, &Token::Into)
             {
                 *cursor += 1;
-            } else if let Ok(Token::Ident(to_kw)) = get_token_peek(tokens, *cursor) {
-                if to_kw.eq_ignore_ascii_case("TO") {
-                    *cursor += 1;
-                }
+            } else if let Ok(Token::Ident(to_kw)) = get_token_peek(tokens, *cursor)
+                && to_kw.eq_ignore_ascii_case("TO")
+            {
+                *cursor += 1;
             }
 
             let end_id = match get_token(tokens, cursor)? {
@@ -3377,10 +3377,10 @@ pub fn parse_graph_match(tokens: &[Token], cursor: &mut usize) -> Result<Stateme
     }
     if check_token(tokens, *cursor, &Token::Match) {
         *cursor += 1;
-    } else if let Ok(Token::Ident(s)) = get_token_peek(tokens, *cursor) {
-        if s.eq_ignore_ascii_case("MATCH") {
-            *cursor += 1;
-        }
+    } else if let Ok(Token::Ident(s)) = get_token_peek(tokens, *cursor)
+        && s.eq_ignore_ascii_case("MATCH")
+    {
+        *cursor += 1;
     }
 
     // 1. Source node: (var [: label])

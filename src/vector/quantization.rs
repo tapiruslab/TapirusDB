@@ -190,7 +190,7 @@ impl ProductQuantizer {
     /// Initialize a ProductQuantizer with uniform grid centroids
     pub fn new_uniform(dim: usize, num_subspaces: usize, centroids_per_subspace: usize) -> Self {
         assert!(
-            dim % num_subspaces == 0,
+            dim.is_multiple_of(num_subspaces),
             "Dimension must be divisible by num_subspaces"
         );
         let sub_dim = dim / num_subspaces;
@@ -221,7 +221,7 @@ impl ProductQuantizer {
         }
         let dim = vectors[0].len();
         assert!(
-            dim % num_subspaces == 0,
+            dim.is_multiple_of(num_subspaces),
             "Dimension must be divisible by num_subspaces"
         );
         let sub_dim = dim / num_subspaces;

@@ -3,7 +3,7 @@ name = "tapirus-nodejs"
 version = "1.0.5"
 publish = false
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 
 [lib]

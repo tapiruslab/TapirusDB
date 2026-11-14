@@ -1009,10 +1009,10 @@ impl BTreeStorage {
                         return Ok(false);
                     }
                 }
-                if let Some(rc) = header.right_child {
-                    if !self.scan_subtree_with_ref(pager, rc, callback)? {
-                        return Ok(false);
-                    }
+                if let Some(rc) = header.right_child
+                    && !self.scan_subtree_with_ref(pager, rc, callback)?
+                {
+                    return Ok(false);
                 }
                 Ok(true)
             }
@@ -1056,10 +1056,10 @@ impl BTreeStorage {
                         return Ok(false);
                     }
                 }
-                if let Some(rc) = header.right_child {
-                    if !self.scan_subtree_with(pager, rc, callback)? {
-                        return Ok(false);
-                    }
+                if let Some(rc) = header.right_child
+                    && !self.scan_subtree_with(pager, rc, callback)?
+                {
+                    return Ok(false);
                 }
                 Ok(true)
             }

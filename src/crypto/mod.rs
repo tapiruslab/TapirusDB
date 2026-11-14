@@ -236,9 +236,12 @@ impl DatabaseCipher {
     /// know when KCV generation is impossible rather than silently receiving a
     /// zeroed tag that would bypass authentication checks.
     pub fn generate_kcv(&self) -> Result<[u8; 16]> {
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&self.key));
-        let nonce = Nonce::from_slice(&self.salt[0..12]);
-        let ciphertext = cipher.encrypt(nonce, KCV_MAGIC).map_err(|_| {
+        let mut key = Key::from(self.key);
+        let cipher = ChaCha20Poly1305::new(&key);
+        key.as_mut_slice().zeroize();
+        let nonce = Nonce::try_from(&self.salt[0..12])
+            .map_err(|_| Error::Corrupted("Invalid salt slice for KCV nonce".into()))?;
+        let ciphertext = cipher.encrypt(&nonce, KCV_MAGIC).map_err(|_| {
             Error::Corrupted("KCV generation failed: ChaCha20-Poly1305 encryption error".into())
         })?;
         if ciphertext.len() < 16 {
@@ -286,8 +289,10 @@ impl DatabaseCipher {
             )));
         }
 
-        let cipher = XChaCha20Poly1305::new(Key::from_slice(&self.key));
-        let nonce = XNonce::from_slice(nonce_bytes);
+        let mut key = Key::from(self.key);
+        let cipher = XChaCha20Poly1305::new(&key);
+        key.as_mut_slice().zeroize();
+        let nonce = XNonce::from(*nonce_bytes);
 
         let (pt_start, pt_end) = if page_id == 1 {
             (100, ENCRYPTED_PAGE_USABLE_SIZE)
@@ -303,7 +308,7 @@ impl DatabaseCipher {
         };
 
         let ct = cipher
-            .encrypt(nonce, payload)
+            .encrypt(&nonce, payload)
             .map_err(|e| Error::Corrupted(format!("Encryption error: {e}")))?;
 
         let tag_offset = ct.len() - TAG_SIZE;
@@ -352,7 +357,9 @@ impl DatabaseCipher {
             )));
         }
 
-        let cipher = XChaCha20Poly1305::new(Key::from_slice(&self.key));
+        let mut key = Key::from(self.key);
+        let cipher = XChaCha20Poly1305::new(&key);
+        key.as_mut_slice().zeroize();
 
         let (pt_start, pt_end) = if page_id == 1 {
             (100, ENCRYPTED_PAGE_USABLE_SIZE)
@@ -365,7 +372,7 @@ impl DatabaseCipher {
             &disk_page[ENCRYPTED_PAGE_USABLE_SIZE..ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE];
         let tag_slice = &disk_page[ENCRYPTED_PAGE_USABLE_SIZE + XNONCE_SIZE..4096];
 
-        let nonce = XNonce::from_slice(nonce_slice);
+        let nonce = XNonce::try_from(nonce_slice).map_err(|_| Error::DecryptionFailed(page_id))?;
 
         let mut combined = Vec::with_capacity(ct_slice.len() + tag_slice.len());
         combined.extend_from_slice(ct_slice);
@@ -378,7 +385,7 @@ impl DatabaseCipher {
         };
 
         let pt = cipher
-            .decrypt(nonce, payload)
+            .decrypt(&nonce, payload)
             .map_err(|_| Error::DecryptionFailed(page_id))?;
 
         let mut out_page = vec![0u8; 4096];

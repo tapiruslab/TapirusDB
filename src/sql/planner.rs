@@ -53,14 +53,14 @@ impl TableStats {
             return 1.0;
         }
 
-        if let Some(&distinct) = self.column_distinct.get(column) {
-            if distinct > 0 {
-                if is_equality {
-                    return (1.0 / distinct as f64).min(1.0);
-                } else {
-                    // Range query default selectivity ~ 33%
-                    return 0.33;
-                }
+        if let Some(&distinct) = self.column_distinct.get(column)
+            && distinct > 0
+        {
+            if is_equality {
+                return (1.0 / distinct as f64).min(1.0);
+            } else {
+                // Range query default selectivity ~ 33%
+                return 0.33;
             }
         }
 

@@ -817,13 +817,13 @@ impl Connection {
         let graph = executor.graph();
         let mut heap = std::collections::BinaryHeap::new();
         for node in graph.all_nodes() {
-            if let Some(ref nv) = node.vector {
-                if nv.len() == query_vec.len() {
-                    let sim = crate::vector::cosine_similarity(query_vec, nv);
-                    heap.push((std::cmp::Reverse((sim * 100000.0) as i64), node.id));
-                    if heap.len() > top_k {
-                        heap.pop();
-                    }
+            if let Some(ref nv) = node.vector
+                && nv.len() == query_vec.len()
+            {
+                let sim = crate::vector::cosine_similarity(query_vec, nv);
+                heap.push((std::cmp::Reverse((sim * 100000.0) as i64), node.id));
+                if heap.len() > top_k {
+                    heap.pop();
                 }
             }
         }
@@ -1202,12 +1202,12 @@ impl Connection {
         self.mutate_memory(|mem, executor, pager| {
             if let Some(scope) = scope {
                 for id in [id_a, id_b] {
-                    if let Some(entry) = mem.get_memory(id) {
-                        if !scope.matches_entry(entry) {
-                            return Err(Error::PermissionDenied(format!(
-                                "Memory #{id} is outside scoped owner boundary"
-                            )));
-                        }
+                    if let Some(entry) = mem.get_memory(id)
+                        && !scope.matches_entry(entry)
+                    {
+                        return Err(Error::PermissionDenied(format!(
+                            "Memory #{id} is outside scoped owner boundary"
+                        )));
                     }
                 }
             }
@@ -1301,14 +1301,13 @@ impl Connection {
     pub fn memory_forget_checked(&self, id: u64) -> Result<bool> {
         let scope = self.memory_scope.as_ref();
         self.mutate_memory(|mem, executor, pager| {
-            if let Some(scope) = scope {
-                if let Some(entry) = mem.get_memory(id) {
-                    if !scope.matches_entry(entry) {
-                        return Err(Error::PermissionDenied(format!(
-                            "Memory #{id} is outside scoped owner boundary"
-                        )));
-                    }
-                }
+            if let Some(scope) = scope
+                && let Some(entry) = mem.get_memory(id)
+                && !scope.matches_entry(entry)
+            {
+                return Err(Error::PermissionDenied(format!(
+                    "Memory #{id} is outside scoped owner boundary"
+                )));
             }
             let (removed, updated) = mem.remove_ids(&[id]);
             for id in &removed {
@@ -1630,11 +1629,11 @@ impl Connection {
         let affected_res = executor.execute(&mut pager, stmt);
         let affected = match affected_res {
             Ok(n) => {
-                if is_rollback || rollback_to.is_some() {
-                    if let Err(e) = self.restore_memory_from_pager(&mut pager, &executor) {
-                        let _ = pager.end_concurrent_write();
-                        return Err(e);
-                    }
+                if (is_rollback || rollback_to.is_some())
+                    && let Err(e) = self.restore_memory_from_pager(&mut pager, &executor)
+                {
+                    let _ = pager.end_concurrent_write();
+                    return Err(e);
                 }
                 n
             }

@@ -686,15 +686,15 @@ impl Catalog {
         let mut btree = BTreeStorage::new();
         let cells = btree.scan(pager, 1)?;
         for cell in cells {
-            if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload) {
-                if td.name.eq_ignore_ascii_case(table_name) {
-                    let payload = serde_json::to_vec(&updated_def).map_err(|e| {
-                        Error::Corrupted(format!("Failed to serialize updated table def: {e}"))
-                    })?;
-                    btree.delete(pager, 1, cell.row_id)?;
-                    btree.insert(pager, 1, cell.row_id, &payload)?;
-                    break;
-                }
+            if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload)
+                && td.name.eq_ignore_ascii_case(table_name)
+            {
+                let payload = serde_json::to_vec(&updated_def).map_err(|e| {
+                    Error::Corrupted(format!("Failed to serialize updated table def: {e}"))
+                })?;
+                btree.delete(pager, 1, cell.row_id)?;
+                btree.insert(pager, 1, cell.row_id, &payload)?;
+                break;
             }
         }
 
@@ -735,15 +735,15 @@ impl Catalog {
         let mut btree = BTreeStorage::new();
         let cells = btree.scan(pager, 1)?;
         for cell in cells {
-            if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload) {
-                if td.name.eq_ignore_ascii_case(old_name) {
-                    let payload = serde_json::to_vec(&updated_def).map_err(|e| {
-                        Error::Corrupted(format!("Failed to serialize updated table def: {e}"))
-                    })?;
-                    btree.delete(pager, 1, cell.row_id)?;
-                    btree.insert(pager, 1, cell.row_id, &payload)?;
-                    break;
-                }
+            if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload)
+                && td.name.eq_ignore_ascii_case(old_name)
+            {
+                let payload = serde_json::to_vec(&updated_def).map_err(|e| {
+                    Error::Corrupted(format!("Failed to serialize updated table def: {e}"))
+                })?;
+                btree.delete(pager, 1, cell.row_id)?;
+                btree.insert(pager, 1, cell.row_id, &payload)?;
+                break;
             }
         }
 
@@ -789,15 +789,15 @@ impl Catalog {
         let mut btree = BTreeStorage::new();
         let cells = btree.scan(pager, 1)?;
         for cell in cells {
-            if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload) {
-                if td.name.eq_ignore_ascii_case(table_name) {
-                    let payload = serde_json::to_vec(&updated_def).map_err(|e| {
-                        Error::Corrupted(format!("Failed to serialize updated table def: {e}"))
-                    })?;
-                    btree.delete(pager, 1, cell.row_id)?;
-                    btree.insert(pager, 1, cell.row_id, &payload)?;
-                    break;
-                }
+            if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload)
+                && td.name.eq_ignore_ascii_case(table_name)
+            {
+                let payload = serde_json::to_vec(&updated_def).map_err(|e| {
+                    Error::Corrupted(format!("Failed to serialize updated table def: {e}"))
+                })?;
+                btree.delete(pager, 1, cell.row_id)?;
+                btree.insert(pager, 1, cell.row_id, &payload)?;
+                break;
             }
         }
 
@@ -850,28 +850,28 @@ impl Catalog {
         let col_names = old_def.column_names();
         let cells = btree.scan(pager, root_page)?;
         for cell in cells {
-            if let Ok(row) = crate::sql::codec::decode_row(&cell.payload, &col_names) {
-                if col_idx < row.values().len() {
-                    let mut vals = row.values().to_vec();
-                    vals.remove(col_idx);
-                    let new_payload = crate::sql::codec::encode_row(&vals);
-                    btree.insert(pager, root_page, cell.row_id, &new_payload)?;
-                }
+            if let Ok(row) = crate::sql::codec::decode_row(&cell.payload, &col_names)
+                && col_idx < row.values().len()
+            {
+                let mut vals = row.values().to_vec();
+                vals.remove(col_idx);
+                let new_payload = crate::sql::codec::encode_row(&vals);
+                btree.insert(pager, root_page, cell.row_id, &new_payload)?;
             }
         }
 
         // Update Page 1 B+Tree master schema entry
         let cells = btree.scan(pager, 1)?;
         for cell in cells {
-            if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload) {
-                if td.name.eq_ignore_ascii_case(table_name) {
-                    let payload = serde_json::to_vec(&updated_def).map_err(|e| {
-                        Error::Corrupted(format!("Failed to serialize updated table def: {e}"))
-                    })?;
-                    btree.delete(pager, 1, cell.row_id)?;
-                    btree.insert(pager, 1, cell.row_id, &payload)?;
-                    break;
-                }
+            if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload)
+                && td.name.eq_ignore_ascii_case(table_name)
+            {
+                let payload = serde_json::to_vec(&updated_def).map_err(|e| {
+                    Error::Corrupted(format!("Failed to serialize updated table def: {e}"))
+                })?;
+                btree.delete(pager, 1, cell.row_id)?;
+                btree.insert(pager, 1, cell.row_id, &payload)?;
+                break;
             }
         }
 
@@ -893,11 +893,11 @@ impl Catalog {
             let mut btree = BTreeStorage::new();
             let cells = btree.scan(pager, 1)?;
             for cell in cells {
-                if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload) {
-                    if td.name.eq_ignore_ascii_case(&table_def.name) {
-                        let _ = btree.delete(pager, 1, cell.row_id);
-                        break;
-                    }
+                if let Ok(td) = serde_json::from_slice::<TableDef>(&cell.payload)
+                    && td.name.eq_ignore_ascii_case(&table_def.name)
+                {
+                    let _ = btree.delete(pager, 1, cell.row_id);
+                    break;
                 }
             }
 
@@ -957,11 +957,11 @@ impl Catalog {
             let mut btree = BTreeStorage::new();
             let cells = btree.scan(pager, 1)?;
             for cell in cells {
-                if let Ok(vd) = serde_json::from_slice::<ViewDef>(&cell.payload) {
-                    if vd.name.eq_ignore_ascii_case(view_name) {
-                        let _ = btree.delete(pager, 1, cell.row_id);
-                        break;
-                    }
+                if let Ok(vd) = serde_json::from_slice::<ViewDef>(&cell.payload)
+                    && vd.name.eq_ignore_ascii_case(view_name)
+                {
+                    let _ = btree.delete(pager, 1, cell.row_id);
+                    break;
                 }
             }
 
@@ -1069,11 +1069,11 @@ impl Catalog {
             let mut btree = BTreeStorage::new();
             let cells = btree.scan(pager, 1)?;
             for cell in cells {
-                if let Ok(id) = serde_json::from_slice::<IndexDef>(&cell.payload) {
-                    if id.name.eq_ignore_ascii_case(index_name) {
-                        let _ = btree.delete(pager, 1, cell.row_id);
-                        break;
-                    }
+                if let Ok(id) = serde_json::from_slice::<IndexDef>(&cell.payload)
+                    && id.name.eq_ignore_ascii_case(index_name)
+                {
+                    let _ = btree.delete(pager, 1, cell.row_id);
+                    break;
                 }
             }
 
@@ -1170,11 +1170,11 @@ impl Catalog {
             let mut btree = BTreeStorage::new();
             let cells = btree.scan(pager, 1)?;
             for cell in cells {
-                if let Ok(tr) = serde_json::from_slice::<TriggerDef>(&cell.payload) {
-                    if tr.name.eq_ignore_ascii_case(trigger_name) {
-                        let _ = btree.delete(pager, 1, cell.row_id);
-                        break;
-                    }
+                if let Ok(tr) = serde_json::from_slice::<TriggerDef>(&cell.payload)
+                    && tr.name.eq_ignore_ascii_case(trigger_name)
+                {
+                    let _ = btree.delete(pager, 1, cell.row_id);
+                    break;
                 }
             }
 

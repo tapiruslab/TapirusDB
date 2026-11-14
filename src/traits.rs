@@ -210,15 +210,15 @@ pub fn col_name_matches(stored: &str, target: &str) -> bool {
     if stored.eq_ignore_ascii_case(target) {
         return true;
     }
-    if let Some(pos) = stored.rfind('.') {
-        if stored[pos + 1..].eq_ignore_ascii_case(target) {
-            return true;
-        }
+    if let Some(pos) = stored.rfind('.')
+        && stored[pos + 1..].eq_ignore_ascii_case(target)
+    {
+        return true;
     }
-    if let Some(pos) = target.rfind('.') {
-        if target[pos + 1..].eq_ignore_ascii_case(stored) {
-            return true;
-        }
+    if let Some(pos) = target.rfind('.')
+        && target[pos + 1..].eq_ignore_ascii_case(stored)
+    {
+        return true;
     }
     false
 }

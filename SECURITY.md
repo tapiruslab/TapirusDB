@@ -23,6 +23,7 @@ db.internal.example.com {
 - The daemon uses a synchronous listener and a bounded thread per client. The request limits are 16 KiB of headers, 4 MiB of body, 64 simultaneous clients and 10 seconds to receive a request. It is not a hardened reverse proxy or an asynchronous multi-tenant database server.
 - Loaded `.tapmodel` weights are limited to 128 MiB and checked for consistent dimensions and finite values. The default TAP weights are deterministic heuristics, not a validated or calibrated model.
 - Authentication does not replace filesystem permissions, encrypted transport, secret management or application-level authorization.
+- For cryptographic threat modeling, trust boundaries, and third-party audit scope, see [docs/security/SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md](docs/security/SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md). For the formal WAL crash-safety specification verified by TLC in CI, see [docs/formal_verification/README.md](docs/formal_verification/README.md).
 
 ## Vulnerability reports
 

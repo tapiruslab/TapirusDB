@@ -1242,18 +1242,15 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
                     db_ref.last_errcode = rc;
                     return rc;
                 }
-                if plan.occurrence_slots.is_empty() {
-                    if let Ok(toks) = tapirus::sql::lexer::tokenize(&plan.normalized_sql) {
-                        if !toks.is_empty() {
-                            if let Err(e) = tapirus::sql::parser::parse_tokens(&toks) {
-                                let rc = map_error_to_sqlite_code(&e);
-                                db_ref.last_error =
-                                    Some(CString::new(e.to_string()).unwrap_or_default());
-                                db_ref.last_errcode = rc;
-                                return rc;
-                            }
-                        }
-                    }
+                if plan.occurrence_slots.is_empty()
+                    && let Ok(toks) = tapirus::sql::lexer::tokenize(&plan.normalized_sql)
+                    && !toks.is_empty()
+                    && let Err(e) = tapirus::sql::parser::parse_tokens(&toks)
+                {
+                    let rc = map_error_to_sqlite_code(&e);
+                    db_ref.last_error = Some(CString::new(e.to_string()).unwrap_or_default());
+                    db_ref.last_errcode = rc;
+                    return rc;
                 }
             }
         }
@@ -1338,10 +1335,10 @@ pub unsafe extern "C" fn sqlite3_bind_parameter_index(
         return 0;
     };
     for (idx, name_opt) in stmt.param_names.iter().enumerate() {
-        if let Some(name) = name_opt {
-            if name.to_str().ok() == Some(target) {
-                return (idx + 1) as i32;
-            }
+        if let Some(name) = name_opt
+            && name.to_str().ok() == Some(target)
+        {
+            return (idx + 1) as i32;
         }
     }
     0

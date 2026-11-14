@@ -235,7 +235,7 @@ impl<D: FlashBlockDevice> MicroDatabase<D> {
             .push((sensor_id, timestamp, value, label.to_string()));
 
         // Flush checkpoint to Block 1 periodically
-        if self.records.len() % 10 == 0 {
+        if self.records.len().is_multiple_of(10) {
             let mut buf = vec![0u8; self.pager.block_size()];
             let count_bytes = (self.records.len() as u32).to_le_bytes();
             buf[0..4].copy_from_slice(&count_bytes);

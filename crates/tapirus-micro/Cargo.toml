@@ -2,7 +2,7 @@
 name = "tapirus-micro"
 version = "1.0.5"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "BUSL-1.1"
 description = "Allocation-free fixed-slot flash records for bare-metal devices"
 repository = "https://github.com/tapiruslab/TapirusDB"

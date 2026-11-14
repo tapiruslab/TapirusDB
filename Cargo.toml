@@ -11,7 +11,7 @@ documentation = "https://docs.rs/tapirus"
 readme = "README.md"
 keywords = ["embedded", "database", "sqlite", "vector", "ai-memory"]
 categories = ["database-implementations", "embedded"]
-rust-version = "1.85"
+rust-version = "1.88"
 exclude = [
     "docs/formal_verification/",
     "scratch/",
@@ -88,12 +88,9 @@ parking_lot = "0.12"
 crc32fast = "1.4"
 
 # Encryption at Rest (AEAD ChaCha20-Poly1305 & SHA256 Key Derivation)
-# 0.11 resolves ctutils 0.4.2 on Rust 1.85 (RUSTSEC-2026-0385).
-# Patched ctutils >=0.4.4 requires Rust 1.87; retain this API line at MSRV 1.85.
-chacha20poly1305 = "0.10"
-# 0.11.1 raises MSRV to Rust 1.88; pin 0.11.0 while this crate promises 1.85.
-# Cargo.lock currently resolves patched block-buffer 0.12.1; OSV gates updates.
-sha2 = "=0.11.0"
+# Requires MSRV Rust 1.88+ for patched ctutils (>=0.4.4) and sha2 (>=0.11.1).
+chacha20poly1305 = "0.11"
+sha2 = "0.11.1"
 subtle = "2.6"
 zeroize = { version = "1.9", default-features = false }
 

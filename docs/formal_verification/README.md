@@ -1,13 +1,26 @@
-# WAL TLA+ specification: scope and status
+# WAL TLA+ Specification: Scope and CI Verification
 
-This directory contains a TLA+ model for selected WAL and recovery transitions. The model is a design aid and is not evidence that the Rust implementation has been formally verified.
+This directory contains the TLA+ crash-safety and WAL recovery model ([TAPIRUS_WAL.tla](TAPIRUS_WAL.tla)) together with its finite TLC configuration ([TAPIRUS_WAL.cfg](TAPIRUS_WAL.cfg)).
 
-No TLC execution output, checked state count, invariant result, or refinement proof connecting this model to the implementation is included in this repository. Do not describe the engine as formally verified based on these files alone.
+## Model Scope
 
-To run the model locally, install the TLA+ tools and execute:
+- Models TapirusDB's Single-Writer write-ahead log protocol (`BeginTx`, `WriteBuffer`, `AppendWalFrame`, `CommitTx`, `AbortTx`, `Checkpoint`, `Crash`, `Recover`, `Done`).
+- Verifies four safety invariants over the bounded configuration (`MaxPages = 2`, `MaxTxId = 2`, `MaxVal = 2`, `MaxWalLen = 4`):
+  - `TypeOK`
+  - `RecoveredDiskMatchesCommitted`
+  - `CheckpointedDiskMatchesCommitted`
+  - `NoUncommittedCheckpoint`
+
+## Running TLC Locally or in CI
+
+CI executes TLC on every push/PR in `.github/workflows/ci.yml` (`formal-verification` job).
+
+To run locally with Java (`default-jre-headless` / OpenJDK 17+) and `tla2tools.jar`:
 
 ```bash
-java -cp tla2tools.jar tlc2.TLC TAPIRUS_WAL.tla -config TAPIRUS_WAL.cfg
+java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC -workers auto -config docs/formal_verification/TAPIRUS_WAL.cfg docs/formal_verification/TAPIRUS_WAL.tla
 ```
 
-A successful run should be recorded with the TLC version, exact command, model configuration, explored state count, and invariant results. It would verify only the bounded model that was checked; it would not prove the Rust implementation correct.
+## Boundaries & Non-Claims
+
+A passing TLC run proves the safety invariants hold across every reachable state of the bounded TLA+ specification (`MaxPages = 2`, `MaxTxId = 2`, `MaxVal = 2`, `MaxWalLen = 4`). It is a formal design verification artifact, not an automated refinement proof equivalence between TLA+ actions and the Rust implementation in `src/pager/`.

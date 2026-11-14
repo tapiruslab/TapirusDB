@@ -104,10 +104,10 @@ impl LruState {
     }
 
     fn insert_cache(&mut self, id: u64, record: PagedNodeRecord, capacity: usize) {
-        if self.cache.len() >= capacity {
-            if let Some(evicted_id) = self.lru_queue.pop_front() {
-                self.cache.remove(&evicted_id);
-            }
+        if self.cache.len() >= capacity
+            && let Some(evicted_id) = self.lru_queue.pop_front()
+        {
+            self.cache.remove(&evicted_id);
         }
         self.cache.insert(id, record);
         self.lru_queue.push_back(id);
@@ -144,12 +144,12 @@ impl PagedVectorStore {
         }
 
         let disk_opt = self.disk_pages.read().get(&id).cloned();
-        if let Some(bytes) = disk_opt {
-            if let Ok(rec) = PagedNodeRecord::from_bytes(&bytes) {
-                let mut lru = self.lru.lock();
-                lru.insert_cache(id, rec.clone(), self.capacity);
-                return Some(rec);
-            }
+        if let Some(bytes) = disk_opt
+            && let Ok(rec) = PagedNodeRecord::from_bytes(&bytes)
+        {
+            let mut lru = self.lru.lock();
+            lru.insert_cache(id, rec.clone(), self.capacity);
+            return Some(rec);
         }
 
         None
@@ -424,14 +424,14 @@ impl PagedHnswIndex {
 
         // Update back-links for neighbors at layer 0
         for &n_id in &neighbors_l0 {
-            if let Some(mut neighbor) = self.store.get(n_id) {
-                if !neighbor.neighbors_l0.contains(&id) {
-                    neighbor.neighbors_l0.push(id);
-                    if neighbor.neighbors_l0.len() > self.m0 {
-                        neighbor.neighbors_l0.truncate(self.m0);
-                    }
-                    self.store.put(neighbor)?;
+            if let Some(mut neighbor) = self.store.get(n_id)
+                && !neighbor.neighbors_l0.contains(&id)
+            {
+                neighbor.neighbors_l0.push(id);
+                if neighbor.neighbors_l0.len() > self.m0 {
+                    neighbor.neighbors_l0.truncate(self.m0);
                 }
+                self.store.put(neighbor)?;
             }
         }
 
@@ -533,21 +533,21 @@ impl PagedHnswIndex {
                 .unwrap_or_default();
 
             for neighbor_id in neighbors {
-                if visited.insert(neighbor_id) {
-                    if let Some(neighbor) = self.store.get(neighbor_id) {
-                        let dist = self.distance(query, &neighbor.vector);
-                        if dist < furthest_dist || top_candidates.len() < self.ef_search {
-                            candidates.push(MinCandidate {
-                                id: neighbor_id,
-                                distance: dist,
-                            });
-                            top_candidates.push(MaxCandidate {
-                                id: neighbor_id,
-                                distance: dist,
-                            });
-                            if top_candidates.len() > self.ef_search {
-                                top_candidates.pop();
-                            }
+                if visited.insert(neighbor_id)
+                    && let Some(neighbor) = self.store.get(neighbor_id)
+                {
+                    let dist = self.distance(query, &neighbor.vector);
+                    if dist < furthest_dist || top_candidates.len() < self.ef_search {
+                        candidates.push(MinCandidate {
+                            id: neighbor_id,
+                            distance: dist,
+                        });
+                        top_candidates.push(MaxCandidate {
+                            id: neighbor_id,
+                            distance: dist,
+                        });
+                        if top_candidates.len() > self.ef_search {
+                            top_candidates.pop();
                         }
                     }
                 }

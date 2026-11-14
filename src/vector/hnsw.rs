@@ -449,26 +449,26 @@ impl HnswIndex {
                 break;
             }
 
-            if let Some(node) = self.nodes.get(&curr.id) {
-                if layer < node.layer_neighbors.len() {
-                    for &neighbor_id in &node.layer_neighbors[layer] {
-                        if visited.insert(neighbor_id) {
-                            if let Some(neighbor) = self.nodes.get(&neighbor_id) {
-                                let dist = self.compute_node_distance(query, neighbor, metric);
-                                if dist < furthest_dist || nearest.len() < ef {
-                                    candidates.push(MinCandidate {
-                                        id: neighbor_id,
-                                        distance: dist,
-                                    });
-                                    nearest.push(MaxCandidate {
-                                        id: neighbor_id,
-                                        distance: dist,
-                                    });
+            if let Some(node) = self.nodes.get(&curr.id)
+                && layer < node.layer_neighbors.len()
+            {
+                for &neighbor_id in &node.layer_neighbors[layer] {
+                    if visited.insert(neighbor_id)
+                        && let Some(neighbor) = self.nodes.get(&neighbor_id)
+                    {
+                        let dist = self.compute_node_distance(query, neighbor, metric);
+                        if dist < furthest_dist || nearest.len() < ef {
+                            candidates.push(MinCandidate {
+                                id: neighbor_id,
+                                distance: dist,
+                            });
+                            nearest.push(MaxCandidate {
+                                id: neighbor_id,
+                                distance: dist,
+                            });
 
-                                    if nearest.len() > ef {
-                                        nearest.pop(); // Evict furthest
-                                    }
-                                }
+                            if nearest.len() > ef {
+                                nearest.pop(); // Evict furthest
                             }
                         }
                     }
@@ -493,10 +493,10 @@ impl HnswIndex {
             return candidates.iter().map(|(id, _)| *id).collect();
         }
         let vector = |id: u64| -> Option<&[f32]> {
-            if let Some((new_id, new_vector)) = inserted {
-                if new_id == id {
-                    return Some(new_vector);
-                }
+            if let Some((new_id, new_vector)) = inserted
+                && new_id == id
+            {
+                return Some(new_vector);
             }
             self.nodes.get(&id).map(|node| node.vector.as_slice())
         };
@@ -567,22 +567,22 @@ impl HnswIndex {
         }
 
         // Small allow-lists are cheaper and more accurate to score directly.
-        if let Some(allowed) = filter {
-            if allowed.len() <= self.ef_search.max(k) {
-                let mut matches: Vec<_> = allowed
-                    .iter()
-                    .filter(|id| !self.tombstones.contains(id))
-                    .filter(|id| accept(**id))
-                    .filter_map(|id| {
-                        self.nodes
-                            .get(id)
-                            .map(|node| (*id, self.compute_node_distance(query, node, metric)))
-                    })
-                    .collect();
-                matches.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-                matches.truncate(k);
-                return Ok(matches);
-            }
+        if let Some(allowed) = filter
+            && allowed.len() <= self.ef_search.max(k)
+        {
+            let mut matches: Vec<_> = allowed
+                .iter()
+                .filter(|id| !self.tombstones.contains(id))
+                .filter(|id| accept(**id))
+                .filter_map(|id| {
+                    self.nodes
+                        .get(id)
+                        .map(|node| (*id, self.compute_node_distance(query, node, metric)))
+                })
+                .collect();
+            matches.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+            matches.truncate(k);
+            return Ok(matches);
         }
 
         let mut curr_entry = match self.entry_point {

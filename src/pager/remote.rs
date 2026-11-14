@@ -362,16 +362,14 @@ impl RemoteRangeReader for CloudS3RemoteStorage {
             }
         }
 
-        if let Ok(resp) = req.call() {
-            if let Some(cl) = resp
+        if let Ok(resp) = req.call()
+            && let Some(cl) = resp
                 .headers()
                 .get("content-length")
                 .and_then(|v| v.to_str().ok())
-            {
-                if let Ok(size) = cl.parse::<u64>() {
-                    return Ok(size);
-                }
-            }
+            && let Ok(size) = cl.parse::<u64>()
+        {
+            return Ok(size);
         }
 
         // Fallback: request 1-byte range to inspect Content-Range header
@@ -394,12 +392,11 @@ impl RemoteRangeReader for CloudS3RemoteStorage {
             .headers()
             .get("content-range")
             .and_then(|v| v.to_str().ok())
+            && let Some(slash_idx) = cr.rfind('/')
         {
-            if let Some(slash_idx) = cr.rfind('/') {
-                let total_str = &cr[slash_idx + 1..];
-                if let Ok(size) = total_str.trim().parse::<u64>() {
-                    return Ok(size);
-                }
+            let total_str = &cr[slash_idx + 1..];
+            if let Ok(size) = total_str.trim().parse::<u64>() {
+                return Ok(size);
             }
         }
 
@@ -407,10 +404,9 @@ impl RemoteRangeReader for CloudS3RemoteStorage {
             .headers()
             .get("content-length")
             .and_then(|v| v.to_str().ok())
+            && let Ok(size) = cl.parse::<u64>()
         {
-            if let Ok(size) = cl.parse::<u64>() {
-                return Ok(size);
-            }
+            return Ok(size);
         }
 
         Err(Error::Corrupted(format!(

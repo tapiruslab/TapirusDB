@@ -541,10 +541,10 @@ impl CypherExecutor {
 
         // Step 1: Match source nodes
         for source_node in &all_nodes {
-            if let Some(ref l) = match_q.source.label {
-                if !source_node.label.eq_ignore_ascii_case(l) {
-                    continue;
-                }
+            if let Some(ref l) = match_q.source.label
+                && !source_node.label.eq_ignore_ascii_case(l)
+            {
+                continue;
             }
 
             // If query is node-only (no edge traversal): `MATCH (a:Person) RETURN a.id`
@@ -567,12 +567,11 @@ impl CypherExecutor {
                     edge_pat.label.as_deref(),
                 );
                 for (target_node, edge) in neighbors {
-                    if let Some(ref t_pat) = match_q.target {
-                        if let Some(ref tl) = t_pat.label {
-                            if !target_node.label.eq_ignore_ascii_case(tl) {
-                                continue;
-                            }
-                        }
+                    if let Some(ref t_pat) = match_q.target
+                        && let Some(ref tl) = t_pat.label
+                        && !target_node.label.eq_ignore_ascii_case(tl)
+                    {
+                        continue;
                     }
                     bindings.push(CypherBinding {
                         source: (*source_node).clone(),
@@ -592,12 +591,11 @@ impl CypherExecutor {
                     &mut visited_paths,
                     &mut |target_node_id, last_edge| {
                         if let Some(target_node) = engine.get_node(target_node_id) {
-                            if let Some(ref t_pat) = match_q.target {
-                                if let Some(ref tl) = t_pat.label {
-                                    if !target_node.label.eq_ignore_ascii_case(tl) {
-                                        return;
-                                    }
-                                }
+                            if let Some(ref t_pat) = match_q.target
+                                && let Some(ref tl) = t_pat.label
+                                && !target_node.label.eq_ignore_ascii_case(tl)
+                            {
+                                return;
                             }
                             bindings.push(CypherBinding {
                                 source: (*source_node).clone(),
@@ -771,21 +769,21 @@ impl CypherBinding {
             "label" => Value::Text(node.label.clone()),
             "properties" => Value::Text(node.properties.clone()),
             prop_key => {
-                if let Ok(json) = serde_json::from_str::<JsonValue>(&node.properties) {
-                    if let Some(val) = json.get(prop_key) {
-                        return match val {
-                            JsonValue::String(s) => Value::Text(s.clone()),
-                            JsonValue::Number(num) => {
-                                if let Some(i) = num.as_i64() {
-                                    Value::Integer(i)
-                                } else {
-                                    Value::Real(num.as_f64().unwrap_or(0.0))
-                                }
+                if let Ok(json) = serde_json::from_str::<JsonValue>(&node.properties)
+                    && let Some(val) = json.get(prop_key)
+                {
+                    return match val {
+                        JsonValue::String(s) => Value::Text(s.clone()),
+                        JsonValue::Number(num) => {
+                            if let Some(i) = num.as_i64() {
+                                Value::Integer(i)
+                            } else {
+                                Value::Real(num.as_f64().unwrap_or(0.0))
                             }
-                            JsonValue::Bool(b) => Value::Integer(if *b { 1 } else { 0 }),
-                            _ => Value::Text(val.to_string()),
-                        };
-                    }
+                        }
+                        JsonValue::Bool(b) => Value::Integer(if *b { 1 } else { 0 }),
+                        _ => Value::Text(val.to_string()),
+                    };
                 }
                 Value::Null
             }
@@ -801,20 +799,20 @@ impl CypherBinding {
             "weight" => Value::Real(edge.weight as f64),
             "properties" => Value::Text(edge.properties.clone()),
             prop_key => {
-                if let Ok(json) = serde_json::from_str::<JsonValue>(&edge.properties) {
-                    if let Some(val) = json.get(prop_key) {
-                        return match val {
-                            JsonValue::String(s) => Value::Text(s.clone()),
-                            JsonValue::Number(num) => {
-                                if let Some(i) = num.as_i64() {
-                                    Value::Integer(i)
-                                } else {
-                                    Value::Real(num.as_f64().unwrap_or(0.0))
-                                }
+                if let Ok(json) = serde_json::from_str::<JsonValue>(&edge.properties)
+                    && let Some(val) = json.get(prop_key)
+                {
+                    return match val {
+                        JsonValue::String(s) => Value::Text(s.clone()),
+                        JsonValue::Number(num) => {
+                            if let Some(i) = num.as_i64() {
+                                Value::Integer(i)
+                            } else {
+                                Value::Real(num.as_f64().unwrap_or(0.0))
                             }
-                            _ => Value::Text(val.to_string()),
-                        };
-                    }
+                        }
+                        _ => Value::Text(val.to_string()),
+                    };
                 }
                 Value::Null
             }

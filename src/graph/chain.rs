@@ -203,10 +203,10 @@ impl<'a> GraphChain<'a> {
                 );
 
                 for (neighbor, edge) in neighbors {
-                    if let Some(min_w) = step.min_weight {
-                        if edge.weight < min_w {
-                            continue;
-                        }
+                    if let Some(min_w) = step.min_weight
+                        && edge.weight < min_w
+                    {
+                        continue;
                     }
 
                     // Prevent immediate back-tracking cycles within the current step
@@ -256,15 +256,15 @@ impl<'a> GraphChain<'a> {
         if let Some(ref v) = node.vector {
             return Some(std::borrow::Cow::Borrowed(v.as_slice()));
         }
-        if let Some(ext) = self.external_vectors {
-            if let Some(v) = ext.get(&node.id) {
-                return Some(std::borrow::Cow::Borrowed(v.as_slice()));
-            }
+        if let Some(ext) = self.external_vectors
+            && let Some(v) = ext.get(&node.id)
+        {
+            return Some(std::borrow::Cow::Borrowed(v.as_slice()));
         }
-        if let Some(ref resolver) = self.external_resolver {
-            if let Some(v) = resolver(node.id) {
-                return Some(std::borrow::Cow::Owned(v));
-            }
+        if let Some(ref resolver) = self.external_resolver
+            && let Some(v) = resolver(node.id)
+        {
+            return Some(std::borrow::Cow::Owned(v));
         }
         None
     }
