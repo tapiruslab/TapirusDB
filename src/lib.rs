@@ -16,6 +16,8 @@ pub mod error;
 pub mod graph;
 #[cfg(feature = "quad")]
 pub mod iot;
+#[cfg(feature = "std")]
+pub mod lakehouse;
 pub mod memory;
 pub mod pager;
 pub mod realtime;
@@ -2064,6 +2066,80 @@ impl Connection {
         let rows = self.query(sql)?;
         serde_json::to_string(&rows)
             .map_err(|e| Error::Corrupted(format!("Failed to serialize query rows to JSON: {e}")))
+    }
+
+    /// High-throughput direct batch insert bypassing SQL parsing and per-row lock overhead.
+    pub fn insert_rows_batch(
+        &self,
+        table: &str,
+        columns: Option<&[String]>,
+        rows: &[Vec<Value>],
+    ) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let mut pager = self.pager.write();
+        let mut executor = self.executor.write();
+        if pager.begin_concurrent_write()? {
+            executor.reload_from_pager(&mut pager)?;
+        }
+        let count_res = executor.execute_insert_batch(&mut pager, table, columns, rows);
+        let in_tx = pager.is_in_transaction();
+        let savepoint_depth = pager.savepoint_depth();
+        pager.end_concurrent_write()?;
+        drop(executor);
+        drop(pager);
+
+        let count = count_res?;
+        if count > 0 {
+            let now_ts = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.queue_change(
+                ChangeEvent {
+                    op: ChangeOp::Insert,
+                    table: table.to_string(),
+                    row_id: 0,
+                    timestamp: now_ts,
+                    data: serde_json::json!({ "affected_rows": count }),
+                },
+                in_tx,
+                savepoint_depth,
+            );
+        }
+        Ok(count)
+    }
+
+    /// Stream and ingest any supported dataset (CSV, TSV, JSONL, Parquet, SQLite, SQL dump, PDF, or Text)
+    /// into this TapirusDB connection.
+    #[cfg(feature = "std")]
+    pub fn ingest_lakehouse(
+        &self,
+        source_pattern: &str,
+        explicit_format: Option<&str>,
+        options: &lakehouse::LakeIngestOptions,
+    ) -> Result<lakehouse::IngestStats> {
+        lakehouse::ingest_into_connection(self, source_pattern, explicit_format, options)
+    }
+
+    /// Export a SQL query result directly to Parquet, CSV, TSV, JSONL, or a universal SQL dump.
+    #[cfg(feature = "std")]
+    pub fn export_query_to_file(
+        &self,
+        sql: &str,
+        dest: impl AsRef<Path>,
+        explicit_format: Option<&str>,
+        partition_by: Option<&str>,
+    ) -> Result<lakehouse::ExportStats> {
+        let rows = self.query(sql)?;
+        lakehouse::export_rows_to_path(
+            &rows,
+            "query_export",
+            dest.as_ref(),
+            explicit_format,
+            partition_by,
+        )
     }
 
     /// Explicitly close the connection, persisting any dirty vector snapshots and checkpointing the WAL.

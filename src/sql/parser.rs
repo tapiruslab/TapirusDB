@@ -530,6 +530,39 @@ pub enum Statement {
         /// Optional configuration value or argument
         value: Option<String>,
     },
+    /// External Data Lake / file scan (`read_csv(...)`, `read_parquet(...)`, `read_jsonl(...)`, `read_sqlite(...)`, `read_pdf(...)`, `read_text(...)`)
+    ExternalScan {
+        /// Scanner function name (e.g. `read_csv`, `read_parquet`)
+        func: String,
+        /// Source file path or glob pattern
+        path: String,
+        /// Optional secondary argument (e.g. SQLite table name)
+        arg: Option<String>,
+    },
+    /// COPY target_table FROM 'source_path' [(OPTIONS...)]
+    CopyFrom {
+        /// Target SQL table name
+        table: String,
+        /// Source file path or glob pattern
+        source: String,
+        /// Optional explicit format override (`csv`, `tsv`, `jsonl`, `parquet`, `sqlite`, `sql`, `pdf`, `txt`)
+        format: Option<String>,
+        /// Optional key-value options (e.g. `DELIMITER`, `TABLE`, `MODE`)
+        options: Vec<(String, String)>,
+    },
+    /// COPY source_table | (SELECT ...) TO 'dest_path' [(OPTIONS...)]
+    CopyTo {
+        /// Source table name (when exporting an entire table)
+        source_table: Option<String>,
+        /// Source SELECT query (when exporting query results)
+        source_query: Option<Box<Statement>>,
+        /// Destination file or partitioned output directory path
+        dest: String,
+        /// Optional explicit output format override (`csv`, `tsv`, `jsonl`, `parquet`, `sql`)
+        format: Option<String>,
+        /// Optional Hive partition column name
+        partition_by: Option<String>,
+    },
 }
 
 /// Substitute '?' positional placeholders in a token stream with bound Values
@@ -775,6 +808,7 @@ pub fn parse_tokens(tokens: &[Token]) -> Result<Statement> {
         Token::Pragma => parse_pragma(tokens, &mut cursor),
         Token::Savepoint => parse_savepoint(tokens, &mut cursor),
         Token::Release => parse_release(tokens, &mut cursor),
+        Token::Ident(s) if s.eq_ignore_ascii_case("COPY") => parse_copy(tokens, &mut cursor),
         other => Err(Error::SqlSyntax(format!(
             "Unexpected statement starting with {other:?}"
         ))),
@@ -1623,6 +1657,175 @@ fn parse_pragma(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     Ok(Statement::Pragma { key, value })
 }
 
+fn is_external_scan_fn(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "read_csv"
+            | "read_tsv"
+            | "read_jsonl"
+            | "read_ndjson"
+            | "read_json"
+            | "read_parquet"
+            | "read_sqlite"
+            | "read_pdf"
+            | "read_text"
+            | "read_md"
+    )
+}
+
+fn parse_external_scan(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
+    let func = match get_token(tokens, cursor)? {
+        Token::Ident(s) => s.to_ascii_lowercase(),
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "Expected external scan function name, got {other:?}"
+            )));
+        }
+    };
+    expect_token(tokens, cursor, &Token::OpenParen)?;
+    let path = match get_token(tokens, cursor)? {
+        Token::StringLit(s) => s.clone(),
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "Expected string file path or glob in {func}(...), got {other:?}"
+            )));
+        }
+    };
+    let mut arg = None;
+    if check_token(tokens, *cursor, &Token::Comma) {
+        *cursor += 1;
+        let second = match get_token(tokens, cursor)? {
+            Token::StringLit(s) | Token::Ident(s) => s.clone(),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected string table/option argument in {func}(...), got {other:?}"
+                )));
+            }
+        };
+        arg = Some(second);
+    }
+    expect_token(tokens, cursor, &Token::CloseParen)?;
+    Ok(Statement::ExternalScan { func, path, arg })
+}
+
+fn parse_copy_options(tokens: &[Token], cursor: &mut usize) -> Result<Vec<(String, String)>> {
+    let mut options = Vec::new();
+    if check_token(tokens, *cursor, &Token::With) {
+        *cursor += 1;
+    }
+    if check_token(tokens, *cursor, &Token::OpenParen) {
+        *cursor += 1;
+        while *cursor < tokens.len() && !check_token(tokens, *cursor, &Token::CloseParen) {
+            let key = parse_identifier_or_keyword(tokens, cursor)?.to_ascii_uppercase();
+            if check_token(tokens, *cursor, &Token::Equals) {
+                *cursor += 1;
+            }
+            let val = match get_token(tokens, cursor)? {
+                Token::StringLit(s) | Token::Ident(s) => s.clone(),
+                Token::IntLit(n) => n.to_string(),
+                Token::FloatLit(f) => f.to_string(),
+                Token::Table => "table".to_string(),
+                other => format!("{other:?}"),
+            };
+            options.push((key, val));
+            if check_token(tokens, *cursor, &Token::Comma) {
+                *cursor += 1;
+            }
+        }
+        expect_token(tokens, cursor, &Token::CloseParen)?;
+    }
+    Ok(options)
+}
+
+fn parse_copy(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
+    *cursor += 1; // consume COPY
+
+    if check_token(tokens, *cursor, &Token::OpenParen) {
+        *cursor += 1;
+        let sub_query = parse_select(tokens, cursor)?;
+        expect_token(tokens, cursor, &Token::CloseParen)?;
+        expect_token(tokens, cursor, &Token::To)?;
+        let dest = match get_token(tokens, cursor)? {
+            Token::StringLit(s) => s.clone(),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected destination path string after COPY (...) TO, got {other:?}"
+                )));
+            }
+        };
+        let options = parse_copy_options(tokens, cursor)?;
+        let format = options
+            .iter()
+            .find(|(k, _)| k == "FORMAT")
+            .map(|(_, v)| v.clone());
+        let partition_by = options
+            .iter()
+            .find(|(k, _)| k == "PARTITION_BY" || k == "PARTITION")
+            .map(|(_, v)| v.clone());
+        return Ok(Statement::CopyTo {
+            source_table: None,
+            source_query: Some(Box::new(sub_query)),
+            dest,
+            format,
+            partition_by,
+        });
+    }
+
+    let table = parse_identifier_or_keyword(tokens, cursor)?;
+    if check_token(tokens, *cursor, &Token::From) {
+        *cursor += 1;
+        let source = match get_token(tokens, cursor)? {
+            Token::StringLit(s) => s.clone(),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected source file/glob string after COPY {table} FROM, got {other:?}"
+                )));
+            }
+        };
+        let options = parse_copy_options(tokens, cursor)?;
+        let format = options
+            .iter()
+            .find(|(k, _)| k == "FORMAT")
+            .map(|(_, v)| v.clone());
+        Ok(Statement::CopyFrom {
+            table,
+            source,
+            format,
+            options,
+        })
+    } else if check_token(tokens, *cursor, &Token::To) {
+        *cursor += 1;
+        let dest = match get_token(tokens, cursor)? {
+            Token::StringLit(s) => s.clone(),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected destination path string after COPY {table} TO, got {other:?}"
+                )));
+            }
+        };
+        let options = parse_copy_options(tokens, cursor)?;
+        let format = options
+            .iter()
+            .find(|(k, _)| k == "FORMAT")
+            .map(|(_, v)| v.clone());
+        let partition_by = options
+            .iter()
+            .find(|(k, _)| k == "PARTITION_BY" || k == "PARTITION")
+            .map(|(_, v)| v.clone());
+        Ok(Statement::CopyTo {
+            source_table: Some(table),
+            source_query: None,
+            dest,
+            format,
+            partition_by,
+        })
+    } else {
+        Err(Error::SqlSyntax(
+            "Expected FROM or TO after COPY table name".into(),
+        ))
+    }
+}
+
 fn parse_insert(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     let mut conflict_action = OnConflict::Abort;
 
@@ -1915,7 +2118,11 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
             };
             *cursor += 1;
             expect_token(tokens, cursor, &Token::OpenParen)?;
-            let arg = if check_token(tokens, *cursor, &Token::Asterisk) {
+            let arg = if func_name == "COUNT" && check_token(tokens, *cursor, &Token::Distinct) {
+                *cursor += 1;
+                let col = parse_column_ident(tokens, cursor)?;
+                format!("DISTINCT {col}")
+            } else if check_token(tokens, *cursor, &Token::Asterisk) {
                 *cursor += 1;
                 "*".to_string()
             } else if let Ok(Token::IntLit(n)) = get_token_peek(tokens, *cursor) {
@@ -2188,6 +2395,23 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         }
         let alias = parse_identifier_or_keyword(tokens, cursor)?;
         (alias.clone(), Some((Box::new(subquery), alias)))
+    } else if matches!(
+        get_token_peek(tokens, *cursor),
+        Ok(Token::Ident(fn_name))
+            if *cursor + 1 < tokens.len()
+                && tokens[*cursor + 1] == Token::OpenParen
+                && is_external_scan_fn(fn_name)
+    ) {
+        let ext_stmt = parse_external_scan(tokens, cursor)?;
+        let alias = if check_token(tokens, *cursor, &Token::As) {
+            *cursor += 1;
+            parse_identifier_or_keyword(tokens, cursor)?
+        } else if matches!(get_token_peek(tokens, *cursor), Ok(Token::Ident(_))) {
+            parse_identifier_or_keyword(tokens, cursor)?
+        } else {
+            "__external".to_string()
+        };
+        (alias.clone(), Some((Box::new(ext_stmt), alias)))
     } else {
         let name = match get_token(tokens, cursor)? {
             Token::Ident(s) => s.clone(),

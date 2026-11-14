@@ -11,7 +11,7 @@ use crate::sql::catalog::{
 };
 use crate::sql::codec::{
     decode_row, decode_row_shared, decode_row_shared_projected, decode_row_values_into_projected,
-    encode_row,
+    encode_row, encode_row_into,
 };
 use crate::sql::lexer::{Token, tokenize};
 use crate::sql::parser::{
@@ -2182,6 +2182,7 @@ impl SQLExecutor {
                 | Statement::DropView { .. }
                 | Statement::CreateTrigger { .. }
                 | Statement::DropTrigger { .. }
+                | Statement::CopyFrom { .. }
         )
     }
 
@@ -2798,6 +2799,7 @@ impl SQLExecutor {
             }
 
             Statement::Select { .. }
+            | Statement::ExternalScan { .. }
             | Statement::VectorSearch { .. }
             | Statement::Explain { .. }
             | Statement::GraphTraverse { .. }
@@ -2807,6 +2809,26 @@ impl SQLExecutor {
             | Statement::WithCte { .. } => Err(Error::SqlSyntax(
                 "Query statement passed to execute(); use query() instead".into(),
             )),
+            Statement::CopyFrom {
+                table,
+                source,
+                format,
+                options,
+            } => self.execute_copy_from(pager, &table, &source, format.as_deref(), &options),
+            Statement::CopyTo {
+                source_table,
+                source_query,
+                dest,
+                format,
+                partition_by,
+            } => self.execute_copy_to(
+                pager,
+                source_table.as_deref(),
+                source_query.as_deref(),
+                &dest,
+                format.as_deref(),
+                partition_by.as_deref(),
+            ),
         }
     }
 
@@ -2873,6 +2895,52 @@ impl SQLExecutor {
             }
             Statement::WithCte { ctes, main_query } => {
                 self.query_with_cte(pager, ctes, *main_query)
+            }
+            Statement::ExternalScan { func, path, arg } => {
+                #[cfg(feature = "std")]
+                {
+                    crate::lakehouse::scan_external_rows(&func, &path, arg.as_deref(), None)
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    let _ = (func, path, arg);
+                    Err(Error::SqlSyntax(
+                        "External file scans require the 'std' feature".into(),
+                    ))
+                }
+            }
+            Statement::CopyFrom {
+                table,
+                source,
+                format,
+                options,
+            } => {
+                let count =
+                    self.execute_copy_from(pager, &table, &source, format.as_deref(), &options)?;
+                Ok(vec![Row::new(
+                    vec!["rows_copied".to_string()],
+                    vec![Value::Integer(count as i64)],
+                )])
+            }
+            Statement::CopyTo {
+                source_table,
+                source_query,
+                dest,
+                format,
+                partition_by,
+            } => {
+                let count = self.execute_copy_to(
+                    pager,
+                    source_table.as_deref(),
+                    source_query.as_deref(),
+                    &dest,
+                    format.as_deref(),
+                    partition_by.as_deref(),
+                )?;
+                Ok(vec![Row::new(
+                    vec!["rows_exported".to_string()],
+                    vec![Value::Integer(count as i64)],
+                )])
             }
             Statement::Explain {
                 statement,
@@ -3229,43 +3297,43 @@ impl SQLExecutor {
                     && is_aggregate_query(&columns)
                 {
                     struct PushdownAgg {
-                        col_name: String,
-                        func: String,
+                        spec: ParsedAggSpec,
                         col_idx: Option<usize>,
-                        is_star: bool,
                         acc: crate::sql::vectorized::VectorizedAccumulator,
                     }
 
                     let mut aggs: Vec<PushdownAgg> = Vec::new();
                     for col in &columns {
-                        let upper = col.to_uppercase();
-                        if let Some(open_p) = upper.find('(')
-                            && let Some(close_p) = upper.rfind(')')
-                        {
-                            let func = upper[..open_p].trim().to_string();
-                            let arg = col[open_p + 1..close_p].trim();
-                            let is_star = arg == "*" || arg.parse::<i64>().is_ok();
-                            let col_idx = if is_star {
+                        if let Some(spec) = parse_aggregate_spec(col) {
+                            let col_idx = if spec.is_star {
                                 None
                             } else {
-                                table_def.column_index(arg)
+                                table_def.column_index(&spec.arg)
                             };
+                            let acc = crate::sql::vectorized::VectorizedAccumulator::with_tracking(
+                                spec.needs_samples(),
+                                spec.needs_distinct(),
+                            );
                             aggs.push(PushdownAgg {
-                                col_name: parse_col_and_alias(col).1.unwrap_or(col).to_string(),
-                                func,
+                                spec,
                                 col_idx,
-                                is_star,
+                                acc,
+                            });
+                        } else {
+                            let output_name = parse_col_and_alias(col).1.unwrap_or(col).to_string();
+                            aggs.push(PushdownAgg {
+                                spec: ParsedAggSpec {
+                                    output_name,
+                                    func: String::new(),
+                                    arg: String::new(),
+                                    percentile_q: None,
+                                    is_star: false,
+                                    is_distinct: false,
+                                },
+                                col_idx: table_def.column_index(col),
                                 acc: crate::sql::vectorized::VectorizedAccumulator::new(),
                             });
-                            continue;
                         }
-                        aggs.push(PushdownAgg {
-                            col_name: parse_col_and_alias(col).1.unwrap_or(col).to_string(),
-                            func: String::new(),
-                            col_idx: table_def.column_index(col),
-                            is_star: false,
-                            acc: crate::sql::vectorized::VectorizedAccumulator::new(),
-                        });
                     }
 
                     let mut needed_mask = vec![false; all_col_names.len()];
@@ -3286,13 +3354,13 @@ impl SQLExecutor {
                                     return Ok(true);
                                 }
                                 for agg in &mut aggs {
-                                    if agg.is_star {
+                                    if agg.spec.is_star {
                                         agg.acc.count_all += 1;
                                         agg.acc.count += 1;
                                     } else if let Some(idx) = agg.col_idx
                                         && let Some(val) = full_row.values().get(idx)
                                     {
-                                        agg.acc.accumulate_values(std::iter::once(val));
+                                        agg.acc.accumulate_value(val);
                                     }
                                 }
                             } else {
@@ -3302,34 +3370,320 @@ impl SQLExecutor {
                                     &mut row_vals,
                                 )?;
                                 for agg in &mut aggs {
-                                    if agg.is_star {
+                                    if agg.spec.is_star {
                                         agg.acc.count_all += 1;
                                         agg.acc.count += 1;
                                     } else if let Some(idx) = agg.col_idx
                                         && let Some(val) = row_vals.get(idx)
                                     {
-                                        agg.acc.accumulate_values(std::iter::once(val));
+                                        agg.acc.accumulate_value(val);
                                     }
                                 }
                             }
                             Ok(true)
                         })?;
 
-                    let mut out_cols = Vec::new();
-                    let mut out_vals = Vec::new();
-                    for agg in aggs {
-                        out_cols.push(agg.col_name);
-                        let v = match agg.func.as_str() {
-                            "COUNT" => agg.acc.finalize_count(agg.is_star),
-                            "SUM" => agg.acc.finalize_sum(),
-                            "AVG" => agg.acc.finalize_avg(),
-                            "MIN" => agg.acc.finalize_min(),
-                            "MAX" => agg.acc.finalize_max(),
-                            _ => Value::Null,
-                        };
-                        out_vals.push(v);
+                    let mut out_cols = Vec::with_capacity(aggs.len());
+                    let mut out_vals = Vec::with_capacity(aggs.len());
+                    for mut agg in aggs {
+                        let out_name = agg.spec.output_name.clone();
+                        let val = agg.spec.finalize(&mut agg.acc);
+                        out_cols.push(out_name);
+                        out_vals.push(val);
                     }
                     return Ok(vec![Row::new(out_cols, out_vals)]);
+                }
+
+                // Streaming Vectorized Hash Aggregation Pushdown for GROUP BY
+                if let Some(ref gb_cols) = group_by
+                    && join.is_none()
+                    && as_of_timestamp.is_none()
+                    && fts_scores.is_none()
+                    && !columns.iter().any(|c| has_window_function(c))
+                {
+                    let resolved_having = if let Some(ref h) = having {
+                        Some(self.resolve_where_expr(pager, h)?)
+                    } else {
+                        None
+                    };
+
+                    let output_cols = if columns.is_empty() {
+                        gb_cols.clone()
+                    } else {
+                        columns.clone()
+                    };
+
+                    enum GroupColPlan {
+                        GroupKey { out_name: String, key_pos: usize },
+                        Aggregate { spec: ParsedAggSpec },
+                        FirstValue { out_name: String, col_idx: Option<usize> },
+                    }
+
+                    let gb_indices: Vec<Option<usize>> =
+                        gb_cols.iter().map(|c| table_def.column_index(c)).collect();
+                    let mut plans = Vec::with_capacity(output_cols.len());
+                    let mut agg_specs_template: Vec<(Option<usize>, bool, bool, bool)> = Vec::new();
+                    let mut needed_mask = vec![false; all_col_names.len()];
+
+                    for idx_opt in &gb_indices {
+                        if let Some(i) = *idx_opt
+                            && i < needed_mask.len()
+                        {
+                            needed_mask[i] = true;
+                        }
+                    }
+
+                    for col in &output_cols {
+                        if let Some(spec) = parse_aggregate_spec(col) {
+                            let col_idx = if spec.is_star {
+                                None
+                            } else {
+                                table_def.column_index(&spec.arg)
+                            };
+                            if let Some(i) = col_idx
+                                && i < needed_mask.len()
+                            {
+                                needed_mask[i] = true;
+                            }
+                            agg_specs_template.push((
+                                col_idx,
+                                spec.is_star,
+                                spec.needs_samples(),
+                                spec.needs_distinct(),
+                            ));
+                            plans.push(GroupColPlan::Aggregate { spec });
+                        } else {
+                            let (raw_expr, alias_opt) = parse_col_and_alias(col);
+                            let out_name = alias_opt.unwrap_or(raw_expr).to_string();
+                            if let Some(pos) = gb_cols
+                                .iter()
+                                .position(|g| g.eq_ignore_ascii_case(raw_expr))
+                            {
+                                plans.push(GroupColPlan::GroupKey {
+                                    out_name,
+                                    key_pos: pos,
+                                });
+                            } else {
+                                let col_idx = table_def.column_index(raw_expr);
+                                if let Some(i) = col_idx
+                                    && i < needed_mask.len()
+                                {
+                                    needed_mask[i] = true;
+                                }
+                                plans.push(GroupColPlan::FirstValue { out_name, col_idx });
+                            }
+                        }
+                    }
+
+                    struct StreamGroupState {
+                        keys: Vec<Value>,
+                        accs: Vec<crate::sql::vectorized::VectorizedAccumulator>,
+                        first_vals: Vec<(usize, Value)>,
+                    }
+
+                    let mut group_map: HashMap<Vec<HashableValue>, usize> = HashMap::new();
+                    let mut groups: Vec<StreamGroupState> = Vec::new();
+                    let mut row_vals = Vec::with_capacity(all_col_names.len());
+                    let mut hash_key_buf: Vec<HashableValue> = Vec::with_capacity(gb_cols.len());
+
+                    self.btree
+                        .scan_with_ref(pager, root_page, |_row_id, payload| {
+                            if let Some(ref r_expr) = resolved_where {
+                                let full_row = decode_row(payload, &all_col_names)?;
+                                if !row_matches_resolved(&full_row, r_expr) {
+                                    return Ok(true);
+                                }
+                                let vals = full_row.values();
+                                hash_key_buf.clear();
+                                for idx_opt in &gb_indices {
+                                    let v = idx_opt
+                                        .and_then(|i| vals.get(i))
+                                        .unwrap_or(&Value::Null);
+                                    hash_key_buf.push(HashableValue::from(v));
+                                }
+
+                                let g_pos = if let Some(&pos) = group_map.get(&hash_key_buf) {
+                                    pos
+                                } else {
+                                    let pos = groups.len();
+                                    let key_vals: Vec<Value> = gb_indices
+                                        .iter()
+                                        .map(|idx_opt| {
+                                            idx_opt
+                                                .and_then(|i| vals.get(i).cloned())
+                                                .unwrap_or(Value::Null)
+                                        })
+                                        .collect();
+                                    let accs = agg_specs_template
+                                        .iter()
+                                        .map(|&(_, _, s, d)| {
+                                            crate::sql::vectorized::VectorizedAccumulator::with_tracking(s, d)
+                                        })
+                                        .collect();
+                                    let mut fv = Vec::new();
+                                    for p in &plans {
+                                        if let GroupColPlan::FirstValue { col_idx: Some(ci), .. } = p {
+                                            fv.push((
+                                                *ci,
+                                                vals.get(*ci).cloned().unwrap_or(Value::Null),
+                                            ));
+                                        }
+                                    }
+                                    group_map.insert(hash_key_buf.clone(), pos);
+                                    groups.push(StreamGroupState {
+                                        keys: key_vals,
+                                        accs,
+                                        first_vals: fv,
+                                    });
+                                    pos
+                                };
+
+                                let state = &mut groups[g_pos];
+                                for (acc_idx, &(col_idx, is_star, _, _)) in
+                                    agg_specs_template.iter().enumerate()
+                                {
+                                    if is_star {
+                                        state.accs[acc_idx].count_all += 1;
+                                        state.accs[acc_idx].count += 1;
+                                    } else if let Some(ci) = col_idx
+                                        && let Some(v) = vals.get(ci)
+                                    {
+                                        state.accs[acc_idx].accumulate_value(v);
+                                    }
+                                }
+                            } else {
+                                decode_row_values_into_projected(
+                                    payload,
+                                    &needed_mask,
+                                    &mut row_vals,
+                                )?;
+                                hash_key_buf.clear();
+                                for idx_opt in &gb_indices {
+                                    let v = idx_opt
+                                        .and_then(|i| row_vals.get(i))
+                                        .unwrap_or(&Value::Null);
+                                    hash_key_buf.push(HashableValue::from(v));
+                                }
+
+                                let g_pos = if let Some(&pos) = group_map.get(&hash_key_buf) {
+                                    pos
+                                } else {
+                                    let pos = groups.len();
+                                    let key_vals: Vec<Value> = gb_indices
+                                        .iter()
+                                        .map(|idx_opt| {
+                                            idx_opt
+                                                .and_then(|i| row_vals.get(i).cloned())
+                                                .unwrap_or(Value::Null)
+                                        })
+                                        .collect();
+                                    let accs = agg_specs_template
+                                        .iter()
+                                        .map(|&(_, _, s, d)| {
+                                            crate::sql::vectorized::VectorizedAccumulator::with_tracking(s, d)
+                                        })
+                                        .collect();
+                                    let mut fv = Vec::new();
+                                    for p in &plans {
+                                        if let GroupColPlan::FirstValue { col_idx: Some(ci), .. } = p {
+                                            fv.push((
+                                                *ci,
+                                                row_vals.get(*ci).cloned().unwrap_or(Value::Null),
+                                            ));
+                                        }
+                                    }
+                                    group_map.insert(hash_key_buf.clone(), pos);
+                                    groups.push(StreamGroupState {
+                                        keys: key_vals,
+                                        accs,
+                                        first_vals: fv,
+                                    });
+                                    pos
+                                };
+
+                                let state = &mut groups[g_pos];
+                                for (acc_idx, &(col_idx, is_star, _, _)) in
+                                    agg_specs_template.iter().enumerate()
+                                {
+                                    if is_star {
+                                        state.accs[acc_idx].count_all += 1;
+                                        state.accs[acc_idx].count += 1;
+                                    } else if let Some(ci) = col_idx
+                                        && let Some(v) = row_vals.get(ci)
+                                    {
+                                        state.accs[acc_idx].accumulate_value(v);
+                                    }
+                                }
+                            }
+                            Ok(true)
+                        })?;
+
+                    let mut result_rows = Vec::with_capacity(groups.len());
+                    for mut state in groups {
+                        let mut g_cols = Vec::with_capacity(plans.len());
+                        let mut g_vals = Vec::with_capacity(plans.len());
+                        let mut acc_cursor = 0usize;
+                        for plan in &plans {
+                            match plan {
+                                GroupColPlan::GroupKey { out_name, key_pos } => {
+                                    g_cols.push(out_name.clone());
+                                    g_vals.push(state.keys[*key_pos].clone());
+                                }
+                                GroupColPlan::Aggregate { spec } => {
+                                    g_cols.push(spec.output_name.clone());
+                                    g_vals.push(spec.finalize(&mut state.accs[acc_cursor]));
+                                    acc_cursor += 1;
+                                }
+                                GroupColPlan::FirstValue { out_name, col_idx } => {
+                                    g_cols.push(out_name.clone());
+                                    let v = col_idx
+                                        .and_then(|ci| {
+                                            state
+                                                .first_vals
+                                                .iter()
+                                                .find(|(i, _)| *i == ci)
+                                                .map(|(_, val)| val.clone())
+                                        })
+                                        .unwrap_or(Value::Null);
+                                    g_vals.push(v);
+                                }
+                            }
+                        }
+                        let row = Row::new(g_cols, g_vals);
+                        if let Some(ref h_expr) = resolved_having
+                            && !row_matches_resolved(&row, h_expr)
+                        {
+                            continue;
+                        }
+                        result_rows.push(row);
+                    }
+
+                    if let Some(order) = order_by {
+                        result_rows.sort_by(|a, b| {
+                            let val_a = a.get_value(&order.column).unwrap_or(&Value::Null);
+                            let val_b = b.get_value(&order.column).unwrap_or(&Value::Null);
+                            if order.is_ascending {
+                                val_a.compare(val_b)
+                            } else {
+                                val_b.compare(val_a)
+                            }
+                        });
+                    }
+                    if distinct {
+                        let mut seen = HashSet::new();
+                        result_rows.retain(|r| seen.insert(format!("{:?}", r.values())));
+                    }
+                    if let Some(off) = offset {
+                        if off < result_rows.len() {
+                            result_rows = result_rows.split_off(off);
+                        } else {
+                            result_rows.clear();
+                        }
+                    }
+                    if let Some(lim) = limit {
+                        result_rows.truncate(lim);
+                    }
+                    return Ok(result_rows);
                 }
 
                 // Table scan left table
@@ -4049,91 +4403,27 @@ impl SQLExecutor {
                     left_rows = joined_rows;
                 }
 
-                // Check for GROUP BY (High-Performance O(N) Hash Aggregation)
+                // Check for GROUP BY (High-Performance O(N) Hash Aggregation fallback for joins/temporal)
                 if let Some(ref gb_cols) = group_by {
-                    let mut group_map: HashMap<Vec<HashableValue>, usize> = HashMap::new();
-                    let mut groups: Vec<(Vec<Value>, Vec<Row>)> = Vec::new();
-                    for row in left_rows {
-                        let key: Vec<Value> = gb_cols
-                            .iter()
-                            .map(|c| row.get_value(c).cloned().unwrap_or(Value::Null))
-                            .collect();
-                        let hash_key: Vec<HashableValue> =
-                            key.iter().map(HashableValue::from).collect();
-                        if let Some(&pos) = group_map.get(&hash_key) {
-                            groups[pos].1.push(row);
-                        } else {
-                            let pos = groups.len();
-                            group_map.insert(hash_key, pos);
-                            groups.push((key, vec![row]));
-                        }
-                    }
-
-                    let mut grouped_rows = Vec::new();
-                    let output_cols = if columns.is_empty() {
-                        gb_cols.clone()
-                    } else {
-                        columns.clone()
-                    };
-
-                    for (key, g_rows) in groups {
-                        let mut g_cols = Vec::new();
-                        let mut g_vals = Vec::new();
-
-                        for col in &output_cols {
-                            let upper = col.to_uppercase();
-                            if let Some(open_p) = upper.find('(')
-                                && let Some(close_p) = upper.rfind(')')
-                            {
-                                let func = &upper[..open_p];
-                                let arg = col[open_p + 1..close_p].trim();
-                                let computed = compute_aggregate(func, arg, &g_rows);
-                                g_cols.push(col.clone());
-                                g_vals.push(computed);
-                                continue;
-                            }
-                            if let Some(pos) = gb_cols.iter().position(|c| c == col) {
-                                g_cols.push(col.clone());
-                                g_vals.push(key[pos].clone());
-                            } else {
-                                let val = g_rows
-                                    .first()
-                                    .and_then(|r| r.get_value(col))
-                                    .cloned()
-                                    .unwrap_or(Value::Null);
-                                g_cols.push(col.clone());
-                                g_vals.push(val);
-                            }
-                        }
-
-                        let g_row = Row::new(g_cols, g_vals);
-                        if let Some(ref h_expr) = resolved_having
-                            && !row_matches_resolved(&g_row, h_expr)
-                        {
-                            continue;
-                        }
-                        grouped_rows.push(g_row);
-                    }
-
-                    left_rows = grouped_rows;
+                    left_rows = aggregate_ephemeral_rows(
+                        &left_rows,
+                        &columns,
+                        gb_cols,
+                        resolved_having.as_ref(),
+                    );
                 } else if is_aggregate_query(&columns) {
                     let mut agg_cols = Vec::new();
                     let mut agg_vals = Vec::new();
 
                     for col in &columns {
-                        let upper = col.to_uppercase();
-                        if let Some(open_p) = upper.find('(')
-                            && let Some(close_p) = upper.rfind(')')
-                        {
-                            let func = &upper[..open_p];
-                            let arg = col[open_p + 1..close_p].trim();
-                            let computed = compute_aggregate(func, arg, &left_rows);
-                            agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
+                        if let Some(spec) = parse_aggregate_spec(col) {
+                            let computed = compute_aggregate_from_spec(&spec, &left_rows);
+                            agg_cols.push(spec.output_name);
                             agg_vals.push(computed);
-                            continue;
+                        } else {
+                            agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
+                            agg_vals.push(Value::Null);
                         }
-                        agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
-                        agg_vals.push(Value::Null);
                     }
 
                     return Ok(vec![Row::new(agg_cols, agg_vals)]);
@@ -5190,7 +5480,8 @@ impl SQLExecutor {
             table,
             join,
             where_clause,
-            having: _,
+            group_by,
+            having,
             order_by,
             limit,
             offset,
@@ -5279,7 +5570,48 @@ impl SQLExecutor {
                 rows.retain(|r| row_matches_resolved(r, &resolved));
             }
 
-            // Apply ORDER BY
+            // Apply GROUP BY / Aggregates / Projection
+            if let Some(ref gb_cols) = group_by {
+                let resolved_having = if let Some(ref h) = having {
+                    Some(self.resolve_where_expr(pager, h)?)
+                } else {
+                    None
+                };
+                rows = aggregate_ephemeral_rows(&rows, &columns, gb_cols, resolved_having.as_ref());
+            } else if is_aggregate_query(&columns) {
+                let mut agg_cols = Vec::new();
+                let mut agg_vals = Vec::new();
+
+                for col in &columns {
+                    if let Some(spec) = parse_aggregate_spec(col) {
+                        let computed = compute_aggregate_from_spec(&spec, &rows);
+                        agg_cols.push(spec.output_name);
+                        agg_vals.push(computed);
+                    } else {
+                        agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
+                        agg_vals.push(Value::Null);
+                    }
+                }
+
+                return Ok(vec![Row::new(agg_cols, agg_vals)]);
+            } else if !columns.is_empty() && columns[0] != "*" {
+                // Projection
+                rows = rows
+                    .into_iter()
+                    .map(|r| {
+                        let mut vals = Vec::new();
+                        let mut out_cols = Vec::new();
+                        for c in &columns {
+                            let (raw, alias) = parse_col_and_alias(c);
+                            out_cols.push(alias.unwrap_or(raw).to_string());
+                            vals.push(r.get_value(raw).cloned().unwrap_or(Value::Null));
+                        }
+                        Row::new(out_cols, vals)
+                    })
+                    .collect();
+            }
+
+            // Apply ORDER BY (after GROUP BY / projection so aliases and aggregate names resolve)
             if let Some(ref order) = order_by {
                 rows.sort_by(|a, b| {
                     let val_a = a.get_value(&order.column).unwrap_or(&Value::Null);
@@ -5290,42 +5622,6 @@ impl SQLExecutor {
                         val_b.compare(val_a)
                     }
                 });
-            }
-
-            // Apply Aggregates / Projection
-            if is_aggregate_query(&columns) {
-                let mut agg_cols = Vec::new();
-                let mut agg_vals = Vec::new();
-
-                for col in &columns {
-                    let upper = col.to_uppercase();
-                    if let Some(open_p) = upper.find('(')
-                        && let Some(close_p) = upper.rfind(')')
-                    {
-                        let func = &upper[..open_p];
-                        let arg = col[open_p + 1..close_p].trim();
-                        let computed = compute_aggregate(func, arg, &rows);
-                        agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
-                        agg_vals.push(computed);
-                        continue;
-                    }
-                    agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
-                    agg_vals.push(Value::Null);
-                }
-
-                return Ok(vec![Row::new(agg_cols, agg_vals)]);
-            } else if !columns.is_empty() && columns[0] != "*" {
-                // Projection
-                rows = rows
-                    .into_iter()
-                    .map(|r| {
-                        let mut vals = Vec::new();
-                        for c in &columns {
-                            vals.push(r.get_value(c).cloned().unwrap_or(Value::Null));
-                        }
-                        Row::new(columns.clone(), vals)
-                    })
-                    .collect();
             }
 
             // Apply DISTINCT
@@ -5355,6 +5651,379 @@ impl SQLExecutor {
         } else {
             Err(Error::SqlSyntax("Expected SELECT in CTE main query".into()))
         }
+    }
+
+    /// Ultra-fast batch insert bypassing SQL string construction and per-row parsing.
+    ///
+    /// Resolves schema metadata once per batch and reuses a single binary encoding buffer
+    /// for tables without triggers, temporal history, foreign keys, check constraints, FTS,
+    /// or secondary indexes; falls back to full per-row enforcement automatically when those
+    /// features are enabled.
+    pub fn execute_insert_batch(
+        &mut self,
+        pager: &mut Pager,
+        table: &str,
+        columns: Option<&[String]>,
+        rows: &[Vec<Value>],
+    ) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let (
+            root_page,
+            table_cols,
+            pk_idx,
+            vector_col,
+            is_temporal,
+            initial_next_row_id,
+            needs_full_path,
+        ) = {
+            let table_def = self
+                .catalog
+                .get_table(table)
+                .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
+
+            let has_triggers = self
+                .catalog
+                .triggers()
+                .iter()
+                .any(|t| t.table.eq_ignore_ascii_case(table));
+            let has_indexes = self
+                .catalog
+                .indexes()
+                .iter()
+                .any(|idx| idx.table.eq_ignore_ascii_case(table));
+            let has_checks = !table_def.check_constraints.is_empty();
+            let has_fks =
+                self.foreign_keys_enabled && !collect_table_foreign_keys(table_def).is_empty();
+            let has_unique_cols = table_def.columns.iter().any(|c| c.unique && !c.primary_key);
+            let is_temporal = table_def.system_versioning || self.default_system_versioning;
+            let has_fts = table_def.fts_config.is_some();
+
+            let complex = has_triggers
+                || has_indexes
+                || has_checks
+                || has_fks
+                || has_unique_cols
+                || is_temporal
+                || has_fts;
+
+            (
+                table_def.root_page,
+                table_def.columns.clone(),
+                table_def.primary_key_index(),
+                table_def.vector_column(),
+                is_temporal,
+                table_def.next_row_id,
+                complex,
+            )
+        };
+
+        let _ = is_temporal;
+
+        if needs_full_path {
+            let cols_owned = columns.map(<[String]>::to_vec);
+            return self.atomic_statement(pager, |executor, pager| {
+                let mut total = 0usize;
+                for row_vals in rows {
+                    let (n, _) = executor.execute_insert(
+                        pager,
+                        table.to_string(),
+                        cols_owned.clone(),
+                        row_vals.clone(),
+                        OnConflict::Abort,
+                        None,
+                    )?;
+                    total += n;
+                }
+                Ok(total)
+            });
+        }
+
+        // Precompute column alignment mapping once for the entire batch.
+        let col_mapping: Option<Vec<usize>> = if let Some(cols) = columns {
+            let table_def = self.catalog.get_table(table).unwrap();
+            let mut map = Vec::with_capacity(cols.len());
+            for c_name in cols {
+                let idx = table_def
+                    .column_index(c_name)
+                    .ok_or_else(|| Error::Corrupted(format!("Unknown column: {c_name}")))?;
+                map.push(idx);
+            }
+            Some(map)
+        } else {
+            None
+        };
+
+        let template_defaults: Vec<Value> = table_cols
+            .iter()
+            .map(|c| {
+                c.default_value
+                    .as_ref()
+                    .map(DefaultValue::materialize)
+                    .unwrap_or(Value::Null)
+            })
+            .collect();
+
+        let num_cols = table_cols.len();
+        self.atomic_statement(pager, |executor, pager| {
+            let mut next_row_id = initial_next_row_id;
+            let mut last_row_id = 0u64;
+            let mut inserted = 0usize;
+            let mut aligned = Vec::with_capacity(num_cols);
+            let mut encode_buf = Vec::with_capacity(256);
+
+            for input_vals in rows {
+                aligned.clear();
+                if let Some(ref map) = col_mapping {
+                    if map.len() != input_vals.len() {
+                        return Err(Error::SqlSyntax(
+                            "Column count does not match value count in INSERT batch".into(),
+                        ));
+                    }
+                    aligned.extend(template_defaults.iter().cloned());
+                    for (&dst_idx, val) in map.iter().zip(input_vals.iter()) {
+                        aligned[dst_idx] = val.clone();
+                    }
+                } else {
+                    if input_vals.len() != num_cols {
+                        return Err(Error::SqlSyntax(format!(
+                            "INSERT requires {} values, got {}",
+                            num_cols,
+                            input_vals.len()
+                        )));
+                    }
+                    aligned.extend(input_vals.iter().cloned());
+                }
+
+                // Coerce types & enforce NOT NULL
+                for (col_idx, col_def) in table_cols.iter().enumerate() {
+                    let orig = std::mem::replace(&mut aligned[col_idx], Value::Null);
+                    let coerced = col_def.data_type.coerce_value(orig).map_err(|e| match e {
+                        Error::DimensionMismatch(exp, got) => Error::DimensionMismatch(exp, got),
+                        Error::ConstraintViolation(msg) => Error::ConstraintViolation(format!(
+                            "{table}.{}: {msg}",
+                            col_def.name
+                        )),
+                        other => other,
+                    })?;
+                    if col_def.not_null && coerced.is_null() {
+                        return Err(Error::ConstraintViolation(format!(
+                            "NOT NULL constraint failed: {table}.{}",
+                            col_def.name
+                        )));
+                    }
+                    aligned[col_idx] = coerced;
+                }
+
+                let (row_id, need_pk_check) = if let Some(idx) = pk_idx {
+                    match &aligned[idx] {
+                        Value::Integer(i) => {
+                            let id_val = *i as u64;
+                            if id_val >= next_row_id {
+                                next_row_id = id_val + 1;
+                                (id_val, false)
+                            } else {
+                                (id_val, true)
+                            }
+                        }
+                        Value::Null => {
+                            let rid = next_row_id;
+                            next_row_id += 1;
+                            aligned[idx] = Value::Integer(rid as i64);
+                            (rid, false)
+                        }
+                        _ => {
+                            let rid = next_row_id;
+                            next_row_id += 1;
+                            (rid, false)
+                        }
+                    }
+                } else {
+                    let rid = next_row_id;
+                    next_row_id += 1;
+                    (rid, false)
+                };
+
+                if need_pk_check && executor.btree.search(pager, root_page, row_id)?.is_some() {
+                    let pk_col_name = pk_idx
+                        .map(|i| table_cols[i].name.as_str())
+                        .unwrap_or("id");
+                    return Err(Error::ConstraintViolation(format!(
+                        "UNIQUE constraint failed: {table}.{pk_col_name} (key {row_id} already exists)"
+                    )));
+                }
+
+                encode_row_into(&aligned, &mut encode_buf);
+                executor.btree.insert(pager, root_page, row_id, &encode_buf)?;
+
+                if let Some((v_idx, _)) = vector_col
+                    && let Some(Value::Vector(vec_data)) = aligned.get(v_idx)
+                {
+                    let index = executor
+                        .vector_indexes
+                        .entry(table.to_lowercase())
+                        .or_insert_with(|| HnswIndex::new(vec_data.len(), DistanceMetric::Cosine));
+                    index.insert_vector(row_id, vec_data)?;
+                }
+
+                last_row_id = row_id;
+                inserted += 1;
+            }
+
+            if let Some(table_def) = executor.catalog.get_table_mut(table) {
+                table_def.next_row_id = next_row_id;
+            }
+            if inserted > 0 {
+                executor.last_insert_rowid = last_row_id as i64;
+            }
+            Ok(inserted)
+        })
+    }
+
+    #[cfg(feature = "std")]
+    fn execute_copy_from(
+        &mut self,
+        pager: &mut Pager,
+        table: &str,
+        source: &str,
+        format: Option<&str>,
+        options: &[(String, String)],
+    ) -> Result<usize> {
+        let fmt = crate::lakehouse::DataFormat::parse_format_or_path(format, source)?;
+        let src_table = options
+            .iter()
+            .find(|(k, _)| k == "TABLE")
+            .map(|(_, v)| v.as_str());
+        let scan_tag = match fmt {
+            crate::lakehouse::DataFormat::Csv => "read_csv",
+            crate::lakehouse::DataFormat::Tsv => "read_tsv",
+            crate::lakehouse::DataFormat::Jsonl => "read_jsonl",
+            crate::lakehouse::DataFormat::Parquet => "read_parquet",
+            crate::lakehouse::DataFormat::Sqlite => "read_sqlite",
+            crate::lakehouse::DataFormat::Pdf => "read_pdf",
+            crate::lakehouse::DataFormat::Text | crate::lakehouse::DataFormat::Markdown => {
+                "read_text"
+            }
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "COPY FROM does not support {other:?} directly via SQL; use `tapirus convert`."
+                )));
+            }
+        };
+
+        let ext_rows = crate::lakehouse::scan_external_rows(scan_tag, source, src_table, None)?;
+        if ext_rows.is_empty() {
+            return Ok(0);
+        }
+
+        let cols = ext_rows[0].columns().to_vec();
+        if self.catalog.get_table(table).is_none() {
+            let mut col_defs = Vec::with_capacity(cols.len());
+            for (c_idx, c_name) in cols.iter().enumerate() {
+                let mut has_int = false;
+                let mut has_real = false;
+                let mut has_blob = false;
+                let mut has_vec: Option<usize> = None;
+                let mut has_text = false;
+                for r in ext_rows.iter().take(256) {
+                    if let Some(v) = r.values().get(c_idx) {
+                        match v {
+                            Value::Null => {}
+                            Value::Integer(_) => has_int = true,
+                            Value::Real(_) => has_real = true,
+                            Value::Blob(_) => has_blob = true,
+                            Value::Vector(vec) => has_vec = Some(vec.len()),
+                            Value::Text(_) => has_text = true,
+                        }
+                    }
+                }
+                let ty = if has_text {
+                    "TEXT".to_string()
+                } else if let Some(d) = has_vec {
+                    format!("VECTOR({d})")
+                } else if has_blob {
+                    "BLOB".to_string()
+                } else if has_real {
+                    "REAL".to_string()
+                } else if has_int {
+                    "INTEGER".to_string()
+                } else {
+                    "TEXT".to_string()
+                };
+                col_defs.push(format!("{c_name} {ty}"));
+            }
+            let ddl = format!(
+                "CREATE TABLE IF NOT EXISTS {table} ({});",
+                col_defs.join(", ")
+            );
+            let parsed = crate::sql::parser::parse_sql(&ddl)?;
+            self.execute_inner(pager, parsed)?;
+        }
+
+        let mut total = 0usize;
+        for chunk in ext_rows.chunks(2048) {
+            let batch: Vec<Vec<Value>> = chunk.iter().map(|r| r.values().to_vec()).collect();
+            total += self.execute_insert_batch(pager, table, Some(&cols), &batch)?;
+        }
+        Ok(total)
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn execute_copy_from(
+        &mut self,
+        _pager: &mut Pager,
+        _table: &str,
+        _source: &str,
+        _format: Option<&str>,
+        _options: &[(String, String)],
+    ) -> Result<usize> {
+        Err(Error::SqlSyntax("COPY FROM requires the 'std' feature".into()))
+    }
+
+    #[cfg(feature = "std")]
+    fn execute_copy_to(
+        &mut self,
+        pager: &mut Pager,
+        source_table: Option<&str>,
+        source_query: Option<&Statement>,
+        dest: &str,
+        format: Option<&str>,
+        partition_by: Option<&str>,
+    ) -> Result<usize> {
+        let (rows, tbl_label) = if let Some(q) = source_query {
+            (self.query_inner(pager, q.clone())?, "query_export")
+        } else if let Some(tbl) = source_table {
+            let sel = crate::sql::parser::parse_sql(&format!("SELECT * FROM {tbl};"))?;
+            (self.query_inner(pager, sel)?, tbl)
+        } else {
+            return Err(Error::SqlSyntax(
+                "COPY TO requires a table name or (SELECT ...) query".into(),
+            ));
+        };
+
+        let stats = crate::lakehouse::export_rows_to_path(
+            &rows,
+            tbl_label,
+            std::path::Path::new(dest),
+            format,
+            partition_by,
+        )?;
+        Ok(stats.rows_exported)
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn execute_copy_to(
+        &mut self,
+        _pager: &mut Pager,
+        _source_table: Option<&str>,
+        _source_query: Option<&Statement>,
+        _dest: &str,
+        _format: Option<&str>,
+        _partition_by: Option<&str>,
+    ) -> Result<usize> {
+        Err(Error::SqlSyntax("COPY TO requires the 'std' feature".into()))
     }
 
     /// High-performance compiled/prepared statement insert execution path.
@@ -6795,44 +7464,227 @@ fn strip_quotes(s: &str) -> &str {
     trimmed
 }
 
-fn is_aggregate_query(columns: &[String]) -> bool {
-    columns.iter().any(|c| {
-        let (expr, _) = parse_col_and_alias(c);
-        let upper = expr.to_ascii_uppercase();
-        if upper.contains(" OVER ") || upper.contains(" OVER(") {
-            return false;
+#[derive(Debug, Clone)]
+struct ParsedAggSpec {
+    output_name: String,
+    func: String,
+    arg: String,
+    percentile_q: Option<f64>,
+    is_star: bool,
+    is_distinct: bool,
+}
+
+impl ParsedAggSpec {
+    fn needs_samples(&self) -> bool {
+        matches!(
+            self.func.as_str(),
+            "MEDIAN" | "PERCENTILE" | "PERCENTILE_CONT"
+        )
+    }
+
+    fn needs_distinct(&self) -> bool {
+        self.is_distinct
+    }
+
+    fn finalize(&self, acc: &mut crate::sql::vectorized::VectorizedAccumulator) -> Value {
+        match self.func.as_str() {
+            "COUNT" if self.is_distinct => acc.finalize_count_distinct(),
+            "COUNT" => acc.finalize_count(self.is_star),
+            "SUM" => acc.finalize_sum(),
+            "AVG" => acc.finalize_avg(),
+            "MIN" => acc.finalize_min(),
+            "MAX" => acc.finalize_max(),
+            "STDDEV" | "STDDEV_SAMP" | "STDEV" => acc.finalize_stddev(true),
+            "STDDEV_POP" => acc.finalize_stddev(false),
+            "VARIANCE" | "VAR_SAMP" => acc.finalize_variance(true),
+            "VAR_POP" => acc.finalize_variance(false),
+            "MEDIAN" => acc.finalize_median(),
+            "PERCENTILE" | "PERCENTILE_CONT" => {
+                acc.finalize_percentile(self.percentile_q.unwrap_or(0.5))
+            }
+            _ => Value::Null,
         }
-        upper.starts_with("COUNT(")
-            || upper.starts_with("SUM(")
-            || upper.starts_with("AVG(")
-            || upper.starts_with("MIN(")
-            || upper.starts_with("MAX(")
+    }
+}
+
+fn parse_aggregate_spec(col: &str) -> Option<ParsedAggSpec> {
+    let (expr, alias_opt) = parse_col_and_alias(col);
+    let expr_upper = expr.to_ascii_uppercase();
+    if expr_upper.contains(" OVER ") || expr_upper.contains(" OVER(") {
+        return None;
+    }
+    let open_p = expr.find('(')?;
+    let close_p = expr.rfind(')')?;
+    if close_p <= open_p {
+        return None;
+    }
+    let func = expr[..open_p].trim().to_ascii_uppercase();
+    if !matches!(
+        func.as_str(),
+        "COUNT"
+            | "SUM"
+            | "AVG"
+            | "MIN"
+            | "MAX"
+            | "STDDEV"
+            | "STDDEV_SAMP"
+            | "STDDEV_POP"
+            | "STDEV"
+            | "VARIANCE"
+            | "VAR_SAMP"
+            | "VAR_POP"
+            | "MEDIAN"
+            | "PERCENTILE"
+            | "PERCENTILE_CONT"
+    ) {
+        return None;
+    }
+
+    let raw_arg = expr[open_p + 1..close_p].trim();
+    let (arg_part, percentile_q) =
+        if matches!(func.as_str(), "PERCENTILE" | "PERCENTILE_CONT")
+            && let Some((col_part, q_part)) = raw_arg.split_once(',')
+        {
+            (
+                col_part.trim(),
+                q_part.trim().parse::<f64>().ok(),
+            )
+        } else {
+            (raw_arg, None)
+        };
+
+    let mut is_distinct = false;
+    let cleaned_arg = if func == "COUNT"
+        && arg_part.len() > 9
+        && arg_part[..9].eq_ignore_ascii_case("DISTINCT ")
+    {
+        is_distinct = true;
+        arg_part[9..].trim()
+    } else {
+        arg_part
+    };
+
+    let is_star = !is_distinct
+        && (cleaned_arg == "*"
+            || cleaned_arg == "1"
+            || (!cleaned_arg.is_empty() && cleaned_arg.chars().all(|c| c.is_ascii_digit())));
+
+    let output_name = alias_opt.unwrap_or(expr).to_string();
+    Some(ParsedAggSpec {
+        output_name,
+        func,
+        arg: cleaned_arg.to_string(),
+        percentile_q,
+        is_star,
+        is_distinct,
     })
 }
 
-fn compute_aggregate(func: &str, arg: &str, rows: &[Row]) -> Value {
-    let is_count_all =
-        arg == "*" || arg == "1" || (!arg.is_empty() && arg.chars().all(|c| c.is_ascii_digit()));
+fn is_aggregate_query(columns: &[String]) -> bool {
+    columns.iter().any(|c| parse_aggregate_spec(c).is_some())
+}
 
-    if func == "COUNT" && is_count_all {
+fn compute_aggregate_from_spec(spec: &ParsedAggSpec, rows: &[Row]) -> Value {
+    if spec.func == "COUNT" && spec.is_star {
         return Value::Integer(rows.len() as i64);
     }
 
-    let mut acc = crate::sql::vectorized::VectorizedAccumulator::new();
+    let mut acc = crate::sql::vectorized::VectorizedAccumulator::with_tracking(
+        spec.needs_samples(),
+        spec.needs_distinct(),
+    );
     for r in rows {
-        if let Some(v) = r.get_value(arg) {
-            acc.accumulate_values(std::iter::once(v));
+        if let Some(v) = r.get_value(&spec.arg) {
+            acc.accumulate_value(v);
+        }
+    }
+    spec.finalize(&mut acc)
+}
+
+fn aggregate_ephemeral_rows(
+    rows: &[Row],
+    columns: &[String],
+    gb_cols: &[String],
+    resolved_having: Option<&ResolvedWhereExpr>,
+) -> Vec<Row> {
+    let mut group_map: HashMap<Vec<HashableValue>, usize> = HashMap::new();
+    let mut groups: Vec<(Vec<Value>, Vec<&Row>)> = Vec::new();
+    for row in rows {
+        let key: Vec<Value> = gb_cols
+            .iter()
+            .map(|c| row.get_value(c).cloned().unwrap_or(Value::Null))
+            .collect();
+        let hash_key: Vec<HashableValue> = key.iter().map(HashableValue::from).collect();
+        if let Some(&pos) = group_map.get(&hash_key) {
+            groups[pos].1.push(row);
+        } else {
+            let pos = groups.len();
+            group_map.insert(hash_key, pos);
+            groups.push((key, vec![row]));
         }
     }
 
-    match func {
-        "COUNT" => acc.finalize_count(is_count_all),
-        "SUM" => acc.finalize_sum(),
-        "AVG" => acc.finalize_avg(),
-        "MIN" => acc.finalize_min(),
-        "MAX" => acc.finalize_max(),
-        _ => Value::Null,
+    let output_cols = if columns.is_empty() {
+        gb_cols.to_vec()
+    } else {
+        columns.to_vec()
+    };
+
+    let mut grouped_rows = Vec::with_capacity(groups.len());
+    for (key, g_rows) in groups {
+        let mut g_cols = Vec::with_capacity(output_cols.len());
+        let mut g_vals = Vec::with_capacity(output_cols.len());
+
+        for col in &output_cols {
+            if let Some(spec) = parse_aggregate_spec(col) {
+                if spec.func == "COUNT" && spec.is_star {
+                    g_cols.push(spec.output_name);
+                    g_vals.push(Value::Integer(g_rows.len() as i64));
+                } else {
+                    let mut acc = crate::sql::vectorized::VectorizedAccumulator::with_tracking(
+                        spec.needs_samples(),
+                        spec.needs_distinct(),
+                    );
+                    for r in &g_rows {
+                        if let Some(v) = r.get_value(&spec.arg) {
+                            acc.accumulate_value(v);
+                        }
+                    }
+                    let val = spec.finalize(&mut acc);
+                    g_cols.push(spec.output_name);
+                    g_vals.push(val);
+                }
+                continue;
+            }
+            let (raw_col, alias_opt) = parse_col_and_alias(col);
+            let out_name = alias_opt.unwrap_or(raw_col).to_string();
+            if let Some(pos) = gb_cols
+                .iter()
+                .position(|c| c.eq_ignore_ascii_case(raw_col))
+            {
+                g_cols.push(out_name);
+                g_vals.push(key[pos].clone());
+            } else {
+                let val = g_rows
+                    .first()
+                    .and_then(|r| r.get_value(raw_col))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                g_cols.push(out_name);
+                g_vals.push(val);
+            }
+        }
+
+        let g_row = Row::new(g_cols, g_vals);
+        if let Some(h_expr) = resolved_having
+            && !row_matches_resolved(&g_row, h_expr)
+        {
+            continue;
+        }
+        grouped_rows.push(g_row);
     }
+
+    grouped_rows
 }
 
 #[cfg(test)]

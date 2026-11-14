@@ -107,6 +107,13 @@ wide = { version = "0.7", optional = true }
 getrandom = "0.4.3"
 ureq = { version = "3.5", optional = true }
 
+# Optional Big Data, Data Lake & Document Ingestion (Pure Rust where possible)
+parquet = { version = "60.1", default-features = false, features = ["arrow", "snap", "brotli", "flate2-zlib-rs", "lz4", "base64", "simdutf8"], optional = true }
+arrow-array = { version = "60.1", default-features = false, optional = true }
+arrow-schema = { version = "60.1", default-features = false, optional = true }
+flate2 = { version = "1.0", default-features = false, features = ["zlib-rs"], optional = true }
+lopdf = { version = "0.47", default-features = false, optional = true }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom-02 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
@@ -121,8 +128,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3.14"
 
 [features]
-# Flagship Default: Complete Quad-Model Engine + Native TLS Server Support
-default = ["quad", "tls"]
+# Flagship Default: Complete Quad-Model Engine + Native TLS Server + Lakehouse Analytics
+default = ["quad", "tls", "lakehouse"]
 
 # Core Data Model Building Blocks
 sql = []
@@ -167,6 +174,7 @@ simd = ["dep:wide"]
 tap-deep = []
 cloud-s3 = ["dep:ureq"]
 http-embeddings = ["dep:ureq"]
+lakehouse = ["std", "dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:flate2", "dep:lopdf"]
 fault-injection = []
 
 [profile.dev]

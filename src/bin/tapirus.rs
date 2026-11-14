@@ -98,6 +98,24 @@ fn main() {
         return;
     }
 
+    // Check if sub-command is "export"
+    if args.len() > 1 && args[1] == "export" {
+        run_export_command(&args[2..]);
+        return;
+    }
+
+    // Check if sub-command is "convert"
+    if args.len() > 1 && args[1] == "convert" {
+        run_convert_command(&args[2..]);
+        return;
+    }
+
+    // Check if sub-command is "lake" or "lakehouse"
+    if args.len() > 1 && (args[1] == "lake" || args[1] == "lakehouse") {
+        run_lake_command(&args[2..]);
+        return;
+    }
+
     // Check if sub-command is "mcp"
     if args.len() > 1 && args[1] == "mcp" {
         run_mcp_command(&args[2..]);
@@ -230,7 +248,16 @@ fn print_help() {
         "  tapirus verify [OPTIONS] <DATABASE_FILE>             Check database page and encryption integrity"
     );
     println!(
-        "  tapirus import <FORMAT> <FILE> [OPTIONS]             Streaming importer (CSV, JSONL, Markdown)"
+        "  tapirus import <FORMAT> <FILE> [OPTIONS]             High-speed importer (CSV/Parquet/SQLite/SQL/PDF/Text)"
+    );
+    println!(
+        "  tapirus export <TARGET> <OUT> [OPTIONS]              Export table/query to Parquet, CSV, TSV, JSONL, SQL"
+    );
+    println!(
+        "  tapirus convert <SRC> <DEST> [OPTIONS]               Universal converter (CSV/Parquet/SQLite/SQL/PDF <-> .tapir)"
+    );
+    println!(
+        "  tapirus lake <scan|ingest|export> [OPTIONS]          Data Lake globs, Hive partitions & analytics"
     );
     println!("  tapirus serve [OPTIONS] [DATABASE_FILE]              Launch the HTTP REST server");
     println!(
@@ -4900,11 +4927,39 @@ fn handle_dump_command(conn: &Connection, parts: &[&str]) {
 
 fn handle_export_command(conn: &Connection, target_name: &str, output_path: &str) {
     let start = Instant::now();
+    let lower = output_path.to_ascii_lowercase();
+    let is_lakehouse_fmt = lower.ends_with(".parquet")
+        || lower.ends_with(".csv")
+        || lower.ends_with(".tsv")
+        || lower.ends_with(".jsonl")
+        || lower.ends_with(".ndjson")
+        || lower.ends_with(".sql");
+
     // 1. Check if it's a relational table
     if let Some(table) = conn.table(target_name) {
         let sql = format!("SELECT * FROM {};", table.name);
         match conn.query(&sql) {
             Ok(rows) => {
+                if is_lakehouse_fmt {
+                    match tapirus::lakehouse::export_rows_to_path(
+                        &rows,
+                        &table.name,
+                        Path::new(output_path),
+                        None,
+                        None,
+                    ) {
+                        Ok(stats) => println!(
+                            "Exported {} rows ({} file(s)) from table '{}' to '{}' in {:.2}ms",
+                            stats.rows_exported,
+                            stats.files_written,
+                            target_name,
+                            output_path,
+                            stats.elapsed_ms
+                        ),
+                        Err(e) => println!("Export error: {e}"),
+                    }
+                    return;
+                }
                 let json_rows: Vec<serde_json::Value> = rows
                     .iter()
                     .map(|r| {
@@ -4959,334 +5014,30 @@ fn handle_export_command(conn: &Connection, target_name: &str, output_path: &str
     println!("Error: Target '{target_name}' is neither a table nor a document collection");
 }
 
-fn parse_csv_line(line: &str) -> Vec<String> {
-    let mut fields = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-    let mut bracket_depth = 0usize;
-
-    let chars: Vec<char> = line.chars().collect();
-    let mut idx = 0;
-    while idx < chars.len() {
-        let ch = chars[idx];
-        match ch {
-            '"' => {
-                if in_quotes && idx + 1 < chars.len() && chars[idx + 1] == '"' {
-                    current.push('"');
-                    idx += 1; // Skip escaped quote
-                } else {
-                    in_quotes = !in_quotes;
-                }
-            }
-            '[' if !in_quotes => {
-                bracket_depth += 1;
-                current.push(ch);
-            }
-            ']' if !in_quotes => {
-                bracket_depth = bracket_depth.saturating_sub(1);
-                current.push(ch);
-            }
-            ',' if !in_quotes && bracket_depth == 0 => {
-                fields.push(current.trim().to_string());
-                current.clear();
-            }
-            _ => {
-                current.push(ch);
-            }
-        }
-        idx += 1;
-    }
-    fields.push(current.trim().to_string());
-    fields
-}
-
-fn format_csv_sql_value(v: &str) -> String {
-    let trimmed = v.trim();
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
-        "NULL".to_string()
-    } else if let Ok(i) = trimmed.parse::<i64>() {
-        i.to_string()
-    } else if let Ok(f) = trimmed.parse::<f64>() {
-        f.to_string()
-    } else if trimmed.starts_with('[') && trimmed.ends_with(']') {
-        trimmed.to_string()
-    } else {
-        format!("'{}'", trimmed.replace('\'', "''"))
-    }
-}
-
 fn import_csv_file(conn: &Connection, csv_path: &str, table_name: &str, batch_size: usize) {
-    let start = Instant::now();
-    let file = match std::fs::File::open(csv_path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("Import Error: Could not open CSV file '{csv_path}': {e}");
-            return;
-        }
-    };
-
-    let reader = io::BufReader::new(file);
-    let mut lines_iter = reader.lines();
-
-    let header_line = match lines_iter.next() {
-        Some(Ok(l)) if !l.trim().is_empty() => l,
-        _ => {
-            eprintln!("Import Error: CSV file '{csv_path}' is empty or missing headers.");
-            return;
-        }
-    };
-
-    let headers = parse_csv_line(&header_line);
-    if headers.is_empty() {
-        eprintln!("Import Error: No columns found in CSV header.");
-        return;
-    }
-
-    let clean_headers: Vec<String> = headers
-        .iter()
-        .map(|h| {
-            let trimmed = h.trim();
-            if trimmed.is_empty() {
-                "col".to_string()
+    match tapirus::lakehouse::csv_stream::ingest_csv_fast(
+        conn,
+        Path::new(csv_path),
+        table_name,
+        None,
+        batch_size.max(256),
+        &[],
+    ) {
+        Ok(stats) => {
+            let rate = if stats.elapsed_ms > 0.0 {
+                stats.rows_ingested as f64 / (stats.elapsed_ms / 1000.0)
             } else {
-                trimmed
-                    .chars()
-                    .map(|c| {
-                        if c.is_alphanumeric() || c == '_' {
-                            c
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect()
-            }
-        })
-        .collect();
-
-    // Check if table already exists in database
-    if conn.table(table_name).is_none() {
-        // Collect first batch of lines for type inference and processing
-        let mut sample_rows = Vec::new();
-        let mut row_buffer = Vec::new();
-
-        for line in lines_iter.by_ref() {
-            let line = match line {
-                Ok(line) => line,
-                Err(error) => {
-                    eprintln!("CSV read failed: {error}");
-                    return;
-                }
+                stats.rows_ingested as f64
             };
-            if !line.trim().is_empty() {
-                let fields = parse_csv_line(&line);
-                if fields.len() == clean_headers.len() {
-                    if sample_rows.len() < 100 {
-                        sample_rows.push(fields.clone());
-                    }
-                    row_buffer.push(fields);
-                    if row_buffer.len() >= batch_size {
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Infer column data types
-        let mut col_types = Vec::new();
-        for col_idx in 0..clean_headers.len() {
-            let mut all_int = true;
-            let mut all_float = true;
-            let mut vector_dim: Option<usize> = None;
-            let mut has_non_empty = false;
-
-            for row in &sample_rows {
-                if let Some(val) = row.get(col_idx) {
-                    let val = val.trim();
-                    if val.is_empty() || val.eq_ignore_ascii_case("null") {
-                        continue;
-                    }
-                    has_non_empty = true;
-
-                    if val.starts_with('[') && val.ends_with(']') {
-                        let inner = &val[1..val.len() - 1];
-                        let parts: Vec<&str> = inner.split(',').collect();
-                        if !parts.is_empty()
-                            && parts.iter().all(|p| p.trim().parse::<f32>().is_ok())
-                        {
-                            vector_dim = Some(parts.len());
-                            all_int = false;
-                            all_float = false;
-                            continue;
-                        }
-                    }
-
-                    if val.parse::<i64>().is_err() {
-                        all_int = false;
-                    }
-                    if val.parse::<f64>().is_err() {
-                        all_float = false;
-                    }
-                }
-            }
-
-            let dtype = if let Some(dims) = vector_dim {
-                format!("VECTOR({dims})")
-            } else if has_non_empty && all_int {
-                "INTEGER".to_string()
-            } else if has_non_empty && all_float {
-                "REAL".to_string()
-            } else {
-                "TEXT".to_string()
-            };
-
-            col_types.push(dtype);
-        }
-
-        let col_defs: Vec<String> = clean_headers
-            .iter()
-            .zip(col_types.iter())
-            .map(|(name, dtype)| format!("{name} {dtype}"))
-            .collect();
-
-        let create_sql = format!(
-            "CREATE TABLE IF NOT EXISTS {} ({});",
-            table_name,
-            col_defs.join(", ")
-        );
-
-        if let Err(e) = conn.execute(&create_sql) {
-            eprintln!("Import Error: Failed to auto-create table '{table_name}': {e}");
-            return;
-        }
-
-        println!(
-            "  ✓ Schema auto-inferred and table '{}' initialized.",
-            table_name
-        );
-
-        let header_list = clean_headers.join(", ");
-        let mut total_imported = 0usize;
-
-        let _ = conn.begin_transaction();
-        for row in row_buffer {
-            let formatted_vals: Vec<String> = row.iter().map(|v| format_csv_sql_value(v)).collect();
-
-            let sql = format!(
-                "INSERT INTO {} ({}) VALUES ({});",
-                table_name,
-                header_list,
-                formatted_vals.join(", ")
+            println!(
+                "\x1b[1;32m✓\x1b[0m Successfully imported \x1b[1m{}\x1b[0m rows into table '\x1b[36m{}\x1b[0m' in {:.2}ms ({:.0} rows/sec)",
+                stats.rows_ingested, stats.target, stats.elapsed_ms, rate
             );
-            if conn.execute(&sql).is_ok() {
-                total_imported += 1;
-            }
         }
-        let _ = conn.commit();
-
-        let _ = conn.begin_transaction();
-        let mut batch_count = 0usize;
-
-        for line in lines_iter {
-            let line = match line {
-                Ok(line) => line,
-                Err(error) => {
-                    let _ = conn.rollback();
-                    eprintln!("CSV read failed: {error}");
-                    return;
-                }
-            };
-            if !line.trim().is_empty() {
-                let fields = parse_csv_line(&line);
-                if fields.len() == clean_headers.len() {
-                    let formatted_vals: Vec<String> =
-                        fields.iter().map(|v| format_csv_sql_value(v)).collect();
-
-                    let sql = format!(
-                        "INSERT INTO {} ({}) VALUES ({});",
-                        table_name,
-                        header_list,
-                        formatted_vals.join(", ")
-                    );
-                    if conn.execute(&sql).is_ok() {
-                        total_imported += 1;
-                        batch_count += 1;
-                        if batch_count >= batch_size {
-                            let _ = conn.commit();
-                            let _ = conn.begin_transaction();
-                            batch_count = 0;
-                        }
-                    }
-                }
-            }
-        }
-        let _ = conn.commit();
-
-        let elapsed = start.elapsed();
-        let rate = if elapsed.as_secs_f64() > 0.0 {
-            total_imported as f64 / elapsed.as_secs_f64()
-        } else {
-            total_imported as f64
-        };
-
-        println!(
-            "\x1b[1;32m✓\x1b[0m Successfully imported \x1b[1m{}\x1b[0m rows into table '\x1b[36m{}\x1b[0m' in {:.2?} ({:.0} rows/sec)",
-            total_imported, table_name, elapsed, rate
-        );
-        return;
-    }
-
-    // Table already exists: Stream directly
-    let header_list = clean_headers.join(", ");
-    let mut total_imported = 0usize;
-    let mut batch_count = 0usize;
-
-    let _ = conn.begin_transaction();
-    for line in lines_iter {
-        let line = match line {
-            Ok(line) => line,
-            Err(error) => {
-                let _ = conn.rollback();
-                eprintln!("CSV read failed: {error}");
-                return;
-            }
-        };
-        if !line.trim().is_empty() {
-            let fields = parse_csv_line(&line);
-            if fields.len() == clean_headers.len() {
-                let formatted_vals: Vec<String> =
-                    fields.iter().map(|v| format_csv_sql_value(v)).collect();
-
-                let sql = format!(
-                    "INSERT INTO {} ({}) VALUES ({});",
-                    table_name,
-                    header_list,
-                    formatted_vals.join(", ")
-                );
-                if conn.execute(&sql).is_ok() {
-                    total_imported += 1;
-                    batch_count += 1;
-                    if batch_count >= batch_size {
-                        let _ = conn.commit();
-                        let _ = conn.begin_transaction();
-                        batch_count = 0;
-                    }
-                }
-            }
+        Err(e) => {
+            eprintln!("Import Error: Could not import CSV file '{csv_path}': {e}");
         }
     }
-    let _ = conn.commit();
-
-    let elapsed = start.elapsed();
-    let rate = if elapsed.as_secs_f64() > 0.0 {
-        total_imported as f64 / elapsed.as_secs_f64()
-    } else {
-        total_imported as f64
-    };
-
-    println!(
-        "\x1b[1;32m✓\x1b[0m Successfully imported \x1b[1m{}\x1b[0m rows into table '\x1b[36m{}\x1b[0m' in {:.2?} ({:.0} rows/sec)",
-        total_imported, table_name, elapsed, rate
-    );
 }
 
 fn import_jsonl_file(conn: &Connection, json_path: &str, collection_name: &str, batch_size: usize) {
@@ -5544,41 +5295,88 @@ fn import_markdown_file(
 }
 
 fn print_import_help() {
-    println!("Usage: tapirus import <FORMAT> <FILE> [OPTIONS]");
-    println!("       tapirus import <FILE> [OPTIONS]");
+    println!("Usage: tapirus import <FORMAT> <FILE_OR_GLOB> [OPTIONS]");
+    println!("       tapirus import <FILE_OR_GLOB> [OPTIONS]");
     println!();
-    println!("High-throughput streaming data importer for TapirusDB.");
-    println!("Supports Tabular Relational CSV, JSON / JSONL Document collections,");
-    println!("and Markdown AI Agent Memory chunking with GraphRAG entity linking.");
+    println!("High-throughput streaming & lakehouse importer for TapirusDB.");
+    println!("Supports CSV/TSV/.csv.gz, JSON/JSONL, Apache Parquet, SQLite binaries,");
+    println!("PostgreSQL/MySQL/SQLite SQL dumps, PDF documents, Plain Text, and Markdown.");
     println!();
     println!("Formats:");
-    println!("  csv                      Import CSV records into a relational SQL table");
-    println!("  jsonl, json              Import JSON/JSONL documents into a Document collection");
-    println!("  markdown, md             Chunk Markdown into AI Agent Memory & Knowledge Graph");
+    println!("  csv, tsv                 Stream CSV/TSV/.gz into a SQL table (batch encoder)");
+    println!("  parquet                  Stream Apache Parquet (+ Hive partitions & Arrow vectors)");
+    println!("  jsonl, json              Import JSON/JSONL to SQL table (or --collection docs)");
+    println!("  sqlite, db               Import tables from SQLite3 binary DB (Pure Safe Rust)");
+    println!("  sql, dump                Import .sql dump (PostgreSQL COPY/INSERT, MySQL, SQLite)");
+    println!("  pdf, txt, log            Extract & chunk PDF/Text into Table, Document, or AI Memory");
+    println!("  markdown, md             Chunk Markdown into AI Memory/Graph, Document, or Table");
     println!();
     println!("Common Options:");
     println!("  --db <PATH>              Path to target database file (default: production.tapir)");
     println!("  --passphrase <KEY>       Passphrase for encrypted database (ChaCha20-Poly1305)");
-    println!("  --batch <N>              Batch size for transaction commits (default: 500)");
+    println!("  --batch <N>              Batch size for transaction commits (default: 2048)");
+    println!("  --table <NAME>           Target SQL table name (defaults to file stem)");
+    println!("  --source-table <NAME>    Specific source table when reading multi-table SQLite/DB");
+    println!("  --delimiter <CHAR>       Explicit field delimiter for CSV/TSV");
     println!("  -h, --help               Print this help message");
     println!();
-    println!("CSV Specific Options:");
-    println!("  --table <NAME>           Target table name (defaults to file name stem)");
-    println!();
-    println!("JSON / JSONL Specific Options:");
-    println!(
-        "  --collection <NAME>      Target document collection name (defaults to file name stem)"
-    );
-    println!();
-    println!("Markdown Specific Options:");
-    println!("  --namespace <NAME>       Target memory namespace (defaults to file name stem)");
+    println!("JSONL Document & Unstructured Options:");
+    println!("  --collection <NAME>      Import JSON/JSONL into a Document collection");
+    println!("  --mode <table|doc|ai>    Target store for PDF/Text/Markdown (default: table; md w/ --namespace uses ai)");
+    println!("  --chunk-size <N>         Character window when chunking PDF/Text (default: 1200)");
+    println!("  --namespace <NAME>       Target AI memory namespace (defaults to file stem)");
     println!("  --session-id <ID>        Optional session ID for agent memory");
-    println!("  --tags <TAG1,TAG2,...>   Comma-separated tags for memory recall indexing");
+    println!("  --tags <TAG1,TAG2,...>   Comma-separated tags for AI memory recall indexing");
     println!();
     println!("Examples:");
-    println!("  tapirus import csv users.csv --table users --db app.tapir");
-    println!("  tapirus import jsonl events.jsonl --collection events --db app.tapir");
-    println!("  tapirus import md handbook.md --namespace docs --tags company,handbook");
+    println!("  tapirus import csv sales.csv.gz --table sales --db lake.tapir");
+    println!("  tapirus import parquet \"lake/year=2026/*.parquet\" --table events --db lake.tapir");
+    println!("  tapirus import sqlite legacy.db --db modern.tapir");
+    println!("  tapirus import pdf report.pdf --mode ai --namespace research --db app.tapir");
+}
+
+fn open_cli_connection(db_path: &str, passphrase: Option<&str>) -> Connection {
+    if let Some(pass) = passphrase {
+        match Connection::open_encrypted(Path::new(db_path), pass) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error opening encrypted database at '{db_path}': {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        match Connection::open(Path::new(db_path)) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error opening database at '{db_path}': {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn is_known_import_format(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "csv"
+            | "tsv"
+            | "jsonl"
+            | "ndjson"
+            | "json"
+            | "parquet"
+            | "pq"
+            | "sqlite"
+            | "sqlite3"
+            | "db"
+            | "sql"
+            | "dump"
+            | "pdf"
+            | "txt"
+            | "text"
+            | "log"
+            | "markdown"
+            | "md"
+    )
 }
 
 fn run_import_command(args: &[String]) {
@@ -5591,12 +5389,16 @@ fn run_import_command(args: &[String]) {
     let mut file_path: Option<String> = None;
     let mut db_path = "production.tapir".to_string();
     let mut table_name: Option<String> = None;
+    let mut source_table: Option<String> = None;
     let mut collection_name: Option<String> = None;
     let mut namespace: Option<String> = None;
     let mut session_id: Option<String> = None;
     let mut tags = Vec::new();
     let mut passphrase: Option<String> = None;
-    let mut batch_size = 500usize;
+    let mut batch_size = 2048usize;
+    let mut delimiter: Option<char> = None;
+    let mut chunk_size = 1200usize;
+    let mut text_mode_explicit: Option<tapirus::lakehouse::TextImportMode> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -5614,6 +5416,12 @@ fn run_import_command(args: &[String]) {
             "--table" => {
                 if i + 1 < args.len() {
                     table_name = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--source-table" => {
+                if i + 1 < args.len() {
+                    source_table = Some(args[i + 1].clone());
                     i += 1;
                 }
             }
@@ -5653,19 +5461,44 @@ fn run_import_command(args: &[String]) {
             }
             "--batch" | "--batch-size" => {
                 if i + 1 < args.len() {
-                    batch_size = args[i + 1].parse().unwrap_or(500);
+                    batch_size = args[i + 1].parse().unwrap_or(2048);
+                    i += 1;
+                }
+            }
+            "--delimiter" => {
+                if i + 1 < args.len() {
+                    let raw = &args[i + 1];
+                    delimiter = if raw == "\\t" || raw.eq_ignore_ascii_case("tab") {
+                        Some('\t')
+                    } else {
+                        raw.chars().next()
+                    };
+                    i += 1;
+                }
+            }
+            "--chunk-size" => {
+                if i + 1 < args.len() {
+                    chunk_size = args[i + 1].parse().unwrap_or(1200).max(128);
+                    i += 1;
+                }
+            }
+            "--mode" => {
+                if i + 1 < args.len() {
+                    text_mode_explicit = match args[i + 1].to_ascii_lowercase().as_str() {
+                        "table" | "sql" => Some(tapirus::lakehouse::TextImportMode::Table),
+                        "doc" | "document" => Some(tapirus::lakehouse::TextImportMode::Document),
+                        "ai" | "memory" => Some(tapirus::lakehouse::TextImportMode::AiMemory),
+                        other => {
+                            eprintln!("Error: Unknown --mode '{other}'. Choose: table, doc, ai.");
+                            std::process::exit(1);
+                        }
+                    };
                     i += 1;
                 }
             }
             arg if !arg.starts_with('-') => {
-                if format.is_none()
-                    && (arg == "csv"
-                        || arg == "jsonl"
-                        || arg == "json"
-                        || arg == "markdown"
-                        || arg == "md")
-                {
-                    format = Some(arg.to_string());
+                if format.is_none() && is_known_import_format(arg) {
+                    format = Some(arg.to_ascii_lowercase());
                 } else if file_path.is_none() {
                     file_path = Some(arg.to_string());
                 }
@@ -5678,75 +5511,375 @@ fn run_import_command(args: &[String]) {
     let file_path = match file_path {
         Some(f) => f,
         None => {
-            eprintln!("Error: Target file to import is required.");
+            eprintln!("Error: Target file or glob pattern to import is required.");
             println!();
             print_import_help();
             std::process::exit(1);
         }
     };
 
-    let p = Path::new(&file_path);
-    if !p.exists() {
-        eprintln!("Error: File '{file_path}' does not exist.");
-        std::process::exit(1);
-    }
-
-    let inferred_format = format.unwrap_or_else(|| {
-        let ext = p
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        match ext.as_str() {
-            "csv" => "csv".to_string(),
-            "jsonl" => "jsonl".to_string(),
-            "json" => "json".to_string(),
-            "md" | "markdown" => "markdown".to_string(),
-            _ => "csv".to_string(),
-        }
-    });
-
-    let conn = if let Some(ref pass) = passphrase {
-        match Connection::open_encrypted(Path::new(&db_path), pass) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Error opening encrypted database at '{db_path}': {e}");
-                std::process::exit(1);
-            }
-        }
-    } else {
-        match Connection::open(Path::new(&db_path)) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Error opening database at '{db_path}': {e}");
-                std::process::exit(1);
-            }
+    let parsed_fmt = match tapirus::lakehouse::DataFormat::parse_format_or_path(
+        format.as_deref(),
+        &file_path,
+    ) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
         }
     };
 
+    let conn = open_cli_connection(&db_path, passphrase.as_deref());
+    let p = Path::new(&file_path);
     let stem = p
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("data")
         .to_string();
 
-    match inferred_format.as_str() {
-        "csv" => {
-            let table = table_name.unwrap_or(stem);
-            import_csv_file(&conn, &file_path, &table, batch_size);
+    // Backwards-compatible paths when explicit Document/Memory GraphRAG flags are given
+    if parsed_fmt == tapirus::lakehouse::DataFormat::Jsonl && collection_name.is_some() {
+        let col = collection_name.unwrap_or(stem);
+        import_jsonl_file(&conn, &file_path, &col, batch_size);
+        return;
+    }
+    if parsed_fmt == tapirus::lakehouse::DataFormat::Markdown
+        && (namespace.is_some() || session_id.is_some())
+        && text_mode_explicit.is_none()
+    {
+        let ns = namespace.unwrap_or(stem);
+        import_markdown_file(&conn, &file_path, &ns, session_id.as_deref(), &tags);
+        return;
+    }
+
+    let text_mode = text_mode_explicit.unwrap_or_else(|| {
+        if collection_name.is_some() {
+            tapirus::lakehouse::TextImportMode::Document
+        } else if namespace.is_some() {
+            tapirus::lakehouse::TextImportMode::AiMemory
+        } else {
+            tapirus::lakehouse::TextImportMode::Table
         }
-        "jsonl" | "json" => {
-            let col = collection_name.unwrap_or(stem);
-            import_jsonl_file(&conn, &file_path, &col, batch_size);
-        }
-        "markdown" | "md" => {
-            let ns = namespace.unwrap_or(stem);
-            import_markdown_file(&conn, &file_path, &ns, session_id.as_deref(), &tags);
-        }
-        other => {
-            eprintln!(
-                "Error: Unsupported import format '{other}'. Choose from: csv, jsonl, json, markdown."
+    });
+
+    let target_name = table_name.or(collection_name).or(namespace);
+    let opts = tapirus::lakehouse::LakeIngestOptions {
+        target_name,
+        source_table,
+        batch_size,
+        delimiter,
+        text_mode,
+        chunk_size,
+        chunk_overlap: (chunk_size / 8).min(250),
+        tags,
+    };
+
+    match tapirus::lakehouse::ingest_into_connection(&conn, &file_path, format.as_deref(), &opts)
+    {
+        Ok(stats) => {
+            let rate = if stats.elapsed_ms > 0.0 {
+                stats.rows_ingested as f64 / (stats.elapsed_ms / 1000.0)
+            } else {
+                stats.rows_ingested as f64
+            };
+            println!(
+                "\x1b[1;32m✓\x1b[0m Ingested \x1b[1m{}\x1b[0m rows ({} files, {} cols) into '\x1b[36m{}\x1b[0m' in {:.2}ms ({:.0} rows/sec)",
+                stats.rows_ingested,
+                stats.files_processed,
+                stats.columns,
+                stats.target,
+                stats.elapsed_ms,
+                rate
             );
+        }
+        Err(e) => {
+            eprintln!("Import Error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_export_command(args: &[String]) {
+    if args.len() < 2 || args[0] == "-h" || args[0] == "--help" {
+        println!(
+            "Usage: tapirus export <TABLE_OR_SQL> <OUTPUT_PATH> [--db <DB>] [--format <FMT>] [--partition-by <COL>] [--passphrase <KEY>]"
+        );
+        return;
+    }
+
+    let mut target_or_sql: Option<String> = None;
+    let mut output_path: Option<String> = None;
+    let mut db_path = "production.tapir".to_string();
+    let mut format: Option<String> = None;
+    let mut partition_by: Option<String> = None;
+    let mut passphrase: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--db" if i + 1 < args.len() => {
+                db_path = args[i + 1].clone();
+                i += 1;
+            }
+            "--format" | "--to" if i + 1 < args.len() => {
+                format = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--partition-by" if i + 1 < args.len() => {
+                partition_by = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--passphrase" if i + 1 < args.len() => {
+                passphrase = Some(args[i + 1].clone());
+                i += 1;
+            }
+            arg if !arg.starts_with('-') => {
+                if target_or_sql.is_none() {
+                    target_or_sql = Some(arg.to_string());
+                } else if output_path.is_none() {
+                    output_path = Some(arg.to_string());
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let (Some(target), Some(out)) = (target_or_sql, output_path) else {
+        eprintln!("Error: Both <TABLE_OR_SQL> and <OUTPUT_PATH> are required.");
+        std::process::exit(1);
+    };
+
+    let conn = open_cli_connection(&db_path, passphrase.as_deref());
+    let upper = target.trim().to_ascii_uppercase();
+    let sql = if upper.starts_with("SELECT ") || upper.starts_with("WITH ") {
+        target.clone()
+    } else {
+        format!("SELECT * FROM {target};")
+    };
+
+    let table_label = if upper.starts_with("SELECT ") || upper.starts_with("WITH ") {
+        "export_result"
+    } else {
+        target.as_str()
+    };
+
+    let rows = match conn.query(&sql) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Export query error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match tapirus::lakehouse::export_rows_to_path(
+        &rows,
+        table_label,
+        Path::new(&out),
+        format.as_deref(),
+        partition_by.as_deref(),
+    ) {
+        Ok(stats) => println!(
+            "\x1b[1;32m✓\x1b[0m Exported \x1b[1m{}\x1b[0m rows ({} file(s)) to '{}' in {:.2}ms",
+            stats.rows_exported, stats.files_written, out, stats.elapsed_ms
+        ),
+        Err(e) => {
+            eprintln!("Export Error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_convert_command(args: &[String]) {
+    if args.len() < 2 || args[0] == "-h" || args[0] == "--help" {
+        println!(
+            "Usage: tapirus convert <SOURCE_OR_GLOB> <DEST_PATH> [--from <FMT>] [--to <FMT>] [--table <NAME>] [--source-table <NAME>] [--partition-by <COL>] [--mode <table|doc|ai>] [--passphrase <KEY>]"
+        );
+        println!(
+            "Converts between CSV/TSV/.gz, JSONL, Parquet, SQLite (.db/.sqlite), SQL dumps, PDF, Text/MD, and .tapir."
+        );
+        return;
+    }
+
+    let mut src: Option<String> = None;
+    let mut dest: Option<String> = None;
+    let mut src_fmt: Option<String> = None;
+    let mut dest_fmt: Option<String> = None;
+    let mut table_name: Option<String> = None;
+    let mut source_table: Option<String> = None;
+    let mut partition_by: Option<String> = None;
+    let mut passphrase: Option<String> = None;
+    let mut text_mode = tapirus::lakehouse::TextImportMode::Table;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--from" if i + 1 < args.len() => {
+                src_fmt = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--to" if i + 1 < args.len() => {
+                dest_fmt = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--table" if i + 1 < args.len() => {
+                table_name = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--source-table" if i + 1 < args.len() => {
+                source_table = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--partition-by" if i + 1 < args.len() => {
+                partition_by = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--passphrase" if i + 1 < args.len() => {
+                passphrase = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--mode" if i + 1 < args.len() => {
+                text_mode = match args[i + 1].to_ascii_lowercase().as_str() {
+                    "doc" | "document" => tapirus::lakehouse::TextImportMode::Document,
+                    "ai" | "memory" => tapirus::lakehouse::TextImportMode::AiMemory,
+                    _ => tapirus::lakehouse::TextImportMode::Table,
+                };
+                i += 1;
+            }
+            arg if !arg.starts_with('-') => {
+                if src.is_none() {
+                    src = Some(arg.to_string());
+                } else if dest.is_none() {
+                    dest = Some(arg.to_string());
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let (Some(src), Some(dest)) = (src, dest) else {
+        eprintln!("Error: Both <SOURCE> and <DEST> are required.");
+        std::process::exit(1);
+    };
+
+    let opts = tapirus::lakehouse::LakeIngestOptions {
+        target_name: table_name,
+        source_table,
+        text_mode,
+        ..Default::default()
+    };
+
+    match tapirus::lakehouse::convert_dataset(
+        &src,
+        Path::new(&dest),
+        src_fmt.as_deref(),
+        dest_fmt.as_deref(),
+        passphrase.as_deref(),
+        &opts,
+        partition_by.as_deref(),
+    ) {
+        Ok((ingest, export_opt)) => {
+            if let Some(exp) = export_opt {
+                println!(
+                    "\x1b[1;32m✓\x1b[0m Converted '{}' -> '{}' ({} rows, {} file(s)) in {:.2}ms",
+                    src,
+                    dest,
+                    exp.rows_exported,
+                    exp.files_written,
+                    ingest.elapsed_ms + exp.elapsed_ms
+                );
+            } else {
+                println!(
+                    "\x1b[1;32m✓\x1b[0m Converted '{}' -> '{}' (table '{}', {} rows) in {:.2}ms",
+                    src, dest, ingest.target, ingest.rows_ingested, ingest.elapsed_ms
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("Convert Error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_lake_help() {
+    println!("Usage:");
+    println!("  tapirus lake scan <PATH_OR_GLOB> [--format <FMT>] [--table <SRC_TBL>] [--limit <N>]");
+    println!("  tapirus lake ingest <PATH_OR_GLOB> --db <DB> [--table <NAME>] [--batch <N>]");
+    println!("  tapirus lake export <TABLE_OR_SQL> <DEST> --db <DB> [--partition-by <COL>]");
+}
+
+fn run_lake_command(args: &[String]) {
+    if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
+        print_lake_help();
+        return;
+    }
+    match args[0].as_str() {
+        "scan" => {
+            let mut path: Option<String> = None;
+            let mut format: Option<String> = None;
+            let mut src_table: Option<String> = None;
+            let mut limit = Some(25usize);
+            let mut i = 1usize;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--format" if i + 1 < args.len() => {
+                        format = Some(args[i + 1].clone());
+                        i += 1;
+                    }
+                    "--table" | "--source-table" if i + 1 < args.len() => {
+                        src_table = Some(args[i + 1].clone());
+                        i += 1;
+                    }
+                    "--limit" if i + 1 < args.len() => {
+                        limit = args[i + 1].parse().ok();
+                        i += 1;
+                    }
+                    arg if !arg.starts_with('-') && path.is_none() => {
+                        path = Some(arg.to_string());
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            let Some(path) = path else {
+                eprintln!("Error: <PATH_OR_GLOB> required for 'tapirus lake scan'.");
+                std::process::exit(1);
+            };
+            let inferred_fmt = format.unwrap_or_else(|| {
+                match tapirus::lakehouse::DataFormat::parse_format_or_path(None, &path) {
+                    Ok(tapirus::lakehouse::DataFormat::Parquet) => "parquet".to_string(),
+                    Ok(tapirus::lakehouse::DataFormat::Tsv) => "tsv".to_string(),
+                    Ok(tapirus::lakehouse::DataFormat::Jsonl) => "jsonl".to_string(),
+                    Ok(tapirus::lakehouse::DataFormat::Sqlite) => "sqlite".to_string(),
+                    Ok(tapirus::lakehouse::DataFormat::Pdf) => "pdf".to_string(),
+                    Ok(tapirus::lakehouse::DataFormat::Text)
+                    | Ok(tapirus::lakehouse::DataFormat::Markdown) => "text".to_string(),
+                    _ => "csv".to_string(),
+                }
+            });
+            match tapirus::lakehouse::scan_external_rows(
+                &inferred_fmt,
+                &path,
+                src_table.as_deref(),
+                limit,
+            ) {
+                Ok(rows) => {
+                    println!("Scanned {} rows from '{}' ({})", rows.len(), path, inferred_fmt);
+                    render_ascii_table(&rows);
+                }
+                Err(e) => {
+                    eprintln!("Lake scan error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "ingest" => run_import_command(&args[1..]),
+        "export" => run_export_command(&args[1..]),
+        other => {
+            eprintln!("Unknown 'tapirus lake' subcommand '{other}'.");
+            print_lake_help();
             std::process::exit(1);
         }
     }
