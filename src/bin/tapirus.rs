@@ -248,13 +248,13 @@ fn print_help() {
         "  tapirus verify [OPTIONS] <DATABASE_FILE>             Check database page and encryption integrity"
     );
     println!(
-        "  tapirus import <FORMAT> <FILE> [OPTIONS]             High-speed importer (CSV/Parquet/SQLite/SQL/PDF/Text)"
+        "  tapirus import <FORMAT> <FILE> [OPTIONS]             High-speed importer (CSV/Excel/Parquet/SQLite/SQL/PDF/Text)"
     );
     println!(
-        "  tapirus export <TARGET> <OUT> [OPTIONS]              Export table/query to Parquet, CSV, TSV, JSONL, SQL"
+        "  tapirus export <TARGET> <OUT> [OPTIONS]              Export table/query to Parquet, Excel, CSV, TSV, JSONL, SQL"
     );
     println!(
-        "  tapirus convert <SRC> <DEST> [OPTIONS]               Universal converter (CSV/Parquet/SQLite/SQL/PDF <-> .tapir)"
+        "  tapirus convert <SRC> <DEST> [OPTIONS]               Universal converter (CSV/Excel/Parquet/SQLite/SQL/PDF <-> .tapir)"
     );
     println!(
         "  tapirus lake <scan|ingest|export> [OPTIONS]          Data Lake globs, Hive partitions & analytics"
@@ -4929,6 +4929,7 @@ fn handle_export_command(conn: &Connection, target_name: &str, output_path: &str
     let start = Instant::now();
     let lower = output_path.to_ascii_lowercase();
     let is_lakehouse_fmt = lower.ends_with(".parquet")
+        || lower.ends_with(".xlsx")
         || lower.ends_with(".csv")
         || lower.ends_with(".tsv")
         || lower.ends_with(".jsonl")
@@ -5299,16 +5300,23 @@ fn print_import_help() {
     println!("       tapirus import <FILE_OR_GLOB> [OPTIONS]");
     println!();
     println!("High-throughput streaming & lakehouse importer for TapirusDB.");
-    println!("Supports CSV/TSV/.csv.gz, JSON/JSONL, Apache Parquet, SQLite binaries,");
-    println!("PostgreSQL/MySQL/SQLite SQL dumps, PDF documents, Plain Text, and Markdown.");
+    println!("Supports CSV/TSV/.csv.gz, Excel (.xlsx/.xls/.xlsb/.ods), JSON/JSONL,");
+    println!("Apache Parquet, SQLite binaries, PostgreSQL/MySQL/SQLite SQL dumps, PDF, and Text.");
     println!();
     println!("Formats:");
     println!("  csv, tsv                 Stream CSV/TSV/.gz into a SQL table (batch encoder)");
-    println!("  parquet                  Stream Apache Parquet (+ Hive partitions & Arrow vectors)");
+    println!(
+        "  excel, xlsx, xls, ods    Import Excel / OpenDocument sheets (--source-table for sheet)"
+    );
+    println!(
+        "  parquet                  Stream Apache Parquet (+ Hive partitions & Arrow vectors)"
+    );
     println!("  jsonl, json              Import JSON/JSONL to SQL table (or --collection docs)");
     println!("  sqlite, db               Import tables from SQLite3 binary DB (Pure Safe Rust)");
     println!("  sql, dump                Import .sql dump (PostgreSQL COPY/INSERT, MySQL, SQLite)");
-    println!("  pdf, txt, log            Extract & chunk PDF/Text into Table, Document, or AI Memory");
+    println!(
+        "  pdf, txt, log            Extract & chunk PDF/Text into Table, Document, or AI Memory"
+    );
     println!("  markdown, md             Chunk Markdown into AI Memory/Graph, Document, or Table");
     println!();
     println!("Common Options:");
@@ -5322,7 +5330,9 @@ fn print_import_help() {
     println!();
     println!("JSONL Document & Unstructured Options:");
     println!("  --collection <NAME>      Import JSON/JSONL into a Document collection");
-    println!("  --mode <table|doc|ai>    Target store for PDF/Text/Markdown (default: table; md w/ --namespace uses ai)");
+    println!(
+        "  --mode <table|doc|ai>    Target store for PDF/Text/Markdown (default: table; md w/ --namespace uses ai)"
+    );
     println!("  --chunk-size <N>         Character window when chunking PDF/Text (default: 1200)");
     println!("  --namespace <NAME>       Target AI memory namespace (defaults to file stem)");
     println!("  --session-id <ID>        Optional session ID for agent memory");
@@ -5330,7 +5340,9 @@ fn print_import_help() {
     println!();
     println!("Examples:");
     println!("  tapirus import csv sales.csv.gz --table sales --db lake.tapir");
-    println!("  tapirus import parquet \"lake/year=2026/*.parquet\" --table events --db lake.tapir");
+    println!(
+        "  tapirus import parquet \"lake/year=2026/*.parquet\" --table events --db lake.tapir"
+    );
     println!("  tapirus import sqlite legacy.db --db modern.tapir");
     println!("  tapirus import pdf report.pdf --mode ai --namespace research --db app.tapir");
 }
@@ -5365,6 +5377,12 @@ fn is_known_import_format(token: &str) -> bool {
             | "json"
             | "parquet"
             | "pq"
+            | "excel"
+            | "xlsx"
+            | "xls"
+            | "xlsb"
+            | "xlsm"
+            | "ods"
             | "sqlite"
             | "sqlite3"
             | "db"
@@ -5518,16 +5536,14 @@ fn run_import_command(args: &[String]) {
         }
     };
 
-    let parsed_fmt = match tapirus::lakehouse::DataFormat::parse_format_or_path(
-        format.as_deref(),
-        &file_path,
-    ) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        }
-    };
+    let parsed_fmt =
+        match tapirus::lakehouse::DataFormat::parse_format_or_path(format.as_deref(), &file_path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        };
 
     let conn = open_cli_connection(&db_path, passphrase.as_deref());
     let p = Path::new(&file_path);
@@ -5574,8 +5590,7 @@ fn run_import_command(args: &[String]) {
         tags,
     };
 
-    match tapirus::lakehouse::ingest_into_connection(&conn, &file_path, format.as_deref(), &opts)
-    {
+    match tapirus::lakehouse::ingest_into_connection(&conn, &file_path, format.as_deref(), &opts) {
         Ok(stats) => {
             let rate = if stats.elapsed_ms > 0.0 {
                 stats.rows_ingested as f64 / (stats.elapsed_ms / 1000.0)
@@ -5805,7 +5820,9 @@ fn run_convert_command(args: &[String]) {
 
 fn print_lake_help() {
     println!("Usage:");
-    println!("  tapirus lake scan <PATH_OR_GLOB> [--format <FMT>] [--table <SRC_TBL>] [--limit <N>]");
+    println!(
+        "  tapirus lake scan <PATH_OR_GLOB> [--format <FMT>] [--table <SRC_TBL>] [--limit <N>]"
+    );
     println!("  tapirus lake ingest <PATH_OR_GLOB> --db <DB> [--table <NAME>] [--batch <N>]");
     println!("  tapirus lake export <TABLE_OR_SQL> <DEST> --db <DB> [--partition-by <COL>]");
 }
@@ -5847,18 +5864,20 @@ fn run_lake_command(args: &[String]) {
                 eprintln!("Error: <PATH_OR_GLOB> required for 'tapirus lake scan'.");
                 std::process::exit(1);
             };
-            let inferred_fmt = format.unwrap_or_else(|| {
-                match tapirus::lakehouse::DataFormat::parse_format_or_path(None, &path) {
-                    Ok(tapirus::lakehouse::DataFormat::Parquet) => "parquet".to_string(),
-                    Ok(tapirus::lakehouse::DataFormat::Tsv) => "tsv".to_string(),
-                    Ok(tapirus::lakehouse::DataFormat::Jsonl) => "jsonl".to_string(),
-                    Ok(tapirus::lakehouse::DataFormat::Sqlite) => "sqlite".to_string(),
-                    Ok(tapirus::lakehouse::DataFormat::Pdf) => "pdf".to_string(),
-                    Ok(tapirus::lakehouse::DataFormat::Text)
-                    | Ok(tapirus::lakehouse::DataFormat::Markdown) => "text".to_string(),
-                    _ => "csv".to_string(),
-                }
-            });
+            let inferred_fmt =
+                format.unwrap_or_else(
+                    || match tapirus::lakehouse::DataFormat::parse_format_or_path(None, &path) {
+                        Ok(tapirus::lakehouse::DataFormat::Parquet) => "parquet".to_string(),
+                        Ok(tapirus::lakehouse::DataFormat::Excel) => "excel".to_string(),
+                        Ok(tapirus::lakehouse::DataFormat::Tsv) => "tsv".to_string(),
+                        Ok(tapirus::lakehouse::DataFormat::Jsonl) => "jsonl".to_string(),
+                        Ok(tapirus::lakehouse::DataFormat::Sqlite) => "sqlite".to_string(),
+                        Ok(tapirus::lakehouse::DataFormat::Pdf) => "pdf".to_string(),
+                        Ok(tapirus::lakehouse::DataFormat::Text)
+                        | Ok(tapirus::lakehouse::DataFormat::Markdown) => "text".to_string(),
+                        _ => "csv".to_string(),
+                    },
+                );
             match tapirus::lakehouse::scan_external_rows(
                 &inferred_fmt,
                 &path,
@@ -5866,7 +5885,12 @@ fn run_lake_command(args: &[String]) {
                 limit,
             ) {
                 Ok(rows) => {
-                    println!("Scanned {} rows from '{}' ({})", rows.len(), path, inferred_fmt);
+                    println!(
+                        "Scanned {} rows from '{}' ({})",
+                        rows.len(),
+                        path,
+                        inferred_fmt
+                    );
                     render_ascii_table(&rows);
                 }
                 Err(e) => {

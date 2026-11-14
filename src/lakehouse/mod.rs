@@ -14,12 +14,16 @@
 
 pub mod csv_stream;
 #[cfg(feature = "lakehouse")]
+pub mod excel_io;
+#[cfg(feature = "lakehouse")]
 pub mod parquet_io;
 pub mod pdf_text;
 pub mod sql_dump;
 pub mod sqlite_reader;
 
 pub use csv_stream::{ExportStats, IngestStats, ingest_csv_fast, ingest_jsonl_as_table};
+#[cfg(feature = "lakehouse")]
+pub use excel_io::{ingest_excel_file, scan_excel_rows, write_rows_to_excel};
 #[cfg(feature = "lakehouse")]
 pub use parquet_io::{ingest_parquet_file, scan_parquet_rows, write_rows_to_parquet};
 pub use pdf_text::{
@@ -48,6 +52,8 @@ pub enum DataFormat {
     Jsonl,
     /// Apache Parquet columnar Data Lake files (`.parquet`).
     Parquet,
+    /// Excel & OpenDocument spreadsheets (`.xlsx`, `.xls`, `.xlsb`, `.xlsm`, `.ods`).
+    Excel,
     /// SQLite 3 binary database (`.db`, `.sqlite`, `.sqlite3`).
     Sqlite,
     /// Universal SQL dump (`.sql` from PostgreSQL, MySQL, SQLite, or DuckDB).
@@ -71,6 +77,7 @@ impl DataFormat {
                 "tsv" => Ok(Self::Tsv),
                 "jsonl" | "ndjson" | "json" => Ok(Self::Jsonl),
                 "parquet" | "pq" => Ok(Self::Parquet),
+                "excel" | "xlsx" | "xls" | "xlsb" | "xlsm" | "ods" => Ok(Self::Excel),
                 "sqlite" | "sqlite3" | "db" => Ok(Self::Sqlite),
                 "sql" | "dump" => Ok(Self::SqlDump),
                 "pdf" => Ok(Self::Pdf),
@@ -96,6 +103,13 @@ impl DataFormat {
             Ok(Self::Jsonl)
         } else if trimmed.ends_with(".parquet") {
             Ok(Self::Parquet)
+        } else if trimmed.ends_with(".xlsx")
+            || trimmed.ends_with(".xls")
+            || trimmed.ends_with(".xlsb")
+            || trimmed.ends_with(".xlsm")
+            || trimmed.ends_with(".ods")
+        {
+            Ok(Self::Excel)
         } else if trimmed.ends_with(".sqlite")
             || trimmed.ends_with(".sqlite3")
             || trimmed.ends_with(".db")
@@ -337,6 +351,9 @@ pub fn scan_external_rows(
         "read_tsv" | "tsv" => DataFormat::Tsv,
         "read_jsonl" | "read_ndjson" | "read_json" | "jsonl" | "json" => DataFormat::Jsonl,
         "read_parquet" | "parquet" => DataFormat::Parquet,
+        "read_excel" | "read_xlsx" | "excel" | "xlsx" | "xls" | "xlsb" | "xlsm" | "ods" => {
+            DataFormat::Excel
+        }
         "read_sqlite" | "sqlite" => DataFormat::Sqlite,
         "read_pdf" | "pdf" => DataFormat::Pdf,
         "read_text" | "read_md" | "text" | "txt" | "md" => DataFormat::Text,
@@ -369,6 +386,18 @@ pub fn scan_external_rows(
                 {
                     return Err(Error::Corrupted(
                         "Parquet reading requires the 'lakehouse' feature".into(),
+                    ));
+                }
+            }
+            DataFormat::Excel => {
+                #[cfg(feature = "lakehouse")]
+                {
+                    excel_io::scan_excel_rows(&file.path, sub_arg, &file.partitions, remaining)?
+                }
+                #[cfg(not(feature = "lakehouse"))]
+                {
+                    return Err(Error::Corrupted(
+                        "Excel reading requires the 'lakehouse' feature".into(),
                     ));
                 }
             }
@@ -481,6 +510,25 @@ pub fn ingest_into_connection(
                     ));
                 }
             }
+            DataFormat::Excel => {
+                #[cfg(feature = "lakehouse")]
+                {
+                    excel_io::ingest_excel_file(
+                        conn,
+                        &file.path,
+                        options.target_name.as_deref(),
+                        options.source_table.as_deref(),
+                        options.batch_size,
+                        &file.partitions,
+                    )?
+                }
+                #[cfg(not(feature = "lakehouse"))]
+                {
+                    return Err(Error::Corrupted(
+                        "Excel ingestion requires the 'lakehouse' feature".into(),
+                    ));
+                }
+            }
             DataFormat::Sqlite => {
                 let per_table = sqlite_reader::import_sqlite_file(
                     conn,
@@ -556,6 +604,18 @@ pub fn export_rows_to_path(
         DataFormat::Tsv => csv_stream::write_rows_to_csv(rows, dest, '\t'),
         DataFormat::Jsonl => csv_stream::write_rows_to_jsonl(rows, dest),
         DataFormat::SqlDump => sql_dump::write_rows_to_sql_dump(table_name, rows, dest),
+        DataFormat::Excel => {
+            #[cfg(feature = "lakehouse")]
+            {
+                excel_io::write_rows_to_excel(rows, table_name, dest)
+            }
+            #[cfg(not(feature = "lakehouse"))]
+            {
+                Err(Error::Corrupted(
+                    "Excel export requires the 'lakehouse' feature".into(),
+                ))
+            }
+        }
         DataFormat::Parquet => {
             #[cfg(feature = "lakehouse")]
             {

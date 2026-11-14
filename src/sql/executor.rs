@@ -3314,11 +3314,7 @@ impl SQLExecutor {
                                 spec.needs_samples(),
                                 spec.needs_distinct(),
                             );
-                            aggs.push(PushdownAgg {
-                                spec,
-                                col_idx,
-                                acc,
-                            });
+                            aggs.push(PushdownAgg { spec, col_idx, acc });
                         } else {
                             let output_name = parse_col_and_alias(col).1.unwrap_or(col).to_string();
                             aggs.push(PushdownAgg {
@@ -3414,9 +3410,17 @@ impl SQLExecutor {
                     };
 
                     enum GroupColPlan {
-                        GroupKey { out_name: String, key_pos: usize },
-                        Aggregate { spec: ParsedAggSpec },
-                        FirstValue { out_name: String, col_idx: Option<usize> },
+                        GroupKey {
+                            out_name: String,
+                            key_pos: usize,
+                        },
+                        Aggregate {
+                            spec: ParsedAggSpec,
+                        },
+                        FirstValue {
+                            out_name: String,
+                            col_idx: Option<usize>,
+                        },
                     }
 
                     let gb_indices: Vec<Option<usize>> =
@@ -5901,6 +5905,7 @@ impl SQLExecutor {
             crate::lakehouse::DataFormat::Tsv => "read_tsv",
             crate::lakehouse::DataFormat::Jsonl => "read_jsonl",
             crate::lakehouse::DataFormat::Parquet => "read_parquet",
+            crate::lakehouse::DataFormat::Excel => "read_excel",
             crate::lakehouse::DataFormat::Sqlite => "read_sqlite",
             crate::lakehouse::DataFormat::Pdf => "read_pdf",
             crate::lakehouse::DataFormat::Text | crate::lakehouse::DataFormat::Markdown => {
@@ -5979,7 +5984,9 @@ impl SQLExecutor {
         _format: Option<&str>,
         _options: &[(String, String)],
     ) -> Result<usize> {
-        Err(Error::SqlSyntax("COPY FROM requires the 'std' feature".into()))
+        Err(Error::SqlSyntax(
+            "COPY FROM requires the 'std' feature".into(),
+        ))
     }
 
     #[cfg(feature = "std")]
@@ -6023,7 +6030,9 @@ impl SQLExecutor {
         _format: Option<&str>,
         _partition_by: Option<&str>,
     ) -> Result<usize> {
-        Err(Error::SqlSyntax("COPY TO requires the 'std' feature".into()))
+        Err(Error::SqlSyntax(
+            "COPY TO requires the 'std' feature".into(),
+        ))
     }
 
     /// High-performance compiled/prepared statement insert execution path.
@@ -7541,28 +7550,23 @@ fn parse_aggregate_spec(col: &str) -> Option<ParsedAggSpec> {
     }
 
     let raw_arg = expr[open_p + 1..close_p].trim();
-    let (arg_part, percentile_q) =
-        if matches!(func.as_str(), "PERCENTILE" | "PERCENTILE_CONT")
-            && let Some((col_part, q_part)) = raw_arg.split_once(',')
-        {
-            (
-                col_part.trim(),
-                q_part.trim().parse::<f64>().ok(),
-            )
-        } else {
-            (raw_arg, None)
-        };
+    let (arg_part, percentile_q) = if matches!(func.as_str(), "PERCENTILE" | "PERCENTILE_CONT")
+        && let Some((col_part, q_part)) = raw_arg.split_once(',')
+    {
+        (col_part.trim(), q_part.trim().parse::<f64>().ok())
+    } else {
+        (raw_arg, None)
+    };
 
     let mut is_distinct = false;
-    let cleaned_arg = if func == "COUNT"
-        && arg_part.len() > 9
-        && arg_part[..9].eq_ignore_ascii_case("DISTINCT ")
-    {
-        is_distinct = true;
-        arg_part[9..].trim()
-    } else {
-        arg_part
-    };
+    let cleaned_arg =
+        if func == "COUNT" && arg_part.len() > 9 && arg_part[..9].eq_ignore_ascii_case("DISTINCT ")
+        {
+            is_distinct = true;
+            arg_part[9..].trim()
+        } else {
+            arg_part
+        };
 
     let is_star = !is_distinct
         && (cleaned_arg == "*"
@@ -7658,10 +7662,7 @@ fn aggregate_ephemeral_rows(
             }
             let (raw_col, alias_opt) = parse_col_and_alias(col);
             let out_name = alias_opt.unwrap_or(raw_col).to_string();
-            if let Some(pos) = gb_cols
-                .iter()
-                .position(|c| c.eq_ignore_ascii_case(raw_col))
-            {
+            if let Some(pos) = gb_cols.iter().position(|c| c.eq_ignore_ascii_case(raw_col)) {
                 g_cols.push(out_name);
                 g_vals.push(key[pos].clone());
             } else {

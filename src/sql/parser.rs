@@ -1666,6 +1666,8 @@ fn is_external_scan_fn(name: &str) -> bool {
             | "read_ndjson"
             | "read_json"
             | "read_parquet"
+            | "read_excel"
+            | "read_xlsx"
             | "read_sqlite"
             | "read_pdf"
             | "read_text"

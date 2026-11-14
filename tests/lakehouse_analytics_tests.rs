@@ -659,3 +659,117 @@ fn test_vectorized_analytics_stddev_median_percentile_groupby_and_copy() {
     let copy_cnt = conn.query("SELECT COUNT(*) FROM metrics_copy;").unwrap();
     assert_eq!(copy_cnt[0].values()[0], Value::Integer(1000));
 }
+
+#[test]
+fn test_excel_xlsx_roundtrip_and_sql_scan() {
+    let dir = TempDir::new().unwrap();
+    let xlsx_path = dir.path().join("workbook.xlsx");
+
+    // Build a multi-sheet .xlsx workbook natively in Pure Rust via rust_xlsxwriter
+    {
+        let mut wb = rust_xlsxwriter::Workbook::new();
+        let s1 = wb.add_worksheet();
+        s1.set_name("sales").unwrap();
+        s1.write_string(0, 0, "id").unwrap();
+        s1.write_string(0, 1, "item").unwrap();
+        s1.write_string(0, 2, "revenue").unwrap();
+        s1.write_string(0, 3, "emb").unwrap();
+
+        s1.write_number(1, 0, 1.0).unwrap();
+        s1.write_string(1, 1, "Router").unwrap();
+        s1.write_number(1, 2, 199.5).unwrap();
+        s1.write_string(1, 3, "[0.1, 0.2, 0.3]").unwrap();
+
+        s1.write_number(2, 0, 2.0).unwrap();
+        s1.write_string(2, 1, "Switch").unwrap();
+        s1.write_number(2, 2, 350.25).unwrap();
+        s1.write_string(2, 3, "[0.4, 0.5, 0.6]").unwrap();
+
+        let s2 = wb.add_worksheet();
+        s2.set_name("regions").unwrap();
+        s2.write_string(0, 0, "code").unwrap();
+        s2.write_string(0, 1, "label").unwrap();
+        s2.write_string(1, 0, "MY").unwrap();
+        s2.write_string(1, 1, "Malaysia").unwrap();
+
+        wb.save(&xlsx_path).unwrap();
+    }
+
+    let conn = Connection::open_in_memory().unwrap();
+
+    // 1. Direct SQL scan of default sheet and named sheet via read_excel()
+    let scan_default = conn
+        .query(&format!(
+            "SELECT item, revenue, emb FROM read_excel('{}');",
+            xlsx_path.to_string_lossy().replace('\\', "/")
+        ))
+        .unwrap();
+    assert_eq!(scan_default.len(), 2);
+    assert_eq!(scan_default[0].values()[0], Value::Text("Router".into()));
+    assert_eq!(scan_default[0].values()[1], Value::Real(199.5));
+    assert!(matches!(scan_default[0].values()[2], Value::Vector(ref v) if v.len() == 3));
+
+    let scan_sheet2 = conn
+        .query(&format!(
+            "SELECT code, label FROM read_excel('{}', 'regions');",
+            xlsx_path.to_string_lossy().replace('\\', "/")
+        ))
+        .unwrap();
+    assert_eq!(scan_sheet2.len(), 1);
+    assert_eq!(scan_sheet2[0].values()[0], Value::Text("MY".into()));
+
+    // 2. Multi-sheet ingest into TapirusDB tables
+    let ingest = conn
+        .ingest_lakehouse(
+            &xlsx_path.to_string_lossy(),
+            None,
+            &LakeIngestOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(ingest.rows_ingested, 3);
+    assert_eq!(
+        conn.query("SELECT COUNT(*) FROM sales;").unwrap()[0].values()[0],
+        Value::Integer(2)
+    );
+    assert_eq!(
+        conn.query("SELECT COUNT(*) FROM regions;").unwrap()[0].values()[0],
+        Value::Integer(1)
+    );
+
+    // 3. Convert Excel -> Parquet and export SQL query -> new .xlsx roundtrip
+    let pq_out = dir.path().join("sales_from_excel.parquet");
+    let (_, exp_pq) = convert_dataset(
+        &xlsx_path.to_string_lossy(),
+        &pq_out,
+        None,
+        None,
+        None,
+        &LakeIngestOptions {
+            source_table: Some("sales".into()),
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(exp_pq.unwrap().rows_exported, 2);
+
+    let xlsx_out = dir.path().join("exported.xlsx");
+    conn.execute(&format!(
+        "COPY (SELECT id, item, revenue FROM sales ORDER BY id) TO '{}';",
+        xlsx_out.to_string_lossy().replace('\\', "/")
+    ))
+    .unwrap();
+    assert!(xlsx_out.exists());
+
+    let rescan = conn
+        .query(&format!(
+            "SELECT SUM(revenue) FROM read_excel('{}');",
+            xlsx_out.to_string_lossy().replace('\\', "/")
+        ))
+        .unwrap();
+    let total_rev = match rescan[0].values()[0] {
+        Value::Real(v) => v,
+        _ => panic!("expected real sum"),
+    };
+    assert!((total_rev - 549.75).abs() < 1e-6);
+}

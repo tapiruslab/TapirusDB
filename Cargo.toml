@@ -113,6 +113,8 @@ arrow-array = { version = "60.1", default-features = false, optional = true }
 arrow-schema = { version = "60.1", default-features = false, optional = true }
 flate2 = { version = "1.0", default-features = false, features = ["zlib-rs"], optional = true }
 lopdf = { version = "0.47", default-features = false, optional = true }
+calamine = { version = "0.38", optional = true }
+rust_xlsxwriter = { version = "0.102", default-features = false, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom-02 = { package = "getrandom", version = "0.2", features = ["js"] }
@@ -174,7 +176,7 @@ simd = ["dep:wide"]
 tap-deep = []
 cloud-s3 = ["dep:ureq"]
 http-embeddings = ["dep:ureq"]
-lakehouse = ["std", "dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:flate2", "dep:lopdf"]
+lakehouse = ["std", "dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:flate2", "dep:lopdf", "dep:calamine", "dep:rust_xlsxwriter"]
 fault-injection = []
 
 [profile.dev]
