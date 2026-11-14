@@ -267,6 +267,14 @@ pub struct Pager {
     _lock_path: Option<PathBuf>,
     in_memory_pages: HashMap<PageId, Vec<u8>>,
     wal: Option<Wal>,
+    wal_overlay: HashMap<PageId, Vec<u8>>,
+    concurrent_wal_path: Option<PathBuf>,
+    read_only: bool,
+    concurrent_access: bool,
+    busy_timeout: std::time::Duration,
+    synced_wal_fingerprint: (u64, u32, u32, u32),
+    synced_base_len: u64,
+    write_generation: u64,
     checkpoint_threshold: usize,
     cipher: Option<crate::crypto::DatabaseCipher>,
     transaction_savepoint: Option<TransactionSavepoint>,
@@ -359,6 +367,62 @@ impl Pager {
         Self::open_with_cipher(path, page_size, cache_capacity, None)
     }
 
+    /// Acquire the cross-process `.tapir-lock` file with optional timeout/backoff.
+    fn acquire_lock_file(
+        db_path: &Path,
+        lock_path: &Path,
+        timeout: std::time::Duration,
+    ) -> Result<File> {
+        let start = web_time::Instant::now();
+        loop {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(lock_path)
+            {
+                Ok(mut lf) => {
+                    let _ = write!(lf, "{}", std::process::id());
+                    let _ = lf.flush();
+                    return Ok(lf);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let is_stale = if let Ok(content) = std::fs::read_to_string(lock_path) {
+                        if let Ok(pid) = content.trim().parse::<u32>() {
+                            !is_process_alive(pid)
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    if is_stale {
+                        let _ = std::fs::remove_file(lock_path);
+                        continue;
+                    }
+                    if start.elapsed() >= timeout {
+                        return Err(Error::Busy(format!(
+                            "Database file '{}' is locked by another process (active lockfile: {})",
+                            db_path.display(),
+                            lock_path.display()
+                        )));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                // On Windows NTFS, opening a lockfile that is concurrently in delete-pending state
+                // returns PermissionDenied (ERROR_ACCESS_DENIED) briefly until handle teardown completes.
+                Err(e)
+                    if cfg!(windows)
+                        && e.kind() == std::io::ErrorKind::PermissionDenied
+                        && start.elapsed() < timeout =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(e) => return Err(Error::Io(e)),
+            }
+        }
+    }
+
     /// Open a disk file with an optional cryptographic cipher for Page-Level Encryption at Rest
     pub fn open_with_cipher(
         path: &Path,
@@ -368,44 +432,7 @@ impl Pager {
     ) -> Result<Self> {
         // Atomic cross-process file lock via .tapir-lock
         let lock_path = path.with_extension("tapir-lock");
-        let mut lock_file = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-        {
-            Ok(lf) => lf,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let is_stale = if let Ok(content) = std::fs::read_to_string(&lock_path) {
-                    if let Ok(pid) = content.trim().parse::<u32>() {
-                        !is_process_alive(pid)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
-                if is_stale {
-                    let _ = std::fs::remove_file(&lock_path);
-                    OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&lock_path)
-                        .map_err(|err| {
-                            Error::Busy(format!("Failed to reclaim stale lockfile: {err}"))
-                        })?
-                } else {
-                    return Err(Error::Busy(format!(
-                        "Database file '{}' is locked by another process (active lockfile: {})",
-                        path.display(),
-                        lock_path.display()
-                    )));
-                }
-            }
-            Err(e) => return Err(Error::Io(e)),
-        };
-        let _ = write!(lock_file, "{}", std::process::id());
-        let _ = lock_file.flush();
+        let lock_file = Self::acquire_lock_file(path, &lock_path, std::time::Duration::ZERO)?;
 
         struct LockGuard {
             file: Option<std::fs::File>,
@@ -515,6 +542,14 @@ impl Pager {
             _lock_path: Some(lock_path),
             in_memory_pages: HashMap::new(),
             wal: Some(wal),
+            wal_overlay: HashMap::new(),
+            concurrent_wal_path: None,
+            read_only: false,
+            concurrent_access: false,
+            busy_timeout: std::time::Duration::ZERO,
+            synced_wal_fingerprint: (0, 0, 0, 0),
+            synced_base_len: 0,
+            write_generation: 0,
             checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
             cipher,
             transaction_savepoint: None,
@@ -533,6 +568,172 @@ impl Pager {
             pager.touch_lru(pid);
         }
 
+        Ok(pager)
+    }
+
+    /// Open an existing disk database in non-blocking read-only mode without acquiring `.tapir-lock`.
+    ///
+    /// Multiple reader processes can open the same database concurrently alongside writers.
+    /// Reads automatically overlay committed frames from `.tapir-wal` onto the base `.tapir` file.
+    pub fn open_read_only_with_cipher(
+        path: &Path,
+        cache_capacity: usize,
+        cipher: Option<crate::crypto::DatabaseCipher>,
+    ) -> Result<Self> {
+        let header = Self::read_header_for_open(path)?.ok_or_else(|| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Database file '{}' does not exist", path.display()),
+            ))
+        })?;
+        if header.encryption_flags == 1 {
+            if let Some(ref c) = cipher {
+                if !c.verify_kcv(&header.kcv) {
+                    return Err(Error::DecryptionFailed(1));
+                }
+            } else {
+                return Err(Error::EncryptedDatabase);
+            }
+        }
+        let file = OpenOptions::new().read(true).open(path)?;
+        let cache_capacity = if cache_capacity == 0 {
+            256
+        } else {
+            cache_capacity
+        };
+        let wal_path = path.with_extension("tapir-wal");
+        let mut pager = Self {
+            header,
+            file: Some(file),
+            _path: Some(path.to_path_buf()),
+            _lock_file: None,
+            _lock_path: None,
+            in_memory_pages: HashMap::new(),
+            wal: None,
+            wal_overlay: HashMap::new(),
+            concurrent_wal_path: Some(wal_path),
+            read_only: true,
+            concurrent_access: false,
+            busy_timeout: std::time::Duration::ZERO,
+            synced_wal_fingerprint: (u64::MAX, 0, 0, 0),
+            synced_base_len: u64::MAX,
+            write_generation: 0,
+            checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
+            cipher,
+            transaction_savepoint: None,
+            named_savepoints: Vec::new(),
+            cache_capacity,
+            lru_head: None,
+            lru_tail: None,
+            lru_nodes: HashMap::new(),
+            remote_reader: None,
+            remote_writer: None,
+        };
+        pager.refresh_committed_state()?;
+        Ok(pager)
+    }
+
+    /// Open a disk database with multi-process WAL coordination.
+    ///
+    /// Unlike exclusive open mode, `.tapir-lock` is acquired only during write transactions / mutations
+    /// (waiting up to `busy_timeout`) and released immediately upon completion, enabling concurrent
+    /// reader processes and serialized multi-process writers on the same database file.
+    pub fn open_concurrent_with_cipher(
+        path: &Path,
+        page_size: u16,
+        cache_capacity: usize,
+        cipher: Option<crate::crypto::DatabaseCipher>,
+        busy_timeout: std::time::Duration,
+    ) -> Result<Self> {
+        let lock_path = path.with_extension("tapir-lock");
+        let wal_path = path.with_extension("tapir-wal");
+
+        // Safely initialize missing database file under short-lived write lock
+        if !path.exists() {
+            let init_lock = Self::acquire_lock_file(path, &lock_path, busy_timeout)?;
+            struct InitGuard(Option<File>, PathBuf);
+            impl Drop for InitGuard {
+                fn drop(&mut self) {
+                    self.0.take();
+                    let _ = std::fs::remove_file(&self.1);
+                }
+            }
+            let _guard = InitGuard(Some(init_lock), lock_path.clone());
+            if !path.exists() {
+                let mut h = DatabaseHeader::new(page_size);
+                if let Some(ref c) = cipher {
+                    h.encryption_flags = 1;
+                    h.salt = *c.salt();
+                    h.kcv = c.generate_kcv()?;
+                }
+                let mut page1 = vec![0u8; page_size as usize];
+                crate::btree::engine::init_leaf_page(&mut page1, 1);
+                page1[0..DATABASE_HEADER_SIZE].copy_from_slice(&h.to_bytes());
+                let disk_page1 = if let Some(ref c) = cipher {
+                    c.encrypt_page(1, &page1)?
+                } else {
+                    page1
+                };
+                let mut f = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(path)?;
+                f.seek(SeekFrom::Start(0))?;
+                f.write_all(&disk_page1)?;
+                f.sync_data()?;
+                let _wal = Wal::open(&wal_path, h.page_size as u32)?;
+            }
+        }
+
+        let header = Self::read_header_for_open(path)?.ok_or_else(|| {
+            Error::Corrupted(format!("Failed to read header from '{}'", path.display()))
+        })?;
+        if header.encryption_flags == 1 {
+            if let Some(ref c) = cipher {
+                if !c.verify_kcv(&header.kcv) {
+                    return Err(Error::DecryptionFailed(1));
+                }
+            } else {
+                return Err(Error::EncryptedDatabase);
+            }
+        }
+
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let cache_capacity = if cache_capacity == 0 {
+            256
+        } else {
+            cache_capacity
+        };
+        let mut pager = Self {
+            header,
+            file: Some(file),
+            _path: Some(path.to_path_buf()),
+            _lock_file: None,
+            _lock_path: Some(lock_path),
+            in_memory_pages: HashMap::new(),
+            wal: None,
+            wal_overlay: HashMap::new(),
+            concurrent_wal_path: Some(wal_path),
+            read_only: false,
+            concurrent_access: true,
+            busy_timeout,
+            synced_wal_fingerprint: (u64::MAX, 0, 0, 0),
+            synced_base_len: u64::MAX,
+            write_generation: 0,
+            checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
+            cipher,
+            transaction_savepoint: None,
+            named_savepoints: Vec::new(),
+            cache_capacity,
+            lru_head: None,
+            lru_tail: None,
+            lru_nodes: HashMap::new(),
+            remote_reader: None,
+            remote_writer: None,
+        };
+        pager.refresh_committed_state()?;
         Ok(pager)
     }
 
@@ -575,6 +776,14 @@ impl Pager {
             _lock_path: None,
             in_memory_pages,
             wal: Some(wal),
+            wal_overlay: HashMap::new(),
+            concurrent_wal_path: None,
+            read_only: false,
+            concurrent_access: false,
+            busy_timeout: std::time::Duration::ZERO,
+            synced_wal_fingerprint: (0, 0, 0, 0),
+            synced_base_len: 0,
+            write_generation: 0,
             checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
             cipher,
             transaction_savepoint: None,
@@ -644,6 +853,14 @@ impl Pager {
             _lock_path: None,
             in_memory_pages: HashMap::new(),
             wal: Some(wal),
+            wal_overlay: HashMap::new(),
+            concurrent_wal_path: None,
+            read_only: false,
+            concurrent_access: false,
+            busy_timeout: std::time::Duration::ZERO,
+            synced_wal_fingerprint: (0, 0, 0, 0),
+            synced_base_len: 0,
+            write_generation: 0,
             checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
             cipher,
             transaction_savepoint: None,
@@ -704,6 +921,14 @@ impl Pager {
             _lock_path: None,
             in_memory_pages: HashMap::new(),
             wal: None,
+            wal_overlay: HashMap::new(),
+            concurrent_wal_path: None,
+            read_only: true,
+            concurrent_access: false,
+            busy_timeout: std::time::Duration::ZERO,
+            synced_wal_fingerprint: (0, 0, 0, 0),
+            synced_base_len: 0,
+            write_generation: 0,
             checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
             cipher,
             transaction_savepoint: None,
@@ -772,6 +997,14 @@ impl Pager {
             _lock_path: None,
             in_memory_pages,
             wal: Some(wal),
+            wal_overlay: HashMap::new(),
+            concurrent_wal_path: None,
+            read_only: false,
+            concurrent_access: false,
+            busy_timeout: std::time::Duration::ZERO,
+            synced_wal_fingerprint: (0, 0, 0, 0),
+            synced_base_len: 0,
+            write_generation: 0,
             checkpoint_threshold: DEFAULT_CHECKPOINT_THRESHOLD,
             cipher,
             transaction_savepoint: None,
@@ -1040,7 +1273,15 @@ impl Pager {
             return Ok(data);
         }
 
-        // 2. Check WAL index (MVCC latest version)
+        // 2a. Check committed WAL overlay (for read-only / concurrent / MVCC snapshot readers)
+        if let Some(data) = self.wal_overlay.get(&page_id).cloned() {
+            self.in_memory_pages.insert(page_id, data.clone());
+            self.touch_lru(page_id);
+            self.evict_if_needed();
+            return Ok(data);
+        }
+
+        // 2b. Check active WAL index (latest version)
         if let Some(wal) = &self.wal {
             if let Some(raw) = wal.read_page(page_id) {
                 let plaintext = if let Some(cipher) = &self.cipher {
@@ -1113,6 +1354,45 @@ impl Pager {
         f(buf)
     }
 
+    fn ensure_writable(&self, op: &str) -> Result<()> {
+        if self.remote_reader.is_some() && self.file.is_none() && self.remote_writer.is_none() {
+            return Err(Error::Corrupted(format!(
+                "Cannot {op} on a read-only remote storage connection"
+            )));
+        }
+        if self.read_only {
+            return Err(Error::TransactionError(format!(
+                "Database is opened read-only: cannot {op}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Return whether this pager was opened in read-only mode.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Return whether multi-process concurrent WAL access is enabled on this pager.
+    pub fn is_concurrent_access(&self) -> bool {
+        self.concurrent_access
+    }
+
+    /// Update the busy timeout used when acquiring `.tapir-lock` in concurrent access mode.
+    pub fn set_busy_timeout(&mut self, timeout: std::time::Duration) {
+        self.busy_timeout = timeout;
+    }
+
+    /// Return the configured busy timeout.
+    pub fn busy_timeout(&self) -> std::time::Duration {
+        self.busy_timeout
+    }
+
+    /// Monotonic counter incremented after each committed page mutation or transaction commit.
+    pub fn write_generation(&self) -> u64 {
+        self.write_generation
+    }
+
     /// Mutate an in-memory page frame in place without allocating or cloning 4KB buffers.
     /// If in an active transaction, the original page is preserved for rollback if not yet saved.
     pub fn modify_page<R, F: FnOnce(&mut [u8]) -> Result<R>>(
@@ -1120,6 +1400,7 @@ impl Pager {
         page_id: PageId,
         f: F,
     ) -> Result<R> {
+        self.ensure_writable("modify page")?;
         if page_id == 0 || page_id > self.header.total_pages {
             return Err(Error::PageNotFound(page_id));
         }
@@ -1185,12 +1466,7 @@ impl Pager {
 
     /// Write data to a page by its ID via the Write-Ahead Log
     pub fn write_page(&mut self, page_id: PageId, data: &[u8]) -> Result<()> {
-        if self.remote_reader.is_some() && self.file.is_none() && self.remote_writer.is_none() {
-            return Err(Error::Corrupted(
-                "Cannot write to read-only remote storage connection (HTTP Range reader is read-only)"
-                    .into(),
-            ));
-        }
+        self.ensure_writable("write page")?;
 
         // If connected to a writable remote storage, write page to in_memory_pages directly
         if self.file.is_none() && self.remote_writer.is_some() {
@@ -1309,17 +1585,14 @@ impl Pager {
         if should_checkpoint {
             self.checkpoint()?;
         }
+        self.write_generation = self.write_generation.wrapping_add(1);
 
         Ok(())
     }
 
     /// Allocate a page, reusing pages from the freelist trunk if available, or extending the database file
     pub fn allocate_page(&mut self) -> Result<PageId> {
-        if self.remote_reader.is_some() && self.file.is_none() && self.remote_writer.is_none() {
-            return Err(Error::Corrupted(
-                "Cannot allocate pages on read-only remote storage connection".into(),
-            ));
-        }
+        self.ensure_writable("allocate page")?;
 
         let page_size = self.page_size();
         let mut reused_from_freelist = false;
@@ -1548,11 +1821,7 @@ impl Pager {
     /// Begin a transaction savepoint in O(1) time and memory
     pub fn begin_transaction(&mut self) -> Result<()> {
         self.ensure_io_ready()?;
-        if self.remote_reader.is_some() && self.file.is_none() && self.remote_writer.is_none() {
-            return Err(Error::Corrupted(
-                "Cannot mutate a read-only remote storage connection".into(),
-            ));
-        }
+        self.ensure_writable("begin transaction")?;
         if self.transaction_savepoint.is_some() {
             return Err(Error::TransactionError(
                 "Transaction already in progress".into(),
@@ -1633,6 +1902,7 @@ impl Pager {
             return Err(error);
         }
         self.transaction_savepoint = None;
+        self.write_generation = self.write_generation.wrapping_add(1);
         self.named_savepoints.clear();
         if self
             .wal
@@ -1962,14 +2232,237 @@ impl Pager {
     pub fn apply_wal_frame(&mut self, page_id: PageId, data: &[u8]) -> Result<()> {
         self.write_page(page_id, data)
     }
+
+    /// Synchronize read-only or idle concurrent pager state with any newer commits on disk.
+    ///
+    /// Returns `Ok(true)` if the on-disk committed state advanced and in-memory caches were refreshed.
+    pub fn refresh_committed_state(&mut self) -> Result<bool> {
+        let Some(db_path) = self._path.clone() else {
+            return Ok(false);
+        };
+        if !self.read_only && !self.concurrent_access {
+            return Ok(false);
+        }
+        if self.is_in_transaction() || self.wal.is_some() {
+            return Ok(false);
+        }
+        let wal_path = self
+            .concurrent_wal_path
+            .clone()
+            .unwrap_or_else(|| db_path.with_extension("tapir-wal"));
+
+        for attempt in 0..10 {
+            let wal_fp = Wal::read_file_fingerprint(&wal_path).unwrap_or((0, 0, 0, 0));
+            let base_len = self
+                .file
+                .as_ref()
+                .and_then(|f| f.metadata().ok())
+                .map(|m| m.len())
+                .unwrap_or(0);
+            if attempt == 0
+                && wal_fp == self.synced_wal_fingerprint
+                && base_len == self.synced_base_len
+            {
+                return Ok(false);
+            }
+
+            let wal_state = match Wal::read_all_committed_pages(&wal_path) {
+                Ok(s) => s,
+                Err(_) if attempt < 9 => {
+                    std::thread::sleep(std::time::Duration::from_millis(3));
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+
+            let mut overlay = HashMap::new();
+            let mut wal_db_size = None;
+            let mut retry_needed = false;
+            if let Some((db_size, raw_pages)) = wal_state {
+                wal_db_size = Some(db_size);
+                for (pid, raw) in raw_pages {
+                    let pt = if let Some(ref c) = self.cipher {
+                        match c.decrypt_page(pid, &raw) {
+                            Ok(p) => p,
+                            Err(_) if attempt < 9 => {
+                                retry_needed = true;
+                                break;
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    } else {
+                        raw
+                    };
+                    let decomp = self.decompress_if_needed(pid, pt)?;
+                    overlay.insert(pid, decomp);
+                }
+            }
+            if retry_needed {
+                std::thread::sleep(std::time::Duration::from_millis(3));
+                continue;
+            }
+
+            let new_header = if let Some(p1) = overlay.get(&1) {
+                DatabaseHeader::from_bytes(&p1[..DATABASE_HEADER_SIZE])?
+            } else if let Some(ref mut f) = self.file {
+                f.seek(SeekFrom::Start(0))?;
+                let mut h_buf = [0u8; DATABASE_HEADER_SIZE];
+                f.read_exact(&mut h_buf)?;
+                DatabaseHeader::from_bytes(&h_buf)?
+            } else {
+                self.header.clone()
+            };
+
+            self.header = new_header;
+            if let Some(sz) = wal_db_size {
+                if sz > self.header.total_pages {
+                    self.header.total_pages = sz;
+                }
+            }
+            self.wal_overlay = overlay;
+            self.in_memory_pages.clear();
+            self.lru_nodes.clear();
+            self.lru_head = None;
+            self.lru_tail = None;
+            self.synced_wal_fingerprint = wal_fp;
+            self.synced_base_len = base_len;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Acquire the cross-process write lock and open the writable WAL in concurrent mode.
+    ///
+    /// Returns `Ok(true)` if newer external commits were loaded from disk after acquiring the lock.
+    pub fn begin_concurrent_write(&mut self) -> Result<bool> {
+        if !self.concurrent_access {
+            return Ok(false);
+        }
+        if self.read_only {
+            return Err(Error::TransactionError(
+                "Database is opened read-only: cannot acquire write lock".into(),
+            ));
+        }
+        if self._lock_file.is_some() {
+            return Ok(false);
+        }
+        let db_path = self
+            ._path
+            .clone()
+            .ok_or_else(|| Error::TransactionError("Concurrent mode requires file path".into()))?;
+        let lock_path = self
+            ._lock_path
+            .clone()
+            .unwrap_or_else(|| db_path.with_extension("tapir-lock"));
+        let wal_path = self
+            .concurrent_wal_path
+            .clone()
+            .unwrap_or_else(|| db_path.with_extension("tapir-wal"));
+
+        let lock_file = Self::acquire_lock_file(&db_path, &lock_path, self.busy_timeout)?;
+        let refreshed = match self.refresh_committed_state() {
+            Ok(changed) => changed,
+            Err(e) => {
+                drop(lock_file);
+                let _ = std::fs::remove_file(&lock_path);
+                return Err(e);
+            }
+        };
+        let wal = match Wal::open(&wal_path, self.header.page_size as u32) {
+            Ok(w) => w,
+            Err(e) => {
+                drop(lock_file);
+                let _ = std::fs::remove_file(&lock_path);
+                return Err(e);
+            }
+        };
+        self._lock_file = Some(lock_file);
+        self.wal = Some(wal);
+        Ok(refreshed)
+    }
+
+    /// Release the cross-process write lock when no explicit transaction remains active.
+    pub fn end_concurrent_write(&mut self) -> Result<()> {
+        if !self.concurrent_access || self.is_in_transaction() || self._lock_file.is_none() {
+            return Ok(());
+        }
+        if let Some(wal) = self.wal.take() {
+            if wal.frame_count() == 0 {
+                self.wal_overlay.clear();
+            } else {
+                for (pid, _) in wal.export_frames() {
+                    if let Some(pt) = self.in_memory_pages.get(&pid) {
+                        self.wal_overlay.insert(pid, pt.clone());
+                    }
+                }
+            }
+        }
+        if let Some(ref db_path) = self._path {
+            let wal_path = self
+                .concurrent_wal_path
+                .clone()
+                .unwrap_or_else(|| db_path.with_extension("tapir-wal"));
+            self.synced_wal_fingerprint =
+                Wal::read_file_fingerprint(&wal_path).unwrap_or((0, 0, 0, 0));
+            self.synced_base_len = self
+                .file
+                .as_ref()
+                .and_then(|f| f.metadata().ok())
+                .map(|m| m.len())
+                .unwrap_or(0);
+        }
+        if self._lock_file.take().is_some() {
+            if let Some(ref lock_path) = self._lock_path {
+                let _ = std::fs::remove_file(lock_path);
+            }
+        }
+        Ok(())
+    }
+
+    /// Capture an isolated, read-only committed page snapshot for non-blocking MVCC readers.
+    pub fn snapshot_clone(&mut self) -> Result<Self> {
+        let total = self.header.total_pages;
+        let mut pages = HashMap::with_capacity(total as usize);
+        for pid in 1..=total {
+            pages.insert(pid, self.read_page(pid)?);
+        }
+        Ok(Self {
+            header: self.header.clone(),
+            file: None,
+            _path: None,
+            _lock_file: None,
+            _lock_path: None,
+            in_memory_pages: HashMap::new(),
+            wal: None,
+            wal_overlay: pages,
+            concurrent_wal_path: None,
+            read_only: true,
+            concurrent_access: false,
+            busy_timeout: std::time::Duration::ZERO,
+            synced_wal_fingerprint: (0, 0, 0, 0),
+            synced_base_len: 0,
+            write_generation: 0,
+            checkpoint_threshold: self.checkpoint_threshold,
+            cipher: None,
+            transaction_savepoint: None,
+            named_savepoints: Vec::new(),
+            cache_capacity: self.cache_capacity.max(256),
+            lru_head: None,
+            lru_tail: None,
+            lru_nodes: HashMap::new(),
+            remote_reader: None,
+            remote_writer: None,
+        })
+    }
 }
 
 impl Drop for Pager {
     fn drop(&mut self) {
-        // Release OS file handle first, then remove .tapir-lock file
-        self._lock_file.take();
-        if let Some(ref lock_path) = self._lock_path {
-            let _ = std::fs::remove_file(lock_path);
+        // Only remove .tapir-lock when this Pager actually holds the OS lock file handle.
+        if self._lock_file.take().is_some() {
+            if let Some(ref lock_path) = self._lock_path {
+                let _ = std::fs::remove_file(lock_path);
+            }
         }
     }
 }

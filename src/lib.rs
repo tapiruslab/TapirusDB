@@ -51,7 +51,7 @@ pub use pager::{
     WalReplicationFrame, WalReplicationReceiver, WalReplicationStream,
 };
 pub use realtime::{ChangeEvent, ChangeOp, RealtimeBus};
-pub use session::{Session, SessionDatabase};
+pub use session::{Session, SessionDatabase, SnapshotSession};
 pub use sql::{
     SQLExecutor, ScalarUdf, Statement, UdfRegistry, bind_parameters, parse_sql, parse_tokens,
 };
@@ -130,6 +130,12 @@ pub struct Config {
     pub encryption_key: Option<[u8; 32]>,
     /// Source/index admission limits applied before loading persisted AI memory.
     pub memory: MemoryConfig,
+    /// Open an existing database in non-blocking read-only mode without `.tapir-lock`.
+    pub read_only: bool,
+    /// Enable multi-process WAL coordination (acquires `.tapir-lock` only during writes).
+    pub concurrent_access: bool,
+    /// Maximum time to wait for `.tapir-lock` when `concurrent_access` is enabled.
+    pub busy_timeout: std::time::Duration,
 }
 
 impl Default for Config {
@@ -141,6 +147,9 @@ impl Default for Config {
             passphrase: None,
             encryption_key: None,
             memory: MemoryConfig::default(),
+            read_only: false,
+            concurrent_access: false,
+            busy_timeout: std::time::Duration::ZERO,
         }
     }
 }
@@ -272,8 +281,49 @@ impl Connection {
         Self::open_with_config(path, config)
     }
 
+    /// Open an existing database in non-blocking read-only mode without acquiring `.tapir-lock`.
+    pub fn open_read_only<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::open_read_only_with_config(path, Config::default())
+    }
+
+    /// Open an existing database in non-blocking read-only mode with custom configuration.
+    pub fn open_read_only_with_config<P: AsRef<Path>>(path: P, mut config: Config) -> Result<Self> {
+        config.read_only = true;
+        config.concurrent_access = false;
+        Self::open_with_config(path, config)
+    }
+
+    /// Open a database file with multi-process WAL coordination and default 5s busy timeout.
+    ///
+    /// Multiple processes can read concurrently while writes coordinate safely via short-lived
+    /// `.tapir-lock` acquisition and automatic WAL state synchronization.
+    pub fn open_concurrent<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let config = Config {
+            concurrent_access: true,
+            busy_timeout: std::time::Duration::from_secs(5),
+            ..Default::default()
+        };
+        Self::open_with_config(path, config)
+    }
+
+    /// Open a database file with multi-process WAL coordination and custom configuration.
+    pub fn open_concurrent_with_config<P: AsRef<Path>>(
+        path: P,
+        mut config: Config,
+    ) -> Result<Self> {
+        config.concurrent_access = true;
+        Self::open_with_config(path, config)
+    }
+
     /// Open a database file with custom configuration options
     pub fn open_with_config<P: AsRef<Path>>(path: P, config: Config) -> Result<Self> {
+        if config.read_only && !path.as_ref().exists() {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Database file '{}' does not exist", path.as_ref().display()),
+            )));
+        }
+
         let cipher = if let Some(key) = config.encryption_key {
             let salt = read_or_generate_salt(path.as_ref())?;
             Some(DatabaseCipher::new(key, salt))
@@ -284,12 +334,24 @@ impl Connection {
             None
         };
 
-        let mut pager = Pager::open_with_cipher(
-            path.as_ref(),
-            config.page_size,
-            config.page_cache_capacity,
-            cipher,
-        )?;
+        let mut pager = if config.read_only {
+            Pager::open_read_only_with_cipher(path.as_ref(), config.page_cache_capacity, cipher)?
+        } else if config.concurrent_access {
+            Pager::open_concurrent_with_cipher(
+                path.as_ref(),
+                config.page_size,
+                config.page_cache_capacity,
+                cipher,
+                config.busy_timeout,
+            )?
+        } else {
+            Pager::open_with_cipher(
+                path.as_ref(),
+                config.page_size,
+                config.page_cache_capacity,
+                cipher,
+            )?
+        };
         pager.set_auto_checkpoint(config.auto_checkpoint);
         let mut executor = SQLExecutor::new(&mut pager)?;
         let mut memory = MemoryEngine::with_config(config.memory.clone())?;
@@ -1396,17 +1458,243 @@ impl Connection {
         pager.is_in_transaction()
     }
 
+    /// Set the busy timeout used when coordinating writes in concurrent access mode.
+    pub fn set_busy_timeout(&self, timeout: std::time::Duration) {
+        self.pager.write().set_busy_timeout(timeout);
+    }
+
+    /// Return whether this connection was opened in read-only mode.
+    pub fn is_read_only(&self) -> bool {
+        self.pager.read().is_read_only()
+    }
+
+    pub(crate) fn write_generation(&self) -> u64 {
+        self.pager.read().write_generation()
+    }
+
+    /// Return the row ID of the most recent successful `INSERT` on this connection.
+    pub fn last_insert_rowid(&self) -> i64 {
+        self.executor.read().last_insert_rowid()
+    }
+
+    /// Refresh read-only or idle concurrent connection state from committed on-disk frames.
+    ///
+    /// Returns `Ok(true)` if newer committed writes from another process were loaded.
+    pub fn refresh_from_disk(&self) -> Result<bool> {
+        let mut pager = self.pager.write();
+        if pager.refresh_committed_state()? {
+            let mut executor = self.executor.write();
+            executor.reload_from_pager(&mut pager)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Capture an isolated read-only committed snapshot of pager + SQL executor.
+    pub(crate) fn capture_committed_snapshot(&self) -> Result<(Pager, SQLExecutor)> {
+        let mut pager = self.pager.write();
+        let executor = self.executor.read();
+        let snap_pager = pager.snapshot_clone()?;
+        let snap_executor = executor.clone();
+        Ok((snap_pager, snap_executor))
+    }
+
+    /// Construct an isolated read-only snapshot connection from captured committed parts.
+    pub(crate) fn from_snapshot_parts(
+        pager: Pager,
+        executor: SQLExecutor,
+        config: Config,
+    ) -> Result<Self> {
+        let memory = MemoryEngine::with_config(config.memory.clone())?;
+        Ok(Self {
+            pager: Arc::new(RwLock::new(pager)),
+            executor: Arc::new(RwLock::new(executor)),
+            memory: Arc::new(RwLock::new(memory)),
+            realtime: Arc::new(RealtimeBus::new()),
+            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            config,
+            memory_scope: None,
+        })
+    }
+
+    fn execute_parsed(&self, stmt: Statement) -> Result<usize> {
+        let cdc_info = match &stmt {
+            Statement::Insert { table, .. } | Statement::InsertMany { table, .. } => {
+                Some((ChangeOp::Insert, table.clone()))
+            }
+            Statement::Update { table, .. } => Some((ChangeOp::Update, table.clone())),
+            Statement::Delete { table, .. } => Some((ChangeOp::Delete, table.clone())),
+            _ => None,
+        };
+        let is_commit = matches!(&stmt, Statement::CommitTransaction);
+        let is_rollback = matches!(&stmt, Statement::RollbackTransaction);
+        let is_pragma = matches!(&stmt, Statement::Pragma { .. });
+        let is_tx_end = matches!(
+            &stmt,
+            Statement::CommitTransaction
+                | Statement::RollbackTransaction
+                | Statement::Savepoint { .. }
+                | Statement::RollbackToSavepoint { .. }
+                | Statement::ReleaseSavepoint { .. }
+        );
+
+        let mut pager = self.pager.write();
+        let mut executor = self.executor.write();
+        if !is_pragma && !is_tx_end && pager.begin_concurrent_write()? {
+            executor.reload_from_pager(&mut pager)?;
+        }
+        let change_row_id = predicted_insert_row_id(&executor, &stmt).unwrap_or(0);
+        let rollback_to = if let Statement::RollbackToSavepoint { name } = &stmt {
+            pager.savepoint_position(name)
+        } else {
+            None
+        };
+
+        let affected_res = executor.execute(&mut pager, stmt);
+        let affected = match affected_res {
+            Ok(n) => {
+                if is_rollback || rollback_to.is_some() {
+                    if let Err(e) = self.restore_memory_from_pager(&mut pager, &executor) {
+                        let _ = pager.end_concurrent_write();
+                        return Err(e);
+                    }
+                }
+                n
+            }
+            Err(e) => {
+                let _ = pager.end_concurrent_write();
+                return Err(e);
+            }
+        };
+
+        let in_transaction = pager.is_in_transaction();
+        let savepoint_depth = pager.savepoint_depth();
+        pager.end_concurrent_write()?;
+        drop(executor);
+        drop(pager);
+
+        if let Some(position) = rollback_to {
+            self.discard_changes_after_savepoint(position);
+        }
+        if is_rollback {
+            self.finish_pending_changes(false);
+        }
+        if let Some((op, table)) = cdc_info {
+            let now_ts = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.queue_change(
+                ChangeEvent {
+                    op,
+                    table,
+                    row_id: change_row_id,
+                    timestamp: now_ts,
+                    data: serde_json::json!({"affected_rows": affected}),
+                },
+                in_transaction,
+                savepoint_depth,
+            );
+        }
+        if is_commit {
+            self.finish_pending_changes(true);
+        }
+        Ok(affected)
+    }
+
+    fn query_parsed(&self, stmt: Statement) -> Result<Vec<Row>> {
+        if matches!(
+            &stmt,
+            Statement::BeginTransaction
+                | Statement::CommitTransaction
+                | Statement::RollbackTransaction
+                | Statement::Savepoint { .. }
+                | Statement::RollbackToSavepoint { .. }
+                | Statement::ReleaseSavepoint { .. }
+        ) {
+            self.execute_parsed(stmt)?;
+            return Ok(Vec::new());
+        }
+
+        let cdc_info = match &stmt {
+            Statement::Insert { table, .. } | Statement::InsertMany { table, .. } => {
+                Some((ChangeOp::Insert, table.clone()))
+            }
+            Statement::Update { table, .. } => Some((ChangeOp::Update, table.clone())),
+            Statement::Delete { table, .. } => Some((ChangeOp::Delete, table.clone())),
+            _ => None,
+        };
+
+        let mut pager = self.pager.write();
+        let mut executor = self.executor.write();
+        if cdc_info.is_some() {
+            if pager.begin_concurrent_write()? {
+                executor.reload_from_pager(&mut pager)?;
+            }
+        } else if pager.refresh_committed_state()? {
+            executor.reload_from_pager(&mut pager)?;
+        }
+        let change_row_id = predicted_insert_row_id(&executor, &stmt).unwrap_or(0);
+
+        let rows_res = executor.query(&mut pager, stmt);
+        let rows = match rows_res {
+            Ok(r) => r,
+            Err(e) => {
+                if cdc_info.is_some() {
+                    let _ = pager.end_concurrent_write();
+                }
+                return Err(e);
+            }
+        };
+        let in_transaction = pager.is_in_transaction();
+        let savepoint_depth = pager.savepoint_depth();
+        if cdc_info.is_some() {
+            pager.end_concurrent_write()?;
+        }
+        drop(executor);
+        drop(pager);
+
+        if let Some((op, table)) = cdc_info {
+            let now_ts = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.queue_change(
+                ChangeEvent {
+                    op,
+                    table,
+                    row_id: change_row_id,
+                    timestamp: now_ts,
+                    data: serde_json::json!({"affected_rows": rows.len()}),
+                },
+                in_transaction,
+                savepoint_depth,
+            );
+        }
+        Ok(rows)
+    }
+
     /// Begin a transaction
     pub fn begin_transaction(&self) -> Result<()> {
         let mut pager = self.pager.write();
-        pager.begin_transaction()
+        if pager.begin_concurrent_write()? {
+            let mut executor = self.executor.write();
+            executor.reload_from_pager(&mut pager)?;
+        }
+        if let Err(e) = pager.begin_transaction() {
+            let _ = pager.end_concurrent_write();
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Commit the active transaction
     pub fn commit(&self) -> Result<()> {
         self.persist_vector_snapshots()?;
         let mut pager = self.pager.write();
-        pager.commit_transaction()?;
+        let res = pager.commit_transaction();
+        let _ = pager.end_concurrent_write();
+        res?;
         drop(pager);
         self.finish_pending_changes(true);
         Ok(())
@@ -1415,16 +1703,18 @@ impl Connection {
     /// Rollback the active transaction
     pub fn rollback(&self) -> Result<()> {
         let mut pager = self.pager.write();
-        pager.rollback_transaction()?;
-        let mut executor = self.executor.write();
-        *executor = SQLExecutor::new(&mut pager)?;
-        executor.load_graph_from_disk(&mut pager)?;
-        let mut memory = self.memory.write();
-        *memory = MemoryEngine::with_config(memory.configuration().clone())?;
-        executor.load_memory_from_disk(&mut pager, &mut memory)?;
-        executor.load_vector_indexes_from_disk(&mut pager)?;
-        drop(memory);
-        drop(executor);
+        let res = pager.rollback_transaction();
+        if res.is_ok() {
+            let mut executor = self.executor.write();
+            *executor = SQLExecutor::new(&mut pager)?;
+            executor.load_graph_from_disk(&mut pager)?;
+            let mut memory = self.memory.write();
+            *memory = MemoryEngine::with_config(memory.configuration().clone())?;
+            executor.load_memory_from_disk(&mut pager, &mut memory)?;
+            executor.load_vector_indexes_from_disk(&mut pager)?;
+        }
+        let _ = pager.end_concurrent_write();
+        res?;
         drop(pager);
         self.finish_pending_changes(false);
         Ok(())
@@ -1757,20 +2047,31 @@ impl<'a> PreparedStatement<'a> {
             }
             let mut pager = self.conn.pager.write();
             let mut executor = self.conn.executor.write();
+            if pager.begin_concurrent_write()? {
+                executor.reload_from_pager(&mut pager)?;
+            }
             let row_id =
                 predicted_insert_row_id_for_values(&executor, table, columns.as_deref(), params)
                     .unwrap_or(0);
             let mut buf = self.encode_buf.borrow_mut();
-            let (affected, _) = executor.execute_insert_fast(
+            let exec_res = executor.execute_insert_fast(
                 &mut pager,
                 table,
                 columns.as_deref(),
                 params,
                 Some(&mut buf),
-            )?;
+            );
+            drop(buf);
+            let affected = match exec_res {
+                Ok((affected, _)) => affected,
+                Err(e) => {
+                    let _ = pager.end_concurrent_write();
+                    return Err(e);
+                }
+            };
             let in_transaction = pager.is_in_transaction();
             let savepoint_depth = pager.savepoint_depth();
-            drop(buf);
+            pager.end_concurrent_write()?;
             drop(executor);
             drop(pager);
             let now_ts = web_time::SystemTime::now()
@@ -1801,63 +2102,7 @@ impl<'a> PreparedStatement<'a> {
             let bound = crate::sql::parser::bind_parameters(&self.tokens, params)?;
             crate::sql::parser::parse_tokens(&bound)?
         };
-
-        // Capture mutation metadata for CDC broadcast
-        let cdc_info = match &stmt {
-            Statement::Insert { table, .. } | Statement::InsertMany { table, .. } => {
-                Some((ChangeOp::Insert, table.clone()))
-            }
-            Statement::Update { table, .. } => Some((ChangeOp::Update, table.clone())),
-            Statement::Delete { table, .. } => Some((ChangeOp::Delete, table.clone())),
-            _ => None,
-        };
-        let change_row_id = predicted_insert_row_id(&self.conn.executor.read(), &stmt).unwrap_or(0);
-        let is_commit = matches!(&stmt, Statement::CommitTransaction);
-        let is_rollback = matches!(&stmt, Statement::RollbackTransaction);
-        let rollback_to = if let Statement::RollbackToSavepoint { name } = &stmt {
-            self.conn.pager.read().savepoint_position(name)
-        } else {
-            None
-        };
-
-        let mut pager = self.conn.pager.write();
-        let mut executor = self.conn.executor.write();
-        let affected = executor.execute(&mut pager, stmt)?;
-        if is_rollback || rollback_to.is_some() {
-            self.conn.restore_memory_from_pager(&mut pager, &executor)?;
-        }
-        let in_transaction = pager.is_in_transaction();
-        let savepoint_depth = pager.savepoint_depth();
-        drop(executor);
-        drop(pager);
-        if let Some(position) = rollback_to {
-            self.conn.discard_changes_after_savepoint(position);
-        }
-        if is_rollback {
-            self.conn.finish_pending_changes(false);
-        }
-        if let Some((op, table)) = cdc_info {
-            let now_ts = web_time::SystemTime::now()
-                .duration_since(web_time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            self.conn.queue_change(
-                ChangeEvent {
-                    op,
-                    table,
-                    row_id: change_row_id,
-                    timestamp: now_ts,
-                    data: serde_json::json!({"affected_rows": affected}),
-                },
-                in_transaction,
-                savepoint_depth,
-            );
-        }
-        if is_commit {
-            self.conn.finish_pending_changes(true);
-        }
-
-        Ok(affected)
+        self.conn.execute_parsed(stmt)
     }
 
     /// Execute prepared SQL query returning rows with parameter binding
@@ -1871,58 +2116,7 @@ impl<'a> PreparedStatement<'a> {
             let bound = crate::sql::parser::bind_parameters(&self.tokens, params)?;
             crate::sql::parser::parse_tokens(&bound)?
         };
-
-        // Capture mutation metadata for CDC broadcast if RETURNING was used
-        let cdc_info = match &stmt {
-            Statement::Insert { table, .. } | Statement::InsertMany { table, .. } => {
-                Some((ChangeOp::Insert, table.clone()))
-            }
-            Statement::Update { table, .. } => Some((ChangeOp::Update, table.clone())),
-            Statement::Delete { table, .. } => Some((ChangeOp::Delete, table.clone())),
-            _ => None,
-        };
-        let change_row_id = predicted_insert_row_id(&self.conn.executor.read(), &stmt).unwrap_or(0);
-
-        let mut pager = self.conn.pager.write();
-        let mut executor = self.conn.executor.write();
-        if matches!(
-            &stmt,
-            Statement::BeginTransaction
-                | Statement::CommitTransaction
-                | Statement::RollbackTransaction
-                | Statement::Savepoint { .. }
-                | Statement::RollbackToSavepoint { .. }
-                | Statement::ReleaseSavepoint { .. }
-        ) {
-            drop(executor);
-            drop(pager);
-            self.execute(params)?;
-            return Ok(Vec::new());
-        }
-        let rows = executor.query(&mut pager, stmt)?;
-        let in_transaction = pager.is_in_transaction();
-        let savepoint_depth = pager.savepoint_depth();
-        drop(executor);
-        drop(pager);
-        if let Some((op, table)) = cdc_info {
-            let now_ts = web_time::SystemTime::now()
-                .duration_since(web_time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            self.conn.queue_change(
-                ChangeEvent {
-                    op,
-                    table,
-                    row_id: change_row_id,
-                    timestamp: now_ts,
-                    data: serde_json::json!({"affected_rows": rows.len()}),
-                },
-                in_transaction,
-                savepoint_depth,
-            );
-        }
-
-        Ok(rows)
+        self.conn.query_parsed(stmt)
     }
 }
 
@@ -1974,67 +2168,14 @@ impl DatabaseConnection for Connection {
                 .unwrap_or(0);
             return Ok(affected);
         }
-        let mut pager = self.pager.write();
-        let mut executor = self.executor.write();
-        let stmt = match executor.get_or_parse_statement(trimmed)? {
-            Some(s) => s,
-            None => return Ok(0),
-        };
-
-        // Capture mutation metadata for CDC broadcast
-        let cdc_info = match &stmt {
-            Statement::Insert { table, .. } | Statement::InsertMany { table, .. } => {
-                Some((ChangeOp::Insert, table.clone()))
+        let stmt = {
+            let mut executor = self.executor.write();
+            match executor.get_or_parse_statement(trimmed)? {
+                Some(s) => s,
+                None => return Ok(0),
             }
-            Statement::Update { table, .. } => Some((ChangeOp::Update, table.clone())),
-            Statement::Delete { table, .. } => Some((ChangeOp::Delete, table.clone())),
-            _ => None,
         };
-        let change_row_id = predicted_insert_row_id(&executor, &stmt).unwrap_or(0);
-        let is_commit = matches!(&stmt, Statement::CommitTransaction);
-        let is_rollback = matches!(&stmt, Statement::RollbackTransaction);
-        let rollback_to = if let Statement::RollbackToSavepoint { name } = &stmt {
-            pager.savepoint_position(name)
-        } else {
-            None
-        };
-
-        let affected = executor.execute(&mut pager, stmt)?;
-        if is_rollback || rollback_to.is_some() {
-            self.restore_memory_from_pager(&mut pager, &executor)?;
-        }
-        let in_transaction = pager.is_in_transaction();
-        let savepoint_depth = pager.savepoint_depth();
-        drop(executor);
-        drop(pager);
-        if let Some(position) = rollback_to {
-            self.discard_changes_after_savepoint(position);
-        }
-        if is_rollback {
-            self.finish_pending_changes(false);
-        }
-        if let Some((op, table)) = cdc_info {
-            let now_ts = web_time::SystemTime::now()
-                .duration_since(web_time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            self.queue_change(
-                ChangeEvent {
-                    op,
-                    table,
-                    row_id: change_row_id,
-                    timestamp: now_ts,
-                    data: serde_json::json!({"affected_rows": affected}),
-                },
-                in_transaction,
-                savepoint_depth,
-            );
-        }
-        if is_commit {
-            self.finish_pending_changes(true);
-        }
-
-        Ok(affected)
+        self.execute_parsed(stmt)
     }
 
     /// Execute a SQL query returning multiple rows (also supports openCypher MATCH queries)
@@ -2047,62 +2188,14 @@ impl DatabaseConnection for Connection {
         if upper.starts_with("MATCH") || upper.starts_with("CYPHER") {
             return self.query_cypher(trimmed);
         }
-        let mut pager = self.pager.write();
-        let mut executor = self.executor.write();
-        let stmt = match executor.get_or_parse_statement(trimmed)? {
-            Some(s) => s,
-            None => return Ok(Vec::new()),
-        };
-
-        // Capture mutation metadata for CDC broadcast if RETURNING was used
-        let cdc_info = match &stmt {
-            Statement::Insert { table, .. } | Statement::InsertMany { table, .. } => {
-                Some((ChangeOp::Insert, table.clone()))
+        let stmt = {
+            let mut executor = self.executor.write();
+            match executor.get_or_parse_statement(trimmed)? {
+                Some(s) => s,
+                None => return Ok(Vec::new()),
             }
-            Statement::Update { table, .. } => Some((ChangeOp::Update, table.clone())),
-            Statement::Delete { table, .. } => Some((ChangeOp::Delete, table.clone())),
-            _ => None,
         };
-        let change_row_id = predicted_insert_row_id(&executor, &stmt).unwrap_or(0);
-
-        if matches!(
-            &stmt,
-            Statement::BeginTransaction
-                | Statement::CommitTransaction
-                | Statement::RollbackTransaction
-                | Statement::Savepoint { .. }
-                | Statement::RollbackToSavepoint { .. }
-                | Statement::ReleaseSavepoint { .. }
-        ) {
-            drop(executor);
-            drop(pager);
-            self.execute(trimmed)?;
-            return Ok(Vec::new());
-        }
-        let rows = executor.query(&mut pager, stmt)?;
-        let in_transaction = pager.is_in_transaction();
-        let savepoint_depth = pager.savepoint_depth();
-        drop(executor);
-        drop(pager);
-        if let Some((op, table)) = cdc_info {
-            let now_ts = web_time::SystemTime::now()
-                .duration_since(web_time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            self.queue_change(
-                ChangeEvent {
-                    op,
-                    table,
-                    row_id: change_row_id,
-                    timestamp: now_ts,
-                    data: serde_json::json!({"affected_rows": rows.len()}),
-                },
-                in_transaction,
-                savepoint_depth,
-            );
-        }
-
-        Ok(rows)
+        self.query_parsed(stmt)
     }
 
     /// Execute a parameterized non-query SQL command

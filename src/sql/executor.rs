@@ -3,13 +3,20 @@
 use crate::btree::{BTreeStorage, engine};
 use crate::error::{Error, Result};
 use crate::graph::GraphEngine;
+use crate::memory::bm25::Bm25Index;
 use crate::pager::Pager;
-use crate::sql::catalog::{Catalog, ColumnDef, DataType, IndexDef, TableDef};
+use crate::sql::catalog::{
+    Catalog, ColumnDef, DataType, DefaultValue, ForeignKeyAction, IndexDef, TableDef,
+    TableForeignKey, TriggerDef, TriggerEvent, TriggerTiming,
+};
 use crate::sql::codec::{
     decode_row, decode_row_shared, decode_row_shared_projected, decode_row_values_into_projected,
     encode_row,
 };
-use crate::sql::parser::{BinaryOp, JoinType, OnConflict, Statement, WhereCondition, WhereExpr};
+use crate::sql::lexer::{Token, tokenize};
+use crate::sql::parser::{
+    BinaryOp, JoinType, OnConflict, Statement, WhereCondition, WhereExpr, parse_tokens,
+};
 use crate::traits::{HashableValue, Row, Value, VectorIndexEngine, col_name_matches};
 use crate::vector::{DistanceMetric, HnswIndex};
 use serde::{Deserialize, Serialize};
@@ -227,16 +234,279 @@ pub struct VectorSnapshotRecord {
     pub table_fingerprint: Option<u32>,
 }
 
+/// Extract a composite or single-column index value from a row.
+/// Returns `None` if all indexed columns are `NULL` (SQL indexes omit all-NULL tuples).
+/// The boolean indicates whether ALL columns in the key are non-NULL (for SQL UNIQUE checks).
+fn extract_index_key_value<S: AsRef<str>>(row: &Row, cols: &[S]) -> Option<(Value, bool)> {
+    if cols.is_empty() {
+        return None;
+    }
+    if cols.len() == 1 {
+        let val = row.get_field_or_json_path(cols[0].as_ref())?;
+        if val.is_null() {
+            return None;
+        }
+        return Some((val, true));
+    }
+    let mut vals = Vec::with_capacity(cols.len());
+    let mut any_non_null = false;
+    let mut all_non_null = true;
+    for col in cols {
+        let v = row
+            .get_field_or_json_path(col.as_ref())
+            .unwrap_or(Value::Null);
+        if v.is_null() {
+            all_non_null = false;
+        } else {
+            any_non_null = true;
+        }
+        vals.push(v);
+    }
+    if !any_non_null {
+        return None;
+    }
+    let encoded = serde_json::to_string(&vals).unwrap_or_default();
+    Some((Value::Text(format!("__comp:{encoded}")), all_non_null))
+}
+
+fn collect_table_foreign_keys(table_def: &TableDef) -> Vec<TableForeignKey> {
+    let mut fks = Vec::new();
+    for col in &table_def.columns {
+        if let Some(ref fk) = col.references {
+            fks.push(TableForeignKey {
+                name: None,
+                columns: vec![col.name.clone()],
+                ref_table: fk.table.clone(),
+                ref_columns: fk.column.iter().cloned().collect(),
+                on_delete: fk.on_delete,
+                on_update: fk.on_update,
+            });
+        }
+    }
+    fks.extend(table_def.foreign_keys.iter().cloned());
+    fks
+}
+
+fn resolve_fk_parent_cols(parent_def: &TableDef, fk: &TableForeignKey) -> Vec<String> {
+    if !fk.ref_columns.is_empty() {
+        fk.ref_columns.clone()
+    } else if !parent_def.primary_key_columns.is_empty() {
+        parent_def.primary_key_columns.clone()
+    } else if let Some(pk) = parent_def.columns.iter().find(|c| c.primary_key) {
+        vec![pk.name.clone()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Three-valued SQL predicate evaluation for CHECK constraints (None = UNKNOWN -> CHECK passes).
+fn eval_where_three_valued(
+    row: &Row,
+    expr: &WhereExpr,
+    udfs: Option<&crate::sql::udf::UdfRegistry>,
+) -> Option<bool> {
+    match expr {
+        WhereExpr::Condition(cond) => {
+            let val = match row.get_field_or_json_path(&cond.column) {
+                Some(v) => v,
+                None => match try_eval_scalar_expr(row, &cond.column, udfs) {
+                    Ok(Some(v)) => v,
+                    _ => return None,
+                },
+            };
+            match cond.op {
+                BinaryOp::IsNull => Some(val.is_null()),
+                BinaryOp::IsNotNull => Some(!val.is_null()),
+                _ => {
+                    if val.is_null() {
+                        None
+                    } else {
+                        Some(matches_condition(&val, &cond.op, &cond.value))
+                    }
+                }
+            }
+        }
+        WhereExpr::And(l, r) => match (
+            eval_where_three_valued(row, l, udfs),
+            eval_where_three_valued(row, r, udfs),
+        ) {
+            (Some(false), _) | (_, Some(false)) => Some(false),
+            (Some(true), Some(true)) => Some(true),
+            _ => None,
+        },
+        WhereExpr::Or(l, r) => match (
+            eval_where_three_valued(row, l, udfs),
+            eval_where_three_valued(row, r, udfs),
+        ) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        },
+        WhereExpr::InList {
+            column,
+            values,
+            negated,
+        } => {
+            let val = row.get_field_or_json_path(column)?;
+            if val.is_null() {
+                None
+            } else {
+                let found = values.contains(&val);
+                Some(if *negated { !found } else { found })
+            }
+        }
+        WhereExpr::InSubquery { .. } | WhereExpr::Exists { .. } => Some(true),
+    }
+}
+
+fn value_to_tokens(val: &Value) -> Vec<Token> {
+    match val {
+        Value::Null => vec![Token::Null],
+        Value::Integer(i) if *i < 0 => vec![Token::Dash, Token::IntLit(i.unsigned_abs() as i64)],
+        Value::Integer(i) => vec![Token::IntLit(*i)],
+        Value::Real(f) if *f < 0.0 => vec![Token::Dash, Token::FloatLit(-*f)],
+        Value::Real(f) => vec![Token::FloatLit(*f)],
+        Value::Text(s) => vec![Token::StringLit(s.clone())],
+        Value::Blob(b) => vec![Token::BlobLit(b.clone())],
+        Value::Vector(v) => vec![Token::VectorLit(v.clone())],
+    }
+}
+
+fn token_as_col_name(tok: &Token) -> Option<String> {
+    crate::sql::parser::parse_token_identifier(tok)
+}
+
+fn substitute_trigger_row_tokens(
+    tokens: &[Token],
+    old_row: Option<&Row>,
+    new_row: Option<&Row>,
+) -> Vec<Token> {
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut i = 0usize;
+    while i < tokens.len() {
+        if i + 2 < tokens.len() && tokens[i + 1] == Token::Dot {
+            if let Token::Ident(qualifier) = &tokens[i] {
+                let target_row = if qualifier.eq_ignore_ascii_case("NEW") {
+                    new_row
+                } else if qualifier.eq_ignore_ascii_case("OLD") {
+                    old_row
+                } else {
+                    None
+                };
+                if let Some(row) = target_row {
+                    if let Some(col_name) = token_as_col_name(&tokens[i + 2]) {
+                        let val = row.get_value(&col_name).cloned().unwrap_or(Value::Null);
+                        out.extend(value_to_tokens(&val));
+                        i += 3;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(tokens[i].clone());
+        i += 1;
+    }
+    out
+}
+
+fn split_token_statements(tokens: &[Token]) -> Vec<Vec<Token>> {
+    let mut stmts = Vec::new();
+    let mut current = Vec::new();
+    let mut depth = 0usize;
+    for tok in tokens {
+        match tok {
+            Token::OpenParen => {
+                depth += 1;
+                current.push(tok.clone());
+            }
+            Token::CloseParen => {
+                depth = depth.saturating_sub(1);
+                current.push(tok.clone());
+            }
+            Token::Semicolon if depth == 0 => {
+                if !current.is_empty() {
+                    stmts.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(tok.clone()),
+        }
+    }
+    if !current.is_empty() {
+        stmts.push(current);
+    }
+    stmts
+}
+
+fn collect_and_eq_conditions(expr: &WhereExpr, out: &mut HashMap<String, Value>) {
+    match expr {
+        WhereExpr::Condition(c) if c.op == BinaryOp::Equals => {
+            out.insert(c.column.to_lowercase(), c.value.clone());
+        }
+        WhereExpr::And(l, r) => {
+            collect_and_eq_conditions(l, out);
+            collect_and_eq_conditions(r, out);
+        }
+        _ => {}
+    }
+}
+
+fn extract_fts_match_query(expr: &WhereExpr, table: &str) -> Option<String> {
+    match expr {
+        WhereExpr::Condition(c)
+            if c.op == BinaryOp::Match && c.column.eq_ignore_ascii_case(table) =>
+        {
+            if let Value::Text(ref q) = c.value {
+                Some(q.clone())
+            } else {
+                None
+            }
+        }
+        WhereExpr::And(l, r) | WhereExpr::Or(l, r) => {
+            extract_fts_match_query(l, table).or_else(|| extract_fts_match_query(r, table))
+        }
+        _ => None,
+    }
+}
+
+fn resolve_fts_match_predicate(
+    expr: &ResolvedWhereExpr,
+    table: &str,
+    row_matched: bool,
+) -> ResolvedWhereExpr {
+    match expr {
+        ResolvedWhereExpr::Condition(c)
+            if c.op == BinaryOp::Match && c.column.eq_ignore_ascii_case(table) =>
+        {
+            ResolvedWhereExpr::Boolean(row_matched)
+        }
+        ResolvedWhereExpr::And(l, r) => ResolvedWhereExpr::And(
+            Box::new(resolve_fts_match_predicate(l, table, row_matched)),
+            Box::new(resolve_fts_match_predicate(r, table, row_matched)),
+        ),
+        ResolvedWhereExpr::Or(l, r) => ResolvedWhereExpr::Or(
+            Box::new(resolve_fts_match_predicate(l, table, row_matched)),
+            Box::new(resolve_fts_match_predicate(r, table, row_matched)),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// The SQL and multi-model execution engine for TapirusDB
 #[derive(Debug, Clone)]
 pub struct SQLExecutor {
     catalog: Catalog,
     btree: BTreeStorage,
     vector_indexes: HashMap<String, HnswIndex>,
+    fts_indexes: HashMap<String, Bm25Index>,
     graph: GraphEngine,
     last_temporal_timestamp: u64,
     /// Default system versioning flag for new tables or session-level time travel
     pub default_system_versioning: bool,
+    /// Whether FOREIGN KEY constraints are enforced (`PRAGMA foreign_keys = ON|OFF`).
+    pub foreign_keys_enabled: bool,
+    trigger_depth: usize,
+    fk_cascade_depth: usize,
+    last_insert_rowid: i64,
     statement_cache: HashMap<String, Statement>,
     statement_cache_order: std::collections::VecDeque<String>,
     /// Thread-safe registry for user-defined functions (UDF) and standard scalar extensions
@@ -254,9 +524,14 @@ impl SQLExecutor {
             catalog,
             btree,
             vector_indexes,
+            fts_indexes: HashMap::new(),
             graph: GraphEngine::new(),
             last_temporal_timestamp: 0,
             default_system_versioning: false,
+            foreign_keys_enabled: true,
+            trigger_depth: 0,
+            fk_cascade_depth: 0,
+            last_insert_rowid: 0,
             statement_cache: HashMap::new(),
             statement_cache_order: std::collections::VecDeque::new(),
             udf_registry: crate::sql::udf::UdfRegistry::new(),
@@ -276,12 +551,677 @@ impl SQLExecutor {
         &self.udf_registry
     }
 
+    /// Return the row ID assigned by the most recent successful `INSERT`.
+    pub fn last_insert_rowid(&self) -> i64 {
+        self.last_insert_rowid
+    }
+
     /// Reload catalog, graph, and indexes from disk/pager into executor
     pub fn reload_from_pager(&mut self, pager: &mut Pager) -> Result<()> {
         self.catalog = Catalog::load(pager)?;
+        self.fts_indexes.clear();
         self.load_graph_from_disk(pager)?;
         self.load_vector_indexes_from_disk(pager)?;
         Ok(())
+    }
+
+    fn index_add_row(
+        &mut self,
+        pager: &mut Pager,
+        index_def: &IndexDef,
+        row: &Row,
+        row_id: u64,
+    ) -> Result<()> {
+        let cols = index_def.target_columns();
+        if let Some((val, _)) = extract_index_key_value(row, &cols) {
+            let key = value_to_index_key(&val);
+            let mut bucket =
+                if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
+                    serde_json::from_slice::<IndexBucket>(&payload)
+                        .unwrap_or_else(|_| IndexBucket::new())
+                } else {
+                    IndexBucket::new()
+                };
+            bucket.add_row_id(val, row_id);
+            let idx_payload = serde_json::to_vec(&bucket)
+                .map_err(|e| Error::Corrupted(format!("Failed to serialize index bucket: {e}")))?;
+            self.btree
+                .insert(pager, index_def.root_page, key, &idx_payload)?;
+        }
+        Ok(())
+    }
+
+    fn index_remove_row(
+        &mut self,
+        pager: &mut Pager,
+        index_def: &IndexDef,
+        row: &Row,
+        row_id: u64,
+    ) -> Result<()> {
+        let cols = index_def.target_columns();
+        if let Some((val, _)) = extract_index_key_value(row, &cols) {
+            let key = value_to_index_key(&val);
+            if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
+                if let Ok(mut bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                    bucket.remove_row_id(&val, row_id);
+                    if bucket.is_empty() {
+                        let _ = self.btree.delete(pager, index_def.root_page, key);
+                    } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
+                        let _ = self.btree.insert(pager, index_def.root_page, key, &new_pl);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_row_from_all_indexes(
+        &mut self,
+        pager: &mut Pager,
+        table: &str,
+        row: &Row,
+        row_id: u64,
+    ) -> Result<()> {
+        for index_def in self.catalog.indexes() {
+            if index_def.table.eq_ignore_ascii_case(table) {
+                self.index_remove_row(pager, &index_def, row, row_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn add_row_to_all_indexes(
+        &mut self,
+        pager: &mut Pager,
+        table: &str,
+        row: &Row,
+        row_id: u64,
+    ) -> Result<()> {
+        for index_def in self.catalog.indexes() {
+            if index_def.table.eq_ignore_ascii_case(table) {
+                self.index_add_row(pager, &index_def, row, row_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_unique_constraints(
+        &self,
+        pager: &mut Pager,
+        table_def: &TableDef,
+        candidate_row: &Row,
+        exclude_row_id: Option<u64>,
+    ) -> Result<()> {
+        // 1. Check any explicit CREATE UNIQUE INDEX using B+Tree bucket O(log N)
+        for index_def in self.catalog.indexes() {
+            if index_def.unique && index_def.table.eq_ignore_ascii_case(&table_def.name) {
+                let cols = index_def.target_columns();
+                if let Some((val, all_non_null)) = extract_index_key_value(candidate_row, &cols) {
+                    if all_non_null {
+                        let key = value_to_index_key(&val);
+                        if let Some(payload) = self.btree.search(pager, index_def.root_page, key)? {
+                            if let Ok(bucket) = serde_json::from_slice::<IndexBucket>(&payload) {
+                                if let Some(rids) = bucket.get_row_ids(&val) {
+                                    if rids.iter().any(|&rid| Some(rid) != exclude_row_id) {
+                                        return Err(Error::ConstraintViolation(format!(
+                                            "UNIQUE constraint failed: {}.{}",
+                                            table_def.name,
+                                            cols.join(", ")
+                                        )));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Collect inline column UNIQUE, table UNIQUE(...), and composite PRIMARY KEY(...)
+        let mut unique_groups: Vec<Vec<String>> = Vec::new();
+        for col in &table_def.columns {
+            if col.unique {
+                unique_groups.push(vec![col.name.clone()]);
+            }
+        }
+        for grp in &table_def.unique_constraints {
+            if !grp.is_empty() {
+                unique_groups.push(grp.clone());
+            }
+        }
+        if table_def.primary_key_columns.len() > 1 {
+            unique_groups.push(table_def.primary_key_columns.clone());
+        }
+        if unique_groups.is_empty() {
+            return Ok(());
+        }
+
+        let candidate_tuples: Vec<Option<Vec<Value>>> = unique_groups
+            .iter()
+            .map(|cols| {
+                let mut vals = Vec::with_capacity(cols.len());
+                for c in cols {
+                    let v = candidate_row
+                        .get_field_or_json_path(c)
+                        .unwrap_or(Value::Null);
+                    if v.is_null() {
+                        return None;
+                    }
+                    vals.push(v);
+                }
+                Some(vals)
+            })
+            .collect();
+
+        if candidate_tuples.iter().all(Option::is_none) {
+            return Ok(());
+        }
+
+        let all_cols = table_def.column_names();
+        let cells = self.btree.scan(pager, table_def.root_page)?;
+        for cell in cells {
+            if Some(cell.row_id) == exclude_row_id {
+                continue;
+            }
+            let existing = decode_row(&cell.payload, &all_cols)?;
+            for (g_idx, cols) in unique_groups.iter().enumerate() {
+                let Some(ref cand_vals) = candidate_tuples[g_idx] else {
+                    continue;
+                };
+                let existing_vals: Vec<Value> = cols
+                    .iter()
+                    .map(|c| existing.get_field_or_json_path(c).unwrap_or(Value::Null))
+                    .collect();
+                if &existing_vals == cand_vals {
+                    return Err(Error::ConstraintViolation(format!(
+                        "UNIQUE constraint failed: {}.{}",
+                        table_def.name,
+                        cols.join(", ")
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_check_constraints_for_row(&self, table_def: &TableDef, row: &Row) -> Result<()> {
+        let mut exprs: Vec<(Option<&str>, &str)> = Vec::new();
+        for col in &table_def.columns {
+            if let Some(ref expr_sql) = col.check_expr {
+                exprs.push((Some(col.name.as_str()), expr_sql.as_str()));
+            }
+        }
+        for chk in &table_def.check_constraints {
+            exprs.push((chk.name.as_deref(), chk.expr_sql.as_str()));
+        }
+        for (label, expr_sql) in exprs {
+            let tokens = tokenize(expr_sql)?;
+            let mut cursor = 0usize;
+            let parsed = crate::sql::parser::parse_where_expr_public(&tokens, &mut cursor)?;
+            if eval_where_three_valued(row, &parsed, Some(&self.udf_registry)) == Some(false) {
+                let tag = label.unwrap_or("CHECK");
+                return Err(Error::ConstraintViolation(format!(
+                    "CHECK constraint failed ({tag}) on {}: {expr_sql}",
+                    table_def.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_child_foreign_keys(
+        &self,
+        pager: &mut Pager,
+        table_def: &TableDef,
+        row: &Row,
+    ) -> Result<()> {
+        if !self.foreign_keys_enabled {
+            return Ok(());
+        }
+        for fk in collect_table_foreign_keys(table_def) {
+            let child_vals: Vec<Value> = fk
+                .columns
+                .iter()
+                .map(|c| row.get_field_or_json_path(c).unwrap_or(Value::Null))
+                .collect();
+            if child_vals.iter().any(Value::is_null) {
+                continue;
+            }
+            let parent_def = self.catalog.get_table(&fk.ref_table).ok_or_else(|| {
+                Error::ConstraintViolation(format!(
+                    "FOREIGN KEY references non-existent table '{}'",
+                    fk.ref_table
+                ))
+            })?;
+            let parent_cols = resolve_fk_parent_cols(parent_def, &fk);
+            if parent_cols.len() != child_vals.len() {
+                return Err(Error::ConstraintViolation(format!(
+                    "FOREIGN KEY column count mismatch between {} and {}",
+                    table_def.name, fk.ref_table
+                )));
+            }
+
+            if parent_cols.len() == 1
+                && parent_def
+                    .primary_key_index()
+                    .and_then(|idx| parent_def.columns.get(idx))
+                    .is_some_and(|pk| pk.name.eq_ignore_ascii_case(&parent_cols[0]))
+            {
+                if let Value::Integer(pk_id) = child_vals[0] {
+                    if self
+                        .btree
+                        .search(pager, parent_def.root_page, pk_id as u64)?
+                        .is_some()
+                    {
+                        continue;
+                    } else {
+                        return Err(Error::ConstraintViolation(format!(
+                            "FOREIGN KEY constraint failed: {}.{} -> {}.{}",
+                            table_def.name,
+                            fk.columns.join(","),
+                            fk.ref_table,
+                            parent_cols.join(",")
+                        )));
+                    }
+                }
+            }
+
+            let parent_all_cols = parent_def.column_names();
+            let cells = self.btree.scan(pager, parent_def.root_page)?;
+            let mut found = false;
+            for cell in cells {
+                let p_row = decode_row(&cell.payload, &parent_all_cols)?;
+                let p_vals: Vec<Value> = parent_cols
+                    .iter()
+                    .map(|c| p_row.get_field_or_json_path(c).unwrap_or(Value::Null))
+                    .collect();
+                if p_vals == child_vals {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return Err(Error::ConstraintViolation(format!(
+                    "FOREIGN KEY constraint failed: {}.{} -> {}.{}",
+                    table_def.name,
+                    fk.columns.join(","),
+                    fk.ref_table,
+                    parent_cols.join(",")
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn find_matching_child_rows(
+        &self,
+        pager: &mut Pager,
+        child_def: &TableDef,
+        child_cols: &[String],
+        parent_vals: &[Value],
+    ) -> Result<Vec<(u64, Row)>> {
+        if parent_vals.iter().any(Value::is_null) {
+            return Ok(Vec::new());
+        }
+        let all_cols = child_def.column_names();
+        let cells = self.btree.scan(pager, child_def.root_page)?;
+        let mut matches = Vec::new();
+        for cell in cells {
+            let row = decode_row(&cell.payload, &all_cols)?;
+            let c_vals: Vec<Value> = child_cols
+                .iter()
+                .map(|c| row.get_field_or_json_path(c).unwrap_or(Value::Null))
+                .collect();
+            if c_vals == parent_vals {
+                matches.push((cell.row_id, row));
+            }
+        }
+        Ok(matches)
+    }
+
+    fn handle_parent_foreign_key_on_delete(
+        &mut self,
+        pager: &mut Pager,
+        parent_table: &str,
+        old_parent_row: &Row,
+    ) -> Result<()> {
+        if !self.foreign_keys_enabled {
+            return Ok(());
+        }
+        if self.fk_cascade_depth >= 16 {
+            return Err(Error::ConstraintViolation(
+                "FOREIGN KEY CASCADE recursion limit exceeded".into(),
+            ));
+        }
+        let parent_def = match self.catalog.get_table(parent_table).cloned() {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+        let all_tables = self.catalog.tables();
+        for child_def in all_tables {
+            for fk in collect_table_foreign_keys(&child_def) {
+                if !fk.ref_table.eq_ignore_ascii_case(parent_table) {
+                    continue;
+                }
+                let parent_cols = resolve_fk_parent_cols(&parent_def, &fk);
+                let parent_vals: Vec<Value> = parent_cols
+                    .iter()
+                    .map(|c| {
+                        old_parent_row
+                            .get_field_or_json_path(c)
+                            .unwrap_or(Value::Null)
+                    })
+                    .collect();
+                let matches =
+                    self.find_matching_child_rows(pager, &child_def, &fk.columns, &parent_vals)?;
+                if matches.is_empty() {
+                    continue;
+                }
+                match fk.on_delete {
+                    ForeignKeyAction::NoAction | ForeignKeyAction::Restrict => {
+                        return Err(Error::ConstraintViolation(format!(
+                            "FOREIGN KEY constraint failed: '{parent_table}' row referenced by '{}.{}'",
+                            child_def.name,
+                            fk.columns.join(",")
+                        )));
+                    }
+                    ForeignKeyAction::Cascade => {
+                        self.fk_cascade_depth += 1;
+                        let mut res = Ok(());
+                        for (child_rid, _) in matches {
+                            if let Some(pk_idx) = child_def.primary_key_index() {
+                                let pk_name = &child_def.columns[pk_idx].name;
+                                let cond = WhereExpr::Condition(WhereCondition {
+                                    column: pk_name.clone(),
+                                    op: BinaryOp::Equals,
+                                    value: Value::Integer(child_rid as i64),
+                                });
+                                res = self
+                                    .execute_delete(pager, child_def.name.clone(), Some(cond), None)
+                                    .map(|_| ());
+                            } else if let Some(first_col) = fk.columns.first() {
+                                let cond = WhereExpr::Condition(WhereCondition {
+                                    column: first_col.clone(),
+                                    op: BinaryOp::Equals,
+                                    value: parent_vals[0].clone(),
+                                });
+                                res = self
+                                    .execute_delete(pager, child_def.name.clone(), Some(cond), None)
+                                    .map(|_| ());
+                            }
+                            if res.is_err() {
+                                break;
+                            }
+                        }
+                        self.fk_cascade_depth -= 1;
+                        res?;
+                    }
+                    ForeignKeyAction::SetNull => {
+                        self.fk_cascade_depth += 1;
+                        let mut res = Ok(());
+                        let assignments: Vec<(String, Value)> = fk
+                            .columns
+                            .iter()
+                            .map(|c| (c.clone(), Value::Null))
+                            .collect();
+                        for (idx, col_name) in fk.columns.iter().enumerate() {
+                            if idx < parent_vals.len() {
+                                let cond = WhereExpr::Condition(WhereCondition {
+                                    column: col_name.clone(),
+                                    op: BinaryOp::Equals,
+                                    value: parent_vals[idx].clone(),
+                                });
+                                res = self
+                                    .execute_update(
+                                        pager,
+                                        child_def.name.clone(),
+                                        assignments.clone(),
+                                        Some(cond),
+                                        None,
+                                    )
+                                    .map(|_| ());
+                                break;
+                            }
+                        }
+                        self.fk_cascade_depth -= 1;
+                        res?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_parent_foreign_key_on_update(
+        &mut self,
+        pager: &mut Pager,
+        parent_table: &str,
+        old_parent_row: &Row,
+        new_parent_row: &Row,
+    ) -> Result<()> {
+        if !self.foreign_keys_enabled {
+            return Ok(());
+        }
+        if self.fk_cascade_depth >= 16 {
+            return Err(Error::ConstraintViolation(
+                "FOREIGN KEY CASCADE recursion limit exceeded".into(),
+            ));
+        }
+        let parent_def = match self.catalog.get_table(parent_table).cloned() {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+        let all_tables = self.catalog.tables();
+        for child_def in all_tables {
+            for fk in collect_table_foreign_keys(&child_def) {
+                if !fk.ref_table.eq_ignore_ascii_case(parent_table) {
+                    continue;
+                }
+                let parent_cols = resolve_fk_parent_cols(&parent_def, &fk);
+                let old_vals: Vec<Value> = parent_cols
+                    .iter()
+                    .map(|c| {
+                        old_parent_row
+                            .get_field_or_json_path(c)
+                            .unwrap_or(Value::Null)
+                    })
+                    .collect();
+                let new_vals: Vec<Value> = parent_cols
+                    .iter()
+                    .map(|c| {
+                        new_parent_row
+                            .get_field_or_json_path(c)
+                            .unwrap_or(Value::Null)
+                    })
+                    .collect();
+                if old_vals == new_vals {
+                    continue;
+                }
+                let matches =
+                    self.find_matching_child_rows(pager, &child_def, &fk.columns, &old_vals)?;
+                if matches.is_empty() {
+                    continue;
+                }
+                match fk.on_update {
+                    ForeignKeyAction::NoAction | ForeignKeyAction::Restrict => {
+                        return Err(Error::ConstraintViolation(format!(
+                            "FOREIGN KEY constraint failed on UPDATE of '{parent_table}': referenced by '{}.{}'",
+                            child_def.name,
+                            fk.columns.join(",")
+                        )));
+                    }
+                    ForeignKeyAction::Cascade | ForeignKeyAction::SetNull => {
+                        self.fk_cascade_depth += 1;
+                        let target_vals: Vec<Value> = if fk.on_update == ForeignKeyAction::SetNull {
+                            vec![Value::Null; fk.columns.len()]
+                        } else {
+                            new_vals
+                        };
+                        let assignments: Vec<(String, Value)> =
+                            fk.columns.iter().cloned().zip(target_vals).collect();
+                        let cond = WhereExpr::Condition(WhereCondition {
+                            column: fk.columns[0].clone(),
+                            op: BinaryOp::Equals,
+                            value: old_vals[0].clone(),
+                        });
+                        let res = self
+                            .execute_update(
+                                pager,
+                                child_def.name.clone(),
+                                assignments,
+                                Some(cond),
+                                None,
+                            )
+                            .map(|_| ());
+                        self.fk_cascade_depth -= 1;
+                        res?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_fts_index(&mut self, pager: &mut Pager, table_def: &TableDef) -> Result<()> {
+        let Some(ref fts_cfg) = table_def.fts_config else {
+            return Ok(());
+        };
+        let key = table_def.name.to_lowercase();
+        if self.fts_indexes.contains_key(&key) {
+            return Ok(());
+        }
+        let mut idx = Bm25Index::new();
+        let all_cols = table_def.column_names();
+        let cells = self.btree.scan(pager, table_def.root_page)?;
+        for cell in cells {
+            let row = decode_row(&cell.payload, &all_cols)?;
+            let mut text = String::new();
+            for col in &fts_cfg.columns {
+                if let Some(Value::Text(s)) = row.get_value(col) {
+                    if !text.is_empty() {
+                        text.push(' ');
+                    }
+                    text.push_str(s);
+                }
+            }
+            idx.index_document(cell.row_id, &text);
+        }
+        self.fts_indexes.insert(key, idx);
+        Ok(())
+    }
+
+    fn fts_upsert_row(
+        &mut self,
+        pager: &mut Pager,
+        table_def: &TableDef,
+        row: &Row,
+        row_id: u64,
+    ) -> Result<()> {
+        let Some(ref fts_cfg) = table_def.fts_config else {
+            return Ok(());
+        };
+        self.ensure_fts_index(pager, table_def)?;
+        let mut text = String::new();
+        for col in &fts_cfg.columns {
+            if let Some(Value::Text(s)) = row.get_value(col) {
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(s);
+            }
+        }
+        if let Some(idx) = self.fts_indexes.get_mut(&table_def.name.to_lowercase()) {
+            idx.remove_document(row_id);
+            idx.index_document(row_id, &text);
+        }
+        Ok(())
+    }
+
+    fn fts_remove_row(&mut self, table_def: &TableDef, row_id: u64) {
+        if table_def.fts_config.is_some() {
+            if let Some(idx) = self.fts_indexes.get_mut(&table_def.name.to_lowercase()) {
+                idx.remove_document(row_id);
+            }
+        }
+    }
+
+    fn fire_triggers(
+        &mut self,
+        pager: &mut Pager,
+        table: &str,
+        timing: TriggerTiming,
+        event: TriggerEvent,
+        old_row: Option<&Row>,
+        new_row: Option<&Row>,
+    ) -> Result<bool> {
+        let triggers = self.catalog.triggers_for(table, timing, event);
+        if triggers.is_empty() {
+            return Ok(true);
+        }
+        if self.trigger_depth >= 16 {
+            return Err(Error::ConstraintViolation(
+                "Trigger recursion depth limit exceeded".into(),
+            ));
+        }
+        self.trigger_depth += 1;
+        let result = (|| -> Result<bool> {
+            for trig in triggers {
+                if let Some(ref when_sql) = trig.when_sql {
+                    let when_tokens = tokenize(when_sql)?;
+                    let mut c = 0usize;
+                    let when_expr =
+                        crate::sql::parser::parse_where_expr_public(&when_tokens, &mut c)?;
+                    let resolved = self.resolve_where_expr(pager, &when_expr)?;
+                    let mut t_cols = Vec::new();
+                    let mut t_vals = Vec::new();
+                    if let Some(nr) = new_row {
+                        for (col, val) in nr.columns().iter().zip(nr.values().iter()) {
+                            t_cols.push(format!("NEW.{col}"));
+                            t_vals.push(val.clone());
+                            t_cols.push(col.clone());
+                            t_vals.push(val.clone());
+                        }
+                    }
+                    if let Some(or) = old_row {
+                        for (col, val) in or.columns().iter().zip(or.values().iter()) {
+                            t_cols.push(format!("OLD.{col}"));
+                            t_vals.push(val.clone());
+                            if new_row.is_none() {
+                                t_cols.push(col.clone());
+                                t_vals.push(val.clone());
+                            }
+                        }
+                    }
+                    let trigger_row = Row::new(t_cols, t_vals);
+                    if !row_matches_resolved(&trigger_row, &resolved) {
+                        continue;
+                    }
+                }
+
+                let body_tokens = tokenize(&trig.body_sql)?;
+                let subst_body = substitute_trigger_row_tokens(&body_tokens, old_row, new_row);
+                for stmt_tokens in split_token_statements(&subst_body) {
+                    let stmt = parse_tokens(&stmt_tokens)?;
+                    match stmt {
+                        Statement::Raise { action, message } => {
+                            if action.eq_ignore_ascii_case("IGNORE") {
+                                return Ok(false);
+                            }
+                            return Err(Error::ConstraintViolation(format!(
+                                "Trigger '{}' RAISE({action}): {message}",
+                                trig.name
+                            )));
+                        }
+                        other => {
+                            let _ = self.execute_inner(pager, other)?;
+                        }
+                    }
+                }
+            }
+            Ok(true)
+        })();
+        self.trigger_depth -= 1;
+        result
     }
 
     /// Project a row applying scalar functions and registered UDFs
@@ -1246,6 +2186,8 @@ impl SQLExecutor {
                 | Statement::AlterTableRenameTable { .. }
                 | Statement::CreateView { .. }
                 | Statement::DropView { .. }
+                | Statement::CreateTrigger { .. }
+                | Statement::DropTrigger { .. }
         )
     }
 
@@ -1324,6 +2266,13 @@ impl SQLExecutor {
                             val_lower == "1" || val_lower == "true" || val_lower == "on";
                     }
                     Ok(if self.default_system_versioning { 1 } else { 0 })
+                } else if k == "foreign_keys" {
+                    if let Some(v) = value {
+                        let val_lower = v.trim().to_lowercase();
+                        self.foreign_keys_enabled =
+                            val_lower == "1" || val_lower == "true" || val_lower == "on";
+                    }
+                    Ok(if self.foreign_keys_enabled { 1 } else { 0 })
                 } else {
                     Ok(0)
                 }
@@ -1334,6 +2283,11 @@ impl SQLExecutor {
                 if_not_exists,
                 columns,
                 system_versioning,
+                foreign_keys,
+                check_constraints,
+                unique_constraints,
+                primary_key_columns,
+                fts_config,
             } => {
                 if self.catalog.table_exists(&name) {
                     if if_not_exists {
@@ -1351,11 +2305,21 @@ impl SQLExecutor {
 
                 let mut table_def = TableDef::new(name.clone(), root_page, columns);
                 table_def.system_versioning = system_versioning || self.default_system_versioning;
+                table_def.foreign_keys = foreign_keys;
+                table_def.check_constraints = check_constraints;
+                table_def.unique_constraints = unique_constraints;
+                table_def.primary_key_columns = primary_key_columns;
+                table_def.fts_config = fts_config.clone();
 
                 // If table has a vector column, prepare vector index
                 if let Some((_, dims)) = table_def.vector_column() {
                     let index = HnswIndex::new(dims, DistanceMetric::Cosine);
                     self.vector_indexes.insert(name.to_lowercase(), index);
+                }
+
+                if fts_config.is_some() {
+                    self.fts_indexes
+                        .insert(name.to_lowercase(), Bm25Index::new());
                 }
 
                 self.catalog.create_table(pager, table_def)?;
@@ -1442,6 +2406,7 @@ impl SQLExecutor {
                 pager.rollback_transaction()?;
                 self.catalog = Catalog::load(pager)?;
                 self.vector_indexes.clear();
+                self.fts_indexes.clear();
                 self.graph = GraphEngine::new();
                 self.load_vector_indexes_from_disk(pager)?;
                 self.load_graph_from_disk(pager)?;
@@ -1453,6 +2418,8 @@ impl SQLExecutor {
                 if_not_exists,
                 table,
                 column,
+                columns,
+                unique,
             } => {
                 if if_not_exists && self.catalog.index_exists(&name) {
                     return Ok(0);
@@ -1468,17 +2435,20 @@ impl SQLExecutor {
                     .cloned()
                     .ok_or_else(|| Error::TableNotFound(table.clone()))?;
 
-                let base_col = if let Some(pos) = column.find('.') {
-                    &column[..pos]
+                let target_cols = if columns.is_empty() {
+                    vec![column.clone()]
                 } else {
-                    &column
+                    columns
                 };
-                if table_def.column_index(base_col).is_none()
-                    && table_def.column_index(&column).is_none()
-                {
-                    return Err(Error::Corrupted(format!(
-                        "Column '{column}' not found in table '{table}' for index '{name}'"
-                    )));
+                for col in &target_cols {
+                    let base_col = col.split('.').next().unwrap_or(col);
+                    if table_def.column_index(base_col).is_none()
+                        && table_def.column_index(col).is_none()
+                    {
+                        return Err(Error::Corrupted(format!(
+                            "Column '{col}' not found in table '{table}' for index '{name}'"
+                        )));
+                    }
                 }
 
                 let index_root = pager.allocate_page()?;
@@ -1493,14 +2463,21 @@ impl SQLExecutor {
 
                 for cell in cells {
                     let full_row = decode_row(&cell.payload, &all_col_names)?;
-                    if let Some(col_val) = full_row.get_field_or_json_path(&column) {
-                        if !col_val.is_null() {
-                            let key = value_to_index_key(&col_val);
-                            buckets
-                                .entry(key)
-                                .or_default()
-                                .add_row_id(col_val, cell.row_id);
+                    if let Some((col_val, all_non_null)) =
+                        extract_index_key_value(&full_row, &target_cols)
+                    {
+                        let key = value_to_index_key(&col_val);
+                        let bucket = buckets.entry(key).or_default();
+                        if unique
+                            && all_non_null
+                            && bucket.get_row_ids(&col_val).is_some_and(|r| !r.is_empty())
+                        {
+                            return Err(Error::ConstraintViolation(format!(
+                                "UNIQUE index '{name}' failed: duplicate key in {table}({})",
+                                target_cols.join(", ")
+                            )));
                         }
+                        bucket.add_row_id(col_val, cell.row_id);
                     }
                 }
 
@@ -1511,7 +2488,7 @@ impl SQLExecutor {
                     self.btree.insert(pager, index_root, key, &idx_payload)?;
                 }
 
-                let index_def = IndexDef::new(name, table, column, index_root);
+                let index_def = IndexDef::composite(name, table, target_cols, index_root, unique);
                 self.catalog.create_index(pager, index_def)?;
 
                 Ok(1)
@@ -1534,6 +2511,34 @@ impl SQLExecutor {
             Statement::DropTable { table, if_exists } => {
                 let name_lower = table.to_lowercase();
                 if let Some(table_def) = self.catalog.get_table(&name_lower).cloned() {
+                    if self.foreign_keys_enabled {
+                        for child_def in self.catalog.tables() {
+                            if child_def.name.eq_ignore_ascii_case(&table) {
+                                continue;
+                            }
+                            for fk in collect_table_foreign_keys(&child_def) {
+                                if fk.ref_table.eq_ignore_ascii_case(&table) {
+                                    let child_cols = child_def.column_names();
+                                    let cells = self.btree.scan(pager, child_def.root_page)?;
+                                    for cell in cells {
+                                        let row = decode_row(&cell.payload, &child_cols)?;
+                                        let has_non_null_ref = fk.columns.iter().all(|c| {
+                                            !row.get_field_or_json_path(c)
+                                                .unwrap_or(Value::Null)
+                                                .is_null()
+                                        });
+                                        if has_non_null_ref {
+                                            return Err(Error::ConstraintViolation(format!(
+                                                "FOREIGN KEY constraint failed on DROP TABLE '{table}': referenced by '{}'",
+                                                child_def.name
+                                            )));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     let root_page = table_def.root_page;
                     let mut page_buf = pager.read_page(root_page)?;
                     engine::init_leaf_page(&mut page_buf, root_page);
@@ -1551,8 +2556,21 @@ impl SQLExecutor {
                         let _ = self.catalog.drop_index(pager, &idx_name);
                     }
 
+                    // Drop any triggers attached to this table
+                    let trigger_names: Vec<String> = self
+                        .catalog
+                        .triggers()
+                        .into_iter()
+                        .filter(|t| t.table.eq_ignore_ascii_case(&table))
+                        .map(|t| t.name)
+                        .collect();
+                    for trg_name in trigger_names {
+                        let _ = self.catalog.drop_trigger(pager, &trg_name);
+                    }
+
                     self.catalog.drop_table(pager, &table)?;
                     self.vector_indexes.remove(&name_lower);
+                    self.fts_indexes.remove(&name_lower);
                     Ok(1)
                 } else if if_exists {
                     Ok(0)
@@ -1562,7 +2580,35 @@ impl SQLExecutor {
             }
 
             Statement::AlterTableAddColumn { table, column } => {
+                let default_fill = column.default_value.as_ref().map(DefaultValue::materialize);
                 self.catalog.add_column(pager, &table, column)?;
+                if let Some(fill_val) = default_fill {
+                    if let Some(tdef) = self.catalog.get_table(&table).cloned() {
+                        let col_count = tdef.columns.len();
+                        let prev_cols: Vec<String> = tdef
+                            .columns
+                            .iter()
+                            .take(col_count.saturating_sub(1))
+                            .map(|c| c.name.clone())
+                            .collect();
+                        let cells = self.btree.scan(pager, tdef.root_page)?;
+                        for cell in cells {
+                            let row = decode_row(&cell.payload, &prev_cols)?;
+                            let mut vals = row.values().to_vec();
+                            if vals.len() < col_count {
+                                vals.resize(col_count - 1, Value::Null);
+                                vals.push(fill_val.clone());
+                                let new_payload = encode_row(&vals);
+                                self.btree.insert(
+                                    pager,
+                                    tdef.root_page,
+                                    cell.row_id,
+                                    &new_payload,
+                                )?;
+                            }
+                        }
+                    }
+                }
                 Ok(1)
             }
 
@@ -1595,11 +2641,54 @@ impl SQLExecutor {
                 pager.rollback_to_savepoint(&name)?;
                 self.catalog = Catalog::load(pager)?;
                 self.vector_indexes.clear();
+                self.fts_indexes.clear();
                 self.graph = GraphEngine::new();
                 self.load_vector_indexes_from_disk(pager)?;
                 self.load_graph_from_disk(pager)?;
                 Ok(0)
             }
+
+            Statement::CreateTrigger {
+                name,
+                if_not_exists,
+                table,
+                timing,
+                event,
+                when_sql,
+                body_sql,
+            } => {
+                if if_not_exists && self.catalog.trigger_exists(&name) {
+                    return Ok(0);
+                }
+                if !self.catalog.table_exists(&table) {
+                    return Err(Error::TableNotFound(table));
+                }
+                let trg = TriggerDef {
+                    name,
+                    table,
+                    timing,
+                    event,
+                    when_sql,
+                    body_sql,
+                };
+                self.catalog.create_trigger(pager, trg)?;
+                Ok(1)
+            }
+
+            Statement::DropTrigger { name, if_exists } => {
+                let dropped = self.catalog.drop_trigger(pager, &name)?;
+                if dropped {
+                    Ok(1)
+                } else if if_exists {
+                    Ok(0)
+                } else {
+                    Err(Error::TableNotFound(format!("Trigger '{name}' not found")))
+                }
+            }
+
+            Statement::Raise { action, message } => Err(Error::ConstraintViolation(format!(
+                "RAISE({action}): {message}"
+            ))),
 
             Statement::ReleaseSavepoint { name } => {
                 pager.release_savepoint(&name)?;
@@ -1914,6 +3003,28 @@ impl SQLExecutor {
                 let root_page = table_def.root_page;
                 let all_col_names = table_def.column_names();
 
+                let fts_query = if table_def.fts_config.is_some() {
+                    where_clause
+                        .as_ref()
+                        .and_then(|e| extract_fts_match_query(e, &table))
+                } else {
+                    None
+                };
+                let fts_scores: Option<HashMap<u64, f64>> = if let Some(ref q) = fts_query {
+                    self.ensure_fts_index(pager, &table_def)?;
+                    let idx_key = table.to_lowercase();
+                    let mut score_map = HashMap::new();
+                    if let Some(idx) = self.fts_indexes.get(&idx_key) {
+                        let total_docs = idx.total_docs().max(1);
+                        for (doc_id, score) in idx.search(q, total_docs) {
+                            score_map.insert(doc_id, -(score as f64));
+                        }
+                    }
+                    Some(score_map)
+                } else {
+                    None
+                };
+
                 let resolved_where = if let Some(ref expr) = where_clause {
                     Some(self.resolve_where_expr(pager, expr)?)
                 } else {
@@ -1958,6 +3069,108 @@ impl SQLExecutor {
                                     } else {
                                         return Ok(Vec::new());
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Composite secondary index lookup for `WHERE a = X AND b = Y`
+                if as_of_timestamp.is_none()
+                    && join.is_none()
+                    && order_by.is_none()
+                    && group_by.is_none()
+                {
+                    if let Some(ref expr) = where_clause {
+                        let mut and_eqs = HashMap::new();
+                        collect_and_eq_conditions(expr, &mut and_eqs);
+                        if and_eqs.len() >= 2 {
+                            let matched_comp_idx = self
+                                .catalog
+                                .indexes()
+                                .into_iter()
+                                .filter(|idx| idx.table.eq_ignore_ascii_case(&table))
+                                .filter_map(|idx| {
+                                    let cols = idx.target_columns();
+                                    if cols.len() >= 2
+                                        && cols
+                                            .iter()
+                                            .all(|c| and_eqs.contains_key(&c.to_lowercase()))
+                                    {
+                                        Some((cols.len(), idx))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .max_by_key(|(len, _)| *len)
+                                .map(|(_, idx)| idx);
+
+                            if let Some(index_def) = matched_comp_idx {
+                                let tcols = index_def.target_columns();
+                                let dummy_cols: Vec<String> =
+                                    tcols.iter().map(|c| (*c).to_string()).collect();
+                                let dummy_vals: Vec<Value> = tcols
+                                    .iter()
+                                    .map(|c| {
+                                        and_eqs
+                                            .get(&c.to_lowercase())
+                                            .cloned()
+                                            .unwrap_or(Value::Null)
+                                    })
+                                    .collect();
+                                let dummy_row = Row::new(dummy_cols, dummy_vals);
+                                if let Some((comp_val, _)) =
+                                    extract_index_key_value(&dummy_row, &tcols)
+                                {
+                                    let key = value_to_index_key(&comp_val);
+                                    let mut matched_row_ids = Vec::new();
+                                    if let Some(payload) =
+                                        self.btree.search(pager, index_def.root_page, key)?
+                                    {
+                                        if let Ok(bucket) =
+                                            serde_json::from_slice::<IndexBucket>(&payload)
+                                        {
+                                            if let Some(rids) = bucket.get_row_ids(&comp_val) {
+                                                matched_row_ids.extend_from_slice(rids);
+                                            }
+                                        }
+                                    }
+                                    let output_col_names = if columns.is_empty() {
+                                        all_col_names.clone()
+                                    } else {
+                                        columns.clone()
+                                    };
+                                    let mut result_rows = Vec::new();
+                                    let skip_count = offset.unwrap_or(0);
+                                    let mut skipped = 0;
+                                    for rid in matched_row_ids {
+                                        if let Some(payload) =
+                                            self.btree.search(pager, root_page, rid)?
+                                        {
+                                            let full_row = decode_row(&payload, &all_col_names)?;
+                                            if let Some(ref r_expr) = resolved_where {
+                                                if !row_matches_resolved(&full_row, r_expr) {
+                                                    continue;
+                                                }
+                                            }
+                                            let projected =
+                                                self.project_row(&full_row, &output_col_names)?;
+                                            if distinct && result_rows.contains(&projected) {
+                                                continue;
+                                            }
+                                            if skipped < skip_count {
+                                                skipped += 1;
+                                                continue;
+                                            }
+                                            result_rows.push(projected);
+                                            if let Some(lim) = limit {
+                                                if result_rows.len() >= lim {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    return Ok(result_rows);
                                 }
                             }
                         }
@@ -2459,6 +3672,16 @@ impl SQLExecutor {
                     }
                 }
 
+                let wants_fts_scores = fts_scores.is_some()
+                    && (columns.iter().any(|c| {
+                        let cl = c.to_ascii_lowercase();
+                        cl == "rank" || cl.starts_with("bm25(")
+                    }) || order_by.as_ref().is_some_and(|o| {
+                        let ol = o.column.to_ascii_lowercase();
+                        ol == "rank" || ol.starts_with("bm25(")
+                    }));
+                let mut fts_left_col_shared: Option<Arc<Vec<String>>> = None;
+
                 if as_of_timestamp.is_none() {
                     let can_early_terminate = join.is_none()
                         && order_by.is_none()
@@ -2472,18 +3695,44 @@ impl SQLExecutor {
                     };
 
                     let left_col_shared = Arc::new(all_col_names.clone());
+                    if wants_fts_scores {
+                        let mut extended = all_col_names.clone();
+                        extended.push("rank".to_string());
+                        extended.push(format!("bm25({table})"));
+                        fts_left_col_shared = Some(Arc::new(extended));
+                    }
+
                     self.btree.scan_with(pager, root_page, |cell| {
-                        let full_row = if let Some(ref mask) = left_needed_mask {
+                        let mut full_row = if let Some(ref mask) = left_needed_mask {
                             decode_row_shared_projected(&cell.payload, &left_col_shared, mask)?
                         } else {
                             decode_row_shared(&cell.payload, &left_col_shared)?
                         };
 
-                        // Check WHERE filter on left table
+                        // Check WHERE filter on left table (with FTS5 table MATCH support)
                         if let Some(ref r_expr) = resolved_where {
-                            if !row_matches_resolved(&full_row, r_expr) {
+                            if let Some(ref scores) = fts_scores {
+                                let eff_expr = resolve_fts_match_predicate(
+                                    r_expr,
+                                    &table,
+                                    scores.contains_key(&cell.row_id),
+                                );
+                                if !row_matches_resolved(&full_row, &eff_expr) {
+                                    return Ok(true);
+                                }
+                            } else if !row_matches_resolved(&full_row, r_expr) {
                                 return Ok(true);
                             }
+                        }
+
+                        if let (Some(scores), Some(ext_cols)) =
+                            (fts_scores.as_ref(), fts_left_col_shared.as_ref())
+                        {
+                            let rank_val = scores.get(&cell.row_id).copied().unwrap_or(0.0);
+                            let mut vals = full_row.values().to_vec();
+                            vals.push(Value::Real(rank_val));
+                            vals.push(Value::Real(rank_val));
+                            full_row = Row::with_shared_columns(ext_cols.clone(), vals);
                         }
 
                         left_rows.push(full_row);
@@ -2965,7 +4214,9 @@ impl SQLExecutor {
 
                 // Project columns and apply LIMIT
                 let output_col_names = if columns.is_empty() {
-                    if let Some(first_row) = left_rows.first() {
+                    if wants_fts_scores {
+                        all_col_names.clone()
+                    } else if let Some(first_row) = left_rows.first() {
                         first_row.columns().to_vec()
                     } else {
                         all_col_names.clone()
@@ -2982,7 +4233,10 @@ impl SQLExecutor {
                     let mut indices = Vec::with_capacity(output_col_shared.len());
                     let mut all_matched = true;
                     for col in output_col_shared.iter() {
-                        if col.contains('(') || col.contains(' ') {
+                        let col_lower = col.to_ascii_lowercase();
+                        let is_direct_bm25 =
+                            col_lower.starts_with("bm25(") && !col_lower.contains(" as ");
+                        if !is_direct_bm25 && (col.contains('(') || col.contains(' ')) {
                             all_matched = false;
                             break;
                         }
@@ -3644,6 +4898,71 @@ impl SQLExecutor {
                 ))),
             },
 
+            Statement::Pragma { key, value } => {
+                let k = key.to_lowercase();
+                if k == "table_info" {
+                    let target_table = value.unwrap_or_default();
+                    let cols = vec![
+                        "cid".to_string(),
+                        "name".to_string(),
+                        "type".to_string(),
+                        "notnull".to_string(),
+                        "dflt_value".to_string(),
+                        "pk".to_string(),
+                    ];
+                    let mut rows = Vec::new();
+                    if let Some(tdef) = self.catalog.get_table(&target_table) {
+                        for (cid, col) in tdef.columns.iter().enumerate() {
+                            let dtype = format!("{:?}", col.data_type).to_uppercase();
+                            let dflt = col
+                                .default_value
+                                .as_ref()
+                                .map(|d| Value::Text(format!("{:?}", d.materialize())))
+                                .unwrap_or(Value::Null);
+                            let pk_num = if col.primary_key {
+                                1
+                            } else if let Some(pos) = tdef
+                                .primary_key_columns
+                                .iter()
+                                .position(|p| p.eq_ignore_ascii_case(&col.name))
+                            {
+                                (pos + 1) as i64
+                            } else {
+                                0
+                            };
+                            rows.push(Row::new(
+                                cols.clone(),
+                                vec![
+                                    Value::Integer(cid as i64),
+                                    Value::Text(col.name.clone()),
+                                    Value::Text(dtype),
+                                    Value::Integer(if col.not_null { 1 } else { 0 }),
+                                    dflt,
+                                    Value::Integer(pk_num),
+                                ],
+                            ));
+                        }
+                    }
+                    Ok(rows)
+                } else if k == "foreign_keys" {
+                    if let Some(v) = value {
+                        let val_lower = v.trim().to_lowercase();
+                        self.foreign_keys_enabled =
+                            val_lower == "1" || val_lower == "true" || val_lower == "on";
+                    }
+                    Ok(vec![Row::new(
+                        vec!["foreign_keys".to_string()],
+                        vec![Value::Integer(if self.foreign_keys_enabled {
+                            1
+                        } else {
+                            0
+                        })],
+                    )])
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+
             other => Err(Error::SqlSyntax(format!(
                 "Non-query statement {other:?} passed to query()"
             ))),
@@ -3713,31 +5032,68 @@ impl SQLExecutor {
 
                 let mut is_index_search = false;
                 if !is_pk_search && join.is_none() && order_by.is_none() {
-                    if let Some(WhereExpr::Condition(cond)) = &where_clause {
-                        if cond.op == BinaryOp::Equals {
-                            if let Some(idx_def) =
-                                self.catalog.find_index_for_column(&table, &cond.column)
+                    if let Some(ref expr) = where_clause {
+                        let mut and_eqs = HashMap::new();
+                        collect_and_eq_conditions(expr, &mut and_eqs);
+                        if and_eqs.len() >= 2 {
+                            if let Some(idx_def) = self
+                                .catalog
+                                .indexes()
+                                .into_iter()
+                                .filter(|idx| idx.table.eq_ignore_ascii_case(&table))
+                                .filter(|idx| {
+                                    let cols = idx.target_columns();
+                                    cols.len() >= 2
+                                        && cols
+                                            .iter()
+                                            .all(|c| and_eqs.contains_key(&c.to_lowercase()))
+                                })
+                                .max_by_key(|idx| idx.target_columns().len())
                             {
                                 is_index_search = true;
-                                let sel = stats.estimate_selectivity(&cond.column, true);
-                                let cost = optimizer.estimate_index_scan(
-                                    stats,
-                                    &idx_def.name,
-                                    &cond.column,
-                                    sel,
-                                );
+                                let tcols = idx_def.target_columns().join(", ");
                                 rows.push(Row::new(
                                     cols.clone(),
                                     vec![
                                         Value::Integer(id),
                                         Value::Integer(0),
                                         Value::Text(format!(
-                                            "SEARCH TABLE {} USING INDEX {} ({} = {:?}) {}",
-                                            table, idx_def.name, cond.column, cond.value, cost
+                                            "SEARCH TABLE {} USING COMPOSITE INDEX {} ({})",
+                                            table, idx_def.name, tcols
                                         )),
                                     ],
                                 ));
                                 id += 1;
+                            }
+                        }
+                    }
+                    if !is_index_search {
+                        if let Some(WhereExpr::Condition(cond)) = &where_clause {
+                            if cond.op == BinaryOp::Equals {
+                                if let Some(idx_def) =
+                                    self.catalog.find_index_for_column(&table, &cond.column)
+                                {
+                                    is_index_search = true;
+                                    let sel = stats.estimate_selectivity(&cond.column, true);
+                                    let cost = optimizer.estimate_index_scan(
+                                        stats,
+                                        &idx_def.name,
+                                        &cond.column,
+                                        sel,
+                                    );
+                                    rows.push(Row::new(
+                                        cols.clone(),
+                                        vec![
+                                            Value::Integer(id),
+                                            Value::Integer(0),
+                                            Value::Text(format!(
+                                                "SEARCH TABLE {} USING INDEX {} ({} = {:?}) {}",
+                                                table, idx_def.name, cond.column, cond.value, cost
+                                            )),
+                                        ],
+                                    ));
+                                    id += 1;
+                                }
                             }
                         }
                     }
@@ -4120,6 +5476,7 @@ impl SQLExecutor {
         conflict_action: OnConflict,
         returning: Option<Vec<String>>,
     ) -> Result<(usize, Vec<Row>)> {
+        let table_def_snapshot;
         let table_cols;
         let root_page;
         let row_id;
@@ -4139,14 +5496,22 @@ impl SQLExecutor {
             vector_col = table_def.vector_column();
             is_temporal = table_def.system_versioning || self.default_system_versioning;
 
-            // Align values to table columns
+            // Align values to table columns, applying declared DEFAULT values for omitted columns
             aligned_values = if let Some(cols) = columns {
                 if cols.len() != values.len() {
                     return Err(Error::SqlSyntax(
                         "Column count does not match value count in INSERT".into(),
                     ));
                 }
-                let mut row_vals = vec![Value::Null; table_cols.len()];
+                let mut row_vals: Vec<Value> = table_cols
+                    .iter()
+                    .map(|c| {
+                        c.default_value
+                            .as_ref()
+                            .map(DefaultValue::materialize)
+                            .unwrap_or(Value::Null)
+                    })
+                    .collect();
                 for (c_name, val) in cols.iter().zip(values) {
                     let idx = table_def
                         .column_index(c_name)
@@ -4195,6 +5560,7 @@ impl SQLExecutor {
             };
             row_id = rid;
             key_may_exist = may_exist;
+            table_def_snapshot = table_def.clone();
         }
 
         // Enforce column data type validation and coercion
@@ -4225,6 +5591,21 @@ impl SQLExecutor {
             }
         }
 
+        let all_col_names: Vec<String> = table_cols.iter().map(|c| c.name.clone()).collect();
+        let candidate_row = Row::new(all_col_names.clone(), aligned_values.clone());
+
+        // BEFORE INSERT triggers
+        if !self.fire_triggers(
+            pager,
+            &table,
+            TriggerTiming::Before,
+            TriggerEvent::Insert,
+            None,
+            Some(&candidate_row),
+        )? {
+            return Ok((0, Vec::new()));
+        }
+
         // If table has a primary key or specific row_id and it already exists, enforce UNIQUE constraint or handle Upsert
         let existing_payload = if key_may_exist {
             self.btree.search(pager, root_page, row_id)?
@@ -4247,55 +5628,26 @@ impl SQLExecutor {
                     return Ok((0, Vec::new()));
                 }
                 OnConflict::Replace => {
-                    let all_col_names: Vec<String> =
-                        table_cols.iter().map(|c| c.name.clone()).collect();
+                    self.validate_check_constraints_for_row(&table_def_snapshot, &candidate_row)?;
+                    self.validate_unique_constraints(
+                        pager,
+                        &table_def_snapshot,
+                        &candidate_row,
+                        Some(row_id),
+                    )?;
+                    self.validate_child_foreign_keys(pager, &table_def_snapshot, &candidate_row)?;
                     if let Ok(old_row) = decode_row(&existing_payload, &all_col_names) {
-                        for index_def in self.catalog.indexes() {
-                            if index_def.table.eq_ignore_ascii_case(&table) {
-                                if let Some(val) = old_row.get_field_or_json_path(&index_def.column)
-                                {
-                                    if !val.is_null() {
-                                        let key = value_to_index_key(&val);
-                                        if let Some(payload) =
-                                            self.btree.search(pager, index_def.root_page, key)?
-                                        {
-                                            if let Ok(mut bucket) =
-                                                serde_json::from_slice::<IndexBucket>(&payload)
-                                            {
-                                                bucket.remove_row_id(&val, row_id);
-                                                if bucket.is_empty() {
-                                                    let _ = self.btree.delete(
-                                                        pager,
-                                                        index_def.root_page,
-                                                        key,
-                                                    );
-                                                } else if let Ok(new_pl) =
-                                                    serde_json::to_vec(&bucket)
-                                                {
-                                                    let _ = self.btree.insert(
-                                                        pager,
-                                                        index_def.root_page,
-                                                        key,
-                                                        &new_pl,
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        self.remove_row_from_all_indexes(pager, &table, &old_row, row_id)?;
                     }
                     if let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase()) {
                         index.remove_vector(row_id);
                     }
+                    self.fts_remove_row(&table_def_snapshot, row_id);
                     let now_ts = self.next_temporal_timestamp();
                     self.close_temporal_version(pager, &table, row_id, now_ts)?;
                     self.btree.delete(pager, root_page, row_id)?;
                 }
                 OnConflict::DoUpdate(updates) => {
-                    let all_col_names: Vec<String> =
-                        table_cols.iter().map(|c| c.name.clone()).collect();
                     let old_row = decode_row(&existing_payload, &all_col_names)?;
                     let mut values: Vec<Value> = old_row.values().to_vec();
                     for (col_name, new_val) in updates {
@@ -4328,41 +5680,26 @@ impl SQLExecutor {
                             }
                         }
                     }
-                    for index_def in self.catalog.indexes() {
-                        if index_def.table.eq_ignore_ascii_case(&table) {
-                            if let Some(val) = old_row.get_field_or_json_path(&index_def.column) {
-                                if !val.is_null() {
-                                    let key = value_to_index_key(&val);
-                                    if let Some(payload) =
-                                        self.btree.search(pager, index_def.root_page, key)?
-                                    {
-                                        if let Ok(mut bucket) =
-                                            serde_json::from_slice::<IndexBucket>(&payload)
-                                        {
-                                            bucket.remove_row_id(&val, row_id);
-                                            if bucket.is_empty() {
-                                                let _ = self.btree.delete(
-                                                    pager,
-                                                    index_def.root_page,
-                                                    key,
-                                                );
-                                            } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                                                let _ = self.btree.insert(
-                                                    pager,
-                                                    index_def.root_page,
-                                                    key,
-                                                    &new_pl,
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    let updated_row = Row::new(all_col_names.clone(), values.clone());
+                    self.validate_check_constraints_for_row(&table_def_snapshot, &updated_row)?;
+                    self.validate_unique_constraints(
+                        pager,
+                        &table_def_snapshot,
+                        &updated_row,
+                        Some(row_id),
+                    )?;
+                    self.validate_child_foreign_keys(pager, &table_def_snapshot, &updated_row)?;
+                    self.handle_parent_foreign_key_on_update(
+                        pager,
+                        &table,
+                        &old_row,
+                        &updated_row,
+                    )?;
+                    self.remove_row_from_all_indexes(pager, &table, &old_row, row_id)?;
                     if let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase()) {
                         index.remove_vector(row_id);
                     }
+                    self.fts_remove_row(&table_def_snapshot, row_id);
                     if is_temporal {
                         let now_ts = self.next_temporal_timestamp();
                         self.close_temporal_version(pager, &table, row_id, now_ts)?;
@@ -4372,6 +5709,18 @@ impl SQLExecutor {
                     aligned_values = values;
                 }
             }
+        } else {
+            // Fresh insert: enforce CHECK, UNIQUE, and child FOREIGN KEY
+            self.validate_check_constraints_for_row(&table_def_snapshot, &candidate_row)?;
+            if let Err(err) =
+                self.validate_unique_constraints(pager, &table_def_snapshot, &candidate_row, None)
+            {
+                if conflict_action == OnConflict::Ignore {
+                    return Ok((0, Vec::new()));
+                }
+                return Err(err);
+            }
+            self.validate_child_foreign_keys(pager, &table_def_snapshot, &candidate_row)?;
         }
 
         // Encode row to binary record payload
@@ -4397,51 +5746,28 @@ impl SQLExecutor {
             }
         }
 
-        // Update secondary indexes with inverted posting lists
-        let has_indexes = self
-            .catalog
-            .indexes()
-            .iter()
-            .any(|idx| idx.table.eq_ignore_ascii_case(&table));
-        if has_indexes {
-            let temp_row = Row::new(
-                table_cols.iter().map(|c| c.name.clone()).collect(),
-                aligned_values.clone(),
-            );
-            for index_def in self.catalog.indexes() {
-                if index_def.table.eq_ignore_ascii_case(&table) {
-                    if let Some(val) = temp_row.get_field_or_json_path(&index_def.column) {
-                        if !val.is_null() {
-                            let key = value_to_index_key(&val);
-                            let mut bucket = if let Some(payload) =
-                                self.btree.search(pager, index_def.root_page, key)?
-                            {
-                                serde_json::from_slice::<IndexBucket>(&payload)
-                                    .unwrap_or_else(|_| IndexBucket::new())
-                            } else {
-                                IndexBucket::new()
-                            };
-                            bucket.add_row_id(val, row_id);
-                            let idx_payload = serde_json::to_vec(&bucket).map_err(|e| {
-                                Error::Corrupted(format!("Failed to serialize index bucket: {e}"))
-                            })?;
-                            self.btree
-                                .insert(pager, index_def.root_page, key, &idx_payload)?;
-                        }
-                    }
-                }
-            }
-        }
+        let final_row = Row::new(all_col_names, aligned_values);
+
+        // Update secondary indexes and FTS5 index
+        self.add_row_to_all_indexes(pager, &table, &final_row, row_id)?;
+        self.fts_upsert_row(pager, &table_def_snapshot, &final_row, row_id)?;
+        self.last_insert_rowid = row_id as i64;
+
+        // AFTER INSERT triggers
+        self.fire_triggers(
+            pager,
+            &table,
+            TriggerTiming::After,
+            TriggerEvent::Insert,
+            None,
+            Some(&final_row),
+        )?;
 
         let returned_rows = if let Some(ref ret_cols) = returning {
-            let full_row = Row::new(
-                table_cols.iter().map(|c| c.name.clone()).collect(),
-                aligned_values,
-            );
             if ret_cols.len() == 1 && ret_cols[0] == "*" {
-                vec![full_row]
+                vec![final_row]
             } else {
-                vec![self.project_row(&full_row, ret_cols)?]
+                vec![self.project_row(&final_row, ret_cols)?]
             }
         } else {
             Vec::new()
@@ -4561,10 +5887,33 @@ impl SQLExecutor {
                     }
                 }
 
+                let updated_row = Row::new(all_col_names.clone(), values.clone());
+                if !self.fire_triggers(
+                    pager,
+                    &table,
+                    TriggerTiming::Before,
+                    TriggerEvent::Update,
+                    Some(&full_row),
+                    Some(&updated_row),
+                )? {
+                    continue;
+                }
+
+                self.validate_check_constraints_for_row(&table_def, &updated_row)?;
+                self.validate_unique_constraints(
+                    pager,
+                    &table_def,
+                    &updated_row,
+                    Some(cell.row_id),
+                )?;
+                self.validate_child_foreign_keys(pager, &table_def, &updated_row)?;
+
                 let new_payload = encode_row(&values);
                 self.btree.delete(pager, root_page, cell.row_id)?;
                 self.btree
                     .insert(pager, root_page, new_row_id, &new_payload)?;
+
+                self.handle_parent_foreign_key_on_update(pager, &table, &full_row, &updated_row)?;
 
                 // Update temporal snapshot for time-travel queries if enabled
                 if table_def.system_versioning || self.default_system_versioning {
@@ -4598,64 +5947,13 @@ impl SQLExecutor {
                     }
                 }
 
-                // Update secondary indexes with inverted posting lists
-                for index_def in self.catalog.indexes() {
-                    if index_def.table.eq_ignore_ascii_case(&table) {
-                        if let Some(old_val) = full_row.get_field_or_json_path(&index_def.column) {
-                            if !old_val.is_null() {
-                                let old_key = value_to_index_key(&old_val);
-                                if let Some(payload) =
-                                    self.btree.search(pager, index_def.root_page, old_key)?
-                                {
-                                    if let Ok(mut bucket) =
-                                        serde_json::from_slice::<IndexBucket>(&payload)
-                                    {
-                                        bucket.remove_row_id(&old_val, cell.row_id);
-                                        if bucket.is_empty() {
-                                            let _ = self.btree.delete(
-                                                pager,
-                                                index_def.root_page,
-                                                old_key,
-                                            );
-                                        } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                                            let _ = self.btree.insert(
-                                                pager,
-                                                index_def.root_page,
-                                                old_key,
-                                                &new_pl,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        let updated_temp_row = Row::new(all_col_names.clone(), values.clone());
-                        if let Some(new_val) =
-                            updated_temp_row.get_field_or_json_path(&index_def.column)
-                        {
-                            if !new_val.is_null() {
-                                let new_key = value_to_index_key(&new_val);
-                                let mut bucket = if let Some(payload) =
-                                    self.btree.search(pager, index_def.root_page, new_key)?
-                                {
-                                    serde_json::from_slice::<IndexBucket>(&payload)
-                                        .unwrap_or_else(|_| IndexBucket::new())
-                                } else {
-                                    IndexBucket::new()
-                                };
-                                bucket.add_row_id(new_val, new_row_id);
-                                if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                                    let _ = self.btree.insert(
-                                        pager,
-                                        index_def.root_page,
-                                        new_key,
-                                        &new_pl,
-                                    );
-                                }
-                            }
-                        }
-                    }
+                // Update secondary indexes & FTS5 index
+                self.remove_row_from_all_indexes(pager, &table, &full_row, cell.row_id)?;
+                self.add_row_to_all_indexes(pager, &table, &updated_row, new_row_id)?;
+                if new_row_id != cell.row_id {
+                    self.fts_remove_row(&table_def, cell.row_id);
                 }
+                self.fts_upsert_row(pager, &table_def, &updated_row, new_row_id)?;
 
                 if new_row_id >= table_def.next_row_id {
                     if let Some(tdef_mut) = self.catalog.get_table_mut(&table) {
@@ -4663,8 +5961,16 @@ impl SQLExecutor {
                     }
                 }
 
+                self.fire_triggers(
+                    pager,
+                    &table,
+                    TriggerTiming::After,
+                    TriggerEvent::Update,
+                    Some(&full_row),
+                    Some(&updated_row),
+                )?;
+
                 if let Some(ref ret_cols) = returning {
-                    let updated_row = Row::new(all_col_names.clone(), values.clone());
                     if ret_cols.len() == 1 && ret_cols[0] == "*" {
                         returned_rows.push(updated_row);
                     } else {
@@ -4713,6 +6019,19 @@ impl SQLExecutor {
             };
 
             if matches {
+                if !self.fire_triggers(
+                    pager,
+                    &table,
+                    TriggerTiming::Before,
+                    TriggerEvent::Delete,
+                    Some(&full_row),
+                    None,
+                )? {
+                    continue;
+                }
+
+                self.handle_parent_foreign_key_on_delete(pager, &table, &full_row)?;
+
                 if let Some(ref ret_cols) = returning {
                     if ret_cols.len() == 1 && ret_cols[0] == "*" {
                         returned_rows.push(full_row.clone());
@@ -4729,36 +6048,17 @@ impl SQLExecutor {
                 if let Some(index) = self.vector_indexes.get_mut(&table.to_lowercase()) {
                     index.remove_vector(cell.row_id);
                 }
-                // Delete from secondary indexes with inverted posting lists
-                for index_def in self.catalog.indexes() {
-                    if index_def.table.eq_ignore_ascii_case(&table) {
-                        if let Some(val) = full_row.get_field_or_json_path(&index_def.column) {
-                            if !val.is_null() {
-                                let key = value_to_index_key(&val);
-                                if let Some(payload) =
-                                    self.btree.search(pager, index_def.root_page, key)?
-                                {
-                                    if let Ok(mut bucket) =
-                                        serde_json::from_slice::<IndexBucket>(&payload)
-                                    {
-                                        bucket.remove_row_id(&val, cell.row_id);
-                                        if bucket.is_empty() {
-                                            let _ =
-                                                self.btree.delete(pager, index_def.root_page, key);
-                                        } else if let Ok(new_pl) = serde_json::to_vec(&bucket) {
-                                            let _ = self.btree.insert(
-                                                pager,
-                                                index_def.root_page,
-                                                key,
-                                                &new_pl,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                self.fts_remove_row(&table_def, cell.row_id);
+                self.remove_row_from_all_indexes(pager, &table, &full_row, cell.row_id)?;
+
+                self.fire_triggers(
+                    pager,
+                    &table,
+                    TriggerTiming::After,
+                    TriggerEvent::Delete,
+                    Some(&full_row),
+                    None,
+                )?;
                 deleted_count += 1;
             }
         }

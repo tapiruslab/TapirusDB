@@ -239,6 +239,8 @@ pub struct StorageHealth {
     pub wal_frames: usize,
 }
 
+pub(crate) type CommittedWalSnapshot = (u32, HashMap<PageId, Vec<u8>>);
+
 impl Wal {
     /// Open an existing WAL file or create a new one
     pub fn open<P: AsRef<Path>>(wal_path: P, page_size: u32) -> Result<Self> {
@@ -371,6 +373,82 @@ impl Wal {
             }
         }
         Ok(committed)
+    }
+
+    /// Inspect WAL header metadata and file length as an O(1) commit fingerprint.
+    pub(crate) fn read_file_fingerprint(path: &Path) -> Result<(u64, u32, u32, u32)> {
+        let mut file = match File::open(path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0, 0, 0)),
+            Err(e) => return Err(e.into()),
+        };
+        let len = file.metadata()?.len();
+        if len < WAL_HEADER_SIZE as u64 {
+            return Ok((len, 0, 0, 0));
+        }
+        let mut bytes = [0u8; WAL_HEADER_SIZE];
+        file.read_exact(&mut bytes)?;
+        let header = WalHeader::from_bytes(&bytes)?;
+        Ok((len, header.checkpoint_seq, header.salt_1, header.salt_2))
+    }
+
+    /// Read all committed page images currently present in the WAL without modifying it.
+    ///
+    /// Returns `Ok(Some((db_size_in_pages, committed_pages)))` up to the latest valid commit
+    /// frame (`db_size_in_pages > 0`), or `Ok(None)` if the WAL is absent or has no commits.
+    pub(crate) fn read_all_committed_pages(path: &Path) -> Result<Option<CommittedWalSnapshot>> {
+        let mut file = match File::open(path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let length = file.metadata()?.len();
+        if length < WAL_HEADER_SIZE as u64 {
+            return Ok(None);
+        }
+        let mut bytes = [0u8; WAL_HEADER_SIZE];
+        file.read_exact(&mut bytes)?;
+        let header = WalHeader::from_bytes(&bytes)?;
+        let mut payload = vec![0u8; header.page_size as usize];
+        let mut pending: HashMap<PageId, Vec<u8>> = HashMap::new();
+        let mut committed: HashMap<PageId, Vec<u8>> = HashMap::new();
+        let mut committed_db_size: u32 = 0;
+
+        while file.stream_position()? + WAL_FRAME_HEADER_SIZE as u64 + payload.len() as u64
+            <= length
+        {
+            let mut raw = [0u8; WAL_FRAME_HEADER_SIZE];
+            if file.read_exact(&mut raw).is_err() {
+                break;
+            }
+            let frame = match WalFrameHeader::from_bytes(&raw) {
+                Ok(f) => f,
+                Err(_) => break,
+            };
+            if file.read_exact(&mut payload).is_err() {
+                break;
+            }
+            if frame.salt_1 != header.salt_1
+                || frame.salt_2 != header.salt_2
+                || frame.page_id == 0
+                || frame.frame_crc32 != frame.calculate_crc(&payload)
+            {
+                break;
+            }
+            pending.insert(frame.page_id, payload.clone());
+            if frame.db_size_in_pages > 0 {
+                for (pid, data) in pending.drain() {
+                    committed.insert(pid, data);
+                }
+                committed_db_size = frame.db_size_in_pages;
+            }
+        }
+
+        if committed_db_size == 0 || committed.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some((committed_db_size, committed)))
+        }
     }
 
     /// Check if a page is currently cached in the WAL

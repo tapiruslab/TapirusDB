@@ -3,7 +3,10 @@
 //! Converts token streams into an executable `Statement` AST.
 
 use crate::error::{Error, Result};
-use crate::sql::catalog::{ColumnDef, DataType};
+use crate::sql::catalog::{
+    CheckConstraint, ColumnDef, DataType, DefaultValue, ForeignKeyAction, ForeignKeyRef,
+    FtsTableConfig, TableForeignKey, TriggerEvent, TriggerTiming,
+};
 use crate::sql::lexer::{Token, tokenize};
 use crate::traits::Value;
 
@@ -200,6 +203,16 @@ pub enum Statement {
         columns: Vec<ColumnDef>,
         /// Whether system versioning / time travel is enabled for this table
         system_versioning: bool,
+        /// Table-level / composite FOREIGN KEY constraints
+        foreign_keys: Vec<TableForeignKey>,
+        /// Table-level CHECK constraints
+        check_constraints: Vec<CheckConstraint>,
+        /// Table-level multi-column UNIQUE constraints
+        unique_constraints: Vec<Vec<String>>,
+        /// Composite PRIMARY KEY column names (if specified at table level)
+        primary_key_columns: Vec<String>,
+        /// Optional FTS5 virtual table configuration
+        fts_config: Option<FtsTableConfig>,
     },
     /// INSERT [OR REPLACE|IGNORE] INTO table [(columns...)] VALUES (values...) [ON CONFLICT ...] [RETURNING ...]
     Insert {
@@ -363,7 +376,7 @@ pub enum Statement {
     CommitTransaction,
     /// ROLLBACK \[TRANSACTION\]
     RollbackTransaction,
-    /// CREATE INDEX \[IF NOT EXISTS\] index_name ON table (column)
+    /// CREATE \[UNIQUE\] INDEX \[IF NOT EXISTS\] index_name ON table (col1 \[, col2, ...\])
     CreateIndex {
         /// Index name
         name: String,
@@ -371,8 +384,12 @@ pub enum Statement {
         if_not_exists: bool,
         /// Target table
         table: String,
-        /// Column to index
+        /// Leading column to index
         column: String,
+        /// All indexed columns (supports composite indexes)
+        columns: Vec<String>,
+        /// Whether index enforces uniqueness
+        unique: bool,
     },
     /// EXPLAIN \[QUERY PLAN\] statement
     Explain {
@@ -475,11 +492,42 @@ pub enum Statement {
         /// Optional configuration options (e.g. "damping", "iterations", "normalized")
         options: std::collections::HashMap<String, String>,
     },
-    /// PRAGMA key [= value]
+    /// CREATE TRIGGER [IF NOT EXISTS] name (BEFORE|AFTER) (INSERT|UPDATE|DELETE) ON table [FOR EACH ROW] [WHEN (...)] BEGIN ... END
+    CreateTrigger {
+        /// Trigger name
+        name: String,
+        /// IF NOT EXISTS flag
+        if_not_exists: bool,
+        /// Target table name
+        table: String,
+        /// Execution timing
+        timing: TriggerTiming,
+        /// Event type
+        event: TriggerEvent,
+        /// Optional WHEN condition SQL
+        when_sql: Option<String>,
+        /// Trigger body SQL statements
+        body_sql: String,
+    },
+    /// DROP TRIGGER [IF EXISTS] name
+    DropTrigger {
+        /// Trigger name
+        name: String,
+        /// IF EXISTS flag
+        if_exists: bool,
+    },
+    /// RAISE(ABORT|IGNORE, 'message') inside triggers
+    Raise {
+        /// RAISE action ("ABORT", "FAIL", "ROLLBACK", or "IGNORE")
+        action: String,
+        /// Diagnostic message
+        message: String,
+    },
+    /// PRAGMA key [= value | (arg)]
     Pragma {
         /// Pragma configuration key
         key: String,
-        /// Optional configuration value
+        /// Optional configuration value or argument
         value: Option<String>,
     },
 }
@@ -688,14 +736,26 @@ pub fn parse_tokens(tokens: &[Token]) -> Result<Statement> {
     let mut cursor = 0;
     let statement = match &tokens[cursor] {
         Token::Create => {
-            if cursor + 1 < tokens.len() && tokens[cursor + 1] == Token::Index {
+            if cursor + 1 < tokens.len()
+                && (tokens[cursor + 1] == Token::Index
+                    || matches!(&tokens[cursor + 1], Token::Ident(s) if s.eq_ignore_ascii_case("UNIQUE")))
+            {
                 parse_create_index(tokens, &mut cursor)
             } else if cursor + 1 < tokens.len() && tokens[cursor + 1] == Token::View {
                 parse_create_view(tokens, &mut cursor)
+            } else if cursor + 1 < tokens.len()
+                && matches!(&tokens[cursor + 1], Token::Ident(s) if s.eq_ignore_ascii_case("TRIGGER"))
+            {
+                parse_create_trigger(tokens, &mut cursor)
+            } else if cursor + 1 < tokens.len()
+                && matches!(&tokens[cursor + 1], Token::Ident(s) if s.eq_ignore_ascii_case("VIRTUAL"))
+            {
+                parse_create_virtual_table(tokens, &mut cursor)
             } else {
                 parse_create_table(tokens, &mut cursor)
             }
         }
+        Token::Ident(s) if s.eq_ignore_ascii_case("RAISE") => parse_raise(tokens, &mut cursor),
         Token::Alter => parse_alter(tokens, &mut cursor),
         Token::Insert => parse_insert(tokens, &mut cursor),
         Token::Replace => parse_insert(tokens, &mut cursor),
@@ -813,6 +873,11 @@ fn parse_with_cte(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     })
 }
 
+pub(crate) fn parse_token_identifier(tok: &Token) -> Option<String> {
+    let mut c = 0usize;
+    parse_identifier_or_keyword(std::slice::from_ref(tok), &mut c).ok()
+}
+
 fn parse_identifier_or_keyword(tokens: &[Token], cursor: &mut usize) -> Result<String> {
     match get_token(tokens, cursor)? {
         Token::Ident(s) => Ok(s.clone()),
@@ -860,6 +925,143 @@ fn parse_identifier_or_keyword(tokens: &[Token], cursor: &mut usize) -> Result<S
     }
 }
 
+fn is_ident_ci(tokens: &[Token], cursor: usize, kw: &str) -> bool {
+    matches!(tokens.get(cursor), Some(Token::Ident(s)) if s.eq_ignore_ascii_case(kw))
+}
+
+fn parse_parenthesized_ident_list(tokens: &[Token], cursor: &mut usize) -> Result<Vec<String>> {
+    expect_token(tokens, cursor, &Token::OpenParen)?;
+    let mut cols = Vec::new();
+    while *cursor < tokens.len() {
+        cols.push(parse_column_ident(tokens, cursor)?);
+        if check_token(tokens, *cursor, &Token::Comma) {
+            *cursor += 1;
+        } else {
+            break;
+        }
+    }
+    expect_token(tokens, cursor, &Token::CloseParen)?;
+    if cols.is_empty() {
+        return Err(Error::SqlSyntax(
+            "Expected at least one identifier inside parentheses".into(),
+        ));
+    }
+    Ok(cols)
+}
+
+fn parse_parenthesized_balanced_slice(
+    tokens: &[Token],
+    cursor: &mut usize,
+) -> Result<(usize, usize)> {
+    expect_token(tokens, cursor, &Token::OpenParen)?;
+    let start = *cursor;
+    let mut depth = 1usize;
+    while *cursor < tokens.len() && depth > 0 {
+        match &tokens[*cursor] {
+            Token::OpenParen => depth += 1,
+            Token::CloseParen => {
+                depth -= 1;
+                if depth == 0 {
+                    let end = *cursor;
+                    *cursor += 1;
+                    return Ok((start, end));
+                }
+            }
+            _ => {}
+        }
+        *cursor += 1;
+    }
+    Err(Error::SqlSyntax(
+        "Unclosed '(' in constraint or expression".into(),
+    ))
+}
+
+fn parse_fk_action(tokens: &[Token], cursor: &mut usize) -> Result<ForeignKeyAction> {
+    if is_ident_ci(tokens, *cursor, "CASCADE") {
+        *cursor += 1;
+        Ok(ForeignKeyAction::Cascade)
+    } else if is_ident_ci(tokens, *cursor, "RESTRICT") {
+        *cursor += 1;
+        Ok(ForeignKeyAction::Restrict)
+    } else if check_token(tokens, *cursor, &Token::Set) {
+        *cursor += 1;
+        expect_token(tokens, cursor, &Token::Null)?;
+        Ok(ForeignKeyAction::SetNull)
+    } else if is_ident_ci(tokens, *cursor, "NO") {
+        *cursor += 1;
+        if is_ident_ci(tokens, *cursor, "ACTION") {
+            *cursor += 1;
+        }
+        Ok(ForeignKeyAction::NoAction)
+    } else {
+        Err(Error::SqlSyntax(format!(
+            "Unsupported FOREIGN KEY referential action near {:?}",
+            tokens.get(*cursor)
+        )))
+    }
+}
+
+fn parse_references_tail(
+    tokens: &[Token],
+    cursor: &mut usize,
+) -> Result<(String, Vec<String>, ForeignKeyAction, ForeignKeyAction)> {
+    *cursor += 1; // consume REFERENCES
+    let ref_table = parse_identifier_or_keyword(tokens, cursor)?;
+    let ref_columns = if check_token(tokens, *cursor, &Token::OpenParen) {
+        parse_parenthesized_ident_list(tokens, cursor)?
+    } else {
+        Vec::new()
+    };
+    let mut on_delete = ForeignKeyAction::NoAction;
+    let mut on_update = ForeignKeyAction::NoAction;
+    while check_token(tokens, *cursor, &Token::On) {
+        *cursor += 1;
+        if check_token(tokens, *cursor, &Token::Delete) {
+            *cursor += 1;
+            on_delete = parse_fk_action(tokens, cursor)?;
+        } else if check_token(tokens, *cursor, &Token::Update) {
+            *cursor += 1;
+            on_update = parse_fk_action(tokens, cursor)?;
+        } else {
+            return Err(Error::SqlSyntax(
+                "Expected DELETE or UPDATE after ON in FOREIGN KEY".into(),
+            ));
+        }
+    }
+    Ok((ref_table, ref_columns, on_delete, on_update))
+}
+
+fn parse_default_value(tokens: &[Token], cursor: &mut usize) -> Result<DefaultValue> {
+    let in_parens = check_token(tokens, *cursor, &Token::OpenParen);
+    if in_parens {
+        *cursor += 1;
+    }
+    let dv = if check_token(tokens, *cursor, &Token::Timestamp)
+        || is_ident_ci(tokens, *cursor, "CURRENT_TIMESTAMP")
+    {
+        *cursor += 1;
+        DefaultValue::CurrentTimestamp
+    } else if check_token(tokens, *cursor, &Token::Dash) {
+        *cursor += 1;
+        match get_token(tokens, cursor)? {
+            Token::IntLit(i) => DefaultValue::Integer(-*i),
+            Token::FloatLit(f) => DefaultValue::RealBits((-*f).to_bits()),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected numeric literal after '-' in DEFAULT, got {other:?}"
+                )));
+            }
+        }
+    } else {
+        let val = parse_value_literal(tokens, cursor)?;
+        DefaultValue::from_value(&val)
+    };
+    if in_parens {
+        expect_token(tokens, cursor, &Token::CloseParen)?;
+    }
+    Ok(dv)
+}
+
 fn parse_column_def(tokens: &[Token], cursor: &mut usize) -> Result<ColumnDef> {
     let col_name = parse_identifier_or_keyword(tokens, cursor)?;
 
@@ -901,17 +1103,59 @@ fn parse_column_def(tokens: &[Token], cursor: &mut usize) -> Result<ColumnDef> {
 
     let mut primary_key = false;
     let mut not_null = false;
+    let mut unique = false;
+    let mut default_value = None;
+    let mut check_expr = None;
+    let mut references = None;
 
-    // Optional modifiers: PRIMARY KEY, NOT NULL
+    // Optional column constraints: CONSTRAINT <name>, PRIMARY KEY [AUTOINCREMENT], NOT NULL, NULL, UNIQUE, DEFAULT, CHECK, REFERENCES
     while *cursor < tokens.len() {
+        if check_token(tokens, *cursor, &Token::Comma)
+            || check_token(tokens, *cursor, &Token::CloseParen)
+        {
+            break;
+        }
+        if is_ident_ci(tokens, *cursor, "CONSTRAINT") {
+            *cursor += 1;
+            let _constraint_name = parse_identifier_or_keyword(tokens, cursor)?;
+            continue;
+        }
         if check_token(tokens, *cursor, &Token::Primary) {
             *cursor += 1;
             expect_token(tokens, cursor, &Token::Key)?;
+            if is_ident_ci(tokens, *cursor, "AUTOINCREMENT") {
+                *cursor += 1;
+            }
             primary_key = true;
         } else if check_token(tokens, *cursor, &Token::Not) {
             *cursor += 1;
             expect_token(tokens, cursor, &Token::Null)?;
             not_null = true;
+        } else if check_token(tokens, *cursor, &Token::Null) {
+            *cursor += 1;
+        } else if is_ident_ci(tokens, *cursor, "UNIQUE") {
+            *cursor += 1;
+            unique = true;
+        } else if is_ident_ci(tokens, *cursor, "DEFAULT") {
+            *cursor += 1;
+            default_value = Some(parse_default_value(tokens, cursor)?);
+        } else if is_ident_ci(tokens, *cursor, "CHECK") {
+            *cursor += 1;
+            let (s, e) = parse_parenthesized_balanced_slice(tokens, cursor)?;
+            let sql = tokens_to_sql(&tokens[s..e]);
+            if sql.trim().is_empty() {
+                return Err(Error::SqlSyntax("Empty CHECK constraint expression".into()));
+            }
+            check_expr = Some(sql);
+        } else if is_ident_ci(tokens, *cursor, "REFERENCES") {
+            let (ref_table, ref_cols, on_delete, on_update) =
+                parse_references_tail(tokens, cursor)?;
+            references = Some(ForeignKeyRef {
+                table: ref_table,
+                column: ref_cols.into_iter().next(),
+                on_delete,
+                on_update,
+            });
         } else {
             break;
         }
@@ -922,7 +1166,31 @@ fn parse_column_def(tokens: &[Token], cursor: &mut usize) -> Result<ColumnDef> {
         data_type,
         primary_key,
         not_null,
+        unique,
+        default_value,
+        check_expr,
+        references,
     })
+}
+
+fn starts_table_constraint(tokens: &[Token], cursor: usize) -> bool {
+    if is_ident_ci(tokens, cursor, "CONSTRAINT") {
+        return true;
+    }
+    if check_token(tokens, cursor, &Token::Primary) && check_token(tokens, cursor + 1, &Token::Key)
+    {
+        return true;
+    }
+    if is_ident_ci(tokens, cursor, "UNIQUE") && check_token(tokens, cursor + 1, &Token::OpenParen) {
+        return true;
+    }
+    if is_ident_ci(tokens, cursor, "CHECK") && check_token(tokens, cursor + 1, &Token::OpenParen) {
+        return true;
+    }
+    if is_ident_ci(tokens, cursor, "FOREIGN") && check_token(tokens, cursor + 1, &Token::Key) {
+        return true;
+    }
+    false
 }
 
 fn parse_create_table(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
@@ -949,9 +1217,66 @@ fn parse_create_table(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
     expect_token(tokens, cursor, &Token::OpenParen)?;
 
     let mut columns = Vec::new();
+    let mut foreign_keys = Vec::new();
+    let mut check_constraints = Vec::new();
+    let mut unique_constraints = Vec::new();
+    let mut primary_key_columns = Vec::new();
 
     while *cursor < tokens.len() {
-        columns.push(parse_column_def(tokens, cursor)?);
+        if starts_table_constraint(tokens, *cursor) {
+            let mut constraint_name = None;
+            if is_ident_ci(tokens, *cursor, "CONSTRAINT") {
+                *cursor += 1;
+                constraint_name = Some(parse_identifier_or_keyword(tokens, cursor)?);
+            }
+            if check_token(tokens, *cursor, &Token::Primary) {
+                *cursor += 1;
+                expect_token(tokens, cursor, &Token::Key)?;
+                let pk_cols = parse_parenthesized_ident_list(tokens, cursor)?;
+                primary_key_columns = pk_cols;
+            } else if is_ident_ci(tokens, *cursor, "UNIQUE") {
+                *cursor += 1;
+                let ucols = parse_parenthesized_ident_list(tokens, cursor)?;
+                unique_constraints.push(ucols);
+            } else if is_ident_ci(tokens, *cursor, "CHECK") {
+                *cursor += 1;
+                let (s, e) = parse_parenthesized_balanced_slice(tokens, cursor)?;
+                let sql = tokens_to_sql(&tokens[s..e]);
+                if sql.trim().is_empty() {
+                    return Err(Error::SqlSyntax("Empty CHECK constraint expression".into()));
+                }
+                check_constraints.push(CheckConstraint {
+                    name: constraint_name,
+                    expr_sql: sql,
+                });
+            } else if is_ident_ci(tokens, *cursor, "FOREIGN") {
+                *cursor += 1;
+                expect_token(tokens, cursor, &Token::Key)?;
+                let fk_cols = parse_parenthesized_ident_list(tokens, cursor)?;
+                if !is_ident_ci(tokens, *cursor, "REFERENCES") {
+                    return Err(Error::SqlSyntax(
+                        "Expected REFERENCES after FOREIGN KEY (...)".into(),
+                    ));
+                }
+                let (ref_table, ref_columns, on_delete, on_update) =
+                    parse_references_tail(tokens, cursor)?;
+                foreign_keys.push(TableForeignKey {
+                    name: constraint_name,
+                    columns: fk_cols,
+                    ref_table,
+                    ref_columns,
+                    on_delete,
+                    on_update,
+                });
+            } else {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected table constraint after CONSTRAINT, found {:?}",
+                    tokens.get(*cursor)
+                )));
+            }
+        } else {
+            columns.push(parse_column_def(tokens, cursor)?);
+        }
 
         if check_token(tokens, *cursor, &Token::Comma) {
             *cursor += 1;
@@ -962,6 +1287,16 @@ fn parse_create_table(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
             return Err(Error::SqlSyntax(
                 "Expected ',' or ')' in CREATE TABLE".into(),
             ));
+        }
+    }
+
+    if primary_key_columns.len() == 1 {
+        let pk_name = &primary_key_columns[0];
+        if let Some(col) = columns
+            .iter_mut()
+            .find(|c| c.name.eq_ignore_ascii_case(pk_name))
+        {
+            col.primary_key = true;
         }
     }
 
@@ -1001,16 +1336,283 @@ fn parse_create_table(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
         if_not_exists,
         columns,
         system_versioning,
+        foreign_keys,
+        check_constraints,
+        unique_constraints,
+        primary_key_columns,
+        fts_config: None,
     })
+}
+
+fn parse_create_virtual_table(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
+    *cursor += 1; // consume CREATE
+    if !is_ident_ci(tokens, *cursor, "VIRTUAL") {
+        return Err(Error::SqlSyntax("Expected VIRTUAL".into()));
+    }
+    *cursor += 1;
+    expect_token(tokens, cursor, &Token::Table)?;
+
+    let mut if_not_exists = false;
+    if check_token(tokens, *cursor, &Token::If) {
+        *cursor += 1;
+        expect_token(tokens, cursor, &Token::Not)?;
+        expect_token(tokens, cursor, &Token::Exists)?;
+        if_not_exists = true;
+    }
+
+    let name = parse_identifier_or_keyword(tokens, cursor)?;
+    if !is_ident_ci(tokens, *cursor, "USING") {
+        return Err(Error::SqlSyntax(
+            "Expected USING module in CREATE VIRTUAL TABLE".into(),
+        ));
+    }
+    *cursor += 1;
+
+    let module = parse_identifier_or_keyword(tokens, cursor)?;
+    if !module.eq_ignore_ascii_case("fts5") {
+        return Err(Error::SqlSyntax(format!(
+            "Unsupported virtual table module '{module}' (supported: fts5)"
+        )));
+    }
+
+    expect_token(tokens, cursor, &Token::OpenParen)?;
+    let mut col_names = Vec::new();
+    let mut tokenizer = "unicode61".to_string();
+
+    while *cursor < tokens.len() && !check_token(tokens, *cursor, &Token::CloseParen) {
+        let item = parse_identifier_or_keyword(tokens, cursor)?;
+        if item.eq_ignore_ascii_case("tokenize") {
+            if check_token(tokens, *cursor, &Token::Equals) {
+                *cursor += 1;
+            }
+            tokenizer = match get_token(tokens, cursor)? {
+                Token::StringLit(s) | Token::Ident(s) => s.clone(),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected tokenizer name after tokenize=, got {other:?}"
+                    )));
+                }
+            };
+        } else {
+            col_names.push(item);
+        }
+        if check_token(tokens, *cursor, &Token::Comma) {
+            *cursor += 1;
+        } else if !check_token(tokens, *cursor, &Token::CloseParen) {
+            return Err(Error::SqlSyntax(
+                "Expected ',' or ')' in CREATE VIRTUAL TABLE ... USING fts5(...)".into(),
+            ));
+        }
+    }
+    expect_token(tokens, cursor, &Token::CloseParen)?;
+
+    if col_names.is_empty() {
+        return Err(Error::SqlSyntax(
+            "FTS5 virtual table must specify at least one column".into(),
+        ));
+    }
+
+    let columns = col_names
+        .iter()
+        .map(|col| ColumnDef {
+            name: col.clone(),
+            data_type: DataType::Text,
+            primary_key: false,
+            not_null: false,
+            unique: false,
+            default_value: None,
+            check_expr: None,
+            references: None,
+        })
+        .collect();
+
+    Ok(Statement::CreateTable {
+        name,
+        if_not_exists,
+        columns,
+        system_versioning: false,
+        foreign_keys: Vec::new(),
+        check_constraints: Vec::new(),
+        unique_constraints: Vec::new(),
+        primary_key_columns: Vec::new(),
+        fts_config: Some(FtsTableConfig {
+            columns: col_names,
+            tokenizer,
+        }),
+    })
+}
+
+fn parse_create_trigger(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
+    *cursor += 1; // consume CREATE
+    if !is_ident_ci(tokens, *cursor, "TRIGGER") {
+        return Err(Error::SqlSyntax("Expected TRIGGER".into()));
+    }
+    *cursor += 1;
+
+    let mut if_not_exists = false;
+    if check_token(tokens, *cursor, &Token::If) {
+        *cursor += 1;
+        expect_token(tokens, cursor, &Token::Not)?;
+        expect_token(tokens, cursor, &Token::Exists)?;
+        if_not_exists = true;
+    }
+
+    let name = parse_identifier_or_keyword(tokens, cursor)?;
+    let timing = if is_ident_ci(tokens, *cursor, "BEFORE") {
+        *cursor += 1;
+        TriggerTiming::Before
+    } else if is_ident_ci(tokens, *cursor, "AFTER") {
+        *cursor += 1;
+        TriggerTiming::After
+    } else {
+        return Err(Error::SqlSyntax(
+            "Expected BEFORE or AFTER in CREATE TRIGGER".into(),
+        ));
+    };
+
+    let event = if check_token(tokens, *cursor, &Token::Insert) {
+        *cursor += 1;
+        TriggerEvent::Insert
+    } else if check_token(tokens, *cursor, &Token::Update) {
+        *cursor += 1;
+        TriggerEvent::Update
+    } else if check_token(tokens, *cursor, &Token::Delete) {
+        *cursor += 1;
+        TriggerEvent::Delete
+    } else {
+        return Err(Error::SqlSyntax(
+            "Expected INSERT, UPDATE, or DELETE in CREATE TRIGGER".into(),
+        ));
+    };
+
+    expect_token(tokens, cursor, &Token::On)?;
+    let table = parse_identifier_or_keyword(tokens, cursor)?;
+
+    if is_ident_ci(tokens, *cursor, "FOR") {
+        *cursor += 1;
+        if is_ident_ci(tokens, *cursor, "EACH") {
+            *cursor += 1;
+        }
+        expect_token(tokens, cursor, &Token::Row)?;
+    }
+
+    let mut when_sql = None;
+    if is_ident_ci(tokens, *cursor, "WHEN") {
+        *cursor += 1;
+        let when_start = *cursor;
+        let mut paren_depth = 0usize;
+        while *cursor < tokens.len() {
+            match &tokens[*cursor] {
+                Token::OpenParen => paren_depth += 1,
+                Token::CloseParen => paren_depth = paren_depth.saturating_sub(1),
+                Token::Begin if paren_depth == 0 => break,
+                _ => {}
+            }
+            *cursor += 1;
+        }
+        let sql = tokens_to_sql(&tokens[when_start..*cursor]);
+        if sql.trim().is_empty() {
+            return Err(Error::SqlSyntax(
+                "Expected boolean condition after WHEN in CREATE TRIGGER".into(),
+            ));
+        }
+        when_sql = Some(sql);
+    }
+
+    expect_token(tokens, cursor, &Token::Begin)?;
+    let body_start = *cursor;
+    let mut begin_depth = 1usize;
+    let mut body_end = None;
+    while *cursor < tokens.len() {
+        if check_token(tokens, *cursor, &Token::Begin) {
+            begin_depth += 1;
+        } else if is_ident_ci(tokens, *cursor, "END") {
+            begin_depth -= 1;
+            if begin_depth == 0 {
+                body_end = Some(*cursor);
+                *cursor += 1;
+                break;
+            }
+        }
+        *cursor += 1;
+    }
+    let body_end = body_end.ok_or_else(|| {
+        Error::SqlSyntax("Expected END closing trigger body in CREATE TRIGGER".into())
+    })?;
+    let body_sql = tokens_to_sql(&tokens[body_start..body_end]);
+    if body_sql.trim().is_empty() {
+        return Err(Error::SqlSyntax(
+            "Trigger BEGIN ... END body cannot be empty".into(),
+        ));
+    }
+
+    Ok(Statement::CreateTrigger {
+        name,
+        if_not_exists,
+        table,
+        timing,
+        event,
+        when_sql,
+        body_sql,
+    })
+}
+
+fn parse_raise(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
+    *cursor += 1; // consume RAISE
+    expect_token(tokens, cursor, &Token::OpenParen)?;
+    let action = match get_token(tokens, cursor)? {
+        Token::Ignore => "IGNORE".to_string(),
+        Token::Rollback => "ROLLBACK".to_string(),
+        Token::Ident(s)
+            if s.eq_ignore_ascii_case("ABORT")
+                || s.eq_ignore_ascii_case("FAIL")
+                || s.eq_ignore_ascii_case("ROLLBACK")
+                || s.eq_ignore_ascii_case("IGNORE") =>
+        {
+            s.to_uppercase()
+        }
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "Expected ABORT, FAIL, ROLLBACK, or IGNORE in RAISE(), got {other:?}"
+            )));
+        }
+    };
+    let mut message = String::new();
+    if check_token(tokens, *cursor, &Token::Comma) {
+        *cursor += 1;
+        message = match get_token(tokens, cursor)? {
+            Token::StringLit(s) => s.clone(),
+            Token::Ident(s) => s.clone(),
+            other => {
+                return Err(Error::SqlSyntax(format!(
+                    "Expected message string in RAISE(), got {other:?}"
+                )));
+            }
+        };
+    }
+    expect_token(tokens, cursor, &Token::CloseParen)?;
+    Ok(Statement::Raise { action, message })
 }
 
 fn parse_pragma(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     expect_token(tokens, cursor, &Token::Pragma)?;
     let key = parse_identifier_or_keyword(tokens, cursor)?;
     let mut value = None;
-    if check_token(tokens, *cursor, &Token::Equals) {
+    if check_token(tokens, *cursor, &Token::OpenParen) {
         *cursor += 1;
         let val = match get_token(tokens, cursor)? {
+            Token::Ident(s) => s.clone(),
+            Token::StringLit(s) => s.clone(),
+            Token::IntLit(n) => n.to_string(),
+            Token::Table => "table".to_string(),
+            other => format!("{other:?}"),
+        };
+        expect_token(tokens, cursor, &Token::CloseParen)?;
+        value = Some(val);
+    } else if check_token(tokens, *cursor, &Token::Equals) {
+        *cursor += 1;
+        let val = match get_token(tokens, cursor)? {
+            Token::On => "ON".to_string(),
             Token::Ident(s) => s.clone(),
             Token::StringLit(s) => s.clone(),
             Token::IntLit(n) => n.to_string(),
@@ -2079,6 +2681,21 @@ fn parse_drop(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         });
     }
 
+    if matches!(tokens.get(*cursor), Some(Token::Ident(s)) if s.eq_ignore_ascii_case("TRIGGER")) {
+        *cursor += 1; // consume TRIGGER
+        let mut if_exists = false;
+        if check_token(tokens, *cursor, &Token::If) {
+            *cursor += 1;
+            expect_token(tokens, cursor, &Token::Exists)?;
+            if_exists = true;
+        }
+        let trigger_name = parse_identifier_or_keyword(tokens, cursor)?;
+        return Ok(Statement::DropTrigger {
+            name: trigger_name,
+            if_exists,
+        });
+    }
+
     expect_token(tokens, cursor, &Token::Table)?;
 
     let mut if_exists = false;
@@ -2145,6 +2762,11 @@ fn parse_release(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
 
 fn parse_create_index(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     *cursor += 1; // consume CREATE
+    let mut unique = false;
+    if matches!(tokens.get(*cursor), Some(Token::Ident(s)) if s.eq_ignore_ascii_case("UNIQUE")) {
+        unique = true;
+        *cursor += 1;
+    }
     expect_token(tokens, cursor, &Token::Index)?;
 
     let mut if_not_exists = false;
@@ -2155,36 +2777,35 @@ fn parse_create_index(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
         if_not_exists = true;
     }
 
-    let index_name = match get_token(tokens, cursor)? {
-        Token::Ident(s) => s.clone(),
-        other => {
-            return Err(Error::SqlSyntax(format!(
-                "Expected index name, got {other:?}"
-            )));
-        }
-    };
-
+    let index_name = parse_identifier_or_keyword(tokens, cursor)?;
     expect_token(tokens, cursor, &Token::On)?;
-
-    let table_name = match get_token(tokens, cursor)? {
-        Token::Ident(s) => s.clone(),
-        other => {
-            return Err(Error::SqlSyntax(format!(
-                "Expected table name in CREATE INDEX ON, got {other:?}"
-            )));
-        }
-    };
+    let table_name = parse_identifier_or_keyword(tokens, cursor)?;
 
     expect_token(tokens, cursor, &Token::OpenParen)?;
-    let column_name = parse_column_ident(tokens, cursor)?;
+    let mut columns = Vec::new();
+    loop {
+        columns.push(parse_column_ident(tokens, cursor)?);
+        if check_token(tokens, *cursor, &Token::Comma) {
+            *cursor += 1;
+        } else {
+            break;
+        }
+    }
     expect_token(tokens, cursor, &Token::CloseParen)?;
+    let column = columns.first().cloned().unwrap_or_default();
 
     Ok(Statement::CreateIndex {
         name: index_name,
         if_not_exists,
         table: table_name,
-        column: column_name,
+        column,
+        columns,
+        unique,
     })
+}
+
+pub(crate) fn parse_where_expr_public(tokens: &[Token], cursor: &mut usize) -> Result<WhereExpr> {
+    parse_or_expr(tokens, cursor)
 }
 
 fn parse_where_expr(tokens: &[Token], cursor: &mut usize) -> Result<WhereExpr> {
@@ -2877,6 +3498,13 @@ pub fn parse_graph_match(tokens: &[Token], cursor: &mut usize) -> Result<Stateme
 
 fn parse_value_literal(tokens: &[Token], cursor: &mut usize) -> Result<Value> {
     match get_token(tokens, cursor)? {
+        Token::Dash => match get_token(tokens, cursor)? {
+            Token::IntLit(i) => Ok(Value::Integer(-*i)),
+            Token::FloatLit(f) => Ok(Value::Real(-*f)),
+            other => Err(Error::SqlSyntax(format!(
+                "Expected numeric literal after '-', got {other:?}"
+            ))),
+        },
         Token::IntLit(i) => Ok(Value::Integer(*i)),
         Token::FloatLit(f) => Ok(Value::Real(*f)),
         Token::StringLit(s) => Ok(Value::Text(s.clone())),
@@ -3271,13 +3899,62 @@ mod tests {
                 if_not_exists,
                 table,
                 column,
+                columns,
+                unique,
             } => {
                 assert_eq!(name, "idx_name");
                 assert!(if_not_exists);
                 assert_eq!(table, "users");
                 assert_eq!(column, "name");
+                assert_eq!(columns, vec!["name"]);
+                assert!(!unique);
             }
             _ => panic!("Expected CreateIndex"),
+        }
+
+        let sql_comp = "CREATE UNIQUE INDEX idx_user_email ON users (org_id, email);";
+        match parse_sql(sql_comp).expect("Parse composite unique index") {
+            Statement::CreateIndex {
+                columns, unique, ..
+            } => {
+                assert_eq!(columns, vec!["org_id", "email"]);
+                assert!(unique);
+            }
+            _ => panic!("Expected composite CreateIndex"),
+        }
+
+        let sql_tbl = "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, qty INTEGER DEFAULT 1 CHECK (qty > 0), code TEXT UNIQUE, CHECK (user_id > 0));";
+        match parse_sql(sql_tbl).expect("Parse constrained CREATE TABLE") {
+            Statement::CreateTable {
+                columns,
+                check_constraints,
+                ..
+            } => {
+                assert_eq!(columns.len(), 4);
+                assert!(columns[1].references.is_some());
+                assert_eq!(columns[2].default_value, Some(DefaultValue::Integer(1)));
+                assert!(columns[2].check_expr.is_some());
+                assert!(columns[3].unique);
+                assert_eq!(check_constraints.len(), 1);
+            }
+            _ => panic!("Expected CreateTable"),
+        }
+
+        let sql_trig = "CREATE TRIGGER trg_log AFTER INSERT ON users FOR EACH ROW BEGIN INSERT INTO audit VALUES (NEW.id); END;";
+        assert!(matches!(
+            parse_sql(sql_trig).expect("Parse trigger"),
+            Statement::CreateTrigger { .. }
+        ));
+
+        let sql_fts = "CREATE VIRTUAL TABLE docs USING fts5(title, body);";
+        match parse_sql(sql_fts).expect("Parse FTS5") {
+            Statement::CreateTable {
+                fts_config: Some(cfg),
+                ..
+            } => {
+                assert_eq!(cfg.columns, vec!["title", "body"]);
+            }
+            _ => panic!("Expected FTS5 CreateTable"),
         }
     }
 

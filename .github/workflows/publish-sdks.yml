@@ -311,6 +311,7 @@ jobs:
 
       - name: Build and verify @tapirus/wasm tarball
         run: |
+          cargo fetch --locked
           cargo fetch --locked --target wasm32-unknown-unknown
           node scripts/build-wasm.js --offline
           npm --prefix crates/tapirus-wasm run test:package

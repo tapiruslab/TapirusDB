@@ -126,6 +126,163 @@ impl DataType {
     }
 }
 
+/// Referential action for FOREIGN KEY ON DELETE / ON UPDATE clauses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ForeignKeyAction {
+    /// Reject mutation if child rows reference parent key (SQLite default).
+    #[default]
+    NoAction,
+    /// Reject mutation immediately if child rows reference parent key.
+    Restrict,
+    /// Propagate DELETE or UPDATE to matching child rows.
+    Cascade,
+    /// Set referencing columns in matching child rows to NULL.
+    SetNull,
+}
+
+/// Column-level FOREIGN KEY reference specification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForeignKeyRef {
+    /// Referenced parent table name.
+    pub table: String,
+    /// Referenced parent column name (defaults to parent's primary key when None).
+    pub column: Option<String>,
+    /// Action when parent row is deleted.
+    #[serde(default)]
+    pub on_delete: ForeignKeyAction,
+    /// Action when parent referenced key is updated.
+    #[serde(default)]
+    pub on_update: ForeignKeyAction,
+}
+
+/// Table-level or composite FOREIGN KEY constraint definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableForeignKey {
+    /// Optional constraint name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Child column names.
+    pub columns: Vec<String>,
+    /// Referenced parent table name.
+    pub ref_table: String,
+    /// Referenced parent column names (empty means parent primary key).
+    #[serde(default)]
+    pub ref_columns: Vec<String>,
+    /// Action when parent row is deleted.
+    #[serde(default)]
+    pub on_delete: ForeignKeyAction,
+    /// Action when parent referenced key is updated.
+    #[serde(default)]
+    pub on_update: ForeignKeyAction,
+}
+
+/// Table-level CHECK constraint definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckConstraint {
+    /// Optional constraint name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Raw SQL boolean expression evaluated against candidate rows.
+    pub expr_sql: String,
+}
+
+/// Column DEFAULT value expression (comparable with Eq via float bit encoding).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DefaultValue {
+    /// Explicit NULL default.
+    Null,
+    /// 64-bit signed integer literal.
+    Integer(i64),
+    /// 64-bit IEEE-754 float literal stored as raw bits for Eq compatibility.
+    RealBits(u64),
+    /// UTF-8 string literal.
+    Text(String),
+    /// Binary blob literal.
+    Blob(Vec<u8>),
+    /// Evaluates current UTC UNIX/ISO timestamp string at INSERT time.
+    CurrentTimestamp,
+}
+
+impl DefaultValue {
+    /// Construct a DefaultValue from a runtime Value literal.
+    pub fn from_value(val: &Value) -> Self {
+        match val {
+            Value::Null => Self::Null,
+            Value::Integer(i) => Self::Integer(*i),
+            Value::Real(f) => Self::RealBits(f.to_bits()),
+            Value::Text(s) => Self::Text(s.clone()),
+            Value::Blob(b) => Self::Blob(b.clone()),
+            Value::Vector(v) => Self::Text(format!("{v:?}")),
+        }
+    }
+
+    /// Materialize this DEFAULT specification into a concrete runtime Value.
+    pub fn materialize(&self) -> Value {
+        match self {
+            Self::Null => Value::Null,
+            Self::Integer(i) => Value::Integer(*i),
+            Self::RealBits(bits) => Value::Real(f64::from_bits(*bits)),
+            Self::Text(s) => Value::Text(s.clone()),
+            Self::Blob(b) => Value::Blob(b.clone()),
+            Self::CurrentTimestamp => {
+                let secs = web_time::SystemTime::now()
+                    .duration_since(web_time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                Value::Text(secs.to_string())
+            }
+        }
+    }
+}
+
+/// Configuration for an FTS5 full-text virtual table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FtsTableConfig {
+    /// Columns indexed for BM25 full-text search.
+    pub columns: Vec<String>,
+    /// Tokenizer name (e.g. "unicode61" or "default").
+    #[serde(default)]
+    pub tokenizer: String,
+}
+
+/// Trigger execution timing relative to DML statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TriggerTiming {
+    /// Execute before the target row mutation is applied.
+    Before,
+    /// Execute after the target row mutation succeeds.
+    After,
+}
+
+/// Trigger DML event kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TriggerEvent {
+    /// Fires on INSERT.
+    Insert,
+    /// Fires on UPDATE.
+    Update,
+    /// Fires on DELETE.
+    Delete,
+}
+
+/// Persisted SQL trigger definition stored in the schema catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriggerDef {
+    /// Trigger name.
+    pub name: String,
+    /// Target table name.
+    pub table: String,
+    /// Execution timing (BEFORE or AFTER).
+    pub timing: TriggerTiming,
+    /// DML event (INSERT, UPDATE, or DELETE).
+    pub event: TriggerEvent,
+    /// Optional WHEN boolean guard SQL string.
+    #[serde(default)]
+    pub when_sql: Option<String>,
+    /// Trigger body SQL statements between BEGIN and END.
+    pub body_sql: String,
+}
+
 /// Column definition within a table
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColumnDef {
@@ -137,6 +294,18 @@ pub struct ColumnDef {
     pub primary_key: bool,
     /// Whether column requires non-null values
     pub not_null: bool,
+    /// Whether column enforces uniqueness across non-NULL values
+    #[serde(default)]
+    pub unique: bool,
+    /// Optional DEFAULT value applied when column is omitted on INSERT
+    #[serde(default)]
+    pub default_value: Option<DefaultValue>,
+    /// Optional column-level CHECK SQL constraint expression
+    #[serde(default)]
+    pub check_expr: Option<String>,
+    /// Optional inline FOREIGN KEY reference specification
+    #[serde(default)]
+    pub references: Option<ForeignKeyRef>,
 }
 
 impl ColumnDef {
@@ -147,6 +316,10 @@ impl ColumnDef {
             data_type,
             primary_key: false,
             not_null: false,
+            unique: false,
+            default_value: None,
+            check_expr: None,
+            references: None,
         }
     }
 
@@ -159,6 +332,30 @@ impl ColumnDef {
     /// Mark this column as NOT NULL
     pub fn not_null(mut self) -> Self {
         self.not_null = true;
+        self
+    }
+
+    /// Mark this column as UNIQUE
+    pub fn unique(mut self) -> Self {
+        self.unique = true;
+        self
+    }
+
+    /// Attach a DEFAULT value specification to this column
+    pub fn with_default(mut self, default: DefaultValue) -> Self {
+        self.default_value = Some(default);
+        self
+    }
+
+    /// Attach a CHECK constraint SQL expression to this column
+    pub fn with_check(mut self, expr_sql: impl Into<String>) -> Self {
+        self.check_expr = Some(expr_sql.into());
+        self
+    }
+
+    /// Attach a FOREIGN KEY reference to this column
+    pub fn with_references(mut self, fk: ForeignKeyRef) -> Self {
+        self.references = Some(fk);
         self
     }
 }
@@ -177,6 +374,21 @@ pub struct TableDef {
     /// Whether historical time-travel snapshots are tracked for this table
     #[serde(default)]
     pub system_versioning: bool,
+    /// Table-level or composite FOREIGN KEY constraints
+    #[serde(default)]
+    pub foreign_keys: Vec<TableForeignKey>,
+    /// Table-level CHECK constraints
+    #[serde(default)]
+    pub check_constraints: Vec<CheckConstraint>,
+    /// Table-level multi-column UNIQUE constraints
+    #[serde(default)]
+    pub unique_constraints: Vec<Vec<String>>,
+    /// Composite PRIMARY KEY column names (if more than one column)
+    #[serde(default)]
+    pub primary_key_columns: Vec<String>,
+    /// Optional FTS5 virtual table configuration
+    #[serde(default)]
+    pub fts_config: Option<FtsTableConfig>,
 }
 
 impl TableDef {
@@ -188,6 +400,11 @@ impl TableDef {
             columns,
             next_row_id: 1,
             system_versioning: false,
+            foreign_keys: Vec::new(),
+            check_constraints: Vec::new(),
+            unique_constraints: Vec::new(),
+            primary_key_columns: Vec::new(),
+            fts_config: None,
         }
     }
 
@@ -251,8 +468,11 @@ pub struct IndexDef {
     pub name: String,
     /// Target table name
     pub table: String,
-    /// Target column name
+    /// Primary/leading column name (kept for single-column compatibility)
     pub column: String,
+    /// Ordered columns covered by this index (supports composite multi-column indexes)
+    #[serde(default)]
+    pub columns: Vec<String>,
     /// Root page ID of the index B+Tree
     pub root_page: PageId,
     /// Whether index enforces uniqueness
@@ -260,29 +480,60 @@ pub struct IndexDef {
 }
 
 impl IndexDef {
-    /// Create a new IndexDef
+    /// Create a new single-column IndexDef
     pub fn new(
         name: impl Into<String>,
         table: impl Into<String>,
         column: impl Into<String>,
         root_page: PageId,
     ) -> Self {
+        let col = column.into();
         Self {
             name: name.into(),
             table: table.into(),
-            column: column.into(),
+            column: col.clone(),
+            columns: vec![col],
             root_page,
             unique: false,
         }
     }
+
+    /// Create a new multi-column composite IndexDef
+    pub fn composite(
+        name: impl Into<String>,
+        table: impl Into<String>,
+        columns: Vec<String>,
+        root_page: PageId,
+        unique: bool,
+    ) -> Self {
+        let leading = columns.first().cloned().unwrap_or_default();
+        Self {
+            name: name.into(),
+            table: table.into(),
+            column: leading,
+            columns,
+            root_page,
+            unique,
+        }
+    }
+
+    /// Ordered list of indexed column names (handles legacy single-column records)
+    pub fn target_columns(&self) -> Vec<&str> {
+        if self.columns.is_empty() {
+            vec![self.column.as_str()]
+        } else {
+            self.columns.iter().map(|s| s.as_str()).collect()
+        }
+    }
 }
 
-/// Master schema catalog holding all table and view definitions
+/// Master schema catalog holding all table, view, index, and trigger definitions
 #[derive(Debug, Default, Clone)]
 pub struct Catalog {
     tables: HashMap<String, TableDef>,
     views: HashMap<String, ViewDef>,
     indexes: HashMap<String, IndexDef>,
+    triggers: HashMap<String, TriggerDef>,
     stats: HashMap<String, crate::sql::planner::TableStats>,
     next_table_id: u64,
 }
@@ -294,6 +545,7 @@ impl Catalog {
             tables: HashMap::new(),
             views: HashMap::new(),
             indexes: HashMap::new(),
+            triggers: HashMap::new(),
             stats: HashMap::new(),
             next_table_id: 1,
         }
@@ -305,8 +557,11 @@ impl Catalog {
         let page1_buf = pager.read_page(1)?;
         let header = engine::read_page_header(&page1_buf, 1);
 
-        // If page 1 header hasn't been initialized as a B+Tree leaf, initialize it
+        // If page 1 header hasn't been initialized as a B+Tree leaf, initialize it unless read-only
         if header.is_err() {
+            if pager.is_read_only() {
+                return Ok(catalog);
+            }
             let mut page1_init = page1_buf.clone();
             engine::init_leaf_page(&mut page1_init, 1);
             pager.write_page(1, &page1_init)?;
@@ -324,11 +579,13 @@ impl Catalog {
                 catalog
                     .tables
                     .insert(table_def.name.to_lowercase(), table_def);
-            } else if let Ok(view_def) = serde_json::from_slice::<ViewDef>(&cell.payload) {
+            } else if let Ok(trigger_def) = serde_json::from_slice::<TriggerDef>(&cell.payload) {
                 if cell.row_id >= catalog.next_table_id {
                     catalog.next_table_id = cell.row_id + 1;
                 }
-                catalog.views.insert(view_def.name.to_lowercase(), view_def);
+                catalog
+                    .triggers
+                    .insert(trigger_def.name.to_lowercase(), trigger_def);
             } else if let Ok(index_def) = serde_json::from_slice::<IndexDef>(&cell.payload) {
                 if cell.row_id >= catalog.next_table_id {
                     catalog.next_table_id = cell.row_id + 1;
@@ -336,6 +593,11 @@ impl Catalog {
                 catalog
                     .indexes
                     .insert(index_def.name.to_lowercase(), index_def);
+            } else if let Ok(view_def) = serde_json::from_slice::<ViewDef>(&cell.payload) {
+                if cell.row_id >= catalog.next_table_id {
+                    catalog.next_table_id = cell.row_id + 1;
+                }
+                catalog.views.insert(view_def.name.to_lowercase(), view_def);
             }
         }
 
@@ -827,6 +1089,106 @@ impl Catalog {
             Ok(false)
         }
     }
+
+    /// Find an index on a specific table matching an exact ordered column list
+    pub fn find_index_for_columns(&self, table: &str, columns: &[&str]) -> Option<&IndexDef> {
+        self.indexes.values().find(|idx| {
+            if !idx.table.eq_ignore_ascii_case(table) {
+                return false;
+            }
+            let target = idx.target_columns();
+            target.len() == columns.len()
+                && target
+                    .iter()
+                    .zip(columns.iter())
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        })
+    }
+
+    /// Check if a trigger exists
+    pub fn trigger_exists(&self, name: &str) -> bool {
+        self.triggers.contains_key(&name.to_lowercase())
+    }
+
+    /// Return all triggers attached to a table for a specific timing and DML event
+    pub fn triggers_for(
+        &self,
+        table: &str,
+        timing: TriggerTiming,
+        event: TriggerEvent,
+    ) -> Vec<TriggerDef> {
+        let mut matched: Vec<TriggerDef> = self
+            .triggers
+            .values()
+            .filter(|t| {
+                t.table.eq_ignore_ascii_case(table) && t.timing == timing && t.event == event
+            })
+            .cloned()
+            .collect();
+        matched.sort_by(|a, b| a.name.cmp(&b.name));
+        matched
+    }
+
+    /// Return all registered triggers
+    pub fn triggers(&self) -> Vec<TriggerDef> {
+        self.triggers.values().cloned().collect()
+    }
+
+    /// Register a new trigger and persist it to Page 1
+    pub fn create_trigger(&mut self, pager: &mut Pager, trigger: TriggerDef) -> Result<()> {
+        let name_lower = trigger.name.to_lowercase();
+        if self.triggers.contains_key(&name_lower) {
+            return Err(Error::TableExists(format!(
+                "Trigger '{}' already exists",
+                trigger.name
+            )));
+        }
+
+        let entry_id = self.next_table_id;
+        self.next_table_id += 1;
+
+        let payload = serde_json::to_vec(&trigger)
+            .map_err(|e| Error::Corrupted(format!("Failed to serialize trigger def: {e}")))?;
+
+        let mut btree = BTreeStorage::new();
+        btree.insert(pager, 1, entry_id, &payload)?;
+
+        pager.header_mut().schema_cookie += 1;
+        let header_bytes = pager.header().to_bytes();
+        let mut page1_buf = pager.read_page(1)?;
+        page1_buf[..crate::pager::DATABASE_HEADER_SIZE].copy_from_slice(&header_bytes);
+        pager.write_page(1, &page1_buf)?;
+
+        self.triggers.insert(name_lower, trigger);
+        Ok(())
+    }
+
+    /// Drop a trigger from the catalog and delete its entry on Page 1
+    pub fn drop_trigger(&mut self, pager: &mut Pager, trigger_name: &str) -> Result<bool> {
+        let name_lower = trigger_name.to_lowercase();
+        if self.triggers.remove(&name_lower).is_some() {
+            let mut btree = BTreeStorage::new();
+            let cells = btree.scan(pager, 1)?;
+            for cell in cells {
+                if let Ok(tr) = serde_json::from_slice::<TriggerDef>(&cell.payload) {
+                    if tr.name.eq_ignore_ascii_case(trigger_name) {
+                        let _ = btree.delete(pager, 1, cell.row_id);
+                        break;
+                    }
+                }
+            }
+
+            pager.header_mut().schema_cookie += 1;
+            let header_bytes = pager.header().to_bytes();
+            let mut page1_buf = pager.read_page(1)?;
+            page1_buf[..crate::pager::DATABASE_HEADER_SIZE].copy_from_slice(&header_bytes);
+            pager.write_page(1, &page1_buf)?;
+
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -839,24 +1201,11 @@ mod tests {
         let mut catalog = Catalog::load(&mut pager).expect("Load catalog");
 
         let cols = vec![
-            ColumnDef {
-                name: "id".to_string(),
-                data_type: DataType::Integer,
-                primary_key: true,
-                not_null: true,
-            },
-            ColumnDef {
-                name: "title".to_string(),
-                data_type: DataType::Text,
-                primary_key: false,
-                not_null: false,
-            },
-            ColumnDef {
-                name: "embedding".to_string(),
-                data_type: DataType::Vector(128),
-                primary_key: false,
-                not_null: false,
-            },
+            ColumnDef::new("id", DataType::Integer)
+                .primary_key()
+                .not_null(),
+            ColumnDef::new("title", DataType::Text),
+            ColumnDef::new("embedding", DataType::Vector(128)),
         ];
 
         let table_root = pager.allocate_page().expect("Alloc table root");

@@ -559,9 +559,22 @@ pub const SQLITE_ABORT: i32 = 4;
 pub const SQLITE_BUSY: i32 = 5;
 pub const SQLITE_LOCKED: i32 = 6;
 pub const SQLITE_NOMEM: i32 = 7;
+pub const SQLITE_READONLY: i32 = 8;
+pub const SQLITE_IOERR: i32 = 10;
+pub const SQLITE_CORRUPT: i32 = 11;
+pub const SQLITE_CANTOPEN: i32 = 14;
+pub const SQLITE_CONSTRAINT: i32 = 19;
+pub const SQLITE_MISMATCH: i32 = 20;
+pub const SQLITE_MISUSE: i32 = 21;
 pub const SQLITE_RANGE: i32 = 25;
 pub const SQLITE_ROW: i32 = 100;
 pub const SQLITE_DONE: i32 = 101;
+
+/// SQLite Open Flags
+pub const SQLITE_OPEN_READONLY: i32 = 0x0000_0001;
+pub const SQLITE_OPEN_READWRITE: i32 = 0x0000_0002;
+pub const SQLITE_OPEN_CREATE: i32 = 0x0000_0004;
+pub const SQLITE_OPEN_MEMORY: i32 = 0x0000_0080;
 
 /// SQLite Column Datatypes
 pub const SQLITE_INTEGER: i32 = 1;
@@ -570,13 +583,39 @@ pub const SQLITE_TEXT: i32 = 3;
 pub const SQLITE_BLOB: i32 = 4;
 pub const SQLITE_NULL: i32 = 5;
 
+/// Track C strings allocated by `sqlite3_exec` so `sqlite3_free` is memory-safe.
+fn allocated_exec_strings() -> &'static std::sync::Mutex<std::collections::HashSet<usize>> {
+    static SET: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<usize>>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn alloc_sqlite_cstring(msg: &str) -> *mut c_char {
+    let raw = CString::new(msg)
+        .unwrap_or_else(|_| CString::new("sqlite3 error").unwrap())
+        .into_raw();
+    if let Ok(mut set) = allocated_exec_strings().lock() {
+        set.insert(raw as usize);
+    }
+    raw
+}
+
+/// Callback type for `sqlite3_exec`.
+#[allow(non_camel_case_types)]
+pub type sqlite3_callback =
+    Option<unsafe extern "C" fn(*mut c_void, i32, *mut *mut c_char, *mut *mut c_char) -> i32>;
+
 /// Opaque SQLite Database Handle representation
 #[repr(C)]
 #[allow(non_camel_case_types)]
 pub struct sqlite3 {
     pub(crate) conn: Connection,
     pub(crate) last_error: Option<CString>,
+    pub(crate) last_errcode: i32,
     pub(crate) last_changes: i32,
+    pub(crate) total_changes: i64,
+    pub(crate) last_insert_rowid: i64,
+    pub(crate) busy_timeout_ms: i32,
 }
 
 /// Opaque SQLite Statement Handle representation
@@ -584,11 +623,17 @@ pub struct sqlite3 {
 #[allow(non_camel_case_types)]
 pub struct sqlite3_stmt {
     pub(crate) db: *mut sqlite3,
+    pub(crate) raw_sql: CString,
     pub(crate) sql: String,
     pub(crate) is_query: bool,
+    pub(crate) is_readonly: bool,
     pub(crate) param_count: usize,
+    pub(crate) occurrence_slots: Vec<usize>,
+    pub(crate) param_names: Vec<Option<CString>>,
     pub(crate) bindings: Vec<Value>,
     pub(crate) executed: bool,
+    pub(crate) stepped: bool,
+    pub(crate) finished: bool,
     pub(crate) rows: Vec<tapirus::traits::Row>,
     pub(crate) columns: Vec<CString>,
     pub(crate) current_row_idx: usize,
@@ -596,52 +641,361 @@ pub struct sqlite3_stmt {
     pub(crate) current_blob_cache: Option<Vec<u8>>,
 }
 
-fn count_sql_params(sql: &str) -> usize {
-    let mut count = 0usize;
-    let mut chars = sql.chars().peekable();
+/// Return `(stmt_byte_end, tail_byte_offset)` for the first top-level statement in `sql`.
+///
+/// Handles quoted strings, line/block comments, and `BEGIN ... END` / `CASE ... END` blocks.
+fn split_first_statement(sql: &str) -> (usize, usize) {
+    let bytes = sql.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
     let mut in_single = false;
     let mut in_double = false;
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' if !in_double => {
-                if in_single && chars.peek() == Some(&'\'') {
-                    let _ = chars.next();
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut block_depth: usize = 0;
+    let mut word = String::new();
+
+    while i < len {
+        let b = bytes[i];
+        if in_line_comment {
+            if b == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if b == b'*' && i + 1 < len && bytes[i + 1] == b'/' {
+                in_block_comment = false;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if in_single {
+            if b == b'\'' {
+                if i + 1 < len && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if b == b'"' {
+                if i + 1 < len && bytes[i + 1] == b'"' {
+                    i += 2;
+                    continue;
+                }
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'-' && i + 1 < len && bytes[i + 1] == b'-' {
+            word.clear();
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            word.clear();
+            in_block_comment = true;
+            i += 2;
+            continue;
+        }
+        if b == b'\'' {
+            word.clear();
+            in_single = true;
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            word.clear();
+            in_double = true;
+            i += 1;
+            continue;
+        }
+
+        if b.is_ascii_alphanumeric() || b == b'_' {
+            word.push((b as char).to_ascii_uppercase());
+            i += 1;
+            continue;
+        }
+        if !word.is_empty() {
+            if word == "BEGIN" || word == "CASE" {
+                block_depth += 1;
+            } else if word == "END" && block_depth > 0 {
+                block_depth -= 1;
+            }
+            word.clear();
+        }
+        if b == b';' && block_depth == 0 {
+            return (i + 1, i + 1);
+        }
+        i += 1;
+    }
+
+    (len, len)
+}
+
+struct PlaceholderPlan {
+    normalized_sql: String,
+    param_count: usize,
+    occurrence_slots: Vec<usize>,
+    param_names: Vec<Option<CString>>,
+}
+
+/// Normalize `?`, `?NNN`, `:name`, `@name`, `$name` placeholders into positional `?` bindings.
+fn compile_sql_placeholders(sql: &str) -> PlaceholderPlan {
+    let bytes = sql.as_bytes();
+    let len = bytes.len();
+    let mut normalized = String::with_capacity(len);
+    let mut occurrence_slots = Vec::new();
+    let mut param_names: Vec<Option<CString>> = Vec::new();
+    let mut named_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut next_anon_slot: usize = 0;
+
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while i < len {
+        let b = bytes[i];
+        if in_line_comment {
+            normalized.push(b as char);
+            if b == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            normalized.push(b as char);
+            if b == b'*' && i + 1 < len && bytes[i + 1] == b'/' {
+                normalized.push('/');
+                in_block_comment = false;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if in_single {
+            let ch = sql[i..].chars().next().unwrap();
+            normalized.push(ch);
+            i += ch.len_utf8();
+            if ch == '\'' {
+                if i < len && bytes[i] == b'\'' {
+                    normalized.push('\'');
+                    i += 1;
                 } else {
-                    in_single = !in_single;
+                    in_single = false;
                 }
             }
-            '"' if !in_single => {
-                if in_double && chars.peek() == Some(&'"') {
-                    let _ = chars.next();
+            continue;
+        }
+        if in_double {
+            let ch = sql[i..].chars().next().unwrap();
+            normalized.push(ch);
+            i += ch.len_utf8();
+            if ch == '"' {
+                if i < len && bytes[i] == b'"' {
+                    normalized.push('"');
+                    i += 1;
                 } else {
-                    in_double = !in_double;
+                    in_double = false;
                 }
             }
-            '?' if !in_single && !in_double => count += 1,
-            _ => {}
+            continue;
+        }
+
+        if b == b'-' && i + 1 < len && bytes[i + 1] == b'-' {
+            in_line_comment = true;
+            normalized.push_str("--");
+            i += 2;
+            continue;
+        }
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            in_block_comment = true;
+            normalized.push_str("/*");
+            i += 2;
+            continue;
+        }
+        if b == b'\'' {
+            in_single = true;
+            normalized.push('\'');
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            in_double = true;
+            normalized.push('"');
+            i += 1;
+            continue;
+        }
+
+        if b == b'?' {
+            let start = i;
+            i += 1;
+            let num_start = i;
+            while i < len && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            let slot = if i > num_start {
+                let raw_name = &sql[start..i];
+                if let Ok(num) = sql[num_start..i].parse::<usize>() {
+                    if num >= 1 {
+                        let slot_idx = num - 1;
+                        if param_names.len() <= slot_idx {
+                            param_names.resize(slot_idx + 1, None);
+                        }
+                        if param_names[slot_idx].is_none() {
+                            param_names[slot_idx] = CString::new(raw_name).ok();
+                        }
+                        if num > next_anon_slot {
+                            next_anon_slot = num;
+                        }
+                        slot_idx
+                    } else {
+                        let idx = next_anon_slot;
+                        next_anon_slot += 1;
+                        if param_names.len() <= idx {
+                            param_names.resize(idx + 1, None);
+                        }
+                        idx
+                    }
+                } else {
+                    let idx = next_anon_slot;
+                    next_anon_slot += 1;
+                    if param_names.len() <= idx {
+                        param_names.resize(idx + 1, None);
+                    }
+                    idx
+                }
+            } else {
+                while param_names.get(next_anon_slot).is_some_and(Option::is_some) {
+                    next_anon_slot += 1;
+                }
+                let idx = next_anon_slot;
+                next_anon_slot += 1;
+                if param_names.len() <= idx {
+                    param_names.resize(idx + 1, None);
+                }
+                idx
+            };
+            occurrence_slots.push(slot);
+            normalized.push('?');
+            continue;
+        }
+
+        if matches!(b, b':' | b'@' | b'$')
+            && i + 1 < len
+            && (bytes[i + 1].is_ascii_alphanumeric() || bytes[i + 1] == b'_')
+        {
+            let start = i;
+            i += 1;
+            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let name = &sql[start..i];
+            let slot = if let Some(&existing) = named_map.get(name) {
+                existing
+            } else {
+                while param_names.get(next_anon_slot).is_some_and(Option::is_some) {
+                    next_anon_slot += 1;
+                }
+                let idx = next_anon_slot;
+                next_anon_slot += 1;
+                if param_names.len() <= idx {
+                    param_names.resize(idx + 1, None);
+                }
+                param_names[idx] = CString::new(name).ok();
+                named_map.insert(name.to_string(), idx);
+                idx
+            };
+            occurrence_slots.push(slot);
+            normalized.push('?');
+            continue;
+        }
+
+        let ch = sql[i..].chars().next().unwrap();
+        normalized.push(ch);
+        i += ch.len_utf8();
+    }
+
+    let param_count = param_names.len();
+    PlaceholderPlan {
+        normalized_sql: normalized,
+        param_count,
+        occurrence_slots,
+        param_names,
+    }
+}
+
+fn strip_leading_sql_comments(mut sql: &str) -> &str {
+    loop {
+        sql = sql.trim_start();
+        if let Some(rest) = sql.strip_prefix("--") {
+            match rest.find('\n') {
+                Some(idx) => sql = &rest[idx + 1..],
+                None => return "",
+            }
+        } else if let Some(rest) = sql.strip_prefix("/*") {
+            match rest.find("*/") {
+                Some(idx) => sql = &rest[idx + 2..],
+                None => return "",
+            }
+        } else {
+            return sql;
         }
     }
-    count
 }
 
 fn is_query_sql(sql: &str) -> bool {
-    let trimmed = sql.trim_start().to_uppercase();
+    let trimmed = strip_leading_sql_comments(sql).to_uppercase();
     trimmed.starts_with("SELECT")
         || trimmed.starts_with("WITH")
         || trimmed.starts_with("EXPLAIN")
         || trimmed.starts_with("GRAPH")
+        || (trimmed.starts_with("PRAGMA") && !trimmed.contains('='))
+}
+
+fn map_error_to_sqlite_code(err: &tapirus::error::Error) -> i32 {
+    use tapirus::error::Error;
+    match err {
+        Error::Busy(_) => SQLITE_BUSY,
+        Error::ConstraintViolation(_) => SQLITE_CONSTRAINT,
+        Error::TransactionError(msg) if msg.contains("read-only") => SQLITE_READONLY,
+        Error::Corrupted(msg) if msg.contains("read-only") => SQLITE_READONLY,
+        Error::Corrupted(_) => SQLITE_CORRUPT,
+        Error::Io(_) => SQLITE_IOERR,
+        _ => SQLITE_ERROR,
+    }
 }
 
 unsafe fn execute_sqlite_stmt(stmt: &mut sqlite3_stmt) -> i32 {
     if stmt.db.is_null() {
-        return SQLITE_ERROR;
+        return SQLITE_MISUSE;
     }
     let db_ref = unsafe { &mut *stmt.db };
+    let ordered_params: Vec<Value> = stmt
+        .occurrence_slots
+        .iter()
+        .map(|&slot| stmt.bindings.get(slot).cloned().unwrap_or(Value::Null))
+        .collect();
+
     if stmt.is_query {
-        let result = if stmt.bindings.is_empty() {
+        let result = if ordered_params.is_empty() {
             db_ref.conn.query(&stmt.sql)
         } else {
-            db_ref.conn.query_with_params(&stmt.sql, &stmt.bindings)
+            db_ref.conn.query_with_params(&stmt.sql, &ordered_params)
         };
         match result {
             Ok(rows) => {
@@ -656,32 +1010,48 @@ unsafe fn execute_sqlite_stmt(stmt: &mut sqlite3_stmt) -> i32 {
                 stmt.executed = true;
                 stmt.current_row_idx = 0;
                 db_ref.last_error = None;
+                db_ref.last_errcode = SQLITE_OK;
                 SQLITE_OK
             }
             Err(e) => {
+                let rc = map_error_to_sqlite_code(&e);
                 db_ref.last_error = Some(CString::new(e.to_string()).unwrap_or_default());
-                SQLITE_ERROR
+                db_ref.last_errcode = rc;
+                rc
             }
         }
     } else {
-        let result = if stmt.bindings.is_empty() {
+        let head_upper = strip_leading_sql_comments(&stmt.sql).to_uppercase();
+        let is_insert = head_upper.starts_with("INSERT") || head_upper.starts_with("REPLACE");
+        let is_dml =
+            is_insert || head_upper.starts_with("UPDATE") || head_upper.starts_with("DELETE");
+        let result = if ordered_params.is_empty() {
             db_ref.conn.execute(&stmt.sql)
         } else {
-            db_ref.conn.execute_with_params(&stmt.sql, &stmt.bindings)
+            db_ref.conn.execute_with_params(&stmt.sql, &ordered_params)
         };
         match result {
             Ok(affected) => {
-                db_ref.last_changes = affected as i32;
+                if is_dml {
+                    db_ref.last_changes = affected as i32;
+                    db_ref.total_changes += affected as i64;
+                }
+                if is_insert && affected > 0 {
+                    db_ref.last_insert_rowid = db_ref.conn.last_insert_rowid();
+                }
                 stmt.rows.clear();
                 stmt.columns.clear();
                 stmt.executed = true;
                 stmt.current_row_idx = 0;
                 db_ref.last_error = None;
+                db_ref.last_errcode = SQLITE_OK;
                 SQLITE_OK
             }
             Err(e) => {
+                let rc = map_error_to_sqlite_code(&e);
                 db_ref.last_error = Some(CString::new(e.to_string()).unwrap_or_default());
-                SQLITE_ERROR
+                db_ref.last_errcode = rc;
+                rc
             }
         }
     }
@@ -693,7 +1063,14 @@ unsafe fn execute_sqlite_stmt(stmt: &mut sqlite3_stmt) -> i32 {
 /// Standard C ABI contract.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sqlite3_open(filename: *const c_char, ppDb: *mut *mut sqlite3) -> i32 {
-    unsafe { sqlite3_open_v2(filename, ppDb, 0, ptr::null()) }
+    unsafe {
+        sqlite3_open_v2(
+            filename,
+            ppDb,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+            ptr::null(),
+        )
+    }
 }
 
 /// Open an SQLite compatible connection with flags.
@@ -704,17 +1081,17 @@ pub unsafe extern "C" fn sqlite3_open(filename: *const c_char, ppDb: *mut *mut s
 pub unsafe extern "C" fn sqlite3_open_v2(
     filename: *const c_char,
     ppDb: *mut *mut sqlite3,
-    _flags: i32,
+    flags: i32,
     _zVfs: *const c_char,
 ) -> i32 {
     if ppDb.is_null() {
-        return SQLITE_ERROR;
+        return SQLITE_MISUSE;
     }
     unsafe { *ppDb = ptr::null_mut() };
 
     let res = catch_unwind(AssertUnwindSafe(|| {
         if filename.is_null() {
-            return SQLITE_ERROR;
+            return SQLITE_MISUSE;
         }
         let c_str = unsafe { CStr::from_ptr(filename) };
         let path_str = match c_str.to_str() {
@@ -722,10 +1099,23 @@ pub unsafe extern "C" fn sqlite3_open_v2(
             Err(_) => return SQLITE_ERROR,
         };
 
-        let conn_res = if path_str == ":memory:" || path_str.is_empty() {
+        let is_memory =
+            path_str == ":memory:" || path_str.is_empty() || (flags & SQLITE_OPEN_MEMORY) != 0;
+        let is_ro = (flags & SQLITE_OPEN_READONLY) != 0;
+
+        let conn_res = if is_memory {
             Connection::open_in_memory()
+        } else if is_ro {
+            Connection::open_read_only(Path::new(path_str))
         } else {
-            Connection::open(Path::new(path_str))
+            Connection::open_concurrent_with_config(
+                Path::new(path_str),
+                tapirus::Config {
+                    concurrent_access: true,
+                    busy_timeout: std::time::Duration::ZERO,
+                    ..Default::default()
+                },
+            )
         };
 
         match conn_res {
@@ -733,12 +1123,16 @@ pub unsafe extern "C" fn sqlite3_open_v2(
                 let db_box = Box::new(sqlite3 {
                     conn,
                     last_error: None,
+                    last_errcode: SQLITE_OK,
                     last_changes: 0,
+                    total_changes: 0,
+                    last_insert_rowid: 0,
+                    busy_timeout_ms: 0,
                 });
                 unsafe { *ppDb = Box::into_raw(db_box) };
                 SQLITE_OK
             }
-            Err(_) => SQLITE_ERROR,
+            Err(e) => map_error_to_sqlite_code(&e).max(SQLITE_CANTOPEN),
         }
     }));
 
@@ -768,7 +1162,10 @@ pub unsafe extern "C" fn sqlite3_close_v2(db: *mut sqlite3) -> i32 {
     unsafe { sqlite3_close(db) }
 }
 
-/// Prepare a SQL query statement.
+/// Prepare a SQL statement for execution.
+///
+/// DML/DDL execution is strictly deferred until `sqlite3_step()`, matching SQLite semantics.
+/// Supports multi-statement `pzTail` iteration and `?`, `?NNN`, `:name`, `@name`, `$name` binds.
 ///
 /// # Safety
 /// Standard C ABI contract.
@@ -780,22 +1177,26 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
     ppStmt: *mut *mut sqlite3_stmt,
     pzTail: *mut *const c_char,
 ) -> i32 {
-    if db.is_null() || zSql.is_null() || ppStmt.is_null() {
-        return SQLITE_ERROR;
+    if db.is_null() || ppStmt.is_null() {
+        return SQLITE_MISUSE;
     }
     unsafe { *ppStmt = ptr::null_mut() };
     if !pzTail.is_null() {
         unsafe { *pzTail = ptr::null() };
     }
+    if zSql.is_null() {
+        return SQLITE_OK;
+    }
 
     let res = catch_unwind(AssertUnwindSafe(|| {
         let db_ref = unsafe { &mut *db };
-        let sql_str = if nByte > 0 {
+        let full_sql = if nByte >= 0 {
             let slice = unsafe { std::slice::from_raw_parts(zSql as *const u8, nByte as usize) };
             match std::str::from_utf8(slice) {
                 Ok(s) => s,
                 Err(_) => {
                     db_ref.last_error = Some(CString::new("Invalid UTF-8 in SQL").unwrap());
+                    db_ref.last_errcode = SQLITE_ERROR;
                     return SQLITE_ERROR;
                 }
             }
@@ -804,20 +1205,73 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
                 Ok(s) => s,
                 Err(_) => {
                     db_ref.last_error = Some(CString::new("Invalid UTF-8 in SQL").unwrap());
+                    db_ref.last_errcode = SQLITE_ERROR;
                     return SQLITE_ERROR;
                 }
             }
         };
 
-        let param_count = count_sql_params(sql_str);
-        let is_query = is_query_sql(sql_str);
+        let (stmt_end, tail_offset) = split_first_statement(full_sql);
+        let stmt_slice = &full_sql[..stmt_end];
+        if !pzTail.is_null() {
+            unsafe { *pzTail = zSql.add(tail_offset) };
+        }
+
+        let active_sql = strip_leading_sql_comments(stmt_slice);
+        let active_no_semi = active_sql.trim_end().trim_end_matches(';').trim();
+        if active_no_semi.is_empty() {
+            db_ref.last_error = None;
+            db_ref.last_errcode = SQLITE_OK;
+            return SQLITE_OK;
+        }
+
+        let plan = compile_sql_placeholders(stmt_slice);
+        let is_query = is_query_sql(&plan.normalized_sql);
+
+        // Validate non-query SQL syntax at prepare time without executing or mutating the database.
+        if !is_query {
+            let upper = strip_leading_sql_comments(&plan.normalized_sql).to_uppercase();
+            let is_cypher = upper.starts_with("CREATE (")
+                || upper.starts_with("CREATE(")
+                || upper.starts_with("MATCH")
+                || upper.starts_with("CYPHER");
+            if !is_cypher {
+                if let Err(e) = tapirus::sql::lexer::tokenize(&plan.normalized_sql) {
+                    let rc = map_error_to_sqlite_code(&e);
+                    db_ref.last_error = Some(CString::new(e.to_string()).unwrap_or_default());
+                    db_ref.last_errcode = rc;
+                    return rc;
+                }
+                if plan.occurrence_slots.is_empty() {
+                    if let Ok(toks) = tapirus::sql::lexer::tokenize(&plan.normalized_sql) {
+                        if !toks.is_empty() {
+                            if let Err(e) = tapirus::sql::parser::parse_tokens(&toks) {
+                                let rc = map_error_to_sqlite_code(&e);
+                                db_ref.last_error =
+                                    Some(CString::new(e.to_string()).unwrap_or_default());
+                                db_ref.last_errcode = rc;
+                                return rc;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let raw_sql = CString::new(stmt_slice).unwrap_or_default();
         let mut stmt = Box::new(sqlite3_stmt {
             db,
-            sql: sql_str.to_string(),
+            raw_sql,
+            sql: plan.normalized_sql,
             is_query,
-            param_count,
-            bindings: vec![Value::Null; param_count],
+            is_readonly: is_query,
+            param_count: plan.param_count,
+            occurrence_slots: plan.occurrence_slots,
+            param_names: plan.param_names,
+            bindings: vec![Value::Null; plan.param_count],
             executed: false,
+            stepped: false,
+            finished: false,
             rows: Vec::new(),
             columns: Vec::new(),
             current_row_idx: 0,
@@ -825,9 +1279,9 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
             current_blob_cache: None,
         });
 
-        // Unparameterized statements still execute at prepare time so `sqlite3_column_count`
-        // works immediately before the first `sqlite3_step`, preserving existing behavior.
-        if param_count == 0 {
+        // Read-only unparameterized queries pre-populate column metadata so `sqlite3_column_count`
+        // works before the first `sqlite3_step`, without ever mutating state at prepare time.
+        if is_query && stmt.occurrence_slots.is_empty() {
             let rc = unsafe { execute_sqlite_stmt(&mut stmt) };
             if rc != SQLITE_OK {
                 return rc;
@@ -835,6 +1289,8 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
         }
 
         unsafe { *ppStmt = Box::into_raw(stmt) };
+        db_ref.last_error = None;
+        db_ref.last_errcode = SQLITE_OK;
         SQLITE_OK
     }));
 
@@ -843,7 +1299,7 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
 
 unsafe fn set_sqlite_binding(pStmt: *mut sqlite3_stmt, index: i32, val: Value) -> i32 {
     if pStmt.is_null() {
-        return SQLITE_ERROR;
+        return SQLITE_MISUSE;
     }
     let stmt = unsafe { &mut *pStmt };
     if index < 1 || (index as usize) > stmt.bindings.len() {
@@ -853,7 +1309,7 @@ unsafe fn set_sqlite_binding(pStmt: *mut sqlite3_stmt, index: i32, val: Value) -
     SQLITE_OK
 }
 
-/// Return the number of `?` SQL parameters in a prepared statement.
+/// Return the number of SQL parameters in a prepared statement.
 ///
 /// # Safety
 /// Standard C ABI contract.
@@ -863,6 +1319,51 @@ pub unsafe extern "C" fn sqlite3_bind_parameter_count(pStmt: *mut sqlite3_stmt) 
         return 0;
     }
     unsafe { &*pStmt }.param_count as i32
+}
+
+/// Return the 1-based index of a named SQL parameter (`:name`, `@name`, `$name`, `?NNN`), or 0.
+///
+/// # Safety
+/// Standard C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_bind_parameter_index(
+    pStmt: *mut sqlite3_stmt,
+    zName: *const c_char,
+) -> i32 {
+    if pStmt.is_null() || zName.is_null() {
+        return 0;
+    }
+    let stmt = unsafe { &*pStmt };
+    let Ok(target) = unsafe { CStr::from_ptr(zName) }.to_str() else {
+        return 0;
+    };
+    for (idx, name_opt) in stmt.param_names.iter().enumerate() {
+        if let Some(name) = name_opt {
+            if name.to_str().ok() == Some(target) {
+                return (idx + 1) as i32;
+            }
+        }
+    }
+    0
+}
+
+/// Return the name of the `N`-th (1-based) SQL parameter, or NULL if unnamed/out-of-range.
+///
+/// # Safety
+/// Standard C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_bind_parameter_name(
+    pStmt: *mut sqlite3_stmt,
+    N: i32,
+) -> *const c_char {
+    if pStmt.is_null() || N < 1 {
+        return ptr::null();
+    }
+    let stmt = unsafe { &*pStmt };
+    stmt.param_names
+        .get((N - 1) as usize)
+        .and_then(|opt| opt.as_ref())
+        .map_or(ptr::null(), |c| c.as_ptr())
 }
 
 /// Reset all parameter bindings on a prepared statement back to `NULL`.
@@ -998,16 +1499,20 @@ pub unsafe extern "C" fn sqlite3_step(pStmt: *mut sqlite3_stmt) -> i32 {
 
     let res = catch_unwind(AssertUnwindSafe(|| {
         let stmt = unsafe { &mut *pStmt };
+        stmt.stepped = true;
         if !stmt.executed {
             let rc = unsafe { execute_sqlite_stmt(stmt) };
             if rc != SQLITE_OK {
+                stmt.finished = true;
                 return rc;
             }
         }
         if stmt.current_row_idx < stmt.rows.len() {
             stmt.current_row_idx += 1;
+            stmt.finished = false;
             SQLITE_ROW
         } else {
+            stmt.finished = true;
             SQLITE_DONE
         }
     }));
@@ -1242,12 +1747,16 @@ pub unsafe extern "C" fn sqlite3_reset(pStmt: *mut sqlite3_stmt) -> i32 {
     if !pStmt.is_null() {
         let stmt = unsafe { &mut *pStmt };
         stmt.current_row_idx = 0;
+        stmt.stepped = false;
+        stmt.finished = false;
         stmt.current_text_cache = None;
         stmt.current_blob_cache = None;
-        if stmt.param_count > 0 {
+        if !stmt.is_query || !stmt.occurrence_slots.is_empty() {
             stmt.executed = false;
             stmt.rows.clear();
-            stmt.columns.clear();
+            if !stmt.occurrence_slots.is_empty() {
+                stmt.columns.clear();
+            }
         }
     }
     SQLITE_OK
@@ -1281,11 +1790,20 @@ pub unsafe extern "C" fn sqlite3_errcode(db: *mut sqlite3) -> i32 {
     } else {
         let db_ref = unsafe { &*db };
         if db_ref.last_error.is_some() {
-            SQLITE_ERROR
+            db_ref.last_errcode
         } else {
             SQLITE_OK
         }
     }
+}
+
+/// Return extended numeric error code for the most recent failed API call.
+///
+/// # Safety
+/// Standard C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_extended_errcode(db: *mut sqlite3) -> i32 {
+    unsafe { sqlite3_errcode(db) }
 }
 
 /// Return number of rows modified, inserted or deleted by the most recently completed statement.
@@ -1297,9 +1815,251 @@ pub unsafe extern "C" fn sqlite3_changes(db: *mut sqlite3) -> i32 {
     if db.is_null() {
         0
     } else {
-        let db_ref = unsafe { &*db };
-        db_ref.last_changes
+        unsafe { &*db }.last_changes
     }
+}
+
+/// Return total number of rows inserted, modified or deleted since this database connection opened.
+///
+/// # Safety
+/// Standard C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_total_changes(db: *mut sqlite3) -> i32 {
+    if db.is_null() {
+        0
+    } else {
+        unsafe { &*db }.total_changes as i32
+    }
+}
+
+/// Return the rowid of the most recent successful `INSERT` on the database connection.
+///
+/// # Safety
+/// Standard C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_last_insert_rowid(db: *mut sqlite3) -> i64 {
+    if db.is_null() {
+        0
+    } else {
+        unsafe { &*db }.last_insert_rowid
+    }
+}
+
+/// Configure a busy handler timeout (in milliseconds) for concurrent write locks.
+///
+/// # Safety
+/// Standard C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_busy_timeout(db: *mut sqlite3, ms: i32) -> i32 {
+    if db.is_null() {
+        return SQLITE_MISUSE;
+    }
+    let db_ref = unsafe { &mut *db };
+    db_ref.busy_timeout_ms = ms.max(0);
+    db_ref
+        .conn
+        .set_busy_timeout(std::time::Duration::from_millis(
+            db_ref.busy_timeout_ms as u64,
+        ));
+    SQLITE_OK
+}
+
+/// Return `1` if the connection is in autocommit mode, or `0` inside an explicit transaction.
+///
+/// # Safety
+/// Standard C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_get_autocommit(db: *mut sqlite3) -> i32 {
+    if db.is_null() {
+        1
+    } else {
+        i32::from(!unsafe { &*db }.conn.is_in_transaction())
+    }
+}
+
+/// Return the original SQL text used to prepare `pStmt`.
+///
+/// # Safety
+/// Standard C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_sql(pStmt: *mut sqlite3_stmt) -> *const c_char {
+    if pStmt.is_null() {
+        ptr::null()
+    } else {
+        unsafe { &*pStmt }.raw_sql.as_ptr()
+    }
+}
+
+/// Return `1` if `pStmt` makes no direct changes to the database file, or `0` otherwise.
+///
+/// # Safety
+/// Standard C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_stmt_readonly(pStmt: *mut sqlite3_stmt) -> i32 {
+    if pStmt.is_null() {
+        1
+    } else {
+        i32::from(unsafe { &*pStmt }.is_readonly)
+    }
+}
+
+/// Return `1` if `pStmt` has been stepped and has not yet completed/reset, or `0` otherwise.
+///
+/// # Safety
+/// Standard C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_stmt_busy(pStmt: *mut sqlite3_stmt) -> i32 {
+    if pStmt.is_null() {
+        0
+    } else {
+        let stmt = unsafe { &*pStmt };
+        i32::from(stmt.stepped && !stmt.finished)
+    }
+}
+
+/// Return the number of columns in the current row of `pStmt` (or 0 if no row is active).
+///
+/// # Safety
+/// Standard C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_data_count(pStmt: *mut sqlite3_stmt) -> i32 {
+    if pStmt.is_null() {
+        return 0;
+    }
+    let stmt = unsafe { &*pStmt };
+    if stmt.current_row_idx == 0 || stmt.current_row_idx > stmt.rows.len() || stmt.finished {
+        0
+    } else {
+        stmt.columns.len() as i32
+    }
+}
+
+/// Free memory previously allocated by `sqlite3_exec` (`pzErrMsg`).
+///
+/// # Safety
+/// `ptr` must be NULL or a pointer previously returned via `sqlite3_exec`'s error out parameter.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_free(ptr_arg: *mut c_void) {
+    if ptr_arg.is_null() {
+        return;
+    }
+    let addr = ptr_arg as usize;
+    let owned = allocated_exec_strings()
+        .lock()
+        .map(|mut set| set.remove(&addr))
+        .unwrap_or(false);
+    if owned {
+        unsafe { drop(CString::from_raw(ptr_arg as *mut c_char)) };
+    }
+}
+
+/// Execute zero or more `;`-separated SQL statements in one call with an optional row callback.
+///
+/// # Safety
+/// Standard C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sqlite3_exec(
+    db: *mut sqlite3,
+    sql: *const c_char,
+    callback: sqlite3_callback,
+    arg: *mut c_void,
+    errmsg: *mut *mut c_char,
+) -> i32 {
+    if !errmsg.is_null() {
+        unsafe { *errmsg = ptr::null_mut() };
+    }
+    if db.is_null() {
+        return SQLITE_MISUSE;
+    }
+    if sql.is_null() {
+        return SQLITE_OK;
+    }
+
+    let res = catch_unwind(AssertUnwindSafe(|| {
+        let mut cursor = sql;
+        loop {
+            let mut stmt: *mut sqlite3_stmt = ptr::null_mut();
+            let mut tail: *const c_char = ptr::null();
+            let rc = unsafe { sqlite3_prepare_v2(db, cursor, -1, &mut stmt, &mut tail) };
+            if rc != SQLITE_OK {
+                if !errmsg.is_null() {
+                    let msg = unsafe { CStr::from_ptr(sqlite3_errmsg(db)) }
+                        .to_string_lossy()
+                        .into_owned();
+                    unsafe { *errmsg = alloc_sqlite_cstring(&msg) };
+                }
+                return rc;
+            }
+
+            if !stmt.is_null() {
+                loop {
+                    let step_rc = unsafe { sqlite3_step(stmt) };
+                    if step_rc == SQLITE_ROW {
+                        if let Some(cb) = callback {
+                            let ncol = unsafe { sqlite3_column_count(stmt) };
+                            let mut name_ptrs: Vec<*mut c_char> =
+                                Vec::with_capacity(ncol.max(0) as usize);
+                            let mut val_cstrings: Vec<Option<CString>> =
+                                Vec::with_capacity(ncol.max(0) as usize);
+                            let mut val_ptrs: Vec<*mut c_char> =
+                                Vec::with_capacity(ncol.max(0) as usize);
+                            for col_idx in 0..ncol {
+                                let cname = unsafe { sqlite3_column_name(stmt, col_idx) };
+                                name_ptrs.push(cname as *mut c_char);
+                                if unsafe { sqlite3_column_type(stmt, col_idx) } == SQLITE_NULL {
+                                    val_cstrings.push(None);
+                                    val_ptrs.push(ptr::null_mut());
+                                } else {
+                                    let txt_ptr = unsafe { sqlite3_column_text(stmt, col_idx) };
+                                    if txt_ptr.is_null() {
+                                        val_cstrings.push(None);
+                                        val_ptrs.push(ptr::null_mut());
+                                    } else {
+                                        let cloned = unsafe { CStr::from_ptr(txt_ptr) }.to_owned();
+                                        val_ptrs.push(cloned.as_ptr() as *mut c_char);
+                                        val_cstrings.push(Some(cloned));
+                                    }
+                                }
+                            }
+                            let cb_rc = unsafe {
+                                cb(arg, ncol, val_ptrs.as_mut_ptr(), name_ptrs.as_mut_ptr())
+                            };
+                            if cb_rc != 0 {
+                                unsafe { sqlite3_finalize(stmt) };
+                                if !errmsg.is_null() {
+                                    unsafe { *errmsg = alloc_sqlite_cstring("query aborted") };
+                                }
+                                let db_ref = unsafe { &mut *db };
+                                db_ref.last_error = Some(CString::new("query aborted").unwrap());
+                                db_ref.last_errcode = SQLITE_ABORT;
+                                return SQLITE_ABORT;
+                            }
+                        }
+                    } else if step_rc == SQLITE_DONE {
+                        break;
+                    } else {
+                        unsafe { sqlite3_finalize(stmt) };
+                        if !errmsg.is_null() {
+                            let msg = unsafe { CStr::from_ptr(sqlite3_errmsg(db)) }
+                                .to_string_lossy()
+                                .into_owned();
+                            unsafe { *errmsg = alloc_sqlite_cstring(&msg) };
+                        }
+                        return step_rc;
+                    }
+                }
+                unsafe { sqlite3_finalize(stmt) };
+            }
+
+            if tail.is_null() || unsafe { *tail } == 0 {
+                break;
+            }
+            cursor = tail;
+        }
+        SQLITE_OK
+    }));
+
+    res.unwrap_or(SQLITE_ERROR)
 }
 
 /// Return SQLite library version.
@@ -1538,6 +2298,183 @@ mod tests {
             assert_eq!(std::slice::from_raw_parts(blob_ptr, 4), &blob);
             assert_eq!(sqlite3_step(sel_stmt), SQLITE_DONE);
             sqlite3_finalize(sel_stmt);
+
+            sqlite3_close(db);
+        }
+    }
+
+    #[test]
+    fn test_sqlite_orm_completeness_exec_deferred_named_binds_and_status() {
+        unsafe extern "C" fn collect_callback(
+            ctx: *mut c_void,
+            ncol: i32,
+            vals: *mut *mut c_char,
+            cols: *mut *mut c_char,
+        ) -> i32 {
+            let out = unsafe { &mut *(ctx as *mut Vec<(String, String)>) };
+            for i in 0..ncol as usize {
+                let col_name = unsafe { CStr::from_ptr(*cols.add(i)) }
+                    .to_string_lossy()
+                    .into_owned();
+                let val_str = if unsafe { *vals.add(i) }.is_null() {
+                    "NULL".to_string()
+                } else {
+                    unsafe { CStr::from_ptr(*vals.add(i)) }
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                out.push((col_name, val_str));
+            }
+            0
+        }
+
+        unsafe {
+            let mut db: *mut sqlite3 = ptr::null_mut();
+            let mem = CString::new(":memory:").unwrap();
+            assert_eq!(sqlite3_open(mem.as_ptr(), &mut db), SQLITE_OK);
+            assert_eq!(sqlite3_busy_timeout(db, 2000), SQLITE_OK);
+            assert_eq!(sqlite3_get_autocommit(db), 1);
+
+            // 1. sqlite3_exec multi-statement + trigger semicolon inside BEGIN..END
+            let setup_sql = CString::new(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER CHECK (age >= 0));
+                 CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, note TEXT);
+                 CREATE TRIGGER log_ins AFTER INSERT ON users BEGIN INSERT INTO audit_log (note) VALUES ('added'); END;
+                 INSERT INTO users (name, age) VALUES ('Alice', 30);"
+            )
+            .unwrap();
+            let mut err_ptr: *mut c_char = ptr::null_mut();
+            let rc = sqlite3_exec(db, setup_sql.as_ptr(), None, ptr::null_mut(), &mut err_ptr);
+            assert_eq!(rc, SQLITE_OK);
+            assert!(err_ptr.is_null());
+            assert_eq!(sqlite3_last_insert_rowid(db), 1);
+            assert_eq!(sqlite3_total_changes(db), 1);
+
+            // Verify callback in sqlite3_exec
+            let mut captured: Vec<(String, String)> = Vec::new();
+            let query_sql = CString::new("SELECT id, name FROM users;").unwrap();
+            let rc = sqlite3_exec(
+                db,
+                query_sql.as_ptr(),
+                Some(collect_callback),
+                (&mut captured as *mut Vec<(String, String)>) as *mut c_void,
+                &mut err_ptr,
+            );
+            assert_eq!(rc, SQLITE_OK);
+            assert_eq!(
+                captured,
+                vec![("id".into(), "1".into()), ("name".into(), "Alice".into())]
+            );
+
+            // 2. Prepare DML does NOT execute until sqlite3_step!
+            let deferred_sql =
+                CString::new("INSERT INTO users (name, age) VALUES ('Ghost', 99);").unwrap();
+            let mut deferred_stmt: *mut sqlite3_stmt = ptr::null_mut();
+            assert_eq!(
+                sqlite3_prepare_v2(
+                    db,
+                    deferred_sql.as_ptr(),
+                    -1,
+                    &mut deferred_stmt,
+                    ptr::null_mut()
+                ),
+                SQLITE_OK
+            );
+            assert_eq!(sqlite3_stmt_readonly(deferred_stmt), 0);
+            assert_eq!(sqlite3_stmt_busy(deferred_stmt), 0);
+            assert!(!sqlite3_sql(deferred_stmt).is_null());
+            // Finalize without stepping -> must NOT insert Ghost!
+            sqlite3_finalize(deferred_stmt);
+            let mut count_check: Vec<(String, String)> = Vec::new();
+            let cnt_sql = CString::new("SELECT COUNT(*) FROM users;").unwrap();
+            assert_eq!(
+                sqlite3_exec(
+                    db,
+                    cnt_sql.as_ptr(),
+                    Some(collect_callback),
+                    (&mut count_check as *mut Vec<(String, String)>) as *mut c_void,
+                    ptr::null_mut()
+                ),
+                SQLITE_OK
+            );
+            assert_eq!(count_check[0].1, "1");
+
+            // 3. Named (:name, @name) and numbered (?2) parameters + bind_parameter_index/name
+            let named_sql = CString::new(
+                "INSERT INTO users (name, age) VALUES (:uname, ?2); SELECT name, age FROM users WHERE name = @target;"
+            )
+            .unwrap();
+            let mut stmt1: *mut sqlite3_stmt = ptr::null_mut();
+            let mut tail: *const c_char = ptr::null();
+            assert_eq!(
+                sqlite3_prepare_v2(db, named_sql.as_ptr(), -1, &mut stmt1, &mut tail),
+                SQLITE_OK
+            );
+            assert!(!tail.is_null());
+            assert_eq!(sqlite3_bind_parameter_count(stmt1), 2);
+            let p_uname = CString::new(":uname").unwrap();
+            let p_two = CString::new("?2").unwrap();
+            assert_eq!(sqlite3_bind_parameter_index(stmt1, p_uname.as_ptr()), 1);
+            assert_eq!(sqlite3_bind_parameter_index(stmt1, p_two.as_ptr()), 2);
+            assert_eq!(
+                CStr::from_ptr(sqlite3_bind_parameter_name(stmt1, 1))
+                    .to_str()
+                    .unwrap(),
+                ":uname"
+            );
+            let bob = CString::new("Bob").unwrap();
+            sqlite3_bind_text(stmt1, 1, bob.as_ptr(), -1, ptr::null());
+            sqlite3_bind_int(stmt1, 2, 25);
+            assert_eq!(sqlite3_step(stmt1), SQLITE_DONE);
+            assert_eq!(sqlite3_last_insert_rowid(db), 2);
+            sqlite3_finalize(stmt1);
+
+            // Second statement via pzTail
+            let mut stmt2: *mut sqlite3_stmt = ptr::null_mut();
+            assert_eq!(
+                sqlite3_prepare_v2(db, tail, -1, &mut stmt2, &mut tail),
+                SQLITE_OK
+            );
+            assert_eq!(sqlite3_stmt_readonly(stmt2), 1);
+            let p_target = CString::new("@target").unwrap();
+            assert_eq!(sqlite3_bind_parameter_index(stmt2, p_target.as_ptr()), 1);
+            sqlite3_bind_text(stmt2, 1, bob.as_ptr(), -1, ptr::null());
+            assert_eq!(sqlite3_data_count(stmt2), 0);
+            assert_eq!(sqlite3_step(stmt2), SQLITE_ROW);
+            assert_eq!(sqlite3_stmt_busy(stmt2), 1);
+            assert_eq!(sqlite3_data_count(stmt2), 2);
+            assert_eq!(sqlite3_column_int(stmt2, 1), 25);
+            assert_eq!(sqlite3_step(stmt2), SQLITE_DONE);
+            assert_eq!(sqlite3_stmt_busy(stmt2), 0);
+            sqlite3_finalize(stmt2);
+
+            // 4. Autocommit tracks explicit transaction + Constraint error returns SQLITE_CONSTRAINT + sqlite3_free
+            let tx_begin = CString::new("BEGIN;").unwrap();
+            assert_eq!(
+                sqlite3_exec(
+                    db,
+                    tx_begin.as_ptr(),
+                    None,
+                    ptr::null_mut(),
+                    ptr::null_mut()
+                ),
+                SQLITE_OK
+            );
+            assert_eq!(sqlite3_get_autocommit(db), 0);
+            let bad_age =
+                CString::new("INSERT INTO users (name, age) VALUES ('Bad', -5);").unwrap();
+            let bad_rc = sqlite3_exec(db, bad_age.as_ptr(), None, ptr::null_mut(), &mut err_ptr);
+            assert_eq!(bad_rc, SQLITE_CONSTRAINT);
+            assert_eq!(sqlite3_errcode(db), SQLITE_CONSTRAINT);
+            assert_eq!(sqlite3_extended_errcode(db), SQLITE_CONSTRAINT);
+            assert!(!err_ptr.is_null());
+            sqlite3_free(err_ptr as *mut c_void);
+            let tx_rb = CString::new("ROLLBACK;").unwrap();
+            assert_eq!(
+                sqlite3_exec(db, tx_rb.as_ptr(), None, ptr::null_mut(), ptr::null_mut()),
+                SQLITE_OK
+            );
+            assert_eq!(sqlite3_get_autocommit(db), 1);
 
             sqlite3_close(db);
         }
