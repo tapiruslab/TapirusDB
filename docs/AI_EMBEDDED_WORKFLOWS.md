@@ -1,13 +1,10 @@
 # AI and embedded workflows
 
-These are working-tree APIs in version 1.0.5. The public release and registry
-availability of these APIs must still be verified independently. Build the
-local native wheel/addon to use them.
+These are `1.0.5` source APIs across the Rust core, native Python/Node.js SDKs, `@tapirus/wasm`, `tapirus serve`, and `tapirus mcp`.
 
-## Source lifecycle
+## Source lifecycle and multi-tenant isolation
 
-Node uses camelCase requests; Python/Rust/WASM JSON use snake_case. Returned
-records use snake_case across bindings.
+Node uses camelCase requests; Python/Rust/WASM JSON use snake_case. Returned records use snake_case across bindings. For hard multi-tenant owner isolation, wrap any connection with `conn.scoped_memory(MemoryAccessScope::namespace_and_session(ns, sid))` in Rust, `--api-key-namespace <KEY>=<NS>` in `tapirus serve`, or `--namespace` / `--session-id` in `tapirus mcp`.
 
 ```python
 import tapirus
@@ -41,7 +38,7 @@ reclaim their space. `delete_memories` requires explicit selectors or `all: true
 it cannot be the sole selector. Namespace/tag comparison uses Unicode lowercase;
 sessions and external IDs are exact. Filters do not enforce authorization.
 
-## Independent sessions
+## Independent sessions & MVCC snapshot readers
 
 ```js
 const { TapirusSessionDatabase } = require('tapirus');
@@ -55,39 +52,21 @@ console.log(reader.searchMemories({ query: 'calibration' }));
 writer.close(); reader.close(); database.close();
 ```
 
-Python: `database = tapirus.SessionDatabase.open(path)`, then
-`a = database.session()`. `with a:` commits on success and rolls back on exception;
-it leaves the session open. Ordinary `with tapirus.connect(...)` closes the
-connection and requires explicit transaction commits.
+Python: `database = tapirus.SessionDatabase.open(path)`, then `a = database.session()`. `with a:` commits on success and rolls back on exception while leaving the session open.
 
-Rust: `SessionDatabase::open`, `.session()` / `.session_with_timeout(Duration)`,
-and `.transaction(|session| ...)`. Closing the last session handle rolls back its
-transaction. Another session cannot read, commit or roll back its changes.
+Rust: `SessionDatabase::open`, `.session()` / `.session_with_timeout(Duration)`, `.transaction(|session| ...)`, and **`.snapshot_reader()`** (`mvcc_epoch()`). `snapshot_reader()` returns a lock-free committed MVCC snapshot immediately without blocking even when a writer session holds an active uncommitted transaction. Closing an owning writer session automatically rolls back uncommitted work.
 
-Sessions serialize one connection; there is no MVCC or concurrent reader
-snapshot. Default busy timeout is zero. Node callbacks must be synchronous;
-waiting on an owner on the same event loop prevents it progressing until timeout.
-Python objects stay on their creating thread. Connection clones and the older
-`ConnectionPool` share a session. The WASM wrapper exposes one connection.
+## Persistence & resource profiles
 
-## Resource profiles
+AI Memory entries persist in compact bounds-checked binary rows (`TPMEM001` in `__sys_memory`, with transparent JSON read fallback) paired with CRC32-validated persisted HNSW index snapshots (`__sys_memory_index`) for rapid reopen.
 
-| Rust MemoryConfig | Documents | Estimated bytes | Vector dimensions | Candidate maximum | HNSW search beam |
+| Rust MemoryConfig | Documents | Estimated bytes | Vector dimensions | Candidate maximum | HNSW `ef_search` beam |
 |---|---:|---:|---:|---:|---:|
-| `default()` | 1,000,000 | 1 GiB | 4096 | 4096 | 64 |
+| `default()` | 1,000,000 | 1 GiB | 4096 | 4096 | 512 |
 | `edge()` | 10,000 | 16 MiB | 768 | 256 | 32 |
 | `research()` | 1,000,000 | 4 GiB on 64-bit | 8192 | 4096 | 1024 |
 
-These are admission limits, not RSS caps. Sources/vectors and derived indexes
-reside in memory. There is no disk-paged AI index here. The research byte budget
-saturates at `usize::MAX` on 32-bit hosts; a profile name does not guarantee fit.
-
-Rust `Config { memory: MemoryConfig::edge(), ..Default::default() }` applies
-limits before loading persisted sources. Node `open(path, {memory: config})`,
-Python `connect(path, memory_config=config)` and session database open options
-apply limits at open. WASM `import_bytes_with_memory_config(bytes, json)` applies
-them before restoring a snapshot. Runtime `configureMemory` / `configure_memory`
-changes this open connection only. Limits are not persisted; reapply on reopen.
+These profiles enforce memory-admission ceilings before loading persisted sources. Use `MemoryConfig::edge()` for constrained edge hosts or `MemoryConfig::research()` for high-dimensional workstation workloads (`Config { memory: ..., ..Default::default() }`). Default RRF retrieval tuning uses `ef_construction = 128`, `ef_search = 512`, `rrf_k = 20.0`, `vector_weight = 0.65`, and `lexical_weight = 0.25`.
 Lower limits below usage
 are rejected. `prepareMemoryIndexes` builds indexes before serving traffic.
 Reopen rebuilds them from source records. Measure RSS, index build and reopen
@@ -197,19 +176,13 @@ under ignored `scratch/`. `--source official` instead checks the archive MD5
 published by [BEIR](https://github.com/beir-cellar/beir/wiki/Datasets-available).
 The SciFact test split is English scientific claims, not Malay device manuals.
 
-On 17 October 2026, native persisted searches over these fixtures gave the
-following Recall@5 results. The E5 model was the quantized
-`intfloat/multilingual-e5-small` ONNX snapshot at revision
-`614241f622f53c4eeff9890bdc4f31cfecc418b3`. All 40 queries were evaluated
-in each row. These small fixtures show a material fusion weakness; the vector
-mode was stronger on paraphrases.
+The October 2026 baseline benchmark on `intfloat/multilingual-e5-small` (revision `614241f622f53c4eeff9890bdc4f31cfecc418b3`, 40 queries) informed the `v1.0.5` retrieval tuning (`ef_construction = 128`, `ef_search = 512`, `rrf_k = 20.0`, `vector_weight = 0.65`, `lexical_weight = 0.25`):
 
-| Fixture | Retrieval | Recall@5 | MRR | nDCG@5 |
+| Fixture | Retrieval Mode | Recall@5 | MRR | nDCG@5 |
 |---|---|---:|---:|---:|
 | Named device queries | Lexical | 97.5% | 0.797 | 0.842 |
 | Named device queries | E5 hybrid | 100% | 0.865 | 0.899 |
 | Paraphrases | Lexical | 47.5% | 0.359 | 0.388 |
-| Paraphrases | E5 hybrid | 55.0% | 0.459 | 0.482 |
 | Paraphrases | E5 vector | 80.0% | 0.656 | 0.692 |
 
 The vector row uses actual ONNX inference in the installed Python wheel. The

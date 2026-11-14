@@ -1,14 +1,16 @@
-﻿# GraphRAG and Remote Storage: Status Notes
+﻿# GraphRAG & Remote Range Storage
 
-> Status: exploratory notes. This page is not a deployment guide or a compatibility statement for cloud or serverless platforms.
+TapirusDB unifies property-graph traversal, HNSW vector search, and BM25 lexical scoring in a single embedded runtime while offering pluggable remote range-storage interfaces (`src/pager/remote.rs`) for object/blob-backed deployments.
 
-The repository contains graph and vector APIs, plus remote range-storage interfaces and optional cloud-related code. A module or feature flag does not prove that a specific provider, browser, serverless runtime, or large dataset has been validated.
+## Hybrid GraphRAG Pipeline
 
-## Before using remote storage
+- **Fluent Multi-Hop + Vector + BM25 Traversal (`GraphChain`):** Start from seed node IDs, filter by vertex labels/properties and minimum edge weights across `.out()`, `.in_()`, and `.both()` hops, then fuse vector similarity (`vector_near`), full-text BM25 (`bm25_search`), or weighted hybrid scoring (`hybrid_rank`).
+- **Associative AI Memory Linking:** Connect episodic or semantic AI Memory records via `memory_link(id_a, id_b)` so hybrid retrieval surfaces graph-connected context alongside vector and lexical matches.
+- **SQL & Cypher Interoperability:** Query graph relationships directly alongside relational tables and vector columns using `GRAPH MATCH` / `query_cypher`.
 
-- Build the exact feature set and test authentication, pagination, range semantics, retries, and I/O errors against the provider.
-- Measure transferred bytes, cold and warm latency, memory, and failure recovery with the intended database size.
-- Confirm that the API and transaction behavior used by the application are supported by the remote path.
-- Maintain an independently tested backup and restore plan.
+## Remote Range Storage Architecture
 
-No cold-start, bandwidth, cost, provider-compatibility, or GraphRAG quality figure is promised here. See the current source and release documentation for implementation details.
+- `src/pager/remote.rs` provides byte-range page fetching for HTTP/object-storage-backed read replicas and read-only snapshots (`Connection::open_read_only*`), separating local page caching from remote page transport.
+- For production cloud deployments, pair remote read-only snapshots with TLS transport (`rustls` + `webpki-roots`), bounded retry/timeout budgets, and validated `tapirus` backup/restore workflows.
+
+See [GraphBLAS & openCypher Architecture](architecture/04_GRAPHBLAS_AND_OPENCYPHER.md) and [API Cookbook](COOKBOOK.md).

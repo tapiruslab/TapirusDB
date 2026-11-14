@@ -21,11 +21,11 @@ with tapirus.connect("agent.tapir") as db:
 
 `execute`/`query` accept a list or tuple of bound parameters: `None`, bool, signed 64-bit integer, finite float, string, bytes or a finite vector list. Results are lists of dictionaries; integers retain precision and blobs return `bytes`. Literal question marks inside SQL strings are preserved.
 
-`store_memory`, `search_memories` and `forget_memory` use the [core AI memory contract](../../docs/AI_MEMORY.md). Results include source content/IDs and separate lexical, semantic and recency scores. Applications supply embeddings from a consistent model. These calls do not invoke a model or a network service. Namespace/session filters are application filters, not authorization boundaries. TAP classification/verification scores are heuristics, not calibrated probabilities or safety guarantees.
+`store_memory`, `search_memories` and `forget_memory` use the [core AI memory contract](../../docs/AI_MEMORY.md). Results include source content/IDs and separate lexical, semantic and recency scores. Applications supply embeddings from a consistent model. These calls execute locally without contacting a network service. For hard per-owner namespace/session boundaries in multi-tenant servers or Rust, see `MemoryAccessScope` and `--api-key-namespace`. TAP classification/verification scores are deterministic engine scores rather than calibrated probabilities.
 
 `execute("BEGIN")`, `COMMIT`, `ROLLBACK` and savepoints apply to SQL and AI memory together. The context manager closes the database on exit; it does not automatically commit an explicit transaction. `close()` is idempotent. It invalidates retained collection handles and releases the native connection. Connection and collection objects must stay on their creating Python thread; this module requires the GIL.
 
-Pass a second argument to `connect(path, passphrase)` to open an encrypted native database. Browser snapshots currently use unencrypted files.
+Pass a second argument to `connect(path, passphrase)` to open an XChaCha20-Poly1305 encrypted native `.tapir` database (or use `TapirusWasm.new_encrypted(passphrase)` in browser WASM). Use `tapirus.SessionDatabase.open(path)` for independently owned transactions and non-blocking snapshots.
 
 ## Build and validate the wheel
 

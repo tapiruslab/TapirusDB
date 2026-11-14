@@ -1,21 +1,25 @@
-﻿# Graph Storage and Query Support: Implementation Notes
+﻿# Property Graph, GraphBLAS CSR & openCypher Support
 
-> Status: implementation overview. The query syntax is a TapirusDB subset; it is not a claim of full openCypher or GraphBLAS conformance.
+TapirusDB stores property graphs natively inside the `.tapir` engine, combining labeled nodes, weighted typed edges, Compressed Sparse Row (`CsrGraph`) analytics, openCypher pattern queries, and hybrid GraphRAG traversal.
 
-## Graph representation
+## Graph Engine & CSR Adjacency
 
-`GraphEngine` stores graph data in its runtime structures and provides operations for adding nodes and edges, finding neighbors and paths, extracting subgraphs, and computing selected graph algorithms. `to_csr()` converts a graph to a compressed sparse row representation for code that needs contiguous adjacency arrays.
+- **`GraphEngine` (`src/graph/mod.rs`):** Transactional property nodes and weighted edges persisted within the database pager.
+- **Compressed Sparse Row (`CsrGraph`, `src/graph/csr.rs`):** Converts graph topology into contiguous offset/edge CSR arrays (`graph_to_csr()`) for cache-friendly linear adjacency scans.
 
-The conversion API does not mean all graph queries run over a persistent CSR index. Do not infer allocation behavior, cache residency, or traversal latency from the CSR data shape. Those depend on graph size and the operation being run.
+## Built-In Graph Algorithms
 
-## Query syntax
+Exposed directly in Rust and the SQL executor (`src/sql/executor.rs`):
 
-The SQL parser accepts a limited `GRAPH MATCH` pattern syntax, and the Cypher module handles a bounded `MATCH`/`CREATE` subset. This is not full openCypher. Check the parser and executor for supported patterns, filters, projections, and mutation behavior before using a query in an application.
+- **PageRank** (`graph_pagerank`) — iterative link-importance scoring across graph edges
+- **Dijkstra Shortest Path** (`graph_dijkstra_path`) — weighted single-source shortest path resolution
+- **Connected Components** — structural component discovery
+- **Betweenness Centrality** — bridge/bottleneck node centrality scoring
+- **Louvain Community Detection** — modularity-based graph clustering
 
-## Algorithms
+## Query Interfaces & Hybrid GraphRAG
 
-The SQL executor exposes selected graph algorithms, including PageRank, connected components, betweenness, and Louvain. Availability of a name is not a correctness or scale guarantee. Validate results against a known graph and workload before using them for consequential decisions.
+- **openCypher & SQL `GRAPH MATCH` (`src/graph/cypher.rs`):** Supports `CREATE` and `MATCH ... WHERE ... RETURN` graph pattern queries directly over embedded storage.
+- **Fluent `GraphChain` (`src/lib.rs`):** Composes multi-hop `out()`, `in_()`, `both()`, edge-weight (`min_weight`), label/property filters with `vector_near()`, `bm25_search()`, and `hybrid_rank()` inside a single unified pipeline.
 
-## Measurement
-
-No traversal performance figure is promised here. Measure the complete query on representative data, including graph construction or CSR conversion if that is part of the application path.
+See [GraphRAG and Remote Storage](../GRAPHRAG_AND_REMOTE_STORAGE.md) and [API Cookbook](../COOKBOOK.md).

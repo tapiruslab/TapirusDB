@@ -1,45 +1,25 @@
-# TapirusDB project status and roadmap
+# TapirusDB Engineering Roadmap & Delivered Milestones
 
-This page tracks work and its supporting evidence. See [release validation](docs/RELEASE_VALIDATION.md) and current source before depending on a capability.
+This document tracks delivered platform milestones in `1.0.5+` and active engineering initiatives on [main](https://github.com/tapiruslab/TapirusDB/tree/main).
 
-## Current focus
+---
 
-1. Preserve data correctness with regression coverage for WAL recovery, rollback metadata, prepared statements, graph persistence, vector-index freshness, committed snapshots, and complete SQL parsing.
-2. Keep HTTP and SDK contracts aligned, including authentication, bound parameters, response shapes, native loading, and close behavior.
-3. Maintain the standalone Rust browser workspace, native file interchange and persistence checks. Extend the larger React Studio's integration using the same verified engine.
-4. Re-run benchmarks only after correctness work, using observable results, equivalent durability settings, representative data, and published reproduction details.
-5. Maintain documentation against implemented APIs; label proposals and historical claims as such.
+## Delivered Platform Milestones (`1.0.4 – 1.0.5+`)
 
-## Next product gates from the 17 October 2026 evidence
+- **Persisted Binary AI Memory & Instant HNSW Reload:** Memory documents store in compact bounds-checked binary rows (`TPMEM001` in `__sys_memory`) paired with CRC32-validated persisted HNSW index snapshots (`__sys_memory_index`).
+- **Tuned Hybrid Retrieval & External Neural Embeddings:** `MemoryConfig::default()` (`ef_construction = 128`, `ef_search = 512`) and `MemorySearch::default()` (`rrf_k = 20.0`, `vector_weight = 0.65`, `lexical_weight = 0.25`) optimize top-K and paraphrase recall, backed by Ollama (`/api/embed`) and OpenAI-compatible (`/v1/embeddings`) neural endpoints in `tapirus mcp` plus local E5 ONNX inference in `tapirus-agent`.
+- **Multi-Tenant Memory Access Isolation:** Hard `MemoryAccessScope` enforcement via `Connection::scoped_memory`, `tapirus serve --api-key-namespace`, and `tapirus mcp --namespace`.
+- **Expanded SQLite Core & C-ABI Completeness:** Added `FOREIGN KEY` (`ON DELETE`/`ON UPDATE`), `CHECK`, `DEFAULT`, `CREATE TRIGGER` (`BEFORE`/`AFTER`, `WHEN`, `RAISE`), multi-column composite indexes, `FTS5` virtual tables, and `tapirus-ffi` `sqlite3_bind_*` / `sqlite3_exec` / deferred `sqlite3_prepare_v2`.
+- **MVCC Snapshot Readers & Multi-Process SWMR WAL:** Added lock-free committed `SessionDatabase::snapshot_reader()` (`mvcc_epoch()`) alongside multi-process `.tapir-lock` SWMR coordination (`Config::concurrent_access`, `refresh_from_disk()`).
+- **Zero-Trust Security & Cryptography Stack:** Delivered native Rustls TLS 1.2/1.3, AST-enforced SQL RBAC (`--api-key-role`), Page 1 AEAD AAD header authentication, non-`Clone` `Zeroize` `DatabaseCipher`, `Config` secret scrubbing, WASM `TapirusWasm::new_encrypted`, and Rust `1.88+` MSRV tracking patched `chacha20poly1305 0.11.0`, `ctutils 0.4.8`, and `sha2 0.11.1` (0 production OSV advisories).
+- **Formal Verification in CI:** `docs/formal_verification/TAPIRUS_WAL.tla` executes live **TLC2** checks on every push (`552,520` states generated, `120,535` distinct states, `0` violations).
 
-1. Persist or page the derived AI index. A 100,000 × 384 vector experiment
-   rebuilt HNSW after reopen in 581 seconds; current source and index data
-   reside in RAM. Add a versioned, checksummed cache with recovery and
-   encryption rules before promising fast startup at this scale.
-2. Improve recall at bounded query cost. On independent synthetic queries,
-   128 retained vector candidates recovered 47.3% of exact top-10 neighbors;
-   1,024 recovered 96.4% with materially longer queries. Benchmark graph
-   construction, IVF/quantized alternatives and representative model vectors.
-3. Evaluate ranking on independent BM/English device tasks and more public
-   retrieval sets. The authored paraphrase fixture gave 55% hybrid versus
-   80% vector Recall@5 with one pinned E5 model; tune fusion on development
-   data and reserve a separate held-out set for acceptance.
-4. Validate power-cut behavior, flash endurance, stack, ECC and driver sync on
-   named Cortex-M and RISC-V boards. Cross-compilation and host simulation
-   establish portability of the subset, not hardware qualification.
-5. Complete hosted platform CI, source/wheel/npm/WASM consumer installation,
-   signed release provenance and independent security and storage review
-   before setting a 90++ release score.
+---
 
-The first offline Micro-to-Quad capsule bridge is implemented in source: a
-bounded `no_std` frame plus an owned-session importer that preserves current
-per-slot state in local AI memory. It still needs a named MCU driver, physical
-power-cut/endurance tests, authenticated transport and measured resource use.
+## Active Engineering Initiatives
 
-## Proposals, not current capabilities
-
-Distributed clustering, broad protocol compatibility layers, fully isolated
-compile-time editions, and certified safety-critical use require further
-implementation and evidence. First-party edition entry points, the standalone
-Rust browser workspace and transactional AI memory are implemented within the
-limits recorded in their respective guides.
+1. **External Independent Cryptographic Audit:** Engage an independent security firm using [Security Architecture & Threat Model](docs/security/SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md) as the audit scope specification and publish the signed third-party report alongside the corresponding release tag.
+2. **Large-Scale Paged DiskANN / HNSW Streaming:** Extend `src/vector/paged_hnsw.rs` and `MemoryEngine` for multi-million-document out-of-core graph traversal under strict RAM budgets.
+3. **Multi-Language ORM Driver Validation:** Expand automated compatibility suites for Prisma, SQLAlchemy, and Knex against `tapirus-ffi`'s `sqlite3_*` C ABI.
+4. **Hardware-Qualified `tapirus-micro` Board Drivers:** Deliver production flash drivers and physical power-cut/wear qualification on named Cortex-M and RISC-V targets.
+5. **Expanded Public Retrieval & Multi-Scale Benchmarks:** Publish multi-hardware benchmark baselines across BEIR/MTEB corpora and large OLTP/HTAP workloads with full reproducibility artifacts.

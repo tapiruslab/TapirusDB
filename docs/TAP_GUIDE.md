@@ -52,14 +52,14 @@ Hypothesis:
 Data disimpan secara tempatan.
 ```
 
-Studio Lite menggunakan Rust WASM dalam browser. Salinan database browser disimpan dalam IndexedDB dan tidak disulitkan. Simpan backup `.tapir` jika data perlu dikekalkan.
+Studio Lite menggunakan enjin Rust WASM dalam pelayar dengan sokongan snapshot tempatan IndexedDB serta API penyulitan XChaCha20-Poly1305 (`TapirusWasm.new_encrypted` / `import_encrypted_bytes`). Simpan backup `.tapir` anda apabila perlu memindahkan pangkalan data ke CLI atau SDK native.
 
 ### Versi offline
 
-Di halaman [Downloads](https://tapirusdb.com/download), muat turun:
+Di halaman [Releases](https://github.com/tapiruslab/TapirusDB/releases) atau [Downloads](https://tapirusdb.com/download), muat turun arkib pelayar terkini (versi `1.0.5+`):
 
 ```text
-Tapirus-Studio-Lite-Browser-1.0.2.zip
+Tapirus-Studio-Lite-Browser-1.0.5.zip
 ```
 
 Extract ZIP itu, kemudian jalankan:
@@ -76,7 +76,7 @@ ZIP ini memerlukan Python 3 untuk local HTTP server. Jangan buka `index.html` de
 
 ### Keperluan
 
-- Rust 1.85 atau lebih baharu;
+- Rust 1.88 atau lebih baharu (MSRV rasmi);
 - source repository TapirusDB;
 - Windows PowerShell, atau shell macOS/Linux.
 

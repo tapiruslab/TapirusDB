@@ -1,11 +1,8 @@
 # Tapirus Micro
 
-An initial bare-metal component: `no_std`, no allocator, no dependencies, and
-`forbid(unsafe_code)`. It stores bounded byte records in numbered flash slots and
-provides an `i8` dot product for application-managed quantized vectors.
+A `#![forbid(unsafe_code)]`, `no_std`, zero-allocation flash storage engine with zero external crate dependencies. `tapirus-micro` persists bounded byte records across power-safe dual-bank flash slots (`TPMIC001`), provides quantized `i8` dot-product kernels for edge AI inference, and exports versioned `TPIOCAP1` capsules directly into the full Quad `tapirus` engine (`tapirus-iot`).
 
-This component has a separate `TPMIC001` format. It does not read native `.tapir`
-files and does not implement SQL, HNSW, graphs or a language model.
+This crate uses the compact `TPMIC001` embedded slot format tuned for microcontrollers; use [`tapirus-iot`](../../docs/IOT_CAPSULE.md) to bridge committed slots into native `.tapir` AI Memory.
 
 ## Offline bridge to Quad
 

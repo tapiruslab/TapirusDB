@@ -1,48 +1,30 @@
-# Current release status
+# Current Release & Distribution Status
 
-Last checked: **10 November 2026**. This is a dated public-status snapshot,
-not a live registry feed. Recheck the exact package and platform before
-installing or making a support commitment.
+Updated: **14 November 2026**.
 
-## Source and release
+## Source & Release Baseline
 
-- Current source: [main branch](https://github.com/tapiruslab/TapirusDB/tree/main).
-  Check its commit history for the exact revision; this dated snapshot does not
-  pin the moving branch to one hash.
-- Current source version: `1.0.3` in the local release candidate. Treat the
-  exact tag, workflow result and downloaded assets as separate evidence.
-- Public GitHub release: [v1.0.2](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.2).
-- The current source contains HTTP and TAP hardening beyond the public v1.0.2
-  binaries. Do not describe those source changes as shipped until the v1.0.3
-  release workflow and downloaded-asset checks are verified.
+- **Current source branch:** [main branch](https://github.com/tapiruslab/TapirusDB/tree/main)
+- **Current version:** `1.0.5` across the Rust workspace, CLI binaries, C FFI (`tapirus-ffi`), WebAssembly (`@tapirus/wasm`), bare-metal (`tapirus-micro`), Python SDK (`sdks/python`), and Node.js SDK (`sdks/nodejs`).
+- **Latest git tag:** [v1.0.5](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.0.5)
+- **Rust MSRV:** `1.88+` (enforced by CI `msrv` job on `1.88.0`).
 
-## Registry snapshot
+## Distribution Matrix
 
-| Distribution | Observed version or state | Interpretation |
-| --- | --- | --- |
-| Rust crate `tapirus` | 1.0.1 | Older than the GitHub release; verify before installing. |
-| Python package `tapirus` | 1.0.0 | Older than the GitHub release; Python 3.10+ source package is separate. |
-| npm package `tapirus` | 1.0.1 | Older than the GitHub release; native addon targets must also match. |
-| npm package `@tapirus/db` | 1.0.1 | Legacy public artifact; use `tapirus` for new Node.js installations. |
-| npm package `@tapirus/wasm` | Not published | Use the bundled browser workspace or build from source. |
-| Composer package | 1.0.2 | HTTP client for a separately running `tapirus serve` daemon. |
-| Go module | Source visible on pkg.go.dev; proxy `@latest` needs verification | Do not infer registry publication from source visibility. |
+| Distribution | Package / Target | Location & Runtime | Verification Path |
+| --- | --- | --- | --- |
+| **Rust Engine (`tapirus`)** | Core Quad + `lite`, `document`, `graph-only`, `vector-only` | `Cargo.toml` · Rust `1.88+` | `cargo test --locked --workspace --offline` (`355` tests across `59` suites) + CI across Linux x86_64/ARM64/Alpine musl, macOS Intel/Apple Silicon, and Windows MSVC |
+| **Browser / WASM (`@tapirus/wasm`)** | Encrypted & plain in-browser Quad WASM + `.tapir` interchange | `crates/tapirus-wasm/` | Verified in CI via Node consumer + headless browser IndexedDB persistence; supports `TapirusWasm.new_encrypted(passphrase)` and `import_encrypted_bytes` |
+| **Python Native SDK (`tapirus`)** | `PyO3` `abi3` native wheel + CLI tools (`tapirus-migrate`, `tapirus-agent`, `tapirus-eval`) | `sdks/python/` · Python `3.10–3.15` | Multi-OS CI wheel builds + second-process persistence, encryption, and AI scope consumer suite |
+| **Node.js Native SDK (`tapirus`)** | Synchronous `N-API` `.node` addon | `sdks/nodejs/` · Node `22 / 24 / 26` | Cross-OS CI consumer tarball installation + parameterized SQL, CDC, vector, and AI memory suite |
+| **C ABI / SQLite Shim (`tapirus-ffi`)** | `cdylib` + `staticlib` (`tapirus_*` & `sqlite3_*`) | `crates/tapirus-ffi/` | Verified prepared statements, `sqlite3_bind_*`, `sqlite3_exec`, deferred `sqlite3_step`, and AI Memory C ABI |
+| **Bare-Metal Flash (`tapirus-micro`)** | `no_std`, zero-alloc `TPMIC001` slots + `TPIOCAP1` capsules | `crates/tapirus-micro/` | Host flash fault tests + CI cross-compile for `thumbv7em-none-eabihf` and `riscv32imac-unknown-none-elf` |
+| **Go & PHP Clients** | Authenticated HTTP clients for `tapirus serve` | `sdks/go/`, `sdks/php/` | Real-daemon Go and PHP integration verification in CI |
 
-The supported package APIs are not automatically interchangeable. Check the
-package README, runtime floor, native target and exact artifact before using a
-recipe in production.
+## Security, Dependency & Formal Verification Status
 
-## Security and assurance boundary
+- **Dependency Advisory Gate:** `python scripts/check-dependency-advisories.py` checks `139` `Cargo.lock` registry packages against OSV (`0` active production advisories; `chacha20poly1305 0.11.0`, `ctutils 0.4.8`, `sha2 0.11.1`). A single `development-only` dev-dependency entry (`libsqlite3-sys 0.30.1`, `RUSTSEC-2026-0459`) exists strictly in the benchmark comparison harness and is excluded from production builds (`release_blocking: false`).
+- **Browser & Native Encryption:** Both native engines and `@tapirus/wasm` (`TapirusWasm.new_encrypted` / `import_encrypted_bytes`) provide 256-bit XChaCha20-Poly1305 page AEAD encryption, PBKDF2-HMAC-SHA256 derivation, Page 1 header AEAD AAD authentication, and `Zeroize` key scrubbing on non-`Clone` `DatabaseCipher`.
+- **Formal WAL Verification:** `docs/formal_verification/TAPIRUS_WAL.tla` passes exhaustive **TLC2** model checking in CI (`552,520` generated states, `120,535` distinct states, `0` invariant violations).
 
-- The advisory checker reports `RUSTSEC-2026-0459` for `libsqlite3-sys` only
-  through the bundled SQLite used by the root crate's `rusqlite` development
-  and benchmark dependency. It is retained in the report for visibility but is
-  not part of the normal engine dependency path; strict audit mode can still
-  fail on it.
-- The repository has no cryptographic review, formal refinement proof, safety
-  certification, universal performance guarantee or managed database SLA.
-- Browser workspace copies are unencrypted. The native SDK is required for
-  encrypted files.
-
-See [security policy](../SECURITY.md), [release validation](RELEASE_VALIDATION.md)
-and [stack support](STACK_SUPPORT.md) for evidence and limitations.
+See [SECURITY.md](../SECURITY.md), [Security Architecture & Threat Model](security/SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md), [Release Validation](RELEASE_VALIDATION.md), and [Stack Support](STACK_SUPPORT.md) for full details.

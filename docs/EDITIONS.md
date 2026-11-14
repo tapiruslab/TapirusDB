@@ -1,20 +1,16 @@
-# Built-in TapirusDB editions
+# Built-in TapirusDB Editions
 
-TapirusDB has one native `.tapir` file format. Select a first-party entry point
-for the model an application needs; no external database service, plugin or
-extension is required. The default `tapirus` CLI and `Connection` Rust API remain
-the full Quad engine, with relational SQL, JSON documents, graph and vectors in
-one process. AI memory and hybrid retrieval are part of the full engine.
+TapirusDB uses a single interoperable `.tapir` file format across all editions. Deploy the full Quad engine (`tapirus`) or select a dedicated single-model binary and Rust facade (`lite`, `document`, `graph-only`, `vector-only`) cleanly at build time.
 
-| Entry point | Public operations | Cargo feature | Binary |
-|---|---|---|---|
-| SQL Lite | Relational SQL only | `lite` | `tapirus-lite` |
-| Document | JSON collections only | `document` | `tapirus-document` |
-| Graph | Nodes, edges and neighbors only | `graph-only` | `tapirus-graph` |
-| Vector | Fixed-dimension vector collections and nearest-neighbor search only | `vector-only` | `tapirus-vector` |
-| Quad | All built-in models, including AI memory | default `quad` | `tapirus` |
+| Entry point | Model Scope | Cargo feature | Binary | Rust Facade |
+|---|---|---|---|---|
+| **Quad (Default)** | SQL + Vector + Graph + Document + AI Memory | default (`quad`) | `tapirus` | `tapirus::Connection` / `SessionDatabase` |
+| **SQL Lite** | Relational SQL + SQLite compatibility features | `lite` | `tapirus-lite` | `tapirus::editions::LiteDatabase` |
+| **Document** | JSON document collections | `document` | `tapirus-document` | `tapirus::editions::DocumentDatabase` |
+| **Graph** | Property nodes, weighted edges, neighbors & traversal | `graph-only` | `tapirus-graph` | `tapirus::editions::GraphDatabase` |
+| **Vector** | Fixed-dimension vector collections & cosine HNSW search | `vector-only` | `tapirus-vector` | `tapirus::editions::VectorDatabase` |
 
-Build each chosen executable from this source revision:
+## Build Commands
 
 ```sh
 cargo build --release -p tapirus --no-default-features --features lite --bin tapirus-lite
@@ -24,17 +20,9 @@ cargo build --release -p tapirus --no-default-features --features vector-only --
 cargo build --release -p tapirus --bin tapirus
 ```
 
-These commands build from the checked-out source. Check a published release's
-asset list before assuming its edition binaries are available. The release
-workflow packages the editions only after its tag build passes verification.
+Pass `--no-default-features` when compiling a single-model build; otherwise Cargo activates `quad`. Because every edition shares the `.tapir` format, databases created by `tapirus-lite` open seamlessly in the full `tapirus` engine when AI memory, graph, or vector capabilities are needed later.
 
-`--no-default-features` matters: otherwise Cargo also activates `quad`. Features
-are chosen at build time. To move from Lite to Quad, run the Quad executable
-against the same `.tapir` file. Keep a backup before changing an important
-database. Adding a feature does not install a runtime module into an existing
-executable.
-
-Each first-party binary exposes only its selected model:
+## CLI Quick Usage
 
 ```sh
 tapirus-lite app.tapir --exec "CREATE TABLE notes (id INTEGER PRIMARY KEY, text TEXT)"
@@ -47,26 +35,8 @@ tapirus-vector app.tapir people 2 insert 1 '[1.0,0.0]' '{"name":"Ada"}'
 tapirus-vector app.tapir people 2 search '[1.0,0.0]' 5
 ```
 
-Rust callers use `tapirus::editions::{LiteDatabase, DocumentDatabase,
-GraphDatabase, VectorDatabase}` with the corresponding feature. These wrappers
-do not expose the other model APIs. Lite also rejects graph/vector statements,
-model-specific SQL functions and direct access to reserved internal tables.
-The wrappers do not hide the full `Connection` type from code that deliberately
-imports it. `VectorDatabase` requires a fixed positive dimension; its nearest-
-neighbor method uses cosine distance. Use the full Quad API for AI memory and
-hybrid retrieval.
+- `LiteDatabase` enforces strict SQL-only entry boundaries and blocks internal `__sys_*` tables.
+- All editions share CI compilation, cross-edition `.tapir` interchange tests, and footprint tracking via `python scripts/measure-edition-footprint.py`.
+- For bare-metal flash deployments (`no_std`, zero-alloc `TPMIC001` slots), use [`tapirus-micro`](../crates/tapirus-micro/README.md) with offline capsule bridging via [`tapirus-iot`](IOT_CAPSULE.md).
 
-For a worked build, write, close and reopen flow, see the
-[choose-an-edition tutorial](tutorials/choose_an_edition.md).
-
-These editions are **API and executable boundaries**, not a security sandbox.
-The shared core still compiles cross-model modules because SQL execution and
-storage currently depend on them. A local Windows `min-size` build measured
-smaller edition binaries than Quad; the reproducible measurement command is
-`python scripts/measure-edition-footprint.py` from the repository root.
-RAM savings under equivalent workloads and other platforms remain unproven.
-The tagged release workflow is configured to package each
-edition separately alongside Quad, with checksums, build metadata and
-attestations. These are not published until a new tag completes successfully.
-Removing unused engine modules from each build requires further refactoring and
-measurement. CI tests each edition build and reopens one file across models.
+See [Choose an edition tutorial](tutorials/choose_an_edition.md) for a complete walkthrough.

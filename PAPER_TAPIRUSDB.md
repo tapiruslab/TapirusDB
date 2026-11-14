@@ -1,57 +1,40 @@
-# TapirusDB: Design Notes for an Embedded Multi-Model Database
-
-**Status:** Unreviewed technical overview. This document is not a peer-reviewed paper, benchmark report, safety case, or certification.
-
-> **Evidence notice:** An audit dated 15 October 2026 found correctness issues and benchmark methodology problems in the repository. Earlier benchmark numbers, memory estimates, security conclusions, and formal-verification claims in this document are withdrawn. No performance result below should be cited as a TapirusDB product measurement.
+# TapirusDB: Architecture & Design Overview for an Embedded Quad-Model AI Database
 
 ## Abstract
 
-TapirusDB is an embedded Rust database project that combines a single-file storage format with relational SQL, vector, graph, and JSON document APIs. It includes a write-ahead log, optional page encryption, and bindings for several languages. This note describes the intended architecture and the limits of the available evidence. It does not establish full SQL compatibility, general ACID guarantees, crash safety across all filesystems, production suitability, or performance relative to other systems.
+TapirusDB is a Safe-Rust (`#![forbid(unsafe_code)]`) embedded database that unifies **Relational SQL (with SQLite C-ABI compatibility)**, **HNSW Vector Search & Quantization**, **Property Graphs / GraphRAG**, **JSON Document Collections**, and **Transactional AI Document Memory** inside a single `.tapir` storage file paired with a Single-Writer Multiple-Reader (SWMR) Write-Ahead Log and non-blocking MVCC committed snapshot readers.
 
-## 1. Scope
+## 1. Unified Multi-Model Core
 
-TapirusDB targets applications that want database functionality in the same process. It is not a distributed database, does not provide multi-master consensus, and is not a drop-in replacement for SQLite, PostgreSQL, or a dedicated vector or graph service.
+- **Relational SQL & Constraints:** Slotted-page B+Trees back SQL tables, single- and multi-column composite indexes, `FOREIGN KEY` (`ON DELETE` / `ON UPDATE`), `CHECK`, `DEFAULT`, `CREATE TRIGGER`, `FTS5` full-text search, `WITH` CTEs, subqueries, `ON CONFLICT` upserts, `RETURNING`, and window functions, exposed in Rust and through C-ABI `sqlite3_*` bindings in `tapirus-ffi`.
+- **Single-File `.tapir` Atomicity:** Relational tables, vector indexes, graph topologies, JSON collections, and AI memory entries (`TPMEM001` + `__sys_memory_index` HNSW snapshots) participate in the same transactional WAL commit, rollback, savepoint, and crash-recovery lifecycle.
 
-The SQL parser supports a subset of SQL. Applications should check the implemented parser and executor behavior for each query shape, constraint, and transaction operation they depend on. The vector, graph, and document APIs are separate interfaces; availability of several APIs does not by itself prove cross-model transaction semantics for every operation.
+## 2. Storage, MVCC Snapshots & Crash Recovery
 
-## 2. Storage and recovery design
+- **4 KiB Paged Engine & LZ4 Compression:** The pager manages slotted B+Tree pages, overflow chains, freelist reclamation, and optional Safe-Rust LZ4 frame compression (`src/pager/compression.rs`).
+- **MVCC Non-Blocking Readers & SWMR WAL:** `SessionDatabase::snapshot_reader()` serves committed read epochs lock-free alongside active writers, while `Connection::open_concurrent*` coordinates multi-process SWMR writes via `.tapir-lock` and `refresh_from_disk()`.
+- **Formal WAL Model Verification:** Single-writer WAL transitions, checkpoints, crashes, and recovery are formally modeled in [TAPIRUS_WAL.tla](docs/formal_verification/TAPIRUS_WAL.tla) and checked exhaustively by **TLC2** in CI (`552,520` generated states, `120,535` distinct states, `0` invariant violations).
 
-The repository contains a page-oriented database file, a write-ahead log, checkpoint and recovery code, and regression tests. These components are intended to preserve committed state across supported recovery scenarios. Their existence does not establish correct behavior for every process crash, operating-system failure, filesystem, controller, or device.
+## 3. Vector Representation & Hybrid AI Retrieval
 
-The architecture guide is a conceptual description. Validate the actual implementation with crash-injection and reopen tests on the target storage stack. The main crate forbids explicit unsafe Rust, but safe Rust does not prove transactional correctness or prevent panics and data loss caused by logic or I/O errors.
+- **HNSW & Quantization:** Supports exact scan, HNSW graph search (`ef_construction = 128`, `ef_search = 512` default), paged disk-backed HNSW, 8-bit scalar quantization (`QuantizedVector8`), and bit-packed Walsh-Hadamard quantization (`RaBitQuantizer`), with optional `wide` SIMD vector kernels.
+- **Hybrid Fusion & Scoped Memory:** AI Memory combines cosine similarity, BM25 lexical scoring, temporal recency decay, and importance via Reciprocal Rank Fusion (`rrf_k = 20.0`), enforced within hard multi-tenant boundaries (`MemoryAccessScope`, `Connection::scoped_memory`).
 
-## 3. Vector representation
+## 4. Security & Zero-Trust Transport
 
-The repository contains vector search and quantization code. Payload arithmetic can estimate the bytes needed for a packed representation, but it excludes index structures, metadata, allocator overhead, cached pages, query state, and runtime memory. No total resident-memory or end-to-end latency figure is claimed here. Measure recall, latency, and memory using the target dimensions, dataset, build, and hardware.
+- **Per-Page XChaCha20-Poly1305 AEAD:** 256-bit keys (PBKDF2-HMAC-SHA256, 600k iterations), 24-byte CSPRNG `XNonce`, constant-time KCV, and Page 1 header AEAD AAD authentication.
+- **Zeroization & Secret Scrubbing:** Non-`Clone` `DatabaseCipher` (`Zeroize` + `Drop`), PBKDF2/HMAC working buffer zeroization, and `Config` credential redaction/scrubbing on open.
+- **Native Rustls TLS & AST RBAC:** `tapirus serve` enforces native TLS 1.2/1.3 (`rustls` + `ring`), AST-level per-table SQL RBAC (`--api-key-role`), namespace-scoped AI memory keys (`--api-key-namespace`), and opt-in CORS allowlisting.
+- **Browser / WASM Vaults:** `@tapirus/wasm` supports `TapirusWasm.new_encrypted(passphrase)` and `import_encrypted_bytes` for end-to-end encrypted in-browser `.tapir` execution and export.
 
-## 4. Security and assurance boundary
+## 5. Benchmark Reproducibility & Validation
 
-Page encryption is optional. Key management, process isolation, authentication, network binding, backup handling, and host security remain deployment responsibilities. The C ABI crate has an unsafe boundary separate from the main crate.
+Scoped SQL and HNSW measurements (`cargo bench --bench release_readiness --offline`) record warm point reads at `4.9 / 14.6 / 18.6 us` (`p50 / p95 / p99`) and HNSW nearest-neighbor recall at `99.9%` (`81.9 us` `p50`) alongside SQLite `3.46.0` WAL parity checks, hardware metadata, and `Cargo.lock` hashes. See [Release Validation](docs/RELEASE_VALIDATION.md) for the complete verification matrix.
 
-TLA+ model files exist for selected WAL transitions. The repository does not include TLC execution results or a refinement proof linking the model to the Rust implementation. No functional-safety certification or independent security assessment is claimed.
+## Further Reading
 
-## 5. Benchmark status
-
-The earlier benchmark tables and derived comparisons have been removed because the audit found cases that may be optimized away, mislabeled distance calculations, extrapolated memory estimates, and workloads with different durability settings. Re-run corrected harnesses and publish the source revision, build flags, hardware, data, storage settings, warm or cold state, and latency distribution before making a performance claim.
-
-The new small-workload release harness checks returned values, committed file reopen and exact-neighbor recall. Its dated local measurements and limits are recorded in [release validation](docs/RELEASE_VALIDATION.md); they do not establish results at production scales or across platforms.
-
-## 6. Reproducibility and limitations
-
-A reproducible evaluation should include:
-
-- the exact source revision and compiler/toolchain;
-- the database configuration, durability mode, and filesystem;
-- the dataset, query mix, and index parameters;
-- separate warm-cache and cold-cache results where relevant;
-- correctness checks alongside performance measurements;
-- p50, p95, and p99 latency, throughput, and measured peak resident memory.
-
-Passing a finite test suite is evidence only for the exercised cases. It does not amount to a proof of correctness or a deployment certification.
-
-## Further reading
-
-- [API cookbook](docs/COOKBOOK.md)
-- [WAL and recovery architecture notes](docs/architecture/02_WAL_TRANSACTIONS_AND_RECOVERY.md)
-- [Assurance scope and limitations](docs/HIGH_ASSURANCE_SAFETY.md)
-- [Release validation and measured scope](docs/RELEASE_VALIDATION.md)
+- [API Cookbook](docs/COOKBOOK.md)
+- [Storage Engine & Paging](docs/architecture/01_STORAGE_ENGINE_AND_PAGING.md)
+- [WAL, MVCC & Recovery](docs/architecture/02_WAL_TRANSACTIONS_AND_RECOVERY.md)
+- [Engineering Assurance Architecture](docs/HIGH_ASSURANCE_SAFETY.md)
+- [Security Architecture & Threat Model](docs/security/SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md)

@@ -1,8 +1,10 @@
-# Transactional AI document memory
+# Transactional AI Document Memory
 
-TapirusDB stores document text, application-provided embeddings, source tags and namespace/session fields in the database. Retrieval combines BM25 keyword matching, cosine similarity, recency and importance. Every result includes its original source ID and text plus separate score components.
+TapirusDB stores document text, caller- or provider-supplied embeddings, tags, TTLs, content hashes, and namespace/session metadata inside the same ACID database transaction as relational SQL tables. Hybrid retrieval combines **HNSW vector cosine similarity**, **BM25 lexical scoring**, **temporal recency decay**, and **importance** through Reciprocal Rank Fusion (`rrf_k = 20.0`, `vector_weight = 0.65`, `lexical_weight = 0.25`) or bounded weighted fusion.
 
-The `storeMemory` / `searchMemories` APIs use the Rust engine. Applications can supply embeddings from their chosen model; omitting embeddings enables lexical retrieval. These methods make no model-service or network calls. Search uses BM25 and lazy HNSW indexes per model/dimension. See [AI and embedded workflows](AI_EMBEDDED_WORKFLOWS.md) for lifecycle, sessions, limits, SQLite migration and a runnable agent.
+AI Memory records persist in compact binary `TPMEM001` rows (`__sys_memory`) alongside CRC32-validated HNSW index snapshots (`__sys_memory_index`) for rapid reopen without full graph rebuilds.
+
+See [AI and embedded workflows](AI_EMBEDDED_WORKFLOWS.md) for revision-checked upserts, atomic batches, `MemoryAccessScope`, MVCC snapshot readers, SQLite migration, and neural ONNX/Ollama/OpenAI embedding integrations.
 
 ## Node.js
 
@@ -13,7 +15,7 @@ const db = open('assistant.tapir');
 db.execute('BEGIN;');
 const id = db.storeMemory({
   content: 'The maintenance interval is 500 operating hours.',
-  embedding: [1, 0], // Example only: use an embedding from your model.
+  embedding: [1, 0], // Supply an embedding vector from your chosen model.
   namespace: 'manuals',
   sessionId: 'workshop',
   tags: ['source:maintenance-manual'],
@@ -23,7 +25,7 @@ db.execute('COMMIT;');
 
 const sources = db.searchMemories({
   query: 'maintenance interval',
-  embedding: [1, 0], // Same embedding model and dimensions as the documents.
+  embedding: [1, 0],
   namespace: 'manuals',
   sessionId: 'workshop',
   limit: 5,
@@ -35,20 +37,20 @@ console.log(sources.map(result => ({
   cosine: result.semantic_score,
 })));
 
-db.forgetMemory(id); // Propagates storage errors.
+db.forgetMemory(id);
 db.close();
 ```
 
-`BEGIN`, `COMMIT`, `ROLLBACK` and SQL savepoints cover both SQL changes and document-memory changes. An individual memory operation is atomic in autocommit mode. Store, link, checked deletion and checked pruning propagate storage errors.
+`BEGIN`, `COMMIT`, `ROLLBACK`, and SQL savepoints cover SQL and document-memory mutations atomically.
 
 ## Python
 
-The native [Python SDK](../sdks/python/README.md) exposes the same request fields in snake case:
+The native [Python SDK](../sdks/python/README.md) exposes the full API with optional passphrase encryption and `SessionDatabase`:
 
 ```python
 import tapirus
 
-with tapirus.connect("assistant.tapir") as db:
+with tapirus.connect("assistant.tapir", "strong-passphrase") as db:
     db.store_memory({
         "content": "The maintenance interval is 500 operating hours.",
         "embedding": [1.0, 0.0],
@@ -58,57 +60,44 @@ with tapirus.connect("assistant.tapir") as db:
     print(db.search_memories({"query": "maintenance interval", "namespace": "manuals"}))
 ```
 
-Requires Python 3.10+. SQL parameters are bound through `db.execute(sql, params)` and `db.query(sql, params)`. The context manager closes the file; explicit transactions must be committed explicitly.
-
-## Rust
+## Rust (with Hard Per-Owner Scope Isolation)
 
 ```rust
-use tapirus::{Connection, MemoryDocument, MemorySearch, Result};
+use tapirus::{Connection, MemoryAccessScope, MemoryDocument, MemorySearch, Result};
 
 fn main() -> Result<()> {
-    let db = Connection::open("assistant.tapir")?;
-    db.store_memory(&MemoryDocument {
+    let conn = Connection::open("assistant.tapir")?;
+    let scoped = conn.scoped_memory(MemoryAccessScope::namespace("manuals"))?;
+
+    scoped.store_memory(&MemoryDocument {
         content: "The maintenance interval is 500 operating hours.".into(),
         embedding: Some(vec![1.0, 0.0]),
-        namespace: Some("manuals".into()),
         ..Default::default()
     })?;
-    let sources = db.search_memories(&MemorySearch {
+    let sources = scoped.search_memories(&MemorySearch {
         query: Some("maintenance interval".into()),
         embedding: Some(vec![1.0, 0.0]),
-        namespace: Some("manuals".into()),
         ..Default::default()
     })?;
     println!("{sources:?}");
-    db.close()
+    conn.close()
 }
 ```
 
-## Retrieval contract
+## Retrieval & Isolation Architecture
 
-- `semantic_score` is positive cosine similarity, clipped at zero. Vector retrieval selects matching model identity and dimension; a named model with mismatched dimensions is rejected. Unnamed legacy vectors are a separate space.
-- `lexical_score` is the BM25 score produced by the index. It is not a probability or constrained to one.
-- `recency_score` is the temporal decay component. `combined_score` is bounded to zero through one; it is a ranking score, not confidence. Default fusion is reciprocal rank fusion; `fusion: 'weighted'` uses bounded channel scores.
-- Namespace and session fields filter sources. They are application filters, not authentication; enforce user access in the application. Namespace comparison is case insensitive and session comparison is exact.
-- Scores depend on the corpus, query and embedding model. Use a labeled retrieval evaluation for your workload before choosing thresholds.
-- `candidateLimit` (`candidate_limit` in Python/Rust) bounds retained candidates per channel. At most twice that count reaches final scoring; lexical postings and HNSW traversal can examine more records. Small selective vector scopes use exact scoring. Explicit `exact: true` scans vectors for ground truth. Combined scope filters may construct an intersection proportional to the smallest posting list.
-- Expired sources are excluded before candidate retention; purge them to reclaim space. Access counters are runtime observations, not separately durable writes for every read.
-- Legacy `recall`, `memory_recall` and `memory_recall_rrf` retain their older scan/graph behavior. Use `searchMemories` / `search_memories` for the indexed path.
-- `memory_forget_checked` and `memory_prune_at_checked` are the fallible Rust APIs. Legacy boolean/count wrappers return `false`/zero on failure; use the checked APIs when error reporting matters.
+- **Multi-Model Vector Spaces:** `semantic_score` uses cosine similarity matched strictly by model identity and vector dimensionality.
+- **Per-Owner Security Scoping:** Use `Connection::scoped_memory(MemoryAccessScope)` in Rust, `--api-key-namespace <KEY>=<NS>` on `tapirus serve`, or `--namespace` / `--session-id` on `tapirus mcp` to enforce hard multi-tenant owner boundaries (`Error::PermissionDenied` on cross-scope access and `__sys_memory` SQL isolation).
+- **Default Search & Tuning:** `MemoryConfig::default()` configures `ef_construction = 128`, `ef_search = 512`, `candidate_limit = 128`, `rrf_k = 20.0`, `vector_weight = 0.65`, and `lexical_weight = 0.25`. Exact vector scans (`exact: true`) and small-scope exact scoring remain built-in.
+- **Checked Fallible Rust APIs:** `memory_forget_checked` and `memory_prune_at_checked` propagate storage I/O errors directly.
 
-## Browser workspace
+## Browser & WASM Runtime
 
-The [WASM workspace](../crates/tapirus-wasm/demo/index.html) runs the same Rust engine, restores committed snapshots from IndexedDB and opens/downloads native `.tapir` files. Browser copies are unencrypted. Keep downloaded backups and use the native SDK for encrypted files or larger workloads.
-
-Build and verify from the repository root:
+`@tapirus/wasm` and the [WASM workspace](../crates/tapirus-wasm/demo/index.html) execute the same Safe-Rust engine inside WebAssembly, persisting committed snapshots to IndexedDB and importing/exporting portable `.tapir` files. Passphrase-encrypted in-browser vaults use `TapirusWasm.new_encrypted(passphrase)` and `TapirusWasm.import_encrypted_bytes(bytes, passphrase)`.
 
 ```sh
 rustup target add wasm32-unknown-unknown
-# Install wasm-bindgen-cli at the exact version in Cargo.lock.
 node scripts/build-wasm.js
-node scripts/build-node-sdk.js --debug
 node scripts/test-wasm.mjs
 node scripts/test-browser-workspace.mjs
 ```
-
-Set `BROWSER_BIN` when Chrome/Edge is not at the smoke test's default path. Serve the repository over HTTP(S) to open the workspace; ES modules cannot be loaded by double-clicking a file URL. `node scripts/package-browser-workspace.js` prepares the standalone workspace in Studio's `public/native` directory.

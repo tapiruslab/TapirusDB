@@ -1,8 +1,6 @@
 ﻿# Agent Memory Quickstart with TapirusDB
 
-> This guide shows the Python SDK's built-in text memory API. It does not claim a latency, RAM ceiling, retrieval accuracy, or crash-safety level. Check the API and limitations for the package version you install.
-
-TapirusDB can store text memories in a local database file and retrieve them with the Python SDK. This is a small starting point for experimenting with agent context; evaluate the retrieval behavior and persistence path for your own workload.
+Store agent context, user preferences, and source citations inside a single ACID `.tapir` database using either TapirusDB's lightweight text memory helpers or indexed hybrid HNSW + BM25 retrieval (`store_memory` / `search_memories`).
 
 ## Install
 
@@ -10,52 +8,71 @@ TapirusDB can store text memories in a local database file and retrieve them wit
 pip install tapirus
 ```
 
-## Store and recall text memories
+## 1. Hybrid AI Memory (`store_memory` & `search_memories`)
+
+Store document sources with namespace/session tags and optional model-generated embeddings for HNSW cosine + BM25 RRF retrieval (`ef_construction = 128`, `ef_search = 512`, `rrf_k = 20.0`):
 
 ```python
 import tapirus
 
-with tapirus.connect("agent_memory.tapir") as db:
+with tapirus.connect("agent_memory.tapir", "strong-passphrase") as db:
+    db.store_memory({
+        "content": "Alex prefers concise Rust and PostgreSQL architecture explanations.",
+        "namespace": "user-prefs",
+        "session_id": "session-1",
+        "tags": ["preference"],
+        # Optional: pass embedding=[...] from your local ONNX, Ollama, or OpenAI model
+    })
+
+    hits = db.search_memories({
+        "query": "concise technical style",
+        "namespace": "user-prefs",
+        "limit": 3,
+    })
+    for hit in hits:
+        print(hit["entry"]["content"], "score:", hit["combined_score"])
+```
+
+For multi-step pipelines with chunking and local multilingual E5 ONNX semantic embeddings, see `tapirus-agent` and [AI and embedded workflows](../AI_EMBEDDED_WORKFLOWS.md).
+
+## 2. Quick Conversational Memory (`remember` & `recall`)
+
+```python
+import tapirus
+
+with tapirus.connect("quick_memory.tapir") as db:
     db.remember("Alex prefers concise technical answers.")
-    db.remember("The current project uses Rust and PostgreSQL.")
+    db.remember("The current project uses Rust and TapirusDB.")
 
     matches = db.recall("What style of answer does Alex prefer?", limit=3)
     for item in matches:
         print(item.get("content", ""))
 
-    # Optional: format the returned text as context for an application prompt.
     prompt_context = db.recall_prompt("Alex's answer preferences", limit=3)
     print(prompt_context)
 
     db.checkpoint()
 ```
 
-The current Python implementation performs text matching against stored content and falls back to recent rows when no match is found. It is not an embedding-based semantic search API, and its result should be reviewed before it is used to inform an agent response.
-
-## Rust API
-
-The Rust `Connection` API also provides `remember`, `recall`, and `recall_prompt` methods:
+## 3. Rust API (with Multi-Tenant Scope Isolation)
 
 ```rust
-use tapirus::Connection;
+use tapirus::{Connection, MemoryAccessScope, MemoryDocument, MemorySearch, Result};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = Connection::open("agent_memory.tapir")?;
-    db.remember("Alex prefers concise technical answers.")?;
+fn main() -> Result<()> {
+    let conn = Connection::open("agent_memory.tapir")?;
+    let scoped = conn.scoped_memory(MemoryAccessScope::namespace("user-prefs"))?;
 
-    for item in db.recall("answer preferences", 3) {
-        println!("{}", item.entry.content);
-    }
-    println!("{}", db.recall_prompt("answer preferences", 3));
-    db.checkpoint()?;
-    Ok(())
+    scoped.store_memory(&MemoryDocument {
+        content: "Alex prefers concise technical answers.".into(),
+        ..Default::default()
+    })?;
+    let hits = scoped.search_memories(&MemorySearch {
+        query: Some("technical style".into()),
+        limit: 3,
+        ..Default::default()
+    })?;
+    println!("Retrieved {} scoped memories", hits.len());
+    conn.close()
 }
 ```
-
-## Before using this in production
-
-- Review the package's supported SQL and SDK methods for the version you ship.
-- Test write, close, reopen, and read behavior on the target platform.
-- Measure memory and latency with your dataset and application runtime.
-- Avoid storing secrets unless you have reviewed the optional encryption configuration and key handling.
-- Treat recalled text as untrusted input and apply your application's prompt-injection controls.

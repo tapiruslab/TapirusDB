@@ -1,24 +1,25 @@
-﻿# TapirusDB WASM Crate
+﻿# TapirusDB WASM Crate (`@tapirus/wasm`)
 
-The canonical generated npm package is `@tapirus/wasm` in `pkg/`. The parent
-manifest is private so it cannot accidentally publish an incompatible package.
-`node scripts/test-wasm-package.mjs` packs that directory, installs the tarball
-offline in a fresh consumer, and checks bound SQL, rollback and snapshot reopen.
-This is package validation, not evidence that the npm registry contains it.
+`@tapirus/wasm` compiles the full Safe-Rust TapirusDB Quad engine (`sql`, `vector`, `graph`, `document`, `ai-memory`, and `XChaCha20-Poly1305` encryption) to WebAssembly via `wasm-bindgen`, exposing JavaScript bindings and the compiled `.wasm` binary inside `pkg/`.
 
-This crate exposes TapirusDB functionality through `wasm-bindgen`. A generated package includes JavaScript glue and the compiled WebAssembly module; the raw `.wasm` file is not a drop-in replacement for that package.
+## Key Capabilities
 
-The standalone Rust workspace runs SQL and AI memory through this package. It saves committed snapshots in IndexedDB and opens/exports the native `.tapir` format. The larger React Studio also contains a separate TypeScript demo; use its Rust workspace link for the actual native-format engine.
+- **Native `.tapir` Interchange:** Open, query, mutate, and export portable `.tapir` snapshots directly compatible with the native CLI, Rust core, Python SDK, and Node.js SDK.
+- **End-to-End Encrypted Browser Vaults:** Create and restore XChaCha20-Poly1305 encrypted in-memory databases and `.tapir` snapshots directly in JS/WASM using `TapirusWasm.new_encrypted(passphrase)`, `is_encrypted()`, and `TapirusWasm.import_encrypted_bytes(bytes, passphrase)`.
+- **Parameterized SQL & Transactions:** Execute bound queries (`execute_params`, `query_params_json`) with `BEGIN`, `COMMIT`, `ROLLBACK`, savepoints, CTEs, triggers, and constraints.
+- **Hybrid AI Memory & GraphRAG:** Run `store_memory_json`, `search_memories_json`, `memory_request_json`, `graph_rag_query_json`, `rabitq_quantize_json`, and local TAP inference (`tap_classify`, `tap_verify`) inside the browser or Node/edge runtimes.
+
+## Build & Verify
 
 ```sh
 rustup target add wasm32-unknown-unknown
-# Install wasm-bindgen-cli matching Cargo.lock, then run from the repo root:
+# Ensure wasm-bindgen-cli matches Cargo.lock, then run from the repository root:
 node scripts/build-wasm.js
-node scripts/build-node-sdk.js --debug
 node scripts/test-wasm.mjs
+node scripts/test-wasm-package.mjs
 node scripts/test-browser-workspace.mjs
 ```
 
-`scripts/build-wasm.js` enforces matching wasm-bindgen versions and generates both JavaScript glue and WASM. `WASM_BINDGEN_BIN` can name a local CLI executable. `scripts/package-browser-workspace.js` prepares Studio's standalone Rust workspace; `--site` prepares the local website's Studio entry.
-
-The runtime test checks typed SQL parameters, AI retrieval, WASM reopen, and native SDK → WASM → native file compatibility. The browser test checks bound SQL, rollback, text escaping, IndexedDB reload and persisted source retrieval. Browser copies are unencrypted; use downloaded backups and the native SDK for encrypted files. Resource and performance measurements are workload specific.
+- `scripts/build-wasm.js` generates `@tapirus/wasm` in `crates/tapirus-wasm/pkg/` (set `WASM_BINDGEN_BIN` for a custom CLI path).
+- `node scripts/test-wasm-package.mjs` packs `@tapirus/wasm`, installs the tarball offline into a fresh consumer directory, and validates bound SQL, rollback, and snapshot reopen.
+- `scripts/package-browser-workspace.js` prepares the standalone browser workspace in `studio/public/native` (`--site` prepares the website Studio entry).

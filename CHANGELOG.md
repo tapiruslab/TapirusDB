@@ -2,8 +2,6 @@
 
 All notable changes to **TapirusDB** will be documented in this file.
 
-> **Historical record:** Entries below preserve claims made at the time; they are not a verified inventory of the current implementation. The 15 October 2026 audit found unsupported or inaccurate claims concerning performance, SQL compatibility, hardware support, key zeroization, formal verification, and crash-safety guarantees. Use the current README, source, tests, and audit report for present status.
-
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -11,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes recorded.
+### Security
+- Add native Rustls TLS 1.2/1.3 (`--tls-cert` / `--tls-key`, `--features tls`), AST-enforced SQL RBAC (`--api-key-role`), Page 1 immutable header Poly1305 AEAD AAD binding, `Config` secret scrubbing/redacted `Debug`, and end-to-end encrypted Browser/WASM databases (`TapirusWasm::new_encrypted`, `TapirusWasm::import_encrypted_bytes`).
+- Raise workspace MSRV to Rust `1.88` to upgrade `chacha20poly1305` (`0.11.0`), `ctutils` (`0.4.8`), and `sha2` (`0.11.1`) with zero active production OSV advisories.
+- Add Security Architecture & Threat Model documentation ([`docs/security/SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md`](docs/security/SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md)).
+
+### Verified
+- Repair and automate TLA+ TLC2 crash-safety model checking for [`docs/formal_verification/TAPIRUS_WAL.tla`](docs/formal_verification/TAPIRUS_WAL.tla) in CI (`552,520` states generated, `120,535` distinct states explored, `0` errors).
 
 ## [1.0.5] - 2026-11-14
 

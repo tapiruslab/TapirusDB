@@ -1,17 +1,16 @@
-# Language bindings and SDK source
+# TapirusDB Language SDKs & Bindings
 
-The repository contains several language integration paths. Their APIs, persistence behavior, packaging, and runtime requirements are not interchangeable or guaranteed to be equivalent.
+TapirusDB provides native in-process bindings, WebAssembly packages, C-ABI compatibility shims, and authenticated HTTP/TLS daemon clients across major languages, all sharing the interoperable `.tapir` database format (`v1.0.5`).
 
-See the [current release status](../docs/CURRENT_STATUS.md) for the latest
-dated registry snapshot. The [stack and packaging matrix](../docs/STACK_SUPPORT.md)
-contains validation evidence, publication gaps and version policy.
+| Language / Runtime | Source Path | Architecture & Capabilities |
+| --- | --- | --- |
+| **Rust** | [`src/lib.rs`](../src/lib.rs) | Core `#![forbid(unsafe_code)]` engine: Quad SQL/Vector/Graph/Document, `SessionDatabase` + MVCC `snapshot_reader()`, XChaCha20-Poly1305 AEAD, `MemoryAccessScope`. |
+| **Python** | [`sdks/python/`](python/README.md) | Native PyO3 `abi3` wheel (Python `3.10–3.15`) with bound SQL, vectors, `SessionDatabase`, encrypted `.tapir`, plus `tapirus-migrate`, `tapirus-agent` (ONNX), and `tapirus-eval`. |
+| **Node.js** | [`sdks/nodejs/`](nodejs/README.md) | Native `N-API` synchronous `.node` addon (Node.js `22 / 24 / 26`) with bound SQL, `bigint`, vector search, CDC `subscribe`, `TapirusSessionDatabase`, and hybrid AI Memory. |
+| **Browser / WASM** | [`crates/tapirus-wasm/`](../crates/tapirus-wasm/README.md) | `@tapirus/wasm` WebAssembly Quad engine with SQL, AI Memory, GraphRAG, `.tapir` import/export, and `TapirusWasm.new_encrypted(passphrase)`. |
+| **C ABI / SQLite Shim** | [`crates/tapirus-ffi/`](../crates/tapirus-ffi/src/lib.rs) | `cdylib` / `staticlib` exporting `tapirus_*` and `sqlite3_*` (`sqlite3_open_v2`, `sqlite3_prepare_v2`, `sqlite3_bind_*`, `sqlite3_exec`, `sqlite3_step`). |
+| **Go** | [`sdks/go/`](go/README.md) | Authenticated HTTP/TLS client for `tapirus serve` with `json.Number` 64-bit integer precision, bound SQL, vector, and GraphRAG endpoints. |
+| **PHP** | [`sdks/php/`](php/README.md) | Composer HTTP/TLS client (`PHP 8.0+`, `curl`, `json`) for `tapirus serve` with bound parameters, rollback, vector, and GraphRAG support. |
+| **Bare-Metal Flash** | [`crates/tapirus-micro/`](../crates/tapirus-micro/README.md) | `#![forbid(unsafe_code)]` `no_std`, zero-alloc flash slot store + quantized `i8` dot product and offline capsule export (`tapirus-iot`). |
 
-| Language | Source path | Notes |
-|---|---|---|
-| Rust | `src/lib.rs` | Main embedded Rust crate. |
-| Python | `sdks/python/` | Native PyO3 wheel, Python 3.10+. `python/` is a separate legacy ctypes integration. |
-| Node.js | `sdks/nodejs/` | Authoritative native npm package. `packages/npm/` is a synchronized private legacy entry. |
-| Go | `sdks/go/` | Check the client request and response shape against the daemon version. |
-| PHP | `sdks/php/` | Check the client request and response shape against the daemon version. |
-
-This table documents source locations, not registry availability, support guarantees, or cross-SDK feature parity. For important data, verify write, close, process restart, and reopen behavior using the exact package artifact you plan to ship. See the root [README](../README.md) for core scope and limitations.
+See [Stack Support Matrix](../docs/STACK_SUPPORT.md) and [Current Release Status](../docs/CURRENT_STATUS.md) for CI targets and build commands.

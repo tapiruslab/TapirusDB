@@ -1,142 +1,204 @@
 # TapirusDB
 
-TapirusDB is an embedded Rust database for local applications that need SQL, vector search and AI document memory in one runtime. Store text and embeddings, retrieve sources for an LLM, and keep SQL and memory changes in the same transaction.
+**The 100% Safe-Rust (`#![forbid(unsafe_code)]`) Embedded Quad-Model AI Database & Cognitive Memory Engine.**
+
+Relational SQL, HNSW Vector Search, Property Graphs / GraphRAG, JSON Document Collections, and Transactional AI Memory unified inside a single encrypted, crash-safe `.tapir` file and write-ahead log.
 
 [![Crates.io](https://img.shields.io/crates/v/tapirus.svg?style=flat-square&logo=rust)](https://crates.io/crates/tapirus)
 [![Core lint](https://img.shields.io/badge/core-unsafe_code_forbidden-brightgreen.svg?style=flat-square)](src/lib.rs)
+[![MSRV: Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg?style=flat-square)](Cargo.toml)
+[![TLA+ TLC](https://img.shields.io/badge/TLA%2B%20TLC-552k%20states%20verified-blue.svg?style=flat-square)](docs/formal_verification/README.md)
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-purple.svg?style=flat-square)](LICENSE)
 
-Build local AI products with a data layer that runs inside your application.
-Start with the [web tutorials](https://tapirusdb.com/tutorial), explore the
-[API cookbook](https://tapirusdb.com/cookbook), or
-[try the Rust browser workspace](https://tapirusdb.com/studio/).
+Explore the [web tutorials](https://tapirusdb.com/tutorial), browse the [API cookbook](docs/COOKBOOK.md), or launch the [Rust Browser WASM Workspace](https://tapirusdb.com/studio/).
 
-The default branch includes storage corrections, transactional AI memory and
-native SDK integration coverage. Published release archives may predate these
-changes; see [release validation](docs/RELEASE_VALIDATION.md) for evidence and
-the distinction between current source and published packages.
+---
 
-## Highlights
+## Core Architecture & Capabilities
 
-- Local, in-process database with a `.tapir` file and a write-ahead log.
-- SQL support is a documented subset; TapirusDB is not a SQLite drop-in or a claim of full SQL conformance.
-- Vector, graph, and JSON document APIs are available alongside relational tables.
-- AI source retrieval combines BM25, supplied embeddings, recency and importance, with namespace/session filters and source citations.
-- Indexed memory adds model-specific HNSW, upsert, revision checks, atomic batches, source versions, TTL and configurable budgets. Python tools provide verified SQLite scalar migration, document ingestion and retrieval evaluation. See [AI and embedded workflows](docs/AI_EMBEDDED_WORKFLOWS.md).
-- `SessionDatabase` provides independent transaction ownership over serialized access. The separate [Micro component](crates/tapirus-micro/README.md) targets bounded bare-metal flash records.
-- The [offline IoT capsule bridge](docs/IOT_CAPSULE.md) exports a committed Micro slot without allocation and imports it into Quad's local AI memory with sequence/replay checks. A gateway may attach embeddings from a pinned local provider. It is a source-build capability, not a claim of signed device identity or on-chip LLM inference.
-- The Rust WASM workspace opens and exports native `.tapir` files and saves committed browser snapshots to IndexedDB.
-- First-party SQL Lite, Document, Graph and Vector entry points can be built separately; the default Quad engine exposes every model in the same native file. See [edition builds and limits](docs/EDITIONS.md).
-- Page encryption is optional. Review key handling and deployment configuration for your threat model.
-- The main `tapirus` crate forbids explicit unsafe Rust. The C ABI crate contains unsafe boundary code. This does not prove functional correctness, crash safety, or bounded resource use.
-- Current source binds `tapirus serve` to loopback by default, requires an API key for a non-loopback bind, and disables cross-origin CORS headers unless allowlisted via `--cors-origin` / `TAPIRUS_CORS_ORIGIN`. It limits service to 64 simultaneous clients, 16 KiB headers, 4 MiB bodies and a 10-second request read deadline. It accepts API keys in headers, not URL query strings. Pre-v1.0.4 release binaries may predate this source change; validate the exact downloaded release before relying on these limits in an executable.
-- Current source bounds serialized TAP model loads to 128 MiB and rejects inconsistent dimensions and non-finite weights. Default TAP weights are deterministic heuristic baseline weights, not trained or probability-calibrated models.
+- **Four Data Models + AI Memory in One ACID Engine**
+  - **Relational SQL & SQLite Compatibility:** `CREATE TABLE`, `CREATE INDEX` (single & multi-column composite indexes), `FOREIGN KEY` (`ON DELETE` / `ON UPDATE`), `CHECK`, `DEFAULT`, `CREATE TRIGGER` (`BEFORE`/`AFTER`, `WHEN`, `RAISE`), `FTS5` full-text search, `WITH` CTEs, subqueries, `ON CONFLICT` upserts, `RETURNING`, window functions, parameterized prepared statements, and C-ABI `sqlite3_*` compatibility (`sqlite3_open_v2`, `sqlite3_prepare_v2`, `sqlite3_bind_*`, `sqlite3_step`, `sqlite3_column_*`, `sqlite3_exec`) in `tapirus-ffi`.
+  - **Vector Search & Quantization:** Exact and HNSW approximate nearest neighbors, disk-backed paged HNSW, optional `wide` SIMD kernels (`--features simd`), 8-bit scalar quantization (`QuantizedVector8`), and RaBit bit-packed Walsh-Hadamard quantization (`RaBitQuantizer`).
+  - **Graph & GraphRAG:** Labelled property nodes and weighted edges, Compressed Sparse Row (`CsrGraph`) export, PageRank, Dijkstra shortest path, connected components, betweenness centrality, Louvain community detection, `GRAPH MATCH` / `CYPHER` queries, and fluent `GraphChain` hybrid traversal.
+  - **JSON Document Collections & Transactional AI Memory:** Schemaless document APIs alongside indexed `storeMemory` / `upsertMemory` / `searchMemories` hybrid retrieval combining HNSW cosine similarity, BM25 lexical scoring, temporal recency decay, and importance via Reciprocal Rank Fusion (RRF) or weighted scoring — persisted in compact binary `TPMEM001` rows with CRC32-validated `__sys_memory_index` HNSW snapshots.
+- **MVCC Snapshot Readers & Multi-Process SWMR WAL**
+  - `SessionDatabase` provides owned logical write sessions (`session()`, `session_with_timeout()`) plus non-blocking MVCC committed `SnapshotSession` readers (`snapshot_reader()`, `mvcc_epoch()`) that execute immediately without waiting on active uncommitted write transactions.
+  - `Connection::open_concurrent*` and `Connection::open_read_only*` coordinate multiple OS processes over SWMR WAL (`refresh_from_disk()`, acquiring `.tapir-lock` only for writers).
+- **Hardened Cryptography, Zeroization & Native TLS**
+  - **Storage AEAD:** Per-page 256-bit XChaCha20-Poly1305 encryption (`24`-byte CSPRNG `XNonce`) with PBKDF2-HMAC-SHA256 key derivation (`600,000` iterations), constant-time KCV check, and Poly1305 AAD binding `page_id` + Page 1 immutable security/format header fields.
+  - **Memory Hygiene:** Non-`Clone` `DatabaseCipher` (`Zeroize` + `Drop`), PBKDF2/HMAC stack buffer zeroization, and `Config` secret scrubbing with `[REDACTED]` `Debug` formatting on `Connection::open*` and `tapirus serve`.
+  - **Zero-Trust HTTP & MCP Server (`tapirus serve` / `tapirus mcp`):** Native Rustls TLS 1.2/1.3 (`--tls-cert` / `--tls-key`), loopback-by-default bind, constant-time header-only API key verification, AST-enforced SQL RBAC (`--api-key-role KEY=readonly|readwrite[:tables]`), per-owner AI Memory namespace isolation (`--api-key-namespace`, `MemoryAccessScope`, `Connection::scoped_memory`), opt-in CORS allowlist, defensive HTTP headers, and configurable Ollama / OpenAI-compatible HTTP neural embeddings.
+  - **Browser / WASM Encryption:** `@tapirus/wasm` supports end-to-end encrypted in-memory databases and `.tapir` snapshots via `TapirusWasm.new_encrypted(passphrase)` and `TapirusWasm.import_encrypted_bytes(bytes, passphrase)`.
+- **Formal Verification & Supply-Chain Discipline**
+  - MSRV **Rust 1.88+** tracking patched cryptographic crates (`chacha20poly1305 0.11.0`, `ctutils 0.4.8`, `sha2 0.11.1`), verified via OSV (`scripts/check-dependency-advisories.py`: `0` active production advisories across `139` locked packages).
+  - Single-writer WAL crash-safety specification ([TAPIRUS_WAL.tla](docs/formal_verification/TAPIRUS_WAL.tla)) verified in CI by **TLC2** (`552,520` generated states, `120,535` distinct states, `0` invariant violations across `TypeOK`, `RecoveredDiskMatchesCommitted`, `CheckpointedDiskMatchesCommitted`, and `NoUncommittedCheckpoint`).
+- **Modular Editions & Edge-to-Cloud Footprint**
+  - Build the full Quad engine (`tapirus`), single-model entry points (`tapirus-lite`, `tapirus-document`, `tapirus-graph`, `tapirus-vector`), or bare-metal `no_std` allocation-free flash storage (`tapirus-micro`) with signed offline capsule bridging into Quad (`tapirus-iot`).
 
-## Rust quickstart
+---
 
-Need only one model? Build `tapirus-lite`, `tapirus-document`, `tapirus-graph`,
-or `tapirus-vector` from the current source. Quad remains the default `tapirus`
-binary. For example, a SQL-only CLI build is:
+## Quickstart
 
-```bash
-cargo build --release -p tapirus --no-default-features --features lite --bin tapirus-lite
-```
+### Rust
 
-The edition binaries share the `.tapir` format, but they are API boundaries,
-not security sandboxes or proven low-memory builds. Check the asset list for
-the exact published release before depending on a prebuilt edition binary.
-Follow the [choose-an-edition tutorial](docs/tutorials/choose_an_edition.md)
-for a file-interchange walkthrough.
-
-Add the crate to a Rust project, then open a database and use the SQL API:
+Add `tapirus` (`rust-version = "1.88"`) to `Cargo.toml`:
 
 ```rust
-use tapirus::{Connection, Result};
+use tapirus::{Config, Connection, MemoryDocument, MemorySearch, Result, SessionDatabase, Value};
 
 fn main() -> Result<()> {
-    let db = Connection::open("notes.tapir")?;
-    db.execute("CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)")?;
-    db.execute("INSERT INTO notes (id, body) VALUES (1, 'Check the recovery path')")?;
+    let db = SessionDatabase::open_with_config(
+        "app.tapir",
+        Config {
+            encryption_key: Some("correct-horse-battery-staple".into()),
+            concurrent_access: true,
+            ..Default::default()
+        },
+    )?;
 
-    let rows = db.query("SELECT id, body FROM notes")?;
+    let writer = db.session()?;
+    writer.transaction(|tx| {
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY,
+                body TEXT NOT NULL,
+                tag TEXT DEFAULT 'general'
+            )",
+        )?;
+        tx.execute_with_params(
+            "INSERT INTO notes (id, body) VALUES (?, ?) ON CONFLICT DO UPDATE SET body = EXCLUDED.body",
+            &[Value::Integer(1), Value::Text("Encrypted WAL + SQL + AI memory".into())],
+        )?;
+        tx.store_memory(&MemoryDocument {
+            content: "Engine oil maintenance is due every 500 operating hours.".into(),
+            namespace: Some("manuals".into()),
+            ..Default::default()
+        })?;
+        Ok(())
+    })?;
+
+    // Non-blocking MVCC committed snapshot reader
+    let reader = db.snapshot_reader()?;
+    let rows = reader.query("SELECT id, body, tag FROM notes")?;
     println!("{rows:?}");
+
+    let hits = writer.search_memories(&MemorySearch {
+        query: Some("maintenance interval".into()),
+        namespace: Some("manuals".into()),
+        limit: 5,
+        ..Default::default()
+    })?;
+    println!("Top hit: {:?}", hits.first().map(|h| &h.entry.content));
+
+    writer.close()?;
     db.close()?;
     Ok(())
 }
 ```
 
-Use parameterized APIs for user-provided values. Review the SQL parser and executor for the supported syntax and constraints before depending on a query shape.
+Or build single-model binaries cleanly from source:
 
-## Architecture and workload fit
+```bash
+cargo build --release -p tapirus --no-default-features --features lite --bin tapirus-lite
+cargo build --release -p tapirus --no-default-features --features document --bin tapirus-document
+cargo build --release -p tapirus --no-default-features --features graph-only --bin tapirus-graph
+cargo build --release -p tapirus --no-default-features --features vector-only --bin tapirus-vector
+```
 
-TapirusDB is intended for local, single-process workloads that benefit from colocated relational, vector, graph, or document data. Its API and query support should be evaluated against the application requirements.
-
-`ConnectionPool::acquire()` currently returns a clone of the same connection. Handles share session and transaction state; this is not a pool of independent database sessions. SQL execution uses shared locks, so the pool name does not imply concurrent SQL readers.
-
-Use `SessionDatabase` when transactions need independent owners. Other sessions
-return Busy or wait until the owning session finishes; access remains serialized.
-
-WAL recovery, replication, backups, vector snapshots, HTTP behavior, and SDK bindings have regression tests for selected cases. Tests cover only the scenarios they exercise. Validate crash recovery, resource use, backup and restore, and SDK behavior on the target platform before storing important data.
-
-## AI document memory
+### Node.js (`sdks/nodejs`)
 
 ```js
 const { open } = require('tapirus');
+
 const db = open('assistant.tapir');
-db.storeMemory({ content: 'Maintenance is due every 500 hours.', namespace: 'manuals' });
-const sources = db.searchMemories({ query: 'maintenance interval', namespace: 'manuals', limit: 5 });
-console.log(sources.map(source => ({ id: source.entry.id, text: source.entry.content })));
+db.storeMemory({
+  content: 'Maintenance is due every 500 hours.',
+  namespace: 'manuals',
+  tags: ['source:service-guide'],
+});
+const sources = db.searchMemories({
+  query: 'maintenance interval',
+  namespace: 'manuals',
+  limit: 5,
+});
+console.log(sources.map(s => ({ id: s.entry.id, text: s.entry.content, score: s.combined_score })));
 db.close();
 ```
 
-Supply an `embedding` from your chosen model to add vector similarity. These methods run locally and participate in SQL transactions. See [the AI memory guide](docs/AI_MEMORY.md) for Rust, Node.js, score definitions and browser use.
+### Python (`sdks/python`)
 
-## HTTP server
+```python
+import tapirus
 
-`tapirus serve` exposes plaintext HTTP endpoints on `127.0.0.1:3005` by default. Set `--api-key` (or `TAPIRUS_API_KEY`) whenever reachable by untrusted callers, restrict CORS with `--cors-origin` / `TAPIRUS_CORS_ORIGIN` (disabled by default; same-origin only), and always place `tapirus serve` behind a TLS-terminating reverse proxy (Nginx, Caddy, Envoy, or Cloudflare Tunnel) before exposing it beyond loopback. See [SECURITY.md](SECURITY.md) for deployment limits and TLS reverse-proxy setup. The browser `/chat` page is public; `/api/chat` and `/api/chat/logs` require the configured API key.
-
-## Security, performance, and formal methods
-
-- See [SECURITY.md](SECURITY.md) for the threat boundary, optional encryption, and reporting guidance.
-- Historical latency, throughput, RAM, and binary-size figures are withdrawn pending corrected, reproducible measurements. See [Benchmark status](#benchmark-status).
-- TLA+ files describe selected WAL transitions. The repository has no TLC run output or refinement proof connecting the model to Rust; see [the model scope](#tla-model-scope).
-- No ISO 26262, IEC 62304, DO-178C, or other functional-safety certification is claimed.
-
-## Build and test
-
-```bash
-cargo test --workspace --all-targets --offline
-cargo check --workspace --all-features --offline
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --offline -- -D warnings
+with tapirus.connect("assistant.tapir", "strong-passphrase") as db:
+    db.execute("CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, label TEXT NOT NULL)")
+    db.execute("INSERT INTO events VALUES (?, ?)", [1, "startup"])
+    db.store_memory({
+        "content": "Replace intake filter at 500 operating hours.",
+        "namespace": "manuals",
+    })
+    print(db.search_memories({"query": "intake filter", "namespace": "manuals", "limit": 5}))
 ```
 
-These commands validate the current host build and exercised tests. They do not establish formal verification, certification, or correctness for every failure mode.
+### Secure HTTP & MCP Daemon (`tapirus serve` / `tapirus mcp`)
 
-For a local Linux container build, run `docker build -t tapirusdb:local .`. The image runs as a non-root user. Mount a named volume at `/data` for data that must survive container removal, for example `docker run --rm --network none --mount source=tapirus-demo,target=/data tapirusdb:local /data/demo.tapir -c "CREATE TABLE notes (id INTEGER)"`. A bind-mounted host directory must be writable by the container user. The local Windows Docker smoke check is `powershell -NoProfile -File scripts/test-docker-smoke.ps1`; it builds a local test image and verifies SQL reopen and error exit status. This local check is not a substitute for public release asset verification or cross-platform CI results.
+Start `tapirus serve` with native Rustls TLS 1.2/1.3, namespace-isolated API keys, AST-enforced SQL RBAC, and explicit CORS allowlisting:
 
-## Documentation
+```bash
+tapirus serve assistant.tapir \
+  --bind 0.0.0.0:3443 \
+  --tls-cert cert.pem \
+  --tls-key key.pem \
+  --api-key "$ADMIN_KEY" \
+  --api-key-role "$READER_KEY=readonly:notes" \
+  --api-key-namespace "$AGENT_KEY=workspace-alpha" \
+  --cors-origin https://app.example.com
+```
 
-- [Editions and build commands](docs/EDITIONS.md)
-- [Offline Micro-to-Quad IoT capsules](docs/IOT_CAPSULE.md)
-- [Choose an edition tutorial](docs/tutorials/choose_an_edition.md)
-- [API cookbook](docs/COOKBOOK.md)
-- [WAL and recovery architecture notes](docs/architecture/02_WAL_TRANSACTIONS_AND_RECOVERY.md)
-- [TLA+ model scope](docs/formal_verification/README.md)
-- [Assurance scope and limitations](docs/HIGH_ASSURANCE_SAFETY.md)
-- [SDKs](sdks/README.md)
-- [Stack support, versions and package validation](docs/STACK_SUPPORT.md)
-- [Current release and registry status](docs/CURRENT_STATUS.md)
-- [Transactional AI memory](docs/AI_MEMORY.md)
-- [Panduan TAP: browser, CLI, Rust dan Model Forge](docs/TAP_GUIDE.md)
-- [Release validation and packaging](docs/RELEASE_VALIDATION.md)
+Run an MCP server backed by a local Ollama or OpenAI-compatible neural embedding endpoint:
 
-## Benchmark status
+```bash
+tapirus mcp assistant.tapir \
+  --embed-endpoint http://127.0.0.1:11434/api/embed \
+  --embed-model nomic-embed-text \
+  --embed-dims 768 \
+  --namespace agent-memory
+```
 
-The audit found benchmark cases that need correction or clearer scope, including operations whose results may be optimized away, a dot-product case labeled as cosine, extrapolated vector-memory estimates, and comparisons with different durability settings. Do not use historical performance figures as product claims.
+---
 
-The corrected `cargo bench --bench release_readiness` harness checks results, reopens both databases and measures HNSW recall against exact neighbors. Its small-workload local results and limitations are recorded in [release validation](docs/RELEASE_VALIDATION.md). Publish the source revision, binary hash, compiler flags, hardware, storage settings, dataset, warm or cold state, and latency distribution with every result.
+## Build, Verification & Packaging
 
-## TLA+ model scope
+Verify formatting, strict lints, standalone editions, dependency advisories, and the full test suite locally:
 
-The repository contains a TLA+ model of selected WAL and recovery transitions. There is no TLC run output or refinement proof connecting the model to the Rust implementation. The model is a design artifact, not evidence that the compiled engine is formally verified.
+```bash
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --all-features --offline -- -D warnings
+cargo test --locked --workspace --offline
+python scripts/check-dependency-advisories.py
+```
+
+Containerized execution (runs as a non-root user with `/data` volume persistence):
+
+```bash
+docker build -t tapirusdb:local .
+docker run --rm --network none --mount source=tapirus-demo,target=/data \
+  tapirusdb:local /data/demo.tapir -c "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)"
+```
+
+---
+
+## Documentation Map
+
+- **Security & Formal Verification**
+  - [SECURITY.md](SECURITY.md) — Vulnerability disclosure, cryptographic guarantees, and deployment hardening
+  - [Security Architecture & Threat Model](docs/security/SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md) — Trust boundaries and third-party audit readiness dossier
+  - [TLA+ Formal WAL Specification](docs/formal_verification/README.md) — Crash-safety model and CI TLC2 verification
+  - [Engineering Assurance Architecture](docs/HIGH_ASSURANCE_SAFETY.md) — Safety boundaries, memory safety, and verification controls
+- **Architecture & Guides**
+  - [API Cookbook](docs/COOKBOOK.md) — Verified Rust, SQL, Vector, Graph, Encryption, and AI Memory recipes
+  - [Transactional AI Memory](docs/AI_MEMORY.md) & [AI Embedded Workflows](docs/AI_EMBEDDED_WORKFLOWS.md)
+  - [Editions & Build Profiles](docs/EDITIONS.md) | [IoT Capsules (`tapirus-micro`)](docs/IOT_CAPSULE.md)
+  - [Storage & Paging](docs/architecture/01_STORAGE_ENGINE_AND_PAGING.md) | [WAL, MVCC & Recovery](docs/architecture/02_WAL_TRANSACTIONS_AND_RECOVERY.md) | [SIMD Vector & Quantization](docs/architecture/03_SIMD_VECTOR_AND_QUANTIZATION.md) | [GraphBLAS & openCypher](docs/architecture/04_GRAPHBLAS_AND_OPENCYPHER.md)
+  - [Language SDKs](sdks/README.md) | [Release Validation](docs/RELEASE_VALIDATION.md) | [Current Release Status](docs/CURRENT_STATUS.md)
+  - [Panduan TAP (BM)](docs/TAP_GUIDE.md) | [Interactive Local Web Guide (BM)](docs/tapirusdb-guide.html)

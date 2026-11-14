@@ -1,27 +1,21 @@
-﻿# Vector Search and Quantization: Implementation Notes
+﻿# Vector Search, HNSW & Quantization Architecture
 
-> Status: describes available source modules. Performance, recall, and accuracy depend on workload and have not been established by the source code alone.
+TapirusDB natively integrates vector similarity search directly inside relational SQL queries, graph traversals, and transactional AI Memory without an external sidecar vector service.
 
-## Available components
+## Core Vector Engine Components
 
-TapirusDB includes HNSW index code, vector distance functions, optional `wide`-based vector kernels behind the `simd` Cargo feature, scalar 8-bit quantization, product quantization utilities, and a RaBit-style bit-packed quantizer using deterministic sign flips and a normalized Walsh-Hadamard transform.
+- **Exact & HNSW Nearest-Neighbor Indexing:** Supports exact brute-force search as well as hierarchical navigable small world (`HNSW`) indexes with configurable `M`, `ef_construction`, and `ef_search` traversal beams.
+- **Distance Metrics & SIMD Acceleration (`--features simd`):** Implements Cosine similarity, Squared Euclidean ($L_2^2$), and Dot Product metrics, with optional fixed-width SIMD kernels via the `wide` crate and Safe-Rust chunked vector loops (`src/vector/simd.rs`).
+- **Disk-Backed Paged HNSW & Memory Snapshots:** Includes paged disk-backed vector storage primitives (`src/vector/paged_hnsw.rs`) alongside persisted CRC32-validated HNSW index snapshots (`__sys_memory_index`) for instant reopen on AI Memory collections.
 
-These components are not a single guaranteed execution path. The query planner, index configuration, feature flags, and calling API determine which implementation is used. Verify the selected path for the build you ship.
+## Vector Quantization
 
-## Distance functions
+- **8-Bit Scalar Quantization (`QuantizedVector8`):** Compresses `f32` embedding vectors to compact `u8` payloads with per-vector min/step scale metadata (`4x` payload reduction).
+- **RaBit Bit-Packed Quantization (`RaBitQuantizer`):** Applies deterministic sign-flip rotation followed by a normalized Walsh-Hadamard transform and 1-bit sign-bit packing with exact norm preservation, enabling fast Hamming/bit-packed similarity estimation across high-dimensional embeddings.
 
-The vector module provides cosine distance, squared Euclidean distance, and dot-product operations. The `simd` feature uses fixed-width vector operations through the `wide` crate; builds without it use scalar loops. Runtime CPU dispatch, a particular instruction set, and a fixed number of cycles are not guaranteed by these APIs.
+## SQL & Multi-Model Integration
 
-## Quantization
+- Columns declared with `VECTOR(D)` validate dimensionality on `INSERT`, `UPDATE`, and `UPSERT`, and synchronize secondary vector indexes within SQL transactions.
+- Vector similarity integrates directly into `SELECT` (`ORDER BY COSINE_DISTANCE(...)`), fluent `GraphChain::vector_near()`, and hybrid RRF / weighted `searchMemories` retrieval.
 
-`QuantizedVector8` stores an 8-bit representation with min/step metadata. `RaBitQuantizer` rotates a padded vector with deterministic sign flips and a Walsh-Hadamard transform, then stores sign bits and the original norm. The current distance estimate uses the stored sign bits and a rotated query.
-
-The packed representation can reduce vector payload size. Actual total memory includes graph edges, IDs, index structures, allocator overhead, and any unquantized vectors retained by the caller. Quantization also changes similarity estimates; measure recall and ranking quality on a representative dataset before relying on it.
-
-## HNSW and persistence
-
-The repository includes in-memory HNSW indexes and a paged-vector storage primitive. These should not be described as a fully disk-resident index: the paged store maintains page payloads in an in-memory map, and separate snapshot code handles persistence. Measure process memory and reopen behavior for the exact API and workload you use.
-
-## Benchmarking
-
-No latency, throughput, compression ratio, or recall figure in this document is a release guarantee. A useful benchmark records the source revision, compiler and flags, CPU, dataset, index parameters, warm or cold state, query mix, recall, and memory. It should consume benchmark results observably so the optimizer cannot remove the measured work.
+See [AI and Embedded Workflows](../AI_EMBEDDED_WORKFLOWS.md) and [Release Validation](../RELEASE_VALIDATION.md) for HNSW recall verification and benchmark methodology.

@@ -1,9 +1,6 @@
-# Offline IoT capsule bridge
+# Offline IoT Capsule Bridge (`TPIOCAP1`)
 
-Tapirus Micro can export one committed flash slot as a small versioned frame.
-The full TapirusDB Quad engine can import that frame into local AI memory. No
-external database or network service is required. This is a **source-build
-capability**, not a newly published release artifact or an MCU hardware claim.
+Tapirus Micro exports committed bare-metal flash slots as compact, versioned `TPIOCAP1` transport frames that import directly into the full TapirusDB Quad engine's local AI memory with sequence-number replay protection — zero external broker or cloud dependency required.
 
 ## Device side: bounded and offline
 

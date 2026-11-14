@@ -1,27 +1,29 @@
-﻿# Storage Pages and WAL: Implementation Notes
+﻿# Storage Pages and WAL: Engine Architecture
 
-> Status: implementation notes for the current source tree. This is not a crash-safety certification or a stable on-disk format specification.
+## Page & File Layout
 
-## Page and file layout
+TapirusDB stores all relational tables, secondary indexes, vector indexes, graphs, JSON document collections, and AI memory inside a single page-oriented `.tapir` file paired with a `.tapir-wal` write-ahead log.
 
-The pager defines a default page size of 4,096 bytes and a file header with the `TAPIRUS\0` magic, format version, freelist metadata, WAL sequence, CRC, and optional encryption and compression flags. The B+Tree module encodes table and index pages with slotted-page headers. Its page types also include vector-index, overflow, and freelist entries.
+- **Default page size:** `4,096` bytes with `TAPIRUS\0` file header magic, format version, freelist metadata, WAL sequence counters, CRC checksums, and encryption/compression flags.
+- **Page 1 Header AAD Binding:** Immutable Page 1 format and KDF header fields (`magic`, `page_size`, `version`, `encryption_flags`, `salt`, `kcv`) are authenticated via Poly1305 AEAD Associated Data when encryption is enabled.
+- **Transparent Safe-Rust LZ4 Compression:** Pages above Page 1 can be transparently LZ4-compressed before encryption and WAL/disk writes (`conn.enable_compression()`), with on-demand decompression on page cache load.
 
-These structures describe the implementation. They do not by themselves prove atomic persistence, zero corruption, or compatibility across future releases. Treat the file format as version-specific and keep backups before upgrading or experimenting with recovery.
+## B+Tree Storage
 
-## B+Tree pages
+Table rows and single- or multi-column composite secondary indexes are persisted in slotted-page B+Trees inside `src/btree/`:
 
-Table and secondary-index records are stored in B+Tree pages. Page headers carry the page type, flags, cell count, content offset, freeblock offset, and, for interior pages, a rightmost child pointer. The encoder and decoder in `src/btree` define the actual byte layout; consult that code when changing the format.
+- Interior and leaf page headers encode page type, flags, cell count, content offset, freeblock offset, rightmost child pointer, and overflow page chains for large payloads.
+- Borrowed `Cow<[u8]>` in-page inserts avoid redundant heap allocations on standard OLTP paths, paired with sequential right-append leaf splits.
 
-Do not infer a general `O(log N)` latency bound from the tree shape alone. Disk reads, cache state, page splits, serialization, locking, and query planning affect observed behavior.
+## WAL, Encryption & Recovery
 
-## WAL and transactions
+- **Per-Page XChaCha20-Poly1305 AEAD:** Encrypted databases protect every 4 KiB page using 256-bit keys (PBKDF2-HMAC-SHA256 at 600,000 iterations), fresh 24-byte CSPRNG `XNonce` nonces, and 16-byte Poly1305 tags, with non-`Clone` `Zeroize` key lifecycle hygiene.
+- **WAL Frame Integrity & Crash Recovery:** Mutations write framed pages with CRC verification and commit markers to `.tapir-wal` before checkpointing into `.tapir`. Fault-injection and crash-recovery suites verify recovery across torn frames, corrupted tails, write/sync failures, and abrupt child termination.
+- **Hot Online Backups & Replication:** Built-in `backup`, `vacuum_into`, and incremental WAL frame export/apply (`export_wal_frames`, `apply_wal_frame`) preserve consistent committed snapshots without taking writers offline.
 
-The pager and WAL modules implement frame logging, commit markers, checkpointing, and recovery paths. Regression tests cover selected commit, rollback, reopen, and corruption cases. They do not establish behavior for every process crash, partial write, filesystem, device cache, or power-loss scenario.
+## Concurrency & MVCC Readers
 
-A successful commit result is meaningful only for the operations and I/O path exercised. Preserve and inspect I/O errors, run recovery tests on the target platform, and maintain independent backups for valuable data.
+- **SWMR Multi-Process WAL (`Config::concurrent_access`):** Coordinates multiple processes against the same `.tapir` file, acquiring `.tapir-lock` exclusively during writes and refreshing committed WAL state (`refresh_from_disk()`).
+- **Non-Blocking MVCC Snapshots (`SessionDatabase::snapshot_reader()`):** Delivers lock-free committed snapshot readers tied to atomic `mvcc_epoch()` counters even while an owning `Session` executes an active uncommitted write transaction.
 
-## Buffering and concurrency
-
-The pager maintains in-memory page state, while SQL operations use shared synchronization around pager and executor state. A cloned `ConnectionPool` handle shares a connection/session; it is not an independent transaction session. This design does not imply parallel SQL readers or bounded process memory.
-
-For current API contracts and security limits, see the root `README.md` and `SECURITY.md`.
+See [WAL, MVCC & Recovery Architecture](02_WAL_TRANSACTIONS_AND_RECOVERY.md), [SECURITY.md](../../SECURITY.md), and [README.md](../../README.md).

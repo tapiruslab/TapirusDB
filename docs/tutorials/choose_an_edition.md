@@ -1,8 +1,6 @@
 # Choose a TapirusDB edition
 
-This tutorial uses the current source tree, not an already-published release
-archive. Pick the entry point your application needs. All editions use the
-native `.tapir` format and run without another database service.
+Pick the entry point your application needs (`1.0.5+`). All editions use the interoperable native `.tapir` file format and run embedded in-process without external database services.
 
 | If you need | Build | Public entry point |
 |---|---|---|

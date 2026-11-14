@@ -5,21 +5,21 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'">
   <meta name="tapirus-engine" content="../pkg/tapirus_wasm.js">
-  <meta name="description" content="Run TapirusDB's Rust engine in your browser. Query SQL, store AI document memory, and open or export native .tapir databases.">
-  <title>TapirusDB — Rust Workspace</title>
+  <meta name="description" content="Run TapirusDB's Safe-Rust WebAssembly engine directly in your browser. Execute parameterized SQL, hybrid AI document memory, and native .tapir database import/export.">
+  <title>TapirusDB — Rust WASM Workspace</title>
   <link rel="stylesheet" href="workspace.css">
   <script type="module" src="workspace.js"></script>
 </head>
 <body>
   <header><a class="brand" href="https://tapirusdb.com">TAPIRUS<span>DB</span></a><span id="engine" role="status" data-engine-ready="false">Loading Rust engine…</span></header>
   <main>
-    <div class="intro"><p class="eyebrow">LOCAL DATA · SQL + AI MEMORY</p><h1>Your data. Your engine.</h1><p>SQL and document retrieval run inside the Rust WebAssembly engine. Download a native <code>.tapir</code> file to continue with the CLI or SDK.</p></div>
+    <div class="intro"><p class="eyebrow">100% SAFE RUST · SQL + VECTOR + AI MEMORY IN WASM</p><h1>Your data. Your engine.</h1><p>Full parameterized SQL and hybrid AI document retrieval execute locally inside the compiled Rust WebAssembly engine. Open or export portable native <code>.tapir</code> databases seamlessly between browser, CLI, and native SDKs.</p></div>
     <section class="vault" aria-label="Database file">
       <label for="vault-name">Database name<input id="vault-name" value="workspace.tapir" maxlength="120" autocomplete="off"></label>
       <div class="actions"><button id="new-database" type="button">New database</button><button id="open-saved" type="button">Open browser copy</button><button id="open-database" type="button">Open .tapir</button><button id="download-database" type="button">Download .tapir</button></div>
       <input id="database-file" type="file" accept=".tapir" hidden>
       <p id="storage-status" class="muted" role="status">Browser storage: not initialized</p>
-      <p class="muted">Browser copies use IndexedDB and are unencrypted. Keep downloaded backups; clearing site data removes the browser copy. Encrypted files require the native SDK.</p>
+      <p class="muted">Snapshots persist locally in IndexedDB inside your browser. Download <code>.tapir</code> exports for offline backup or native CLI/SDK transfer; for passphrase-protected XChaCha20-Poly1305 vaults in JS, use <code>TapirusWasm.new_encrypted(passphrase)</code> and <code>import_encrypted_bytes(bytes, passphrase)</code>.</p>
     </section>
     <div class="workspace-grid">
       <section class="panel" aria-labelledby="sql-title">
@@ -31,8 +31,8 @@
         <pre id="sql-result" tabindex="0" aria-label="SQL results">[]</pre>
       </section>
       <section class="panel" aria-labelledby="ai-title">
-        <div class="section-heading"><h2 id="ai-title">AI document memory</h2><span>SOURCE RETRIEVAL</span></div>
-        <p class="muted">Search with BM25 keywords, a model-supplied embedding, or both. Results include source text and separate scores; no cloud service is contacted.</p>
+        <div class="section-heading"><h2 id="ai-title">AI document memory</h2><span>HYBRID SOURCE RETRIEVAL</span></div>
+        <p class="muted">Search locally with BM25 lexical ranking, caller-supplied embeddings, or hybrid fusion with explicit source citations and score breakdowns.</p>
         <label for="memory-content">Document text or search query<textarea id="memory-content" rows="4" placeholder="An engine maintenance guide…"></textarea></label>
         <div class="field-grid"><label for="namespace">Namespace<input id="namespace" value="documents" autocomplete="off"></label><label for="session">Session <span class="muted">optional</span><input id="session" autocomplete="off"></label></div>
         <label for="embedding">Embedding <span class="muted">optional JSON vector from your model</span><textarea id="embedding" rows="2" spellcheck="false" placeholder="[0.12, -0.3, …]"></textarea></label>
@@ -41,8 +41,8 @@
       </section>
     </div>
     <section class="panel" aria-labelledby="tap-title">
-      <div class="section-heading"><h2 id="tap-title">TAP Lite</h2><span>LOCAL HEURISTIC INFERENCE</span></div>
-      <p class="muted">Classify text or check a hypothesis using TAP functions in the Rust WASM engine. These are heuristic results, not a trained language model; model training requires the separate desktop backend.</p>
+      <div class="section-heading"><h2 id="tap-title">TAP Engine</h2><span>IN-BROWSER BITNET/HEURISTIC INFERENCE</span></div>
+      <p class="muted">Run zero-network text classification and premise-hypothesis verification locally inside the Rust WASM runtime.</p>
       <div class="workspace-grid tap-grid">
         <div>
           <label for="tap-text">Text to classify<textarea id="tap-text" rows="3" placeholder="A short text to classify"></textarea></label>
@@ -59,7 +59,7 @@
       </div>
     </section>
     <section class="panel" aria-labelledby="catalog-title"><div class="section-heading"><h2 id="catalog-title">Engine catalog</h2><button id="refresh-schema" type="button">Refresh</button></div><pre id="schema-result" tabindex="0" aria-label="Actual database schema">[]</pre></section>
-    <footer>Native file format · Bound SQL parameters · Transactional AI memory<br><a href="https://github.com/tapiruslab/TapirusDB">Source and compatibility information</a> · <a href="../pkg/LICENSE">Engine license</a></footer>
+    <footer>Native <code>.tapir</code> format · Bound SQL parameters · Transactional AI memory · Safe Rust WASM<br><a href="https://github.com/tapiruslab/TapirusDB">Source and documentation</a> · <a href="../pkg/LICENSE">Engine license</a></footer>
   </main>
 </body>
 </html>

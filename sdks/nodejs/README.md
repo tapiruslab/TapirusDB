@@ -5,10 +5,7 @@ lines. Release builds target Linux x64/ARM64 (glibc), macOS Intel/Apple Silicon,
 and Windows x64. Linux musl and Windows ARM64 addons are not produced by the
 SDK release workflow. The Rust core's broader target matrix is separate.
 
-New source APIs include upsert, atomic batches, TTL, model identity, revision
-checks and indexed retrieval diagnostics. `TapirusSessionDatabase` provides
-independently owned transactions over serialized storage. See
-[AI and embedded workflows](../../docs/AI_EMBEDDED_WORKFLOWS.md).
+New `1.0.5` source APIs include `upsertMemory`, atomic batches, TTLs, pinned embedding model identity, optimistic revision checks, and indexed retrieval diagnostics. `TapirusSessionDatabase` provides independently owned transactions alongside non-blocking snapshot reads. See [AI and embedded workflows](../../docs/AI_EMBEDDED_WORKFLOWS.md).
 
 This package is a synchronous Node.js binding to the TapirusDB Rust engine. It requires a matching native `.node` addon. It does not switch to an in-memory JavaScript implementation if that addon is missing; opening a database fails with a diagnostic error instead.
 

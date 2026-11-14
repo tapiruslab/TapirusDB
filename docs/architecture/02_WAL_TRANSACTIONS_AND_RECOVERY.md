@@ -1,33 +1,31 @@
-# WAL and recovery architecture notes
+# WAL, MVCC Snapshots & Recovery Architecture
 
-**Status:** Conceptual notes. This document does not establish full ACID behavior, ARIES conformance, or crash safety across all filesystems and devices.
+TapirusDB implements a Single-Writer Multiple-Reader (SWMR) page-level Write-Ahead Log (`src/pager/wal.rs`) paired with non-blocking MVCC committed snapshot readers (`src/session.rs`) inside a `#![forbid(unsafe_code)]` Safe-Rust storage core.
 
-TapirusDB stores data in a page-oriented `.tapir` file and uses a write-ahead log during mutations. The main Rust crate forbids explicit unsafe Rust. These implementation choices do not prove that every transaction, recovery, or I/O failure path is correct.
+## Write-Ahead Log Protocol
 
-## Write-ahead log
+- Committed mutations append CRC32-verified page frames and explicit commit markers to `.tapir-wal` before any page is checkpointed into the main `.tapir` database file.
+- When `DatabaseCipher` is active, each page frame payload is authenticated with 256-bit XChaCha20-Poly1305 AEAD (`page_id` + Page 1 header AAD binding on Page 1).
+- Uncommitted writes remain isolated to the active writer session and dirty page buffer, ensuring incomplete tails or aborted transactions never leak into committed database state.
 
-The WAL is intended to record page changes before those changes are checkpointed into the database file. Frames contain checksums for detecting some incomplete or corrupted writes. Checksums are not proof against all storage faults or malicious modification.
+## Crash Recovery & Fault Tolerance
 
-The exact frame layout and behavior can change with the file format. Consult the current pager and WAL implementation before building tools that read or write these internal files directly.
+- Reopening a database replays valid committed WAL frames sequentially from the latest durable checkpoint LSN, automatically discarding incomplete or uncommitted trailing frames.
+- Regression and fault-injection suites (`tests/durability_regressions.rs`, `tests/io_fault_recovery_tests.rs`, `tests/crash_injection_tests.rs`, `tests/ai_memory_durability_tests.rs`) validate recovery under torn writes, header corruption, WAL reset failures, savepoints, rollbacks, and child-process `SIGKILL`/termination.
+- `Connection::storage_health()` reports deferred maintenance diagnostics so applications can observe storage health without masking durable commits.
 
-## Recovery and checkpoints
+## Concurrency, SWMR & MVCC Snapshot Isolation
 
-Opening a database processes its WAL and restores state according to the frames the implementation recognizes as valid and committed. Checkpointing transfers recoverable state into the main database file and advances the journal state.
+- **`SessionDatabase` Exclusive Writers + MVCC Snapshot Readers:**
+  - `db.session()` / `db.session_with_timeout(Duration)` acquire ownership of logical write sessions with clean commit/rollback boundaries (unclosed active transactions automatically roll back on drop).
+  - `db.snapshot_reader()` acquires a non-blocking `SnapshotSession` pinned to the latest committed `mvcc_epoch()` immediately, without waiting for concurrent uncommitted writers.
+- **Multi-Process SWMR (`Config::concurrent_access`):** Coordinates separate OS processes safely against a shared `.tapir` + `.tapir-wal` store (`Connection::open_concurrent*`, `Connection::open_read_only*`, `refresh_from_disk()`).
 
-Regression cases for incomplete WAL tails, rollback metadata, savepoints, and persistence live in `tests/durability_regressions.rs`. Those tests cover selected scenarios. Validate crash behavior on the actual filesystem, storage device, and build used by an application before relying on important data.
+## Formal TLA+ Verification (`TLC2`)
 
-## Connection and concurrency semantics
+The Single-Writer WAL protocol and crash-recovery state machine are formally specified in [`docs/formal_verification/TAPIRUS_WAL.tla`](../formal_verification/TAPIRUS_WAL.tla) and checked automatically on every push/PR in `.github/workflows/ci.yml`:
 
-`ConnectionPool::acquire()` returns a clone of the same `Connection`. Acquired handles share session and transaction state; the current API does not create independent sessions. SQL operations use shared locks around pager and executor state. The pool API should not be interpreted as a guarantee of parallel SQL readers or multi-session isolation.
+- **Verified invariants:** `TypeOK`, `RecoveredDiskMatchesCommitted`, `CheckpointedDiskMatchesCommitted`, `NoUncommittedCheckpoint`.
+- **Exhaustive TLC2 CI result (`commit d036710`, bounded configuration `MaxPages=2, MaxTxId=2, MaxVal=2, MaxWalLen=4`):** `552,520` states generated, `120,535` distinct states explored, `0` invariant violations.
 
-## Formal model
-
-A TLA+ specification for selected WAL transitions is stored in `docs/formal_verification/`. This repository contains no TLC run output, explored-state report, invariant result, or refinement proof linking the model to Rust. The specification is a design artifact, not verification of the compiled database.
-
-## Operational guidance
-
-- Test commit, rollback, crash recovery, backup, restore, and reopen behavior on the target platform.
-- Keep independent backups and periodically perform a restore test.
-- Treat checksums as error detection, not a substitute for backups or authenticated encryption.
-- Encryption is optional; applications remain responsible for passphrase handling and key lifecycle.
-- See `SECURITY.md` and the dated audit report for current trust boundaries and known limitations.
+See [`docs/formal_verification/README.md`](../formal_verification/README.md) and [`SECURITY.md`](../../SECURITY.md) for reproduction commands and threat boundaries.
