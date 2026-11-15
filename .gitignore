@@ -26,6 +26,8 @@ __pycache__/
 *.egg-info/
 *.node
 node_modules/
+crates/tapirus-wasm/pkg/
+crates/tapirus-wasm/pkg-lite/
 
 # Archives
 *.tar.gz
@@ -45,6 +47,7 @@ scratch/
 expert_notes_extracted.txt
 *.audit.md
 *audit*
+!docs/security/EXTERNAL_AUDIT_RFP.md
 
 # Speculative / Concept Documents (Local Only)
 docs/TAPISAURUS_DISTRIBUTED_BLUEPRINT.md

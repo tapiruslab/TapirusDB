@@ -56,10 +56,10 @@ Studio Lite menggunakan enjin Rust WASM dalam pelayar dengan sokongan snapshot t
 
 ### Versi offline
 
-Di halaman [Releases](https://github.com/tapiruslab/TapirusDB/releases) atau [Downloads](https://tapirusdb.com/download), muat turun arkib pelayar terkini (versi `1.0.5+`):
+Di halaman [Releases](https://github.com/tapiruslab/TapirusDB/releases) atau [Downloads](https://tapirusdb.com/download), muat turun arkib pelayar terkini (versi `1.1.0+`):
 
 ```text
-Tapirus-Studio-Lite-Browser-1.0.5.zip
+Tapirus-Studio-Lite-Browser-1.1.0.zip
 ```
 
 Extract ZIP itu, kemudian jalankan:

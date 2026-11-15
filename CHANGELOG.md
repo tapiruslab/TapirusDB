@@ -7,9 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.1.0] - 2026-11-15
+
+### Added
+- `WITH [RECURSIVE]` CTEs, `UNION` / `UNION ALL` compound queries, infix arithmetic (`+`, `-`, `*`, `/`, `%`) and string concatenation (`||`) scalar expressions, and partial indexes (`CREATE [UNIQUE] INDEX ... WHERE ...`) with filtered uniqueness enforcement and residual planner filtering.
+- `@tapirus/wasm-lite` ultra-lightweight WASM build profile (`crates/tapirus-wasm/pkg-lite`, `node scripts/build-wasm.js --lite`, `min-size` `opt-level = "z"`, ~39% smaller raw WASM binary while keeping full SQL, recursive CTEs, partial indexes, encrypted `.tapir` vaults, and snapshot interchange).
+- External third-party security audit RFP & verification scope pack ([`docs/security/EXTERNAL_AUDIT_RFP.md`](docs/security/EXTERNAL_AUDIT_RFP.md)).
+
+### Performance
+- Optimize transactional batch SQL `INSERT` (`Connection::execute_insert_plan`, scratch buffer reuse in `SQLExecutor`, direct pre-validated B+Tree leaf append/split without 4 KiB per-row savepoint page cloning when constraints are safe, and zero-cost fast-path when no realtime subscribers exist), beating SQLite 3.46.0 WAL on `batch_1000_with_commit` (`4.67 ms` vs `5.77 ms`).
 
 ### Security
+- Extend AST SQL RBAC (`authorize_sql_statement_ast`) to cover recursive CTEs and compound `UNION [ALL]` statements.
 - Add native Rustls TLS 1.2/1.3 (`--tls-cert` / `--tls-key`, `--features tls`), AST-enforced SQL RBAC (`--api-key-role`), Page 1 immutable header Poly1305 AEAD AAD binding, `Config` secret scrubbing/redacted `Debug`, and end-to-end encrypted Browser/WASM databases (`TapirusWasm::new_encrypted`, `TapirusWasm::import_encrypted_bytes`).
 - Raise workspace MSRV to Rust `1.88` to upgrade `chacha20poly1305` (`0.11.0`), `ctutils` (`0.4.8`), and `sha2` (`0.11.1`) with zero active production OSV advisories.
 - Add Security Architecture & Threat Model documentation ([`docs/security/SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md`](docs/security/SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md)).

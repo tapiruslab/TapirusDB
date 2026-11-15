@@ -309,12 +309,14 @@ jobs:
           WASM_BINDGEN_VER="$(python3 -c 'import tomllib; lock = tomllib.load(open("Cargo.lock", "rb")); print(next(p["version"] for p in lock["package"] if p["name"] == "wasm-bindgen"))')"
           cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VER"
 
-      - name: Build and verify @tapirus/wasm tarball
+      - name: Build and verify @tapirus/wasm and @tapirus/wasm-lite tarballs
         run: |
           cargo fetch --locked
           cargo fetch --locked --target wasm32-unknown-unknown
           node scripts/build-wasm.js --offline
           npm --prefix crates/tapirus-wasm run test:package
+          node scripts/build-wasm.js --lite --offline
+          node scripts/test-wasm-package.mjs --lite
 
       - uses: actions/upload-artifact@v7
         with:
@@ -336,7 +338,10 @@ jobs:
         with:
           name: wasm-package
           path: dist
-      - name: Publish @tapirus/wasm to npm Registry
-        run: npm publish ./dist/*.tgz --access public --provenance
+      - name: Publish @tapirus/wasm and @tapirus/wasm-lite to npm Registry
+        run: |
+          for tarball in ./dist/*.tgz; do
+            npm publish "$tarball" --access public --provenance
+          done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

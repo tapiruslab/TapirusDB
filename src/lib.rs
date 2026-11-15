@@ -215,6 +215,8 @@ fn take_cipher_from_config(
     Ok(cipher)
 }
 
+type InsertPlanCache = Arc<parking_lot::Mutex<Vec<(String, Arc<PreparedPlan>)>>>;
+
 /// An open connection to a TapirusDB single-file database.
 ///
 /// Implements `Clone` for cheap thread-safe multi-threaded access across worker pools,
@@ -226,8 +228,24 @@ pub struct Connection {
     memory: Arc<RwLock<MemoryEngine>>,
     realtime: Arc<RealtimeBus>,
     pending_changes: Arc<parking_lot::Mutex<Vec<(usize, ChangeEvent)>>>,
+    insert_plan_cache: InsertPlanCache,
     config: Config,
     memory_scope: Option<MemoryAccessScope>,
+}
+
+impl Connection {
+    fn assemble(pager: Pager, executor: SQLExecutor, memory: MemoryEngine, config: Config) -> Self {
+        Self {
+            pager: Arc::new(RwLock::new(pager)),
+            executor: Arc::new(RwLock::new(executor)),
+            memory: Arc::new(RwLock::new(memory)),
+            realtime: Arc::new(RealtimeBus::new()),
+            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            insert_plan_cache: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            config,
+            memory_scope: None,
+        }
+    }
 }
 
 /// A wrapper that distributes cloned handles to one shared connection.
@@ -411,15 +429,7 @@ impl Connection {
         executor.load_graph_from_disk(&mut pager)?;
         executor.load_memory_from_disk(&mut pager, &mut memory)?;
         executor.load_vector_indexes_from_disk(&mut pager)?;
-        Ok(Self {
-            pager: Arc::new(RwLock::new(pager)),
-            executor: Arc::new(RwLock::new(executor)),
-            memory: Arc::new(RwLock::new(memory)),
-            realtime: Arc::new(RealtimeBus::new()),
-            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
-            config,
-            memory_scope: None,
-        })
+        Ok(Self::assemble(pager, executor, memory, config))
     }
 
     /// Open a temporary in-memory database
@@ -463,15 +473,7 @@ impl Connection {
         executor.load_graph_from_disk(&mut pager)?;
         executor.load_memory_from_disk(&mut pager, &mut memory)?;
         executor.load_vector_indexes_from_disk(&mut pager)?;
-        Ok(Self {
-            pager: Arc::new(RwLock::new(pager)),
-            executor: Arc::new(RwLock::new(executor)),
-            memory: Arc::new(RwLock::new(memory)),
-            realtime: Arc::new(RealtimeBus::new()),
-            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
-            config,
-            memory_scope: None,
-        })
+        Ok(Self::assemble(pager, executor, memory, config))
     }
 
     /// Open a database connection initialized directly from a raw byte buffer (e.g. from browser OPFS or IndexedDB).
@@ -506,15 +508,7 @@ impl Connection {
         executor.load_graph_from_disk(&mut pager)?;
         executor.load_memory_from_disk(&mut pager, &mut memory)?;
         executor.load_vector_indexes_from_disk(&mut pager)?;
-        Ok(Self {
-            pager: Arc::new(RwLock::new(pager)),
-            executor: Arc::new(RwLock::new(executor)),
-            memory: Arc::new(RwLock::new(memory)),
-            realtime: Arc::new(RealtimeBus::new()),
-            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
-            config,
-            memory_scope: None,
-        })
+        Ok(Self::assemble(pager, executor, memory, config))
     }
 
     /// Open a read-only connection backed directly by a remote object store (S3, Cloudflare R2, MinIO, GCP)
@@ -536,15 +530,7 @@ impl Connection {
         executor.load_graph_from_disk(&mut pager)?;
         executor.load_memory_from_disk(&mut pager, &mut memory)?;
         executor.load_vector_indexes_from_disk(&mut pager)?;
-        Ok(Self {
-            pager: Arc::new(RwLock::new(pager)),
-            executor: Arc::new(RwLock::new(executor)),
-            memory: Arc::new(RwLock::new(memory)),
-            realtime: Arc::new(RealtimeBus::new()),
-            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
-            config,
-            memory_scope: None,
-        })
+        Ok(Self::assemble(pager, executor, memory, config))
     }
 
     /// Open a bidirectional writable database connection synchronized with remote cloud storage (S3/R2)
@@ -558,15 +544,7 @@ impl Connection {
         executor.load_graph_from_disk(&mut pager)?;
         executor.load_memory_from_disk(&mut pager, &mut memory)?;
         executor.load_vector_indexes_from_disk(&mut pager)?;
-        Ok(Self {
-            pager: Arc::new(RwLock::new(pager)),
-            executor: Arc::new(RwLock::new(executor)),
-            memory: Arc::new(RwLock::new(memory)),
-            realtime: Arc::new(RealtimeBus::new()),
-            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
-            config,
-            memory_scope: None,
-        })
+        Ok(Self::assemble(pager, executor, memory, config))
     }
 
     /// Push local changes back to the remote cloud storage adapter
@@ -1584,15 +1562,7 @@ impl Connection {
         config: Config,
     ) -> Result<Self> {
         let memory = MemoryEngine::with_config(config.memory.clone())?;
-        Ok(Self {
-            pager: Arc::new(RwLock::new(pager)),
-            executor: Arc::new(RwLock::new(executor)),
-            memory: Arc::new(RwLock::new(memory)),
-            realtime: Arc::new(RealtimeBus::new()),
-            pending_changes: Arc::new(parking_lot::Mutex::new(Vec::new())),
-            config,
-            memory_scope: None,
-        })
+        Ok(Self::assemble(pager, executor, memory, config))
     }
 
     fn execute_parsed(&self, stmt: Statement) -> Result<usize> {
@@ -2049,10 +2019,108 @@ impl Connection {
         }
     }
 
+    fn lookup_cached_insert_plan(&self, sql: &str) -> Option<Arc<PreparedPlan>> {
+        let cache = self.insert_plan_cache.lock();
+        cache
+            .iter()
+            .rev()
+            .find(|(cached_sql, _)| cached_sql == sql)
+            .map(|(_, plan)| Arc::clone(plan))
+    }
+
+    fn cache_insert_plan(&self, sql: &str, plan: PreparedPlan) -> Arc<PreparedPlan> {
+        let arc = Arc::new(plan);
+        let mut cache = self.insert_plan_cache.lock();
+        if let Some((_, existing)) = cache.iter().rev().find(|(s, _)| s == sql) {
+            return Arc::clone(existing);
+        }
+        if cache.len() >= 32 {
+            cache.remove(0);
+        }
+        cache.push((sql.to_owned(), Arc::clone(&arc)));
+        arc
+    }
+
+    fn execute_insert_plan(
+        &self,
+        plan: &PreparedPlan,
+        params: &[Value],
+        encode_buf: Option<&mut Vec<u8>>,
+    ) -> Result<usize> {
+        let PreparedPlan::Insert {
+            table,
+            columns,
+            param_count,
+        } = plan;
+        if params.len() != *param_count {
+            return Err(Error::SqlSyntax(format!(
+                "Parameter count mismatch: expected {}, got {}",
+                param_count,
+                params.len()
+            )));
+        }
+        let has_subscribers = self.realtime.has_subscribers();
+        let mut pager = self.pager.write();
+        let mut executor = self.executor.write();
+        if pager.begin_concurrent_write()? {
+            executor.reload_from_pager(&mut pager)?;
+        }
+        let row_id = if has_subscribers {
+            predicted_insert_row_id_for_values(&executor, table, columns.as_deref(), params)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let exec_res =
+            executor.execute_insert_fast(&mut pager, table, columns.as_deref(), params, encode_buf);
+        let affected = match exec_res {
+            Ok((affected, _)) => affected,
+            Err(e) => {
+                let _ = pager.end_concurrent_write();
+                return Err(e);
+            }
+        };
+        let in_transaction = pager.is_in_transaction();
+        let savepoint_depth = pager.savepoint_depth();
+        pager.end_concurrent_write()?;
+        drop(executor);
+        drop(pager);
+        if has_subscribers {
+            let now_ts = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.queue_change(
+                ChangeEvent {
+                    op: ChangeOp::Insert,
+                    table: table.clone(),
+                    row_id,
+                    timestamp: now_ts,
+                    data: serde_json::json!({"affected_rows": affected}),
+                },
+                in_transaction,
+                savepoint_depth,
+            );
+        }
+        Ok(affected)
+    }
+
     /// Execute a parameterized non-query SQL command safely
     pub fn execute_with_params(&self, sql: &str, params: &[Value]) -> Result<usize> {
-        let stmt = self.prepare(sql)?;
-        stmt.execute(params)
+        if let Some(plan) = self.lookup_cached_insert_plan(sql) {
+            return self.execute_insert_plan(&plan, params, None);
+        }
+        let tokens = crate::sql::lexer::tokenize(sql)?;
+        if let Some(plan) = Self::try_compile_insert_plan(&tokens) {
+            let cached = self.cache_insert_plan(sql, plan);
+            return self.execute_insert_plan(&cached, params, None);
+        }
+        if tokens.is_empty() {
+            return Ok(0);
+        }
+        let bound = crate::sql::parser::bind_parameters(&tokens, params)?;
+        let stmt = crate::sql::parser::parse_tokens(&bound)?;
+        self.execute_parsed(stmt)
     }
 
     /// Execute a parameterized SQL query returning rows safely
@@ -2184,65 +2252,9 @@ pub struct PreparedStatement<'a> {
 impl<'a> PreparedStatement<'a> {
     /// Execute prepared non-query SQL command with parameter binding
     pub fn execute(&self, params: &[Value]) -> Result<usize> {
-        if let Some(PreparedPlan::Insert {
-            table,
-            columns,
-            param_count,
-        }) = &self.plan
-        {
-            if params.len() != *param_count {
-                return Err(Error::SqlSyntax(format!(
-                    "Parameter count mismatch: expected {}, got {}",
-                    param_count,
-                    params.len()
-                )));
-            }
-            let mut pager = self.conn.pager.write();
-            let mut executor = self.conn.executor.write();
-            if pager.begin_concurrent_write()? {
-                executor.reload_from_pager(&mut pager)?;
-            }
-            let row_id =
-                predicted_insert_row_id_for_values(&executor, table, columns.as_deref(), params)
-                    .unwrap_or(0);
+        if let Some(plan) = &self.plan {
             let mut buf = self.encode_buf.borrow_mut();
-            let exec_res = executor.execute_insert_fast(
-                &mut pager,
-                table,
-                columns.as_deref(),
-                params,
-                Some(&mut buf),
-            );
-            drop(buf);
-            let affected = match exec_res {
-                Ok((affected, _)) => affected,
-                Err(e) => {
-                    let _ = pager.end_concurrent_write();
-                    return Err(e);
-                }
-            };
-            let in_transaction = pager.is_in_transaction();
-            let savepoint_depth = pager.savepoint_depth();
-            pager.end_concurrent_write()?;
-            drop(executor);
-            drop(pager);
-            let now_ts = web_time::SystemTime::now()
-                .duration_since(web_time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            self.conn.queue_change(
-                ChangeEvent {
-                    op: ChangeOp::Insert,
-                    table: table.clone(),
-                    row_id,
-                    timestamp: now_ts,
-                    data: serde_json::json!({"affected_rows": affected}),
-                },
-                in_transaction,
-                savepoint_depth,
-            );
-
-            return Ok(affected);
+            return self.conn.execute_insert_plan(plan, params, Some(&mut buf));
         }
 
         let stmt = if let Some(p) = &self.preparsed {

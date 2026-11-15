@@ -477,6 +477,9 @@ pub struct IndexDef {
     pub root_page: PageId,
     /// Whether index enforces uniqueness
     pub unique: bool,
+    /// Optional SQL WHERE predicate for partial indexes (None = full-table index)
+    #[serde(default)]
+    pub predicate_sql: Option<String>,
 }
 
 impl IndexDef {
@@ -495,6 +498,7 @@ impl IndexDef {
             columns: vec![col],
             root_page,
             unique: false,
+            predicate_sql: None,
         }
     }
 
@@ -514,7 +518,14 @@ impl IndexDef {
             columns,
             root_page,
             unique,
+            predicate_sql: None,
         }
+    }
+
+    /// Attach an optional SQL WHERE predicate for a partial index
+    pub fn with_predicate(mut self, predicate_sql: Option<String>) -> Self {
+        self.predicate_sql = predicate_sql;
+        self
     }
 
     /// Ordered list of indexed column names (handles legacy single-column records)
@@ -1003,11 +1014,28 @@ impl Catalog {
         self.indexes.get(&name.to_lowercase())
     }
 
-    /// Find an index on a specific table and column
+    /// Find an index on a specific table and column (prefers non-partial indexes first)
     pub fn find_index_for_column(&self, table: &str, column: &str) -> Option<&IndexDef> {
-        self.indexes.values().find(|idx| {
-            idx.table.eq_ignore_ascii_case(table) && idx.column.eq_ignore_ascii_case(column)
-        })
+        self.indexes
+            .values()
+            .find(|idx| {
+                idx.predicate_sql.is_none()
+                    && idx.table.eq_ignore_ascii_case(table)
+                    && idx.column.eq_ignore_ascii_case(column)
+            })
+            .or_else(|| {
+                self.indexes.values().find(|idx| {
+                    idx.table.eq_ignore_ascii_case(table) && idx.column.eq_ignore_ascii_case(column)
+                })
+            })
+    }
+
+    /// Return all index definitions registered on a specific table
+    pub fn indexes_for_table(&self, table: &str) -> Vec<&IndexDef> {
+        self.indexes
+            .values()
+            .filter(|idx| idx.table.eq_ignore_ascii_case(table))
+            .collect()
     }
 
     /// Check whether a table has any secondary indexes without allocating
@@ -1132,6 +1160,13 @@ impl Catalog {
     /// Return all registered triggers
     pub fn triggers(&self) -> Vec<TriggerDef> {
         self.triggers.values().cloned().collect()
+    }
+
+    /// Check whether a table has any registered triggers without allocating
+    pub fn has_table_triggers(&self, table: &str) -> bool {
+        self.triggers
+            .values()
+            .any(|t| t.table.eq_ignore_ascii_case(table))
     }
 
     /// Register a new trigger and persist it to Page 1

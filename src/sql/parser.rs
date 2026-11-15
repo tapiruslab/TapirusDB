@@ -72,8 +72,19 @@ pub struct CteClause {
     pub name: String,
     /// Optional explicit projected column names
     pub columns: Option<Vec<String>>,
+    /// Whether this CTE allows recursive self-reference (`WITH RECURSIVE`)
+    pub recursive: bool,
     /// Inner subquery statement defining the CTE
     pub query: Box<Statement>,
+}
+
+/// Set operations combining multiple SELECT result sets
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetOperation {
+    /// `UNION` (distinct rows)
+    Union,
+    /// `UNION ALL` (retain duplicates)
+    UnionAll,
 }
 
 /// Comparison and matching operators supported in WHERE clauses
@@ -317,12 +328,21 @@ pub enum Statement {
         /// Optional WHERE filter expression for target node properties and edge attributes
         where_clause: Option<WhereExpr>,
     },
-    /// WITH cte AS (SELECT ...) [, ...] SELECT ...
+    /// WITH [RECURSIVE] cte AS (SELECT ...) [, ...] SELECT ...
     WithCte {
         /// List of Common Table Expressions defined in the WITH clause
         ctes: Vec<CteClause>,
         /// Main outer query executed with CTE results available
         main_query: Box<Statement>,
+    },
+    /// Compound SELECT combined via UNION / UNION ALL
+    Compound {
+        /// Left-hand SELECT statement
+        left: Box<Statement>,
+        /// Set operation (`UNION` or `UNION ALL`)
+        op: SetOperation,
+        /// Right-hand SELECT statement
+        right: Box<Statement>,
     },
     /// GRAPH SHORTEST_PATH FROM start_id TO end_id
     GraphShortestPath {
@@ -376,7 +396,7 @@ pub enum Statement {
     CommitTransaction,
     /// ROLLBACK \[TRANSACTION\]
     RollbackTransaction,
-    /// CREATE \[UNIQUE\] INDEX \[IF NOT EXISTS\] index_name ON table (col1 \[, col2, ...\])
+    /// CREATE \[UNIQUE\] INDEX \[IF NOT EXISTS\] index_name ON table (col1 \[, col2, ...\]) \[WHERE predicate\]
     CreateIndex {
         /// Index name
         name: String,
@@ -390,6 +410,10 @@ pub enum Statement {
         columns: Vec<String>,
         /// Whether index enforces uniqueness
         unique: bool,
+        /// Optional WHERE filter for partial indexes
+        where_clause: Option<WhereExpr>,
+        /// Canonical predicate SQL persisted in catalog for partial index maintenance & planning
+        predicate_sql: Option<String>,
     },
     /// EXPLAIN \[QUERY PLAN\] statement
     Explain {
@@ -735,6 +759,10 @@ pub fn tokens_to_sql(tokens: &[Token]) -> String {
             Token::Colon => s.push(':'),
             Token::Dash => s.push('-'),
             Token::Arrow => s.push_str("->"),
+            Token::Plus => s.push('+'),
+            Token::Slash => s.push('/'),
+            Token::Percent => s.push('%'),
+            Token::Concat => s.push_str("||"),
             Token::Over => s.push_str("OVER"),
             Token::Partition => s.push_str("PARTITION"),
             Token::RowNumber => s.push_str("ROW_NUMBER"),
@@ -792,7 +820,7 @@ pub fn parse_tokens(tokens: &[Token]) -> Result<Statement> {
         Token::Alter => parse_alter(tokens, &mut cursor),
         Token::Insert => parse_insert(tokens, &mut cursor),
         Token::Replace => parse_insert(tokens, &mut cursor),
-        Token::Select => parse_select(tokens, &mut cursor),
+        Token::Select => parse_compound_select(tokens, &mut cursor),
         Token::Update => parse_update(tokens, &mut cursor),
         Token::Delete => parse_delete(tokens, &mut cursor),
         Token::Drop => parse_drop(tokens, &mut cursor),
@@ -833,6 +861,15 @@ pub fn parse_sql(sql: &str) -> Result<Statement> {
 
 fn parse_with_cte(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     expect_token(tokens, cursor, &Token::With)?;
+    let recursive = if matches!(
+        tokens.get(*cursor),
+        Some(Token::Ident(s)) if s.eq_ignore_ascii_case("RECURSIVE")
+    ) {
+        *cursor += 1;
+        true
+    } else {
+        false
+    };
     let mut ctes = Vec::new();
 
     loop {
@@ -886,6 +923,7 @@ fn parse_with_cte(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         ctes.push(CteClause {
             name,
             columns,
+            recursive,
             query: Box::new(query_stmt),
         });
 
@@ -2043,12 +2081,60 @@ fn parse_window_spec(tokens: &[Token], cursor: &mut usize) -> Result<String> {
 }
 
 fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<String> {
+    let mut expr = parse_column_primary(tokens, cursor)?;
+
+    while let Some(tok) = tokens.get(*cursor) {
+        let op = match tok {
+            Token::Plus => "+",
+            Token::Dash => "-",
+            Token::Asterisk => "*",
+            Token::Slash => "/",
+            Token::Percent => "%",
+            Token::Concat => "||",
+            _ => break,
+        };
+        *cursor += 1;
+        let rhs = parse_column_primary(tokens, cursor)?;
+        expr = format!("{expr} {op} {rhs}");
+    }
+
+    // Check optional AS alias
+    if check_token(tokens, *cursor, &Token::As) {
+        *cursor += 1;
+        let alias = parse_identifier_or_keyword(tokens, cursor)?;
+        expr = format!("{expr} AS {alias}");
+    }
+
+    Ok(expr)
+}
+
+fn parse_column_primary(tokens: &[Token], cursor: &mut usize) -> Result<String> {
     if *cursor >= tokens.len() {
         return Err(Error::SqlSyntax(
             "Unexpected end of tokens in column list".into(),
         ));
     }
-    let mut expr = match &tokens[*cursor] {
+    if check_token(tokens, *cursor, &Token::OpenParen) {
+        *cursor += 1;
+        let mut inner = parse_column_primary(tokens, cursor)?;
+        while let Some(tok) = tokens.get(*cursor) {
+            let op = match tok {
+                Token::Plus => "+",
+                Token::Dash => "-",
+                Token::Asterisk => "*",
+                Token::Slash => "/",
+                Token::Percent => "%",
+                Token::Concat => "||",
+                _ => break,
+            };
+            *cursor += 1;
+            let rhs = parse_column_primary(tokens, cursor)?;
+            inner = format!("{inner} {op} {rhs}");
+        }
+        expect_token(tokens, cursor, &Token::CloseParen)?;
+        return Ok(format!("({inner})"));
+    }
+    let expr = match &tokens[*cursor] {
         Token::StringLit(_) | Token::IntLit(_) | Token::FloatLit(_) | Token::Null | Token::Dash => {
             parse_func_arg_expr(tokens, cursor)?
         }
@@ -2225,13 +2311,6 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
         _ => parse_column_ident(tokens, cursor)?,
     };
 
-    // Check optional AS alias
-    if check_token(tokens, *cursor, &Token::As) {
-        *cursor += 1;
-        let alias = parse_identifier_or_keyword(tokens, cursor)?;
-        expr = format!("{expr} AS {alias}");
-    }
-
     Ok(expr)
 }
 
@@ -2341,6 +2420,36 @@ fn parse_optional_returning(tokens: &[Token], cursor: &mut usize) -> Result<Opti
     Ok(Some(cols))
 }
 
+fn is_clause_boundary_ident(word: &str) -> bool {
+    word.eq_ignore_ascii_case("UNION")
+        || word.eq_ignore_ascii_case("EXCEPT")
+        || word.eq_ignore_ascii_case("INTERSECT")
+}
+
+fn parse_compound_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
+    let mut stmt = parse_select(tokens, cursor)?;
+    while matches!(tokens.get(*cursor), Some(Token::Ident(s)) if s.eq_ignore_ascii_case("UNION")) {
+        *cursor += 1;
+        let op = if matches!(tokens.get(*cursor), Some(Token::Ident(s)) if s.eq_ignore_ascii_case("ALL"))
+        {
+            *cursor += 1;
+            SetOperation::UnionAll
+        } else {
+            SetOperation::Union
+        };
+        if !check_token(tokens, *cursor, &Token::Select) {
+            return Err(Error::SqlSyntax("Expected SELECT after UNION".into()));
+        }
+        let right = parse_select(tokens, cursor)?;
+        stmt = Statement::Compound {
+            left: Box::new(stmt),
+            op,
+            right: Box::new(right),
+        };
+    }
+    Ok(stmt)
+}
+
 fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     *cursor += 1; // consume SELECT
 
@@ -2428,6 +2537,10 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         {
             *cursor += 1;
             let _alias = parse_identifier_or_keyword(tokens, cursor)?;
+        } else if let Some(Token::Ident(alias)) = tokens.get(*cursor)
+            && !is_clause_boundary_ident(alias)
+        {
+            *cursor += 1;
         }
         (name, None)
     };
@@ -2480,6 +2593,14 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                 )));
             }
         };
+        if check_token(tokens, *cursor, &Token::As) {
+            *cursor += 1;
+            let _ = parse_identifier_or_keyword(tokens, cursor)?;
+        } else if let Some(Token::Ident(alias)) = tokens.get(*cursor)
+            && !is_clause_boundary_ident(alias)
+        {
+            *cursor += 1;
+        }
 
         expect_token(tokens, cursor, &Token::On)?;
         let left_col = parse_column_ident(tokens, cursor)?;
@@ -3020,6 +3141,16 @@ fn parse_create_index(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
     expect_token(tokens, cursor, &Token::CloseParen)?;
     let column = columns.first().cloned().unwrap_or_default();
 
+    let (where_clause, predicate_sql) = if check_token(tokens, *cursor, &Token::Where) {
+        *cursor += 1;
+        let pred_start = *cursor;
+        let expr = parse_where_expr(tokens, cursor)?;
+        let sql_text = tokens_to_sql(&tokens[pred_start..*cursor]);
+        (Some(expr), Some(sql_text))
+    } else {
+        (None, None)
+    };
+
     Ok(Statement::CreateIndex {
         name: index_name,
         if_not_exists,
@@ -3027,6 +3158,8 @@ fn parse_create_index(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
         column,
         columns,
         unique,
+        where_clause,
+        predicate_sql,
     })
 }
 
@@ -4127,6 +4260,8 @@ mod tests {
                 column,
                 columns,
                 unique,
+                where_clause,
+                predicate_sql,
             } => {
                 assert_eq!(name, "idx_name");
                 assert!(if_not_exists);
@@ -4134,6 +4269,8 @@ mod tests {
                 assert_eq!(column, "name");
                 assert_eq!(columns, vec!["name"]);
                 assert!(!unique);
+                assert!(where_clause.is_none());
+                assert!(predicate_sql.is_none());
             }
             _ => panic!("Expected CreateIndex"),
         }

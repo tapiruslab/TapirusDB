@@ -298,6 +298,8 @@ jobs:
       - run: node scripts/build-wasm.js
       - run: node scripts/test-wasm.mjs
       - run: node scripts/test-wasm-package.mjs
+      - run: node scripts/build-wasm.js --lite
+      - run: node scripts/test-wasm-lite.mjs
       - name: Bundle and execute the Worker locally
         run: |
           npm --prefix examples/cloudflare-worker ci

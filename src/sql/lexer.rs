@@ -139,6 +139,10 @@ pub enum Token {
     Colon,
     Dash,
     Arrow,
+    Plus,
+    Slash,
+    Percent,
+    Concat,
 }
 
 /// Tokenize a raw SQL query string into a vector of Tokens
@@ -225,8 +229,30 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
             continue;
         }
 
+        // Concat operator: ||
+        if ch == '|' && i + 1 < chars.len() && chars[i + 1] == '|' {
+            tokens.push(Token::Concat);
+            i += 2;
+            continue;
+        }
+
         // Single-character symbols
         match ch {
+            '+' => {
+                tokens.push(Token::Plus);
+                i += 1;
+                continue;
+            }
+            '/' => {
+                tokens.push(Token::Slash);
+                i += 1;
+                continue;
+            }
+            '%' => {
+                tokens.push(Token::Percent);
+                i += 1;
+                continue;
+            }
             '(' => {
                 tokens.push(Token::OpenParen);
                 i += 1;

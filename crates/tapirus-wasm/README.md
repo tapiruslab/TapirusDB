@@ -14,12 +14,14 @@
 ```sh
 rustup target add wasm32-unknown-unknown
 # Ensure wasm-bindgen-cli matches Cargo.lock, then run from the repository root:
-node scripts/build-wasm.js
+node scripts/build-wasm.js            # Full Quad (@tapirus/wasm) -> pkg/
+node scripts/build-wasm.js --lite     # Ultra-light SQL + Crypto (@tapirus/wasm-lite) -> pkg-lite/
 node scripts/test-wasm.mjs
+node scripts/test-wasm-lite.mjs
 node scripts/test-wasm-package.mjs
 node scripts/test-browser-workspace.mjs
 ```
 
-- `scripts/build-wasm.js` generates `@tapirus/wasm` in `crates/tapirus-wasm/pkg/` (set `WASM_BINDGEN_BIN` for a custom CLI path).
+- `scripts/build-wasm.js` generates `@tapirus/wasm` in `crates/tapirus-wasm/pkg/`, or `@tapirus/wasm-lite` (smaller SQL + transaction + XChaCha20-Poly1305 profile) in `crates/tapirus-wasm/pkg-lite/` when passed `--lite` (set `WASM_BINDGEN_BIN` for a custom CLI path).
 - `node scripts/test-wasm-package.mjs` packs `@tapirus/wasm`, installs the tarball offline into a fresh consumer directory, and validates bound SQL, rollback, and snapshot reopen.
 - `scripts/package-browser-workspace.js` prepares the standalone browser workspace in `studio/public/native` (`--site` prepares the website Studio entry).

@@ -198,6 +198,18 @@ pub fn insert_leaf_cell_raw(
     payload: &[u8],
     overflow_page: Option<PageId>,
 ) -> Result<bool> {
+    let (inserted, _) =
+        insert_leaf_cell_raw_with_overflow(page_buf, page_id, row_id, payload, overflow_page)?;
+    Ok(inserted)
+}
+
+fn insert_leaf_cell_raw_with_overflow(
+    page_buf: &mut [u8],
+    page_id: PageId,
+    row_id: u64,
+    payload: &[u8],
+    overflow_page: Option<PageId>,
+) -> Result<(bool, Option<PageId>)> {
     let page_size = page_buf.len();
     let mut header = read_page_header(page_buf, page_id)?;
 
@@ -210,13 +222,20 @@ pub fn insert_leaf_cell_raw(
 
     let offset = page_header_offset(page_id);
     if header.free_space(page_size, offset) < needed_space {
-        return Ok(false);
+        let old_overflow = if let Ok(idx) = find_leaf_cell_index_by_key(page_buf, page_id, row_id)?
+        {
+            read_leaf_cell(page_buf, page_id, idx)?.overflow_page
+        } else {
+            None
+        };
+        return Ok((false, old_overflow));
     }
 
     // Check if key already exists (update in place or replace)
     let search_res = find_leaf_cell_index_by_key(page_buf, page_id, row_id)?;
-    let insert_idx = match search_res {
+    let (insert_idx, old_overflow) = match search_res {
         Ok(existing_idx) => {
+            let old_ovf = read_leaf_cell(page_buf, page_id, existing_idx)?.overflow_page;
             let ptr_array_start = offset + header.header_size();
             for i in existing_idx..(header.num_cells as usize - 1) {
                 let p1 = ptr_array_start + i * 2;
@@ -225,9 +244,9 @@ pub fn insert_leaf_cell_raw(
                 page_buf[p1 + 1] = page_buf[p2 + 1];
             }
             header.num_cells -= 1;
-            existing_idx
+            (existing_idx, old_ovf)
         }
-        Err(idx) => idx,
+        Err(idx) => (idx, None),
     };
 
     let mut cur_content_offset = if header.cell_content_offset == 0 {
@@ -271,7 +290,7 @@ pub fn insert_leaf_cell_raw(
     header.cell_content_offset = cur_content_offset;
     write_page_header(page_buf, page_id, &header)?;
 
-    Ok(true)
+    Ok((true, old_overflow))
 }
 
 /// Defragment and compact a leaf page, reclaiming all deleted cell space
@@ -665,16 +684,14 @@ impl BTreeStorage {
 
         match page_type {
             PageType::TableLeaf => {
-                let old_overflow = pager.with_page(curr_page_id, |page_buf| {
-                    if let Ok(idx) = find_leaf_cell_index_by_key(page_buf, curr_page_id, key)? {
-                        Ok(read_leaf_cell(page_buf, curr_page_id, idx)?.overflow_page)
-                    } else {
-                        Ok(None)
-                    }
-                })?;
-
-                let inserted = pager.modify_page(curr_page_id, |page_buf| {
-                    insert_leaf_cell_raw(page_buf, curr_page_id, key, &payload, overflow_page)
+                let (inserted, old_overflow) = pager.modify_page(curr_page_id, |page_buf| {
+                    insert_leaf_cell_raw_with_overflow(
+                        page_buf,
+                        curr_page_id,
+                        key,
+                        &payload,
+                        overflow_page,
+                    )
                 })?;
                 if inserted {
                     if let Some(old_ovf) = old_overflow {

@@ -1678,15 +1678,24 @@ fn authorize_sql_statement_ast(
         Statement::WithCte { ctes, main_query } => {
             let mut combined_ctes = cte_names.to_vec();
             for cte in ctes {
+                if cte.recursive {
+                    combined_ctes.push(cte.name.to_ascii_lowercase());
+                }
                 authorize_sql_statement_ast(
                     &cte.query,
                     SqlRoleAccess::ReadOnly,
                     &combined_ctes,
                     allowed_tables,
                 )?;
-                combined_ctes.push(cte.name.to_ascii_lowercase());
+                if !cte.recursive {
+                    combined_ctes.push(cte.name.to_ascii_lowercase());
+                }
             }
             authorize_sql_statement_ast(main_query, access, &combined_ctes, allowed_tables)
+        }
+        Statement::Compound { left, right, .. } => {
+            authorize_sql_statement_ast(left, access, cte_names, allowed_tables)?;
+            authorize_sql_statement_ast(right, access, cte_names, allowed_tables)
         }
         Statement::Explain { statement, .. } => {
             authorize_sql_statement_ast(statement, access, cte_names, allowed_tables)

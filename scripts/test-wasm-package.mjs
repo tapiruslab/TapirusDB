@@ -13,26 +13,31 @@ const npmCli = [process.env.npm_execpath,
   path.resolve(nodeDirectory, '../lib/node_modules/npm/bin/npm-cli.js'),
 ].find(candidate => candidate && fs.existsSync(candidate));
 assert.ok(npmCli, 'npm must be installed alongside Node.js');
+const lite = process.argv.includes('--lite');
+const pkgName = lite ? '@tapirus/wasm-lite' : '@tapirus/wasm';
+const baseName = lite ? 'tapirus_wasm_lite' : 'tapirus_wasm';
+const pkgDir = lite ? 'crates/tapirus-wasm/pkg-lite' : 'crates/tapirus-wasm/pkg';
 const output = path.join(root, 'target/stack-packages/wasm');
 fs.mkdirSync(output, { recursive: true });
 const consumer = fs.mkdtempSync(path.join(os.tmpdir(), 'tapirus-wasm-package-'));
 const env = { ...process.env, npm_config_cache: path.join(consumer, 'cache'), npm_config_update_notifier: 'false' };
 try {
   fs.writeFileSync(path.join(consumer, 'package.json'), JSON.stringify({ name: 'tapirus-wasm-install-check', version: '0.0.0', private: true }));
-  const source = path.join(root, 'crates/tapirus-wasm/pkg');
+  const source = path.join(root, pkgDir);
   const packed = JSON.parse(execFileSync(process.execPath,
     [npmCli, 'pack', '--json', '--pack-destination', output], { cwd: source, env, encoding: 'utf8' }))[0];
-  for (const name of ['LICENSE', 'README.md', 'tapirus_wasm.js', 'tapirus_wasm.d.ts', 'tapirus_wasm_bg.wasm']) {
+  for (const name of ['LICENSE', 'README.md', `${baseName}.js`, `${baseName}.d.ts`, `${baseName}_bg.wasm`]) {
     assert.ok(packed.files.some(file => file.path === name), `WASM tarball must contain ${name}`);
   }
   const tarball = path.join(output, packed.filename);
   execFileSync(process.execPath, [npmCli, 'install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', tarball],
     { cwd: consumer, env, stdio: 'inherit' });
-  const installed = path.join(consumer, 'node_modules/@tapirus/wasm');
-  const { default: init, TapirusWasm } = await import(pathToFileURL(path.join(installed, 'tapirus_wasm.js')));
-  await init({ module_or_path: fs.readFileSync(path.join(installed, 'tapirus_wasm_bg.wasm')) });
+  const installed = path.join(consumer, 'node_modules', ...pkgName.split('/'));
+  const { default: init, TapirusWasm } = await import(pathToFileURL(path.join(installed, `${baseName}.js`)));
+  await init({ module_or_path: fs.readFileSync(path.join(installed, `${baseName}_bg.wasm`)) });
   const expected = JSON.parse(fs.readFileSync(path.join(source, 'package.json'), 'utf8')).version;
   assert.equal(TapirusWasm.version(), expected);
+  assert.equal(TapirusWasm.profile(), lite ? 'lite' : 'quad');
   let db = new TapirusWasm();
   try {
     db.execute('CREATE TABLE packaged (id INTEGER PRIMARY KEY, note TEXT)');

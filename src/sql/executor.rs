@@ -451,6 +451,96 @@ fn collect_and_eq_conditions(expr: &WhereExpr, out: &mut HashMap<String, Value>)
     }
 }
 
+fn collect_and_leaf_predicates(
+    expr: &WhereExpr,
+    out: &mut Vec<crate::sql::parser::WhereCondition>,
+) {
+    match expr {
+        WhereExpr::Condition(c) => out.push(c.clone()),
+        WhereExpr::And(l, r) => {
+            collect_and_leaf_predicates(l, out);
+            collect_and_leaf_predicates(r, out);
+        }
+        _ => {}
+    }
+}
+
+fn combine_compound_rows(
+    left: &mut Vec<Row>,
+    right: Vec<Row>,
+    op: crate::sql::parser::SetOperation,
+) {
+    match op {
+        crate::sql::parser::SetOperation::UnionAll => left.extend(right),
+        crate::sql::parser::SetOperation::Union => {
+            let mut seen = HashSet::with_capacity(left.len() + right.len());
+            left.retain(|r| seen.insert(format!("{:?}", r.values())));
+            for row in right {
+                if seen.insert(format!("{:?}", row.values())) {
+                    left.push(row);
+                }
+            }
+        }
+    }
+}
+
+fn apply_cte_column_names(rows: Vec<Row>, explicit_cols: Option<&[String]>) -> Vec<Row> {
+    let Some(cols) = explicit_cols else {
+        return rows;
+    };
+    rows.into_iter()
+        .map(|r| {
+            if r.values().len() == cols.len() {
+                Row::new(cols.to_vec(), r.values().to_vec())
+            } else {
+                let vals = cols
+                    .iter()
+                    .map(|col| r.get_value(col).cloned().unwrap_or(Value::Null))
+                    .collect();
+                Row::new(cols.to_vec(), vals)
+            }
+        })
+        .collect()
+}
+fn parse_partial_index_where(predicate_sql: &str) -> Option<WhereExpr> {
+    let tokens = crate::sql::lexer::tokenize(predicate_sql).ok()?;
+    let mut cursor = 0usize;
+    let expr = crate::sql::parser::parse_where_expr_public(&tokens, &mut cursor).ok()?;
+    if cursor == tokens.len() {
+        Some(expr)
+    } else {
+        None
+    }
+}
+
+fn partial_index_matches_query(index_def: &IndexDef, query_where: Option<&WhereExpr>) -> bool {
+    let Some(ref pred_sql) = index_def.predicate_sql else {
+        return true;
+    };
+    let Some(q_where) = query_where else {
+        return false;
+    };
+    let Some(pred_expr) = parse_partial_index_where(pred_sql) else {
+        return false;
+    };
+    // Match exact subtree OR every top-level AND condition of the partial predicate inside query ANDs.
+    if pred_expr == *q_where {
+        return true;
+    }
+    let mut pred_conds = Vec::new();
+    let mut q_conds = Vec::new();
+    collect_and_leaf_predicates(&pred_expr, &mut pred_conds);
+    collect_and_leaf_predicates(q_where, &mut q_conds);
+    if pred_conds.is_empty() {
+        return false;
+    }
+    pred_conds.iter().all(|pc| {
+        q_conds.iter().any(|qc| {
+            pc.column.eq_ignore_ascii_case(&qc.column) && pc.op == qc.op && pc.value == qc.value
+        })
+    })
+}
+
 fn extract_fts_match_query(expr: &WhereExpr, table: &str) -> Option<String> {
     match expr {
         WhereExpr::Condition(c)
@@ -510,6 +600,8 @@ pub struct SQLExecutor {
     last_insert_rowid: i64,
     statement_cache: HashMap<String, Statement>,
     statement_cache_order: std::collections::VecDeque<String>,
+    insert_scratch_buf: Vec<u8>,
+    insert_scratch_vals: Vec<Value>,
     /// Thread-safe registry for user-defined functions (UDF) and standard scalar extensions
     pub udf_registry: crate::sql::udf::UdfRegistry,
 }
@@ -535,6 +627,8 @@ impl SQLExecutor {
             last_insert_rowid: 0,
             statement_cache: HashMap::new(),
             statement_cache_order: std::collections::VecDeque::new(),
+            insert_scratch_buf: Vec::with_capacity(256),
+            insert_scratch_vals: Vec::with_capacity(16),
             udf_registry: crate::sql::udf::UdfRegistry::new(),
         })
     }
@@ -566,6 +660,45 @@ impl SQLExecutor {
         Ok(())
     }
 
+    fn partial_index_matches_row(
+        &mut self,
+        pager: &mut Pager,
+        index_def: &IndexDef,
+        row: &Row,
+    ) -> Result<bool> {
+        let Some(ref pred_sql) = index_def.predicate_sql else {
+            return Ok(true);
+        };
+        let tokens = crate::sql::lexer::tokenize(pred_sql)?;
+        let mut cursor = 0usize;
+        let expr = crate::sql::parser::parse_where_expr_public(&tokens, &mut cursor)?;
+        let resolved = self.resolve_where_expr(pager, &expr)?;
+        Ok(row_matches_resolved(row, &resolved))
+    }
+
+    fn find_usable_index_for_column(
+        &self,
+        table: &str,
+        column: &str,
+        query_where: Option<&WhereExpr>,
+    ) -> Option<IndexDef> {
+        let candidates: Vec<&IndexDef> = self
+            .catalog
+            .indexes_for_table(table)
+            .into_iter()
+            .filter(|idx| {
+                idx.column.eq_ignore_ascii_case(column)
+                    && partial_index_matches_query(idx, query_where)
+            })
+            .collect();
+        candidates
+            .iter()
+            .copied()
+            .find(|idx| idx.predicate_sql.is_none())
+            .or_else(|| candidates.into_iter().next())
+            .cloned()
+    }
+
     fn index_add_row(
         &mut self,
         pager: &mut Pager,
@@ -573,6 +706,9 @@ impl SQLExecutor {
         row: &Row,
         row_id: u64,
     ) -> Result<()> {
+        if !self.partial_index_matches_row(pager, index_def, row)? {
+            return Ok(());
+        }
         let cols = index_def.target_columns();
         if let Some((val, _)) = extract_index_key_value(row, &cols) {
             let key = value_to_index_key(&val);
@@ -599,6 +735,9 @@ impl SQLExecutor {
         row: &Row,
         row_id: u64,
     ) -> Result<()> {
+        if !self.partial_index_matches_row(pager, index_def, row)? {
+            return Ok(());
+        }
         let cols = index_def.target_columns();
         if let Some((val, _)) = extract_index_key_value(row, &cols) {
             let key = value_to_index_key(&val);
@@ -647,7 +786,7 @@ impl SQLExecutor {
     }
 
     fn validate_unique_constraints(
-        &self,
+        &mut self,
         pager: &mut Pager,
         table_def: &TableDef,
         candidate_row: &Row,
@@ -656,6 +795,9 @@ impl SQLExecutor {
         // 1. Check any explicit CREATE UNIQUE INDEX using B+Tree bucket O(log N)
         for index_def in self.catalog.indexes() {
             if index_def.unique && index_def.table.eq_ignore_ascii_case(&table_def.name) {
+                if !self.partial_index_matches_row(pager, &index_def, candidate_row)? {
+                    continue;
+                }
                 let cols = index_def.target_columns();
                 if let Some((val, all_non_null)) = extract_index_key_value(candidate_row, &cols)
                     && all_non_null
@@ -2415,6 +2557,8 @@ impl SQLExecutor {
                 column,
                 columns,
                 unique,
+                where_clause,
+                predicate_sql,
             } => {
                 if if_not_exists && self.catalog.index_exists(&name) {
                     return Ok(0);
@@ -2446,18 +2590,28 @@ impl SQLExecutor {
                     }
                 }
 
+                let resolved_predicate = match where_clause {
+                    Some(ref expr) => Some(self.resolve_where_expr(pager, expr)?),
+                    None => None,
+                };
+
                 let index_root = pager.allocate_page()?;
                 let mut index_buf = vec![0u8; pager.page_size()];
                 engine::init_leaf_page(&mut index_buf, index_root);
                 pager.write_page(index_root, &index_buf)?;
 
-                // Populate inverted index posting list with existing rows from table
+                // Populate inverted index posting list with existing rows matching partial predicate (if any)
                 let cells = self.btree.scan(pager, table_def.root_page)?;
                 let all_col_names = table_def.column_names();
                 let mut buckets: HashMap<u64, IndexBucket> = HashMap::new();
 
                 for cell in cells {
                     let full_row = decode_row(&cell.payload, &all_col_names)?;
+                    if let Some(ref pred) = resolved_predicate
+                        && !row_matches_resolved(&full_row, pred)
+                    {
+                        continue;
+                    }
                     if let Some((col_val, all_non_null)) =
                         extract_index_key_value(&full_row, &target_cols)
                     {
@@ -2483,7 +2637,8 @@ impl SQLExecutor {
                     self.btree.insert(pager, index_root, key, &idx_payload)?;
                 }
 
-                let index_def = IndexDef::composite(name, table, target_cols, index_root, unique);
+                let index_def = IndexDef::composite(name, table, target_cols, index_root, unique)
+                    .with_predicate(predicate_sql);
                 self.catalog.create_index(pager, index_def)?;
 
                 Ok(1)
@@ -2806,7 +2961,8 @@ impl SQLExecutor {
             | Statement::GraphShortestPath { .. }
             | Statement::GraphMatch { .. }
             | Statement::GraphAlgorithm { .. }
-            | Statement::WithCte { .. } => Err(Error::SqlSyntax(
+            | Statement::WithCte { .. }
+            | Statement::Compound { .. } => Err(Error::SqlSyntax(
                 "Query statement passed to execute(); use query() instead".into(),
             )),
             Statement::CopyFrom {
@@ -2895,6 +3051,12 @@ impl SQLExecutor {
             }
             Statement::WithCte { ctes, main_query } => {
                 self.query_with_cte(pager, ctes, *main_query)
+            }
+            Statement::Compound { left, op, right } => {
+                let mut left_rows = self.query(pager, *left)?;
+                let right_rows = self.query(pager, *right)?;
+                combine_compound_rows(&mut left_rows, right_rows, op);
+                Ok(left_rows)
             }
             Statement::ExternalScan { func, path, arg } => {
                 #[cfg(feature = "std")]
@@ -3143,7 +3305,10 @@ impl SQLExecutor {
                             .catalog
                             .indexes()
                             .into_iter()
-                            .filter(|idx| idx.table.eq_ignore_ascii_case(&table))
+                            .filter(|idx| {
+                                idx.table.eq_ignore_ascii_case(&table)
+                                    && partial_index_matches_query(idx, where_clause.as_ref())
+                            })
                             .filter_map(|idx| {
                                 let cols = idx.target_columns();
                                 if cols.len() >= 2
@@ -3229,62 +3394,72 @@ impl SQLExecutor {
                     && join.is_none()
                     && order_by.is_none()
                     && group_by.is_none()
-                    && let Some(WhereExpr::Condition(cond)) = &where_clause
-                    && cond.op == BinaryOp::Equals
-                    && let Some(index_def) = self
-                        .catalog
-                        .find_index_for_column(&table, &cond.column)
-                        .cloned()
+                    && let Some(ref w_expr) = where_clause
                 {
-                    let optimizer = crate::sql::planner::CostOptimizer::new();
-                    let default_stats = crate::sql::planner::TableStats::new(&table, 100, 10);
-                    let stats = self
-                        .catalog
-                        .get_table_stats(&table)
-                        .unwrap_or(&default_stats);
-                    let sel = stats.estimate_selectivity(&cond.column, true);
-                    let index_cost =
-                        optimizer.estimate_index_scan(stats, &index_def.name, &cond.column, sel);
-                    let seq_cost = optimizer.estimate_seq_scan(stats, sel);
+                    let mut eq_conds = HashMap::new();
+                    collect_and_eq_conditions(w_expr, &mut eq_conds);
+                    let chosen_single = eq_conds.iter().find_map(|(col_key, val)| {
+                        self.find_usable_index_for_column(&table, col_key, Some(w_expr))
+                            .map(|idx| (col_key.clone(), val.clone(), idx))
+                    });
+                    if let Some((cond_col, cond_val, index_def)) = chosen_single {
+                        let optimizer = crate::sql::planner::CostOptimizer::new();
+                        let default_stats = crate::sql::planner::TableStats::new(&table, 100, 10);
+                        let stats = self
+                            .catalog
+                            .get_table_stats(&table)
+                            .unwrap_or(&default_stats);
+                        let sel = stats.estimate_selectivity(&cond_col, true);
+                        let index_cost =
+                            optimizer.estimate_index_scan(stats, &index_def.name, &cond_col, sel);
+                        let seq_cost = optimizer.estimate_seq_scan(stats, sel);
 
-                    // Execute Index Scan if Cost-Based Optimizer determines lower or equal cost
-                    if index_cost.total_cost <= seq_cost.total_cost {
-                        let key = value_to_index_key(&cond.value);
-                        let mut matched_row_ids = Vec::new();
-                        if let Some(payload) = self.btree.search(pager, index_def.root_page, key)?
-                            && let Ok(bucket) = serde_json::from_slice::<IndexBucket>(&payload)
-                            && let Some(rids) = bucket.get_row_ids(&cond.value)
-                        {
-                            matched_row_ids.extend_from_slice(rids);
-                        }
-                        let output_col_names = if columns.is_empty() {
-                            all_col_names.clone()
-                        } else {
-                            columns.clone()
-                        };
-                        let mut result_rows = Vec::new();
-                        let skip_count = offset.unwrap_or(0);
-                        let mut skipped = 0;
-                        for rid in matched_row_ids {
-                            if let Some(payload) = self.btree.search(pager, root_page, rid)? {
-                                let full_row = decode_row(&payload, &all_col_names)?;
-                                let projected = self.project_row(&full_row, &output_col_names)?;
-                                if distinct && result_rows.contains(&projected) {
-                                    continue;
-                                }
-                                if skipped < skip_count {
-                                    skipped += 1;
-                                    continue;
-                                }
-                                result_rows.push(projected);
-                                if let Some(lim) = limit
-                                    && result_rows.len() >= lim
-                                {
-                                    break;
+                        // Execute Index Scan if Cost-Based Optimizer determines lower or equal cost
+                        if index_cost.total_cost <= seq_cost.total_cost {
+                            let key = value_to_index_key(&cond_val);
+                            let mut matched_row_ids = Vec::new();
+                            if let Some(payload) =
+                                self.btree.search(pager, index_def.root_page, key)?
+                                && let Ok(bucket) = serde_json::from_slice::<IndexBucket>(&payload)
+                                && let Some(rids) = bucket.get_row_ids(&cond_val)
+                            {
+                                matched_row_ids.extend_from_slice(rids);
+                            }
+                            let output_col_names = if columns.is_empty() {
+                                all_col_names.clone()
+                            } else {
+                                columns.clone()
+                            };
+                            let mut result_rows = Vec::new();
+                            let skip_count = offset.unwrap_or(0);
+                            let mut skipped = 0;
+                            for rid in matched_row_ids {
+                                if let Some(payload) = self.btree.search(pager, root_page, rid)? {
+                                    let full_row = decode_row(&payload, &all_col_names)?;
+                                    if let Some(ref r_expr) = resolved_where
+                                        && !row_matches_resolved(&full_row, r_expr)
+                                    {
+                                        continue;
+                                    }
+                                    let projected =
+                                        self.project_row(&full_row, &output_col_names)?;
+                                    if distinct && result_rows.contains(&projected) {
+                                        continue;
+                                    }
+                                    if skipped < skip_count {
+                                        skipped += 1;
+                                        continue;
+                                    }
+                                    result_rows.push(projected);
+                                    if let Some(lim) = limit
+                                        && result_rows.len() >= lim
+                                    {
+                                        break;
+                                    }
                                 }
                             }
+                            return Ok(result_rows);
                         }
-                        return Ok(result_rows);
                     }
                 }
 
@@ -4558,10 +4733,11 @@ impl SQLExecutor {
                     let mut used_index = false;
                     if let ResolvedWhereExpr::Condition(cond) = &resolved
                         && cond.op == BinaryOp::Equals
-                        && let Some(index_def) = self
-                            .catalog
-                            .find_index_for_column(&table, &cond.column)
-                            .cloned()
+                        && let Some(index_def) = self.find_usable_index_for_column(
+                            &table,
+                            &cond.column,
+                            where_clause.as_ref(),
+                        )
                     {
                         let key = value_to_index_key(&cond.value);
                         if let Some(payload) = self.btree.search(pager, index_def.root_page, key)?
@@ -5266,7 +5442,10 @@ impl SQLExecutor {
                                 .catalog
                                 .indexes()
                                 .into_iter()
-                                .filter(|idx| idx.table.eq_ignore_ascii_case(&table))
+                                .filter(|idx| {
+                                    idx.table.eq_ignore_ascii_case(&table)
+                                        && partial_index_matches_query(idx, where_clause.as_ref())
+                                })
                                 .filter(|idx| {
                                     let cols = idx.target_columns();
                                     cols.len() >= 2
@@ -5292,28 +5471,37 @@ impl SQLExecutor {
                             id += 1;
                         }
                     }
-                    if !is_index_search
-                        && let Some(WhereExpr::Condition(cond)) = &where_clause
-                        && cond.op == BinaryOp::Equals
-                        && let Some(idx_def) =
-                            self.catalog.find_index_for_column(&table, &cond.column)
-                    {
-                        is_index_search = true;
-                        let sel = stats.estimate_selectivity(&cond.column, true);
-                        let cost =
-                            optimizer.estimate_index_scan(stats, &idx_def.name, &cond.column, sel);
-                        rows.push(Row::new(
-                            cols.clone(),
-                            vec![
-                                Value::Integer(id),
-                                Value::Integer(0),
-                                Value::Text(format!(
-                                    "SEARCH TABLE {} USING INDEX {} ({} = {:?}) {}",
-                                    table, idx_def.name, cond.column, cond.value, cost
-                                )),
-                            ],
-                        ));
-                        id += 1;
+                    if !is_index_search && let Some(ref w_expr) = where_clause {
+                        let mut eq_conds = HashMap::new();
+                        collect_and_eq_conditions(w_expr, &mut eq_conds);
+                        if let Some((col_key, col_val, idx_def)) =
+                            eq_conds.iter().find_map(|(c, v)| {
+                                self.find_usable_index_for_column(&table, c, Some(w_expr))
+                                    .map(|idx| (c.clone(), v.clone(), idx))
+                            })
+                        {
+                            is_index_search = true;
+                            let sel = stats.estimate_selectivity(&col_key, true);
+                            let cost =
+                                optimizer.estimate_index_scan(stats, &idx_def.name, &col_key, sel);
+                            let idx_kind = if idx_def.predicate_sql.is_some() {
+                                "PARTIAL INDEX"
+                            } else {
+                                "INDEX"
+                            };
+                            rows.push(Row::new(
+                                cols.clone(),
+                                vec![
+                                    Value::Integer(id),
+                                    Value::Integer(0),
+                                    Value::Text(format!(
+                                        "SEARCH TABLE {} USING {} {} ({} = {:?}) {}",
+                                        table, idx_kind, idx_def.name, col_key, col_val, cost
+                                    )),
+                                ],
+                            ));
+                            id += 1;
+                        }
                     }
                 }
 
@@ -5427,7 +5615,7 @@ impl SQLExecutor {
         Ok(rows)
     }
 
-    /// Execute a query with Common Table Expressions (WITH cte AS (...) SELECT ...)
+    /// Execute a query with Common Table Expressions (WITH [RECURSIVE] cte AS (...) SELECT ...)
     fn query_with_cte(
         &mut self,
         pager: &mut Pager,
@@ -5437,38 +5625,114 @@ impl SQLExecutor {
         let mut cte_store: HashMap<String, Vec<Row>> = HashMap::new();
 
         for cte in ctes {
-            // Check if cte.query is a Select referencing previous CTEs
-            let rows = match *cte.query {
-                Statement::Select { ref table, .. } if cte_store.contains_key(table) => {
-                    self.query_on_ephemeral_rows(pager, *cte.query, &cte_store)?
-                }
-                stmt => self.query(pager, stmt)?,
-            };
-
-            let mapped_rows = if let Some(ref explicit_cols) = cte.columns {
-                rows.into_iter()
-                    .map(|r| {
-                        let mut vals = Vec::new();
-                        for col in explicit_cols {
-                            vals.push(r.get_value(col).cloned().unwrap_or(Value::Null));
-                        }
-                        Row::new(explicit_cols.clone(), vals)
-                    })
-                    .collect()
+            let cte_key = cte.name.to_ascii_lowercase();
+            let mapped_rows = if cte.recursive
+                && let Statement::Compound { left, op, right } = *cte.query
+            {
+                self.execute_recursive_cte(
+                    pager,
+                    &cte_key,
+                    cte.columns.as_deref(),
+                    *left,
+                    op,
+                    *right,
+                    &cte_store,
+                )?
             } else {
-                rows
+                let rows = self.eval_cte_statement(pager, *cte.query, &cte_store)?;
+                apply_cte_column_names(rows, cte.columns.as_deref())
             };
 
-            cte_store.insert(cte.name, mapped_rows);
+            cte_store.insert(cte_key, mapped_rows);
         }
 
         // Execute main query against ephemeral CTE store
-        match main_query {
-            Statement::Select { ref table, .. } if cte_store.contains_key(table) => {
-                self.query_on_ephemeral_rows(pager, main_query, &cte_store)
+        self.eval_cte_statement(pager, main_query, &cte_store)
+    }
+
+    fn eval_cte_statement(
+        &mut self,
+        pager: &mut Pager,
+        stmt: Statement,
+        cte_store: &HashMap<String, Vec<Row>>,
+    ) -> Result<Vec<Row>> {
+        match stmt {
+            Statement::Compound { left, op, right } => {
+                let mut left_rows = self.eval_cte_statement(pager, *left, cte_store)?;
+                let right_rows = self.eval_cte_statement(pager, *right, cte_store)?;
+                combine_compound_rows(&mut left_rows, right_rows, op);
+                Ok(left_rows)
             }
-            stmt => self.query(pager, stmt),
+            Statement::Select {
+                ref table,
+                ref join,
+                ..
+            } if cte_store.contains_key(&table.to_ascii_lowercase())
+                || join
+                    .as_ref()
+                    .is_some_and(|j| cte_store.contains_key(&j.table.to_ascii_lowercase())) =>
+            {
+                self.query_on_ephemeral_rows(pager, stmt, cte_store)
+            }
+            other => self.query(pager, other),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_recursive_cte(
+        &mut self,
+        pager: &mut Pager,
+        cte_key: &str,
+        explicit_cols: Option<&[String]>,
+        anchor: Statement,
+        op: crate::sql::parser::SetOperation,
+        recursive_step: Statement,
+        outer_store: &HashMap<String, Vec<Row>>,
+    ) -> Result<Vec<Row>> {
+        const MAX_RECURSIVE_ITERATIONS: usize = 10_000;
+        let anchor_rows = apply_cte_column_names(
+            self.eval_cte_statement(pager, anchor, outer_store)?,
+            explicit_cols,
+        );
+        let mut accumulated = Vec::new();
+        let mut seen: Option<HashSet<String>> =
+            (op == crate::sql::parser::SetOperation::Union).then(HashSet::new);
+        let mut working = Vec::with_capacity(anchor_rows.len());
+        for row in anchor_rows {
+            if let Some(ref mut set) = seen
+                && !set.insert(format!("{:?}", row.values()))
+            {
+                continue;
+            }
+            accumulated.push(row.clone());
+            working.push(row);
+        }
+
+        let mut step_store = outer_store.clone();
+        let mut iterations = 0usize;
+        while !working.is_empty() {
+            iterations += 1;
+            if iterations > MAX_RECURSIVE_ITERATIONS {
+                return Err(Error::SqlSyntax(format!(
+                    "WITH RECURSIVE '{cte_key}' exceeded maximum recursion depth ({MAX_RECURSIVE_ITERATIONS})"
+                )));
+            }
+            step_store.insert(cte_key.to_string(), working);
+            let raw_next = self.eval_cte_statement(pager, recursive_step.clone(), &step_store)?;
+            let next_mapped = apply_cte_column_names(raw_next, explicit_cols);
+            let mut next_working = Vec::new();
+            for row in next_mapped {
+                if let Some(ref mut set) = seen
+                    && !set.insert(format!("{:?}", row.values()))
+                {
+                    continue;
+                }
+                accumulated.push(row.clone());
+                next_working.push(row);
+            }
+            working = next_working;
+        }
+        Ok(accumulated)
     }
 
     /// Evaluate a SELECT statement against in-memory ephemeral CTE tables
@@ -5492,16 +5756,37 @@ impl SQLExecutor {
             ..
         } = stmt
         {
-            let base_rows = cte_store
-                .get(&table)
-                .cloned()
-                .ok_or_else(|| Error::TableNotFound(table.clone()))?;
+            let base_rows = if table.is_empty() {
+                vec![Row::new(Vec::new(), Vec::new())]
+            } else if let Some(cte_rows) = cte_store.get(&table.to_ascii_lowercase()) {
+                cte_rows.clone()
+            } else if self.catalog.table_exists(&table) {
+                self.query(
+                    pager,
+                    Statement::Select {
+                        distinct: false,
+                        columns: Vec::new(),
+                        table: table.clone(),
+                        from_subquery: None,
+                        join: None,
+                        where_clause: None,
+                        group_by: None,
+                        having: None,
+                        order_by: None,
+                        limit: None,
+                        offset: None,
+                        as_of_timestamp: None,
+                    },
+                )?
+            } else {
+                return Err(Error::TableNotFound(table.clone()));
+            };
 
             let mut rows = base_rows;
 
             // Handle optional JOIN
             if let Some(ref j) = join {
-                let right_rows = if let Some(r_cte) = cte_store.get(&j.table) {
+                let right_rows = if let Some(r_cte) = cte_store.get(&j.table.to_ascii_lowercase()) {
                     r_cte.clone()
                 } else if self.catalog.table_exists(&j.table) {
                     self.query(
@@ -5599,20 +5884,11 @@ impl SQLExecutor {
 
                 return Ok(vec![Row::new(agg_cols, agg_vals)]);
             } else if !columns.is_empty() && columns[0] != "*" {
-                // Projection
+                // Full expression projection (supports arithmetic, scalar UDFs, JSON paths, aliases)
                 rows = rows
-                    .into_iter()
-                    .map(|r| {
-                        let mut vals = Vec::new();
-                        let mut out_cols = Vec::new();
-                        for c in &columns {
-                            let (raw, alias) = parse_col_and_alias(c);
-                            out_cols.push(alias.unwrap_or(raw).to_string());
-                            vals.push(r.get_value(raw).cloned().unwrap_or(Value::Null));
-                        }
-                        Row::new(out_cols, vals)
-                    })
-                    .collect();
+                    .iter()
+                    .map(|r| self.project_row(r, &columns))
+                    .collect::<Result<Vec<Row>>>()?;
             }
 
             // Apply ORDER BY (after GROUP BY / projection so aliases and aggregate names resolve)
@@ -6043,8 +6319,148 @@ impl SQLExecutor {
         table: &str,
         columns: Option<&[String]>,
         values: &[Value],
-        _encode_buf: Option<&mut Vec<u8>>,
+        encode_buf: Option<&mut Vec<u8>>,
     ) -> Result<(usize, Vec<Row>)> {
+        if let Some(table_def) = self.catalog.get_table(table) {
+            let has_complex = self.catalog.has_table_triggers(table)
+                || self.catalog.has_table_indexes(table)
+                || !table_def.check_constraints.is_empty()
+                || (self.foreign_keys_enabled && !collect_table_foreign_keys(table_def).is_empty())
+                || table_def.columns.iter().any(|c| c.unique && !c.primary_key)
+                || !table_def.unique_constraints.is_empty()
+                || table_def.system_versioning
+                || self.default_system_versioning
+                || table_def.fts_config.is_some()
+                || table_def.vector_column().is_some();
+
+            if !has_complex {
+                let root_page = table_def.root_page;
+                let num_cols = table_def.columns.len();
+                let pk_idx = table_def.primary_key_index();
+                let current_next_row_id = table_def.next_row_id;
+
+                self.insert_scratch_vals.clear();
+                if let Some(cols) = columns {
+                    if cols.len() != values.len() {
+                        return Err(Error::SqlSyntax(
+                            "Column count does not match value count in INSERT".into(),
+                        ));
+                    }
+                    for c in &table_def.columns {
+                        self.insert_scratch_vals.push(
+                            c.default_value
+                                .as_ref()
+                                .map(DefaultValue::materialize)
+                                .unwrap_or(Value::Null),
+                        );
+                    }
+                    for (c_name, val) in cols.iter().zip(values.iter()) {
+                        let idx = table_def
+                            .column_index(c_name)
+                            .ok_or_else(|| Error::Corrupted(format!("Unknown column: {c_name}")))?;
+                        self.insert_scratch_vals[idx] = val.clone();
+                    }
+                } else {
+                    if values.len() != num_cols {
+                        return Err(Error::SqlSyntax(format!(
+                            "INSERT requires {} values, got {}",
+                            num_cols,
+                            values.len()
+                        )));
+                    }
+                    self.insert_scratch_vals.extend(values.iter().cloned());
+                }
+
+                for (col_idx, col_def) in table_def.columns.iter().enumerate() {
+                    let orig =
+                        std::mem::replace(&mut self.insert_scratch_vals[col_idx], Value::Null);
+                    let coerced = col_def.data_type.coerce_value(orig).map_err(|e| match e {
+                        Error::DimensionMismatch(exp, got) => Error::DimensionMismatch(exp, got),
+                        Error::ConstraintViolation(msg) => {
+                            Error::ConstraintViolation(format!("{table}.{}: {msg}", col_def.name))
+                        }
+                        other => other,
+                    })?;
+                    if col_def.not_null && coerced.is_null() {
+                        return Err(Error::ConstraintViolation(format!(
+                            "NOT NULL constraint failed: {table}.{}",
+                            col_def.name
+                        )));
+                    }
+                    self.insert_scratch_vals[col_idx] = coerced;
+                }
+
+                let mut next_rid = current_next_row_id;
+                let (row_id, need_pk_check) = if let Some(idx) = pk_idx {
+                    match &self.insert_scratch_vals[idx] {
+                        Value::Integer(i) => {
+                            let id_val = *i as u64;
+                            if id_val >= next_rid {
+                                next_rid = id_val + 1;
+                                (id_val, false)
+                            } else {
+                                (id_val, true)
+                            }
+                        }
+                        Value::Null => {
+                            let rid = next_rid;
+                            next_rid += 1;
+                            self.insert_scratch_vals[idx] = Value::Integer(rid as i64);
+                            (rid, false)
+                        }
+                        _ => {
+                            let rid = next_rid;
+                            next_rid += 1;
+                            (rid, false)
+                        }
+                    }
+                } else {
+                    let rid = next_rid;
+                    next_rid += 1;
+                    (rid, false)
+                };
+
+                if need_pk_check && self.btree.search(pager, root_page, row_id)?.is_some() {
+                    let pk_col_name = pk_idx
+                        .map(|i| table_def.columns[i].name.as_str())
+                        .unwrap_or("id");
+                    return Err(Error::ConstraintViolation(format!(
+                        "UNIQUE constraint failed: {table}.{pk_col_name} (key {row_id} already exists)"
+                    )));
+                }
+
+                let buf = match encode_buf {
+                    Some(b) => b,
+                    None => &mut self.insert_scratch_buf,
+                };
+                encode_row_into(&self.insert_scratch_vals, buf);
+
+                let own_tx = !pager.is_in_transaction();
+                if own_tx {
+                    pager.begin_transaction()?;
+                }
+                if let Err(err) = self.btree.insert(pager, root_page, row_id, buf) {
+                    if own_tx && pager.is_in_transaction() {
+                        let _ = pager.rollback_transaction();
+                    }
+                    return Err(err);
+                }
+                if own_tx && let Err(err) = pager.commit_transaction() {
+                    if pager.is_in_transaction() {
+                        let _ = pager.rollback_transaction();
+                    }
+                    let _ = self.reload_from_pager(pager);
+                    return Err(err);
+                }
+
+                if let Some(table_def_mut) = self.catalog.get_table_mut(table) {
+                    table_def_mut.next_row_id = next_rid;
+                }
+                self.last_insert_rowid = row_id as i64;
+                return Ok((1, Vec::new()));
+            }
+        }
+
         let statement = Statement::Insert {
             table: table.to_owned(),
             columns: columns.map(<[String]>::to_vec),
@@ -7247,10 +7663,7 @@ fn eval_func_arg(
     if let Ok(f) = trimmed.parse::<f64>() {
         return Ok(Value::Real(f));
     }
-    if trimmed.contains('(')
-        && trimmed.ends_with(')')
-        && let Some(val) = try_eval_scalar_expr(row, trimmed, udfs)?
-    {
+    if let Some(val) = try_eval_scalar_expr(row, trimmed, udfs)? {
         return Ok(val);
     }
     if let Some(val) = row
@@ -7262,13 +7675,207 @@ fn eval_func_arg(
     Ok(Value::Text(trimmed.to_string()))
 }
 
-/// Try evaluating a scalar expression (built-in SQL function, custom UDF, or TAP function)
+fn strip_outer_parens(expr: &str) -> &str {
+    let mut s = expr.trim();
+    while s.starts_with('(') && s.ends_with(')') {
+        let mut depth = 0usize;
+        let mut in_sq = false;
+        let mut in_dq = false;
+        let mut wraps_entire = true;
+        for (idx, ch) in s.char_indices() {
+            match ch {
+                '\'' if !in_dq => in_sq = !in_sq,
+                '"' if !in_sq => in_dq = !in_dq,
+                '(' if !in_sq && !in_dq => depth += 1,
+                ')' if !in_sq && !in_dq => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 && idx + 1 < s.len() {
+                        wraps_entire = false;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if wraps_entire && depth == 0 {
+            s = s[1..s.len() - 1].trim();
+        } else {
+            break;
+        }
+    }
+    s
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum InfixOp {
+    Concat,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+fn find_top_level_infix(expr: &str) -> Option<(usize, usize, InfixOp)> {
+    let bytes = expr.as_bytes();
+    let mut depth_paren = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut in_sq = false;
+    let mut in_dq = false;
+
+    let mut tier1: Option<(usize, usize, InfixOp)> = None; // ||
+    let mut tier2: Option<(usize, usize, InfixOp)> = None; // +, -
+    let mut tier3: Option<(usize, usize, InfixOp)> = None; // *, /, %
+
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'\'' if !in_dq => in_sq = !in_sq,
+            b'"' if !in_sq => in_dq = !in_dq,
+            b'(' if !in_sq && !in_dq => depth_paren += 1,
+            b')' if !in_sq && !in_dq => depth_paren = depth_paren.saturating_sub(1),
+            b'[' if !in_sq && !in_dq => depth_bracket += 1,
+            b']' if !in_sq && !in_dq => depth_bracket = depth_bracket.saturating_sub(1),
+            _ if !in_sq && !in_dq && depth_paren == 0 && depth_bracket == 0 => {
+                if b == b'|' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
+                    tier1 = Some((i, 2, InfixOp::Concat));
+                    i += 2;
+                    continue;
+                } else if b == b'+' {
+                    tier2 = Some((i, 1, InfixOp::Add));
+                } else if b == b'-' {
+                    let prev_non_ws = expr[..i].trim_end().as_bytes().last().copied();
+                    let is_binary = matches!(
+                        prev_non_ws,
+                        Some(c) if c.is_ascii_alphanumeric() || matches!(c, b'_' | b')' | b'\'' | b'"')
+                    );
+                    if is_binary {
+                        tier2 = Some((i, 1, InfixOp::Sub));
+                    }
+                } else if b == b'*' && !expr[..i].trim().is_empty() {
+                    tier3 = Some((i, 1, InfixOp::Mul));
+                } else if b == b'/' {
+                    tier3 = Some((i, 1, InfixOp::Div));
+                } else if b == b'%' {
+                    tier3 = Some((i, 1, InfixOp::Mod));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    tier1.or(tier2).or(tier3)
+}
+
+fn eval_infix_expr(
+    row: &Row,
+    expr: &str,
+    udfs: Option<&crate::sql::udf::UdfRegistry>,
+) -> Result<Option<Value>> {
+    let trimmed = strip_outer_parens(expr);
+    let Some((pos, len, op)) = find_top_level_infix(trimmed) else {
+        return Ok(None);
+    };
+    let lhs_raw = trimmed[..pos].trim();
+    let rhs_raw = trimmed[pos + len..].trim();
+    if lhs_raw.is_empty() || rhs_raw.is_empty() {
+        return Ok(None);
+    }
+    let lhs = eval_func_arg(row, lhs_raw, udfs)?;
+    let rhs = eval_func_arg(row, rhs_raw, udfs)?;
+
+    if matches!(lhs, Value::Null) || matches!(rhs, Value::Null) {
+        return Ok(Some(Value::Null));
+    }
+
+    let result = match op {
+        InfixOp::Concat => Value::Text(format!(
+            "{}{}",
+            value_to_concat_str(&lhs),
+            value_to_concat_str(&rhs)
+        )),
+        InfixOp::Add => match (lhs, rhs) {
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_add(b)
+                .map(Value::Integer)
+                .unwrap_or_else(|| Value::Real(a as f64 + b as f64)),
+            (a, b) => match (as_f64(&a), as_f64(&b)) {
+                (Some(x), Some(y)) => Value::Real(x + y),
+                _ => Value::Null,
+            },
+        },
+        InfixOp::Sub => match (lhs, rhs) {
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_sub(b)
+                .map(Value::Integer)
+                .unwrap_or_else(|| Value::Real(a as f64 - b as f64)),
+            (a, b) => match (as_f64(&a), as_f64(&b)) {
+                (Some(x), Some(y)) => Value::Real(x - y),
+                _ => Value::Null,
+            },
+        },
+        InfixOp::Mul => match (lhs, rhs) {
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_mul(b)
+                .map(Value::Integer)
+                .unwrap_or_else(|| Value::Real(a as f64 * b as f64)),
+            (a, b) => match (as_f64(&a), as_f64(&b)) {
+                (Some(x), Some(y)) => Value::Real(x * y),
+                _ => Value::Null,
+            },
+        },
+        InfixOp::Div => match (lhs, rhs) {
+            (Value::Integer(_), Value::Integer(0)) => Value::Null,
+            (Value::Integer(a), Value::Integer(b)) => Value::Integer(a / b),
+            (a, b) => match (as_f64(&a), as_f64(&b)) {
+                (Some(_), Some(0.0)) => Value::Null,
+                (Some(x), Some(y)) => Value::Real(x / y),
+                _ => Value::Null,
+            },
+        },
+        InfixOp::Mod => match (lhs, rhs) {
+            (Value::Integer(_), Value::Integer(0)) => Value::Null,
+            (Value::Integer(a), Value::Integer(b)) => Value::Integer(a % b),
+            (a, b) => match (as_f64(&a), as_f64(&b)) {
+                (Some(_), Some(0.0)) => Value::Null,
+                (Some(x), Some(y)) => Value::Real(x % y),
+                _ => Value::Null,
+            },
+        },
+    };
+    Ok(Some(result))
+}
+
+fn as_f64(val: &Value) -> Option<f64> {
+    match val {
+        Value::Integer(i) => Some(*i as f64),
+        Value::Real(f) => Some(*f),
+        Value::Text(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn value_to_concat_str(val: &Value) -> String {
+    match val {
+        Value::Text(s) => s.clone(),
+        Value::Integer(i) => i.to_string(),
+        Value::Real(f) => f.to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Try evaluating a scalar expression (infix arithmetic/concat, built-in SQL function, custom UDF, or TAP function)
 pub fn try_eval_scalar_expr(
     row: &Row,
     expr: &str,
     udfs: Option<&crate::sql::udf::UdfRegistry>,
 ) -> Result<Option<Value>> {
-    let trimmed = expr.trim();
+    let trimmed = strip_outer_parens(expr);
+    if let Some(infix_val) = eval_infix_expr(row, trimmed, udfs)? {
+        return Ok(Some(infix_val));
+    }
     if !trimmed.contains('(') || !trimmed.ends_with(')') {
         return Ok(None);
     }

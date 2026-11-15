@@ -91,6 +91,16 @@ impl TapirusWasm {
         tapirus::VERSION.to_string()
     }
 
+    /// Return the active WASM build profile (`"quad"` or `"lite"`).
+    #[wasm_bindgen]
+    pub fn profile() -> String {
+        if cfg!(feature = "quad") {
+            "quad".to_string()
+        } else {
+            "lite".to_string()
+        }
+    }
+
     /// Whether an explicit SQL transaction is active (not yet exportable).
     pub fn is_in_transaction(&self) -> bool {
         self.conn.is_in_transaction()
@@ -142,6 +152,7 @@ impl TapirusWasm {
     }
 
     /// Persist a document with an optional external model embedding and namespace/session.
+    #[cfg(feature = "quad")]
     pub fn store_memory_json(&self, document_json: &str) -> Result<u64, JsValue> {
         let document = serde_json::from_str::<tapirus::MemoryDocument>(document_json)
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
@@ -151,6 +162,7 @@ impl TapirusWasm {
     }
 
     /// Hybrid retrieval with source IDs/text and separate lexical and vector scores.
+    #[cfg(feature = "quad")]
     pub fn search_memories_json(&self, search_json: &str) -> Result<String, JsValue> {
         let search = serde_json::from_str::<tapirus::MemorySearch>(search_json)
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
@@ -162,6 +174,7 @@ impl TapirusWasm {
     }
 
     /// Source lifecycle, configuration, retrieval diagnostics and storage health.
+    #[cfg(feature = "quad")]
     pub fn memory_request_json(&self, operation: &str, payload: &str) -> Result<String, JsValue> {
         self.conn
             .memory_request_json(operation, payload)
@@ -169,6 +182,7 @@ impl TapirusWasm {
     }
 
     /// Delete a persisted source, propagating storage errors.
+    #[cfg(feature = "quad")]
     pub fn forget_memory(&self, id: u64) -> Result<bool, JsValue> {
         self.conn
             .memory_forget_checked(id)
@@ -176,6 +190,7 @@ impl TapirusWasm {
     }
 
     /// Store a memory in WASM environment (AI Agent Memory)
+    #[cfg(feature = "quad")]
     #[wasm_bindgen]
     pub fn memory_remember(
         &self,
@@ -194,6 +209,7 @@ impl TapirusWasm {
     }
 
     /// Convenient 1-line memory storage in WASM
+    #[cfg(feature = "quad")]
     #[wasm_bindgen]
     pub fn remember(&self, content: &str) -> Result<u64, JsValue> {
         self.conn
@@ -202,6 +218,7 @@ impl TapirusWasm {
     }
 
     /// Convenient 1-line memory recall in WASM (returns JSON string)
+    #[cfg(feature = "quad")]
     #[wasm_bindgen]
     pub fn recall_json(&self, query: &str, limit: usize) -> Result<String, JsValue> {
         let results = self.conn.recall(query, limit);
@@ -209,12 +226,14 @@ impl TapirusWasm {
     }
 
     /// Return prompt-ready context string formatted for LLM prompts in WASM
+    #[cfg(feature = "quad")]
     #[wasm_bindgen]
     pub fn recall_prompt(&self, query: &str, limit: usize) -> String {
         self.conn.recall_prompt(query, limit)
     }
 
     /// Recall memories via hybrid BM25 + Recency scoring in WASM
+    #[cfg(feature = "quad")]
     #[wasm_bindgen]
     pub fn memory_recall_json(&self, query: &str, limit: usize) -> Result<String, JsValue> {
         let filter = tapirus::memory::MemoryRecallFilter::default();
@@ -223,6 +242,7 @@ impl TapirusWasm {
     }
 
     /// Recall memories via Reciprocal Rank Fusion (RRF) in WASM
+    #[cfg(feature = "quad")]
     #[wasm_bindgen]
     pub fn memory_recall_rrf_json(
         &self,
@@ -235,6 +255,7 @@ impl TapirusWasm {
     }
 
     /// Execute GraphRAG query with micro-hop traversal and RRF fusion in WASM
+    #[cfg(feature = "quad")]
     #[wasm_bindgen]
     pub fn graph_rag_query_json(
         &self,
@@ -301,6 +322,7 @@ impl TapirusWasm {
 
     /// Quantize a high-dimensional vector using RaBitQ 1-bit or 2-bit quantization in WebAssembly.
     /// Returns JSON containing bits, norm, dimensions, and compression ratio.
+    #[cfg(feature = "quad")]
     #[wasm_bindgen]
     pub fn rabitq_quantize_json(
         &self,
@@ -314,6 +336,7 @@ impl TapirusWasm {
     }
 
     /// Classify text using the TAP heuristic engine in WASM.
+    #[cfg(feature = "quad")]
     #[wasm_bindgen]
     pub fn tap_classify(&self, text: &str, candidates_csv: &str) -> Result<String, JsValue> {
         let candidates: Vec<&str> = candidates_csv
@@ -330,6 +353,7 @@ impl TapirusWasm {
     }
 
     /// Verify hypothesis against premise using TAP NLI in WASM
+    #[cfg(feature = "quad")]
     #[wasm_bindgen]
     pub fn tap_verify(&self, premise: &str, hypothesis: &str) -> Result<String, JsValue> {
         let res = self
