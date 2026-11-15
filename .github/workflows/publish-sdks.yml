@@ -36,15 +36,16 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   publication-tag:
-    name: Require a version tag before publishing
-    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run && (inputs.publish_pypi || inputs.publish_npm || inputs.publish_wasm)
+    name: Require a version tag and public release before publishing
+    needs: [verify, build-python-wheels, build-python-sdist, package-nodejs, package-wasm]
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && !inputs.dry_run && (inputs.publish_pypi || inputs.publish_npm || inputs.publish_wasm)) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - name: Validate publication source
+      - name: Validate publication source and wait for GitHub Release
         env:
           RELEASE_REF: ${{ github.ref }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -53,9 +54,20 @@ jobs:
             refs/tags/v*) ;;
             *) echo 'Publication requires a version tag. Use dry_run for branches.' >&2; exit 1 ;;
           esac
-          python scripts/check-release-version.py --tag "${RELEASE_REF#refs/tags/}"
-          draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/${RELEASE_REF#refs/tags/}" --jq .draft)"
-          [ "$draft" = false ] || { echo 'SDK publication requires a completed public GitHub release.' >&2; exit 1; }
+          TAG="${RELEASE_REF#refs/tags/}"
+          python scripts/check-release-version.py --tag "$TAG"
+          # Release Pre-built Binaries runs in parallel on v* tags; wait up to 20 min for it to finalize.
+          for attempt in $(seq 1 80); do
+            draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .draft 2>/dev/null || true)"
+            if [ "$draft" = false ]; then
+              echo "Verified public GitHub release for $TAG"
+              exit 0
+            fi
+            echo "Waiting for non-draft GitHub release for $TAG (attempt $attempt/80, draft='$draft')..."
+            sleep 15
+          done
+          echo 'SDK publication requires a completed public GitHub release.' >&2
+          exit 1
 
   # ============================================================================
   # 1. PYTHON SDK (PyPI via Maturin)
@@ -136,7 +148,7 @@ jobs:
     name: Publish Python SDK to PyPI
     needs: [build-python-wheels, build-python-sdist, publication-tag]
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_pypi && !inputs.dry_run }}
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish_pypi && !inputs.dry_run) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -265,11 +277,11 @@ jobs:
     name: Publish the verified npm tarball
     needs: [package-nodejs, publication-tag]
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_npm && !inputs.dry_run }}
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish_npm && !inputs.dry_run) }}
     steps:
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           registry-url: 'https://registry.npmjs.org'
       - uses: actions/download-artifact@v8
         with:
@@ -328,11 +340,11 @@ jobs:
     name: Publish the verified @tapirus/wasm tarball
     needs: [package-wasm, publication-tag]
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_wasm && !inputs.dry_run }}
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish_wasm && !inputs.dry_run) }}
     steps:
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           registry-url: 'https://registry.npmjs.org'
       - uses: actions/download-artifact@v8
         with:
