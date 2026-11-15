@@ -58,6 +58,8 @@ pub struct WalReplicationChunk {
     pub chunk_crc32: u32,
 }
 
+const REPLICATION_WIRE_MAGIC: &[u8; 4] = b"TWR1";
+
 impl WalReplicationChunk {
     /// Create a new replication chunk from a list of frames
     pub fn new(
@@ -111,19 +113,111 @@ impl WalReplicationChunk {
         Ok(())
     }
 
-    /// Serialize chunk to binary JSON bytes for network streaming
+    /// Serialize chunk into a compact binary wire frame (`TWR1`) without JSON byte-array bloat.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        serde_json::to_vec(self)
-            .map_err(|e| Error::Corrupted(format!("Failed to serialize replication chunk: {e}")))
+        let payload_bytes: usize = self.frames.iter().map(|f| 20 + f.data.len()).sum();
+        let mut out = Vec::with_capacity(28 + payload_bytes);
+        out.extend_from_slice(REPLICATION_WIRE_MAGIC);
+        out.extend_from_slice(&self.sequence_number.to_le_bytes());
+        out.extend_from_slice(&self.checkpoint_seq.to_le_bytes());
+        out.extend_from_slice(&self.total_pages.to_le_bytes());
+        out.extend_from_slice(&self.frame_count.to_le_bytes());
+        out.extend_from_slice(&self.chunk_crc32.to_le_bytes());
+
+        for frame in &self.frames {
+            let data_len = u32::try_from(frame.data.len()).map_err(|_| {
+                Error::Corrupted("Replication frame exceeds 4 GiB wire limit".into())
+            })?;
+            out.extend_from_slice(&frame.page_id.to_le_bytes());
+            out.extend_from_slice(&frame.db_size_in_pages.to_le_bytes());
+            out.extend_from_slice(&frame.commit_seq.to_le_bytes());
+            out.extend_from_slice(&frame.crc32.to_le_bytes());
+            out.extend_from_slice(&data_len.to_le_bytes());
+            out.extend_from_slice(&frame.data);
+        }
+        Ok(out)
     }
 
-    /// Deserialize chunk from network stream bytes and perform cryptographic integrity verification
+    /// Deserialize chunk from compact binary (`TWR1`) or legacy JSON wire bytes and verify integrity.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let chunk: Self = serde_json::from_slice(bytes).map_err(|e| {
-            Error::Corrupted(format!("Failed to deserialize replication chunk: {e}"))
-        })?;
+        let chunk = if bytes.starts_with(REPLICATION_WIRE_MAGIC) {
+            Self::decode_binary(bytes)?
+        } else {
+            serde_json::from_slice(bytes).map_err(|e| {
+                Error::Corrupted(format!("Failed to deserialize replication chunk: {e}"))
+            })?
+        };
         chunk.verify()?;
         Ok(chunk)
+    }
+
+    fn decode_binary(bytes: &[u8]) -> Result<Self> {
+        let corrupt =
+            |msg: &str| Error::Corrupted(format!("Replication wire frame corrupted: {msg}"));
+        if bytes.len() < 28 {
+            return Err(corrupt("truncated chunk header"));
+        }
+        let read_u32 = |off: usize| -> Result<u32> {
+            let s = bytes
+                .get(off..off + 4)
+                .ok_or_else(|| corrupt("unexpected EOF"))?;
+            Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+        };
+        let sequence_number = u64::from_le_bytes(
+            bytes[4..12]
+                .try_into()
+                .map_err(|_| corrupt("truncated sequence_number"))?,
+        );
+        let checkpoint_seq = read_u32(12)?;
+        let total_pages = read_u32(16)?;
+        let frame_count = read_u32(20)?;
+        let chunk_crc32 = read_u32(24)?;
+
+        let max_possible = (bytes.len() - 28) / 20;
+        if (frame_count as usize) > max_possible {
+            return Err(corrupt("frame_count exceeds payload size"));
+        }
+
+        let mut pos = 28usize;
+        let mut frames = Vec::with_capacity(frame_count as usize);
+        for _ in 0..frame_count {
+            if pos + 20 > bytes.len() {
+                return Err(corrupt("truncated frame header"));
+            }
+            let page_id = read_u32(pos)?;
+            let db_size_in_pages = read_u32(pos + 4)?;
+            let commit_seq = read_u32(pos + 8)?;
+            let crc32 = read_u32(pos + 12)?;
+            let data_len = read_u32(pos + 16)? as usize;
+            pos += 20;
+            let end = pos
+                .checked_add(data_len)
+                .ok_or_else(|| corrupt("frame length overflow"))?;
+            let data = bytes
+                .get(pos..end)
+                .ok_or_else(|| corrupt("truncated frame payload"))?
+                .to_vec();
+            pos = end;
+            frames.push(WalReplicationFrame {
+                page_id,
+                db_size_in_pages,
+                commit_seq,
+                crc32,
+                data,
+            });
+        }
+        if pos != bytes.len() {
+            return Err(corrupt("trailing bytes after replication frames"));
+        }
+
+        Ok(Self {
+            sequence_number,
+            checkpoint_seq,
+            total_pages,
+            frame_count,
+            frames,
+            chunk_crc32,
+        })
     }
 }
 
@@ -273,5 +367,40 @@ impl WalReplicationReceiver {
     pub fn apply_to_pager(pager: &mut Pager, chunk: &WalReplicationChunk) -> Result<usize> {
         let mut receiver = Self::new();
         receiver.apply_chunk(pager, chunk)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binary_wire_roundtrip_and_legacy_json_compat() {
+        let data = vec![0xAB; 4096];
+        let mut hasher = Hasher::new();
+        hasher.update(&1u32.to_le_bytes());
+        hasher.update(&1u32.to_le_bytes());
+        hasher.update(&1u32.to_le_bytes());
+        hasher.update(&data);
+        let frame = WalReplicationFrame {
+            page_id: 1,
+            db_size_in_pages: 1,
+            commit_seq: 1,
+            crc32: hasher.finalize(),
+            data,
+        };
+        let chunk = WalReplicationChunk::new(1, 0, 1, vec![frame]);
+        let bin = chunk.to_bytes().expect("encode binary");
+        assert!(bin.starts_with(b"TWR1"));
+        // 4KB binary frame should stay close to 4KB on wire, vs >10KB in JSON.
+        assert!(bin.len() < 4200, "unexpected wire bloat: {}", bin.len());
+
+        let decoded_bin = WalReplicationChunk::from_bytes(&bin).expect("decode binary");
+        assert_eq!(decoded_bin, chunk);
+
+        let json_legacy = serde_json::to_vec(&chunk).expect("encode legacy json");
+        let decoded_json =
+            WalReplicationChunk::from_bytes(&json_legacy).expect("decode legacy json");
+        assert_eq!(decoded_json, chunk);
     }
 }

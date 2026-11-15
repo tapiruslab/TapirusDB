@@ -173,6 +173,50 @@ pub fn find_leaf_cell_index_by_key(
     Ok(Err(low))
 }
 
+/// Binary search for the child branch covering `key` in a sorted `TableInterior` page.
+///
+/// Returns `(child_page_id, Some(cell_idx))` when `key <= cell[cell_idx].row_id`, or
+/// `(right_child, None)` when `key` exceeds every separator in the interior page.
+pub fn find_interior_child_by_key(
+    page_buf: &[u8],
+    page_id: PageId,
+    header: &PageHeader,
+    key: u64,
+) -> Result<(PageId, Option<usize>)> {
+    let num_cells = header.num_cells as usize;
+    let right_child = header
+        .right_child
+        .ok_or_else(|| Error::Corrupted("Interior node missing right_child".into()))?;
+    if num_cells == 0 {
+        return Ok((right_child, None));
+    }
+
+    // Fast-path for monotonically increasing / append-heavy workloads
+    let last_cell = read_interior_cell(page_buf, page_id, num_cells - 1)?;
+    if key > last_cell.row_id {
+        return Ok((right_child, None));
+    }
+
+    let mut low = 0usize;
+    let mut high = num_cells;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let cell = read_interior_cell(page_buf, page_id, mid)?;
+        if key <= cell.row_id {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+
+    if low < num_cells {
+        let cell = read_interior_cell(page_buf, page_id, low)?;
+        Ok((cell.left_child, Some(low)))
+    } else {
+        Ok((right_child, None))
+    }
+}
+
 /// Try to insert a leaf cell into a leaf page.
 /// Returns `Ok(true)` if inserted, or `Ok(false)` if there is not enough free space.
 pub fn insert_leaf_cell_into_page(
@@ -560,17 +604,8 @@ impl BTreeStorage {
                         }
                     }
                     PageType::TableInterior => {
-                        let mut next_page = header.right_child.ok_or_else(|| {
-                            Error::Corrupted("Interior node missing right_child".into())
-                        })?;
-
-                        for i in 0..header.num_cells as usize {
-                            let cell = read_interior_cell(page_buf, curr_page_id, i)?;
-                            if key <= cell.row_id {
-                                next_page = cell.left_child;
-                                break;
-                            }
-                        }
+                        let (next_page, _) =
+                            find_interior_child_by_key(page_buf, curr_page_id, &header, key)?;
                         Ok(Step::Interior(next_page))
                     }
                     other => Err(Error::Corrupted(format!(
@@ -603,9 +638,14 @@ impl BTreeStorage {
         key: u64,
         payload: &[u8],
     ) -> Result<()> {
-        let (inline_payload, overflow_page) = if payload.len() > MAX_INLINE_PAYLOAD {
-            let inline = payload[..MAX_INLINE_PAYLOAD].to_vec();
-            let overflow_id = write_overflow_chain(pager, &payload[MAX_INLINE_PAYLOAD..])?;
+        let page_inline_cap = pager
+            .page_size()
+            .saturating_sub(DATABASE_HEADER_SIZE + 64)
+            .max(32);
+        let max_inline = MAX_INLINE_PAYLOAD.min(page_inline_cap);
+        let (inline_payload, overflow_page) = if payload.len() > max_inline {
+            let inline = payload[..max_inline].to_vec();
+            let overflow_id = write_overflow_chain(pager, &payload[max_inline..])?;
             (std::borrow::Cow::Owned(inline), Some(overflow_id))
         } else {
             (std::borrow::Cow::Borrowed(payload), None)
@@ -717,21 +757,7 @@ impl BTreeStorage {
             PageType::TableInterior => {
                 let (target_child, child_idx) = pager.with_page(curr_page_id, |page_buf| {
                     let header = read_page_header(page_buf, curr_page_id)?;
-                    let num_cells = header.num_cells as usize;
-                    let mut tc = header.right_child.ok_or_else(|| {
-                        Error::Corrupted("Interior node missing right_child".into())
-                    })?;
-                    let mut c_idx = None;
-
-                    for i in 0..num_cells {
-                        let icell = read_interior_cell(page_buf, curr_page_id, i)?;
-                        if key <= icell.row_id {
-                            tc = icell.left_child;
-                            c_idx = Some(i);
-                            break;
-                        }
-                    }
-                    Ok((tc, c_idx))
+                    find_interior_child_by_key(page_buf, curr_page_id, &header, key)
                 })?;
 
                 let child_split =
@@ -883,7 +909,11 @@ impl BTreeStorage {
                     let right_page_id = pager.allocate_page()?;
                     let mut right_page_buf = vec![0u8; pager.page_size()];
                     init_leaf_page(&mut right_page_buf, right_page_id);
-                    insert_leaf_cell_into_page(&mut right_page_buf, right_page_id, &new_cell)?;
+                    if !insert_leaf_cell_into_page(&mut right_page_buf, right_page_id, &new_cell)? {
+                        return Err(Error::Corrupted(
+                            "Leaf cell exceeds page capacity on right-append split".into(),
+                        ));
+                    }
                     pager.write_page(right_page_id, &right_page_buf)?;
 
                     return Ok((right_page_id, last_row_id));
@@ -912,7 +942,11 @@ impl BTreeStorage {
         let mut right_page_buf = vec![0u8; pager.page_size()];
         init_leaf_page(&mut right_page_buf, right_page_id);
         for c in right_cells {
-            insert_leaf_cell_into_page(&mut right_page_buf, right_page_id, c)?;
+            if !insert_leaf_cell_into_page(&mut right_page_buf, right_page_id, c)? {
+                return Err(Error::Corrupted(
+                    "Leaf cell exceeds page capacity on right split page".into(),
+                ));
+            }
         }
         pager.write_page(right_page_id, &right_page_buf)?;
 
@@ -925,7 +959,11 @@ impl BTreeStorage {
         }
         init_leaf_page(&mut new_left_buf, left_page_id);
         for c in left_cells {
-            insert_leaf_cell_into_page(&mut new_left_buf, left_page_id, c)?;
+            if !insert_leaf_cell_into_page(&mut new_left_buf, left_page_id, c)? {
+                return Err(Error::Corrupted(
+                    "Leaf cell exceeds page capacity on left split page".into(),
+                ));
+            }
         }
         pager.write_page(left_page_id, &new_left_buf)?;
 
@@ -943,146 +981,331 @@ impl BTreeStorage {
     }
 
     /// Perform a streaming scan across leaf cells with early-termination support
+    /// Stream all cells as owned `TableLeafCell` values with early exit when `callback` returns `Ok(false)`.
     pub fn scan_with<F>(&self, pager: &mut Pager, root_page: PageId, mut callback: F) -> Result<()>
     where
         F: FnMut(TableLeafCell) -> Result<bool>,
     {
-        self.scan_subtree_with(pager, root_page, &mut callback)?;
-        Ok(())
+        self.range_scan_with_ref(pager, root_page, None, None, false, |row_id, payload| {
+            callback(TableLeafCell {
+                row_id,
+                payload: payload.to_vec(),
+                overflow_page: None,
+            })
+        })
     }
 
     /// Perform a zero-copy streaming scan passing borrowed payload slices `(row_id: u64, payload: &[u8])`
-    /// without allocating heap `Vec<u8>` per cell.
-    pub fn scan_with_ref<F>(
+    /// without allocating heap `Vec<u8>` per cell or per page.
+    pub fn scan_with_ref<F>(&self, pager: &mut Pager, root_page: PageId, callback: F) -> Result<()>
+    where
+        F: FnMut(u64, &[u8]) -> Result<bool>,
+    {
+        self.range_scan_with_ref(pager, root_page, None, None, false, callback)
+    }
+
+    /// Perform a zero-copy range scan over `[min_key..=max_key]` in ascending or descending `u64` key order.
+    ///
+    /// Subtrees outside the requested range are pruned in O(log M) at each interior node.
+    pub fn range_scan_with_ref<F>(
         &self,
         pager: &mut Pager,
         root_page: PageId,
+        min_key: Option<u64>,
+        max_key: Option<u64>,
+        descending: bool,
         mut callback: F,
     ) -> Result<()>
     where
         F: FnMut(u64, &[u8]) -> Result<bool>,
     {
-        self.scan_subtree_with_ref(pager, root_page, &mut callback)?;
+        if let (Some(mn), Some(mx)) = (min_key, max_key)
+            && mn > mx
+        {
+            return Ok(());
+        }
+        self.range_scan_subtree_with_ref(
+            pager,
+            root_page,
+            min_key,
+            max_key,
+            descending,
+            &mut callback,
+        )?;
         Ok(())
     }
 
-    fn scan_subtree_with_ref<F>(
+    /// Stream signed `i64` keys stored as two's-complement `u64` row IDs within `[min_i64..=max_i64]`
+    /// in strict signed ascending or descending order.
+    pub fn scan_signed_i64_with_ref<F>(
+        &self,
+        pager: &mut Pager,
+        root_page: PageId,
+        min_i64: Option<i64>,
+        max_i64: Option<i64>,
+        descending: bool,
+        mut callback: F,
+    ) -> Result<()>
+    where
+        F: FnMut(i64, &[u8]) -> Result<bool>,
+    {
+        let lo = min_i64.unwrap_or(i64::MIN);
+        let hi = max_i64.unwrap_or(i64::MAX);
+        if lo > hi {
+            return Ok(());
+        }
+
+        // Non-negative or purely negative intervals map contiguously in two's-complement u64 order.
+        if lo >= 0 || hi < 0 {
+            return self.range_scan_with_ref(
+                pager,
+                root_page,
+                Some(lo as u64),
+                Some(hi as u64),
+                descending,
+                |rid, payload| callback(rid as i64, payload),
+            );
+        }
+
+        // Straddles negative (< 0) and non-negative (>= 0) keys: scan the two contiguous partitions.
+        let mut keep_going = true;
+        if descending {
+            self.range_scan_with_ref(
+                pager,
+                root_page,
+                Some(0),
+                Some(hi as u64),
+                true,
+                |rid, payload| {
+                    keep_going = callback(rid as i64, payload)?;
+                    Ok(keep_going)
+                },
+            )?;
+            if keep_going {
+                self.range_scan_with_ref(
+                    pager,
+                    root_page,
+                    Some(lo as u64),
+                    Some(u64::MAX),
+                    true,
+                    |rid, payload| callback(rid as i64, payload),
+                )?;
+            }
+        } else {
+            self.range_scan_with_ref(
+                pager,
+                root_page,
+                Some(lo as u64),
+                Some(u64::MAX),
+                false,
+                |rid, payload| {
+                    keep_going = callback(rid as i64, payload)?;
+                    Ok(keep_going)
+                },
+            )?;
+            if keep_going {
+                self.range_scan_with_ref(
+                    pager,
+                    root_page,
+                    Some(0),
+                    Some(hi as u64),
+                    false,
+                    |rid, payload| callback(rid as i64, payload),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn range_scan_subtree_with_ref<F>(
         &self,
         pager: &mut Pager,
         curr_page_id: PageId,
+        min_key: Option<u64>,
+        max_key: Option<u64>,
+        descending: bool,
         callback: &mut F,
     ) -> Result<bool>
     where
         F: FnMut(u64, &[u8]) -> Result<bool>,
     {
-        let page_buf = pager.read_page(curr_page_id)?;
-        let header = read_page_header(&page_buf, curr_page_id)?;
+        enum NodeAction {
+            Leaf,
+            Interior(Vec<PageId>),
+        }
 
-        match header.page_type {
-            PageType::TableLeaf => {
-                for i in 0..header.num_cells as usize {
-                    let ptr = read_cell_pointer(&page_buf, curr_page_id, i)? as usize;
-                    if ptr >= page_buf.len() {
-                        return Err(Error::Corrupted(
-                            "Cell pointer points past end of page".into(),
-                        ));
-                    }
-                    let (payload_size, n1) = crate::btree::decode_varint(&page_buf[ptr..])?;
-                    let (row_id, n2) = crate::btree::decode_varint(&page_buf[ptr + n1..])?;
-                    let offset = ptr + n1 + n2;
-                    let payload_len = payload_size as usize;
-                    if page_buf.len() < offset + payload_len + 4 {
-                        return Err(Error::Corrupted(
-                            "Truncated cell payload or overflow pointer".into(),
-                        ));
-                    }
-                    let overflow = u32::from_le_bytes([
-                        page_buf[offset + payload_len],
-                        page_buf[offset + payload_len + 1],
-                        page_buf[offset + payload_len + 2],
-                        page_buf[offset + payload_len + 3],
-                    ]);
+        let action = pager.with_page(curr_page_id, |page_buf| {
+            let header = read_page_header(page_buf, curr_page_id)?;
+            match header.page_type {
+                PageType::TableLeaf => Ok(NodeAction::Leaf),
+                PageType::TableInterior => {
+                    let num_cells = header.num_cells as usize;
+                    let right_child = header.right_child.ok_or_else(|| {
+                        Error::Corrupted("Interior node missing right_child".into())
+                    })?;
 
-                    if overflow == 0 {
-                        let payload_slice = &page_buf[offset..offset + payload_len];
-                        if !callback(row_id, payload_slice)? {
-                            return Ok(false);
+                    let first_child_idx = if let Some(mn) = min_key {
+                        find_interior_child_by_key(page_buf, curr_page_id, &header, mn)?
+                            .1
+                            .unwrap_or(num_cells)
+                    } else {
+                        0
+                    };
+
+                    let last_child_idx = if let Some(mx) = max_key {
+                        find_interior_child_by_key(page_buf, curr_page_id, &header, mx)?
+                            .1
+                            .unwrap_or(num_cells)
+                    } else {
+                        num_cells
+                    };
+
+                    let mut children =
+                        Vec::with_capacity(last_child_idx.saturating_sub(first_child_idx) + 1);
+                    if descending {
+                        for idx in (first_child_idx..=last_child_idx).rev() {
+                            if idx == num_cells {
+                                children.push(right_child);
+                            } else {
+                                let icell = read_interior_cell(page_buf, curr_page_id, idx)?;
+                                children.push(icell.left_child);
+                            }
                         }
                     } else {
-                        let mut full_payload = page_buf[offset..offset + payload_len].to_vec();
-                        let overflow_data = read_overflow_chain(pager, overflow)?;
-                        full_payload.extend_from_slice(&overflow_data);
-                        if !callback(row_id, &full_payload)? {
-                            return Ok(false);
+                        for idx in first_child_idx..=last_child_idx {
+                            if idx == num_cells {
+                                children.push(right_child);
+                            } else {
+                                let icell = read_interior_cell(page_buf, curr_page_id, idx)?;
+                                children.push(icell.left_child);
+                            }
+                        }
+                    }
+                    Ok(NodeAction::Interior(children))
+                }
+                other => Err(Error::Corrupted(format!(
+                    "Invalid page type during scan: {other:?}"
+                ))),
+            }
+        })?;
+
+        match action {
+            NodeAction::Interior(children) => {
+                for child_id in children {
+                    if !self.range_scan_subtree_with_ref(
+                        pager, child_id, min_key, max_key, descending, callback,
+                    )? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            NodeAction::Leaf => {
+                enum LeafStep {
+                    Done(bool),
+                    Overflow {
+                        next_step: usize,
+                        row_id: u64,
+                        prefix: Vec<u8>,
+                        overflow_page: PageId,
+                    },
+                }
+
+                let mut resume_step = 0usize;
+                loop {
+                    let step_res = pager.with_page(curr_page_id, |page_buf| {
+                        let header = read_page_header(page_buf, curr_page_id)?;
+                        let num_cells = header.num_cells as usize;
+                        if num_cells == 0 {
+                            return Ok(LeafStep::Done(true));
+                        }
+
+                        let start_idx = if let Some(mn) = min_key {
+                            match find_leaf_cell_index_by_key(page_buf, curr_page_id, mn)? {
+                                Ok(i) | Err(i) => i,
+                            }
+                        } else {
+                            0
+                        };
+
+                        let end_idx = if let Some(mx) = max_key {
+                            match find_leaf_cell_index_by_key(page_buf, curr_page_id, mx)? {
+                                Ok(i) => i + 1,
+                                Err(i) => i,
+                            }
+                        } else {
+                            num_cells
+                        };
+
+                        if start_idx >= end_idx {
+                            return Ok(LeafStep::Done(true));
+                        }
+
+                        let total_steps = end_idx - start_idx;
+                        for step in resume_step..total_steps {
+                            let cell_idx = if descending {
+                                end_idx - 1 - step
+                            } else {
+                                start_idx + step
+                            };
+                            let ptr = read_cell_pointer(page_buf, curr_page_id, cell_idx)? as usize;
+                            if ptr >= page_buf.len() {
+                                return Err(Error::Corrupted(
+                                    "Cell pointer points past end of page".into(),
+                                ));
+                            }
+                            let (payload_size, n1) = crate::btree::decode_varint(&page_buf[ptr..])?;
+                            let (row_id, n2) = crate::btree::decode_varint(&page_buf[ptr + n1..])?;
+                            let offset = ptr + n1 + n2;
+                            let payload_len = payload_size as usize;
+                            if page_buf.len() < offset + payload_len + 4 {
+                                return Err(Error::Corrupted(
+                                    "Truncated cell payload or overflow pointer".into(),
+                                ));
+                            }
+                            let overflow = u32::from_le_bytes([
+                                page_buf[offset + payload_len],
+                                page_buf[offset + payload_len + 1],
+                                page_buf[offset + payload_len + 2],
+                                page_buf[offset + payload_len + 3],
+                            ]);
+
+                            if overflow == 0 {
+                                let payload_slice = &page_buf[offset..offset + payload_len];
+                                if !callback(row_id, payload_slice)? {
+                                    return Ok(LeafStep::Done(false));
+                                }
+                            } else {
+                                return Ok(LeafStep::Overflow {
+                                    next_step: step + 1,
+                                    row_id,
+                                    prefix: page_buf[offset..offset + payload_len].to_vec(),
+                                    overflow_page: overflow,
+                                });
+                            }
+                        }
+
+                        Ok(LeafStep::Done(true))
+                    })?;
+
+                    match step_res {
+                        LeafStep::Done(cont) => return Ok(cont),
+                        LeafStep::Overflow {
+                            next_step,
+                            row_id,
+                            mut prefix,
+                            overflow_page,
+                        } => {
+                            let overflow_data = read_overflow_chain(pager, overflow_page)?;
+                            prefix.extend_from_slice(&overflow_data);
+                            if !callback(row_id, &prefix)? {
+                                return Ok(false);
+                            }
+                            resume_step = next_step;
                         }
                     }
                 }
-                Ok(true)
             }
-            PageType::TableInterior => {
-                for i in 0..header.num_cells as usize {
-                    let icell = read_interior_cell(&page_buf, curr_page_id, i)?;
-                    if !self.scan_subtree_with_ref(pager, icell.left_child, callback)? {
-                        return Ok(false);
-                    }
-                }
-                if let Some(rc) = header.right_child
-                    && !self.scan_subtree_with_ref(pager, rc, callback)?
-                {
-                    return Ok(false);
-                }
-                Ok(true)
-            }
-            other => Err(Error::Corrupted(format!(
-                "Invalid page type during scan: {other:?}"
-            ))),
-        }
-    }
-
-    fn scan_subtree_with<F>(
-        &self,
-        pager: &mut Pager,
-        curr_page_id: PageId,
-        callback: &mut F,
-    ) -> Result<bool>
-    where
-        F: FnMut(TableLeafCell) -> Result<bool>,
-    {
-        let page_buf = pager.read_page(curr_page_id)?;
-        let header = read_page_header(&page_buf, curr_page_id)?;
-
-        match header.page_type {
-            PageType::TableLeaf => {
-                for i in 0..header.num_cells as usize {
-                    let mut cell = read_leaf_cell(&page_buf, curr_page_id, i)?;
-                    if let Some(overflow_id) = cell.overflow_page {
-                        let overflow_data = read_overflow_chain(pager, overflow_id)?;
-                        cell.payload.extend_from_slice(&overflow_data);
-                        cell.overflow_page = None;
-                    }
-                    if !callback(cell)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
-            PageType::TableInterior => {
-                for i in 0..header.num_cells as usize {
-                    let icell = read_interior_cell(&page_buf, curr_page_id, i)?;
-                    if !self.scan_subtree_with(pager, icell.left_child, callback)? {
-                        return Ok(false);
-                    }
-                }
-                if let Some(rc) = header.right_child
-                    && !self.scan_subtree_with(pager, rc, callback)?
-                {
-                    return Ok(false);
-                }
-                Ok(true)
-            }
-            other => Err(Error::Corrupted(format!(
-                "Invalid page type during scan: {other:?}"
-            ))),
         }
     }
 
@@ -1098,48 +1321,48 @@ impl BTreeStorage {
         curr_page_id: PageId,
         key: u64,
     ) -> Result<bool> {
-        let mut page_buf = pager.read_page(curr_page_id)?;
-        let header = read_page_header(&page_buf, curr_page_id)?;
+        enum DeleteStep {
+            Leaf(Option<(usize, Option<PageId>)>),
+            Interior(PageId),
+        }
 
-        match header.page_type {
-            PageType::TableLeaf => {
-                let cell_to_del = find_leaf_cell_index_by_key(&page_buf, curr_page_id, key)?;
-                let overflow_to_free = if let Ok(idx) = cell_to_del {
-                    read_leaf_cell(&page_buf, curr_page_id, idx)?.overflow_page
-                } else {
-                    None
-                };
-
-                let deleted = delete_leaf_cell_from_page(&mut page_buf, curr_page_id, key)?;
-                if deleted {
-                    pager.write_page(curr_page_id, &page_buf)?;
-                    if let Some(overflow_id) = overflow_to_free {
-                        free_overflow_chain(pager, overflow_id)?;
+        let step = pager.with_page(curr_page_id, |page_buf| {
+            let header = read_page_header(page_buf, curr_page_id)?;
+            match header.page_type {
+                PageType::TableLeaf => {
+                    if let Ok(idx) = find_leaf_cell_index_by_key(page_buf, curr_page_id, key)? {
+                        let overflow_page =
+                            read_leaf_cell(page_buf, curr_page_id, idx)?.overflow_page;
+                        Ok(DeleteStep::Leaf(Some((idx, overflow_page))))
+                    } else {
+                        Ok(DeleteStep::Leaf(None))
                     }
-                    Ok(true)
-                } else {
-                    Ok(false)
                 }
+                PageType::TableInterior => {
+                    let (target_child, _) =
+                        find_interior_child_by_key(page_buf, curr_page_id, &header, key)?;
+                    Ok(DeleteStep::Interior(target_child))
+                }
+                other => Err(Error::Corrupted(format!(
+                    "Invalid page type for deletion: {other:?}"
+                ))),
             }
-            PageType::TableInterior => {
-                let num_cells = header.num_cells as usize;
-                let mut target_child = header
-                    .right_child
-                    .ok_or_else(|| Error::Corrupted("Interior node missing right_child".into()))?;
+        })?;
 
-                for i in 0..num_cells {
-                    let cell = read_interior_cell(&page_buf, curr_page_id, i)?;
-                    if key <= cell.row_id {
-                        target_child = cell.left_child;
-                        break;
-                    }
+        match step {
+            DeleteStep::Leaf(None) => Ok(false),
+            DeleteStep::Leaf(Some((_, overflow_to_free))) => {
+                let deleted = pager.modify_page(curr_page_id, |page_buf| {
+                    delete_leaf_cell_from_page(page_buf, curr_page_id, key)
+                })?;
+                if deleted && let Some(overflow_id) = overflow_to_free {
+                    free_overflow_chain(pager, overflow_id)?;
                 }
-
+                Ok(deleted)
+            }
+            DeleteStep::Interior(target_child) => {
                 self.delete_from_subtree(pager, target_child, key)
             }
-            other => Err(Error::Corrupted(format!(
-                "Invalid page type for deletion: {other:?}"
-            ))),
         }
     }
 }
@@ -1191,5 +1414,92 @@ mod tests {
             .search(&mut pager, root_page, 100)
             .expect("Search after delete");
         assert!(after_delete.is_none());
+    }
+
+    #[test]
+    fn test_range_scan_multilevel_asc_desc_and_signed_keys() {
+        let mut pager = Pager::open_in_memory(512, 256).expect("Open in-memory");
+        let root_page = pager.allocate_page().expect("Allocate root");
+        let mut root_buf = vec![0u8; 512];
+        init_leaf_page(&mut root_buf, root_page);
+        pager.write_page(root_page, &root_buf).expect("Write root");
+
+        let mut btree = BTreeStorage::new();
+        // Force multi-level interior splits using small 512-byte pages
+        let mut keys: Vec<i64> = (-20..=120).step_by(2).collect();
+        keys.push(i64::MIN);
+        keys.push(i64::MAX);
+        for &k in &keys {
+            let payload = format!("val:{k}").into_bytes();
+            btree
+                .insert(&mut pager, root_page, k as u64, &payload)
+                .expect("Insert key");
+        }
+
+        // Ascending signed range straddling negative and positive keys
+        let mut asc_got = Vec::new();
+        btree
+            .scan_signed_i64_with_ref(&mut pager, root_page, Some(-10), Some(14), false, |k, p| {
+                asc_got.push((k, String::from_utf8_lossy(p).into_owned()));
+                Ok(true)
+            })
+            .expect("Range scan asc");
+        let expected_asc: Vec<(i64, String)> = (-10..=14)
+            .step_by(2)
+            .map(|k| (k, format!("val:{k}")))
+            .collect();
+        assert_eq!(asc_got, expected_asc);
+
+        // Descending signed range with early stop
+        let mut desc_got = Vec::new();
+        btree
+            .scan_signed_i64_with_ref(&mut pager, root_page, None, Some(100), true, |k, _| {
+                desc_got.push(k);
+                Ok(desc_got.len() < 4)
+            })
+            .expect("Range scan desc early exit");
+        assert_eq!(desc_got, vec![100, 98, 96, 94]);
+
+        // Full signed order should start at i64::MIN and end at i64::MAX
+        let mut all_signed = Vec::new();
+        btree
+            .scan_signed_i64_with_ref(&mut pager, root_page, None, None, false, |k, _| {
+                all_signed.push(k);
+                Ok(true)
+            })
+            .expect("Full signed asc");
+        let mut expected_all = keys.clone();
+        expected_all.sort_unstable();
+        assert_eq!(all_signed, expected_all);
+    }
+
+    #[test]
+    fn test_scan_with_ref_mixed_inline_and_overflow_cells() {
+        let mut pager = Pager::open_in_memory(512, 128).expect("Open in-memory");
+        let root_page = pager.allocate_page().expect("Allocate root");
+        let mut root_buf = vec![0u8; 512];
+        init_leaf_page(&mut root_buf, root_page);
+        pager.write_page(root_page, &root_buf).expect("Write root");
+
+        let mut btree = BTreeStorage::new();
+        let big = vec![0xABu8; 1500];
+        btree
+            .insert(&mut pager, root_page, 1, b"small-1")
+            .expect("insert 1");
+        btree
+            .insert(&mut pager, root_page, 2, &big)
+            .expect("insert 2");
+        btree
+            .insert(&mut pager, root_page, 3, b"small-3")
+            .expect("insert 3");
+
+        let mut seen = Vec::new();
+        btree
+            .scan_with_ref(&mut pager, root_page, |k, p| {
+                seen.push((k, p.len(), p[0]));
+                Ok(true)
+            })
+            .expect("scan mixed overflow");
+        assert_eq!(seen, vec![(1, 7, b's'), (2, 1500, 0xAB), (3, 7, b's')]);
     }
 }

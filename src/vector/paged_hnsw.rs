@@ -14,7 +14,7 @@ use crate::traits::VectorIndexEngine;
 use crate::vector::{DistanceMetric, QuantizedVector8, cosine_distance, euclidean_distance};
 use parking_lot::{Mutex, RwLock};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 
 /// A candidate neighbor ordered by distance (Min-Heap)
@@ -77,40 +77,252 @@ pub struct PagedNodeRecord {
     pub neighbors_l0: Vec<u64>,
 }
 
+const PAGED_NODE_MAGIC: &[u8; 4] = b"PHN1";
+
 impl PagedNodeRecord {
-    /// Serialize node record into binary payload
+    /// Serialize node record into a compact binary payload (`PHN1`).
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        serde_json::to_vec(self).map_err(|e| Error::Serialization(e.to_string()))
+        let mut out = Vec::with_capacity(
+            24 + self.vector.len() * 4
+                + self
+                    .quantized
+                    .as_ref()
+                    .map_or(0, |q| 16 + q.quantized.len())
+                + self.neighbors_l0.len() * 8,
+        );
+        out.extend_from_slice(PAGED_NODE_MAGIC);
+        out.extend_from_slice(&self.id.to_le_bytes());
+        out.extend_from_slice(&(self.vector.len() as u32).to_le_bytes());
+        for &v in &self.vector {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        match &self.quantized {
+            Some(q) => {
+                out.push(1);
+                out.extend_from_slice(&q.min_val.to_le_bytes());
+                out.extend_from_slice(&q.max_val.to_le_bytes());
+                out.extend_from_slice(&q.step.to_le_bytes());
+                out.extend_from_slice(&(q.quantized.len() as u32).to_le_bytes());
+                out.extend_from_slice(&q.quantized);
+            }
+            None => out.push(0),
+        }
+        out.extend_from_slice(&(self.neighbors_l0.len() as u32).to_le_bytes());
+        for &n in &self.neighbors_l0 {
+            out.extend_from_slice(&n.to_le_bytes());
+        }
+        Ok(out)
     }
 
-    /// Deserialize node record from binary payload
+    /// Deserialize node record from compact binary (`PHN1`) or legacy JSON payload.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        serde_json::from_slice(bytes).map_err(|e| Error::Serialization(e.to_string()))
+        if !bytes.starts_with(PAGED_NODE_MAGIC) {
+            return serde_json::from_slice(bytes).map_err(|e| Error::Serialization(e.to_string()));
+        }
+        let corrupt = |m: &str| Error::Serialization(format!("Corrupted PagedNodeRecord: {m}"));
+        if bytes.len() < 16 {
+            return Err(corrupt("truncated header"));
+        }
+        let id = u64::from_le_bytes(bytes[4..12].try_into().map_err(|_| corrupt("id"))?);
+        let vec_len =
+            u32::from_le_bytes(bytes[12..16].try_into().map_err(|_| corrupt("vec_len"))?) as usize;
+        let mut pos = 16usize;
+        let vec_bytes_end = pos
+            .checked_add(vec_len.saturating_mul(4))
+            .ok_or_else(|| corrupt("vec_len overflow"))?;
+        if vec_bytes_end > bytes.len() {
+            return Err(corrupt("truncated vector"));
+        }
+        let mut vector = Vec::with_capacity(vec_len);
+        for i in 0..vec_len {
+            let off = pos + i * 4;
+            vector.push(f32::from_le_bytes([
+                bytes[off],
+                bytes[off + 1],
+                bytes[off + 2],
+                bytes[off + 3],
+            ]));
+        }
+        pos = vec_bytes_end;
+
+        let has_q = *bytes.get(pos).ok_or_else(|| corrupt("quantized flag"))?;
+        pos += 1;
+        let quantized = if has_q == 1 {
+            if pos + 16 > bytes.len() {
+                return Err(corrupt("truncated sq8 header"));
+            }
+            let min_val =
+                f32::from_le_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]]);
+            let max_val = f32::from_le_bytes([
+                bytes[pos + 4],
+                bytes[pos + 5],
+                bytes[pos + 6],
+                bytes[pos + 7],
+            ]);
+            let step = f32::from_le_bytes([
+                bytes[pos + 8],
+                bytes[pos + 9],
+                bytes[pos + 10],
+                bytes[pos + 11],
+            ]);
+            let qlen = u32::from_le_bytes([
+                bytes[pos + 12],
+                bytes[pos + 13],
+                bytes[pos + 14],
+                bytes[pos + 15],
+            ]) as usize;
+            pos += 16;
+            let qend = pos
+                .checked_add(qlen)
+                .ok_or_else(|| corrupt("qlen overflow"))?;
+            let qbytes = bytes
+                .get(pos..qend)
+                .ok_or_else(|| corrupt("truncated sq8"))?;
+            pos = qend;
+            Some(crate::vector::QuantizedVector8 {
+                quantized: qbytes.to_vec(),
+                min_val,
+                max_val,
+                step,
+            })
+        } else if has_q == 0 {
+            None
+        } else {
+            return Err(corrupt("invalid quantized flag"));
+        };
+
+        if pos + 4 > bytes.len() {
+            return Err(corrupt("truncated neighbors len"));
+        }
+        let nlen = u32::from_le_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
+            as usize;
+        pos += 4;
+        let nend = pos
+            .checked_add(nlen.saturating_mul(8))
+            .ok_or_else(|| corrupt("neighbors overflow"))?;
+        if nend != bytes.len() {
+            return Err(corrupt("neighbors size mismatch"));
+        }
+        let mut neighbors_l0 = Vec::with_capacity(nlen);
+        for i in 0..nlen {
+            let off = pos + i * 8;
+            neighbors_l0.push(u64::from_le_bytes([
+                bytes[off],
+                bytes[off + 1],
+                bytes[off + 2],
+                bytes[off + 3],
+                bytes[off + 4],
+                bytes[off + 5],
+                bytes[off + 6],
+                bytes[off + 7],
+            ]));
+        }
+
+        Ok(Self {
+            id,
+            vector,
+            quantized,
+            neighbors_l0,
+        })
     }
 }
 
+#[derive(Debug)]
+struct LruEntry {
+    record: PagedNodeRecord,
+    prev: Option<u64>,
+    next: Option<u64>,
+}
+
+/// O(1) Doubly-Linked LRU cache keyed by vector node ID (head = LRU, tail = MRU).
 #[derive(Debug, Default)]
 struct LruState {
-    cache: HashMap<u64, PagedNodeRecord>,
-    lru_queue: VecDeque<u64>,
+    entries: HashMap<u64, LruEntry>,
+    head: Option<u64>,
+    tail: Option<u64>,
 }
 
 impl LruState {
-    fn touch(&mut self, id: u64) {
-        if let Some(pos) = self.lru_queue.iter().position(|&x| x == id) {
-            self.lru_queue.remove(pos);
+    fn contains_key(&self, id: &u64) -> bool {
+        self.entries.contains_key(id)
+    }
+
+    fn detach(&mut self, id: u64) -> Option<(Option<u64>, Option<u64>)> {
+        let entry = self.entries.get(&id)?;
+        let prev = entry.prev;
+        let next = entry.next;
+        if let Some(p) = prev {
+            if let Some(pe) = self.entries.get_mut(&p) {
+                pe.next = next;
+            }
+        } else {
+            self.head = next;
         }
-        self.lru_queue.push_back(id);
+        if let Some(n) = next {
+            if let Some(ne) = self.entries.get_mut(&n) {
+                ne.prev = prev;
+            }
+        } else {
+            self.tail = prev;
+        }
+        if let Some(e) = self.entries.get_mut(&id) {
+            e.prev = None;
+            e.next = None;
+        }
+        Some((prev, next))
+    }
+
+    fn attach_tail(&mut self, id: u64) {
+        let old_tail = self.tail;
+        if let Some(e) = self.entries.get_mut(&id) {
+            e.prev = old_tail;
+            e.next = None;
+        }
+        if let Some(t) = old_tail {
+            if let Some(te) = self.entries.get_mut(&t) {
+                te.next = Some(id);
+            }
+        } else {
+            self.head = Some(id);
+        }
+        self.tail = Some(id);
+    }
+
+    fn touch(&mut self, id: u64) {
+        if self.tail == Some(id) || !self.entries.contains_key(&id) {
+            return;
+        }
+        self.detach(id);
+        self.attach_tail(id);
+    }
+
+    fn remove(&mut self, id: u64) {
+        if self.entries.contains_key(&id) {
+            self.detach(id);
+            self.entries.remove(&id);
+        }
     }
 
     fn insert_cache(&mut self, id: u64, record: PagedNodeRecord, capacity: usize) {
-        if self.cache.len() >= capacity
-            && let Some(evicted_id) = self.lru_queue.pop_front()
-        {
-            self.cache.remove(&evicted_id);
+        if let Some(existing) = self.entries.get_mut(&id) {
+            existing.record = record;
+            self.touch(id);
+            return;
         }
-        self.cache.insert(id, record);
-        self.lru_queue.push_back(id);
+        if self.entries.len() >= capacity
+            && let Some(evicted_id) = self.head
+        {
+            self.remove(evicted_id);
+        }
+        self.entries.insert(
+            id,
+            LruEntry {
+                record,
+                prev: None,
+                next: None,
+            },
+        );
+        self.attach_tail(id);
     }
 }
 
@@ -136,8 +348,7 @@ impl PagedVectorStore {
     pub fn get(&self, id: u64) -> Option<PagedNodeRecord> {
         {
             let mut lru = self.lru.lock();
-            if let Some(rec) = lru.cache.get(&id) {
-                let rec = rec.clone();
+            if let Some(rec) = lru.entries.get(&id).map(|e| e.record.clone()) {
                 lru.touch(id);
                 return Some(rec);
             }
@@ -166,7 +377,7 @@ impl PagedVectorStore {
 
     /// Remove a node record from store
     pub fn remove(&self, id: u64) {
-        self.lru.lock().cache.remove(&id);
+        self.lru.lock().remove(id);
         self.disk_pages.write().remove(&id);
     }
 
@@ -182,7 +393,7 @@ impl PagedVectorStore {
 
     /// Check whether a vector node exists in cache or on disk
     pub fn has_node(&self, id: u64) -> bool {
-        if self.lru.lock().cache.contains_key(&id) {
+        if self.lru.lock().contains_key(&id) {
             return true;
         }
         self.disk_pages.read().contains_key(&id)

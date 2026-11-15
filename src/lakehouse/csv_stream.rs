@@ -131,12 +131,36 @@ pub fn sanitize_column_names(raw: &[String]) -> Vec<String> {
     out
 }
 
-/// Parse one RFC-4180 CSV/TSV record into string fields using a reusable buffer,
+/// Parse one RFC-4180 CSV/TSV record into string fields using reusable string slots,
 /// keeping bracketed vector literals (`[0.1, 0.2, ...]`) intact even if unquoted.
 pub fn parse_delimited_line(line: &str, delimiter: char, out: &mut Vec<String>) {
-    out.clear();
     let line = line.trim_end_matches(&['\r', '\n'][..]);
-    let mut current = String::with_capacity(32);
+    let mut field_idx = 0usize;
+
+    let push_slot = |idx: &mut usize, out: &mut Vec<String>, src: &str| {
+        if *idx < out.len() {
+            out[*idx].clear();
+            out[*idx].push_str(src);
+        } else {
+            out.push(src.to_string());
+        }
+        *idx += 1;
+    };
+
+    // Fast path: plain unquoted records with no vector brackets can slice-split with zero char decoding.
+    if !line.contains('"') && !line.contains('[') {
+        for part in line.split(delimiter) {
+            push_slot(&mut field_idx, out, part);
+        }
+        out.truncate(field_idx);
+        return;
+    }
+
+    if out.is_empty() {
+        out.push(String::with_capacity(32));
+    } else {
+        out[0].clear();
+    }
     let mut in_quotes = false;
     let mut bracket_depth = 0usize;
     let mut chars = line.chars().peekable();
@@ -146,28 +170,33 @@ pub fn parse_delimited_line(line: &str, delimiter: char, out: &mut Vec<String>) 
             if in_quotes {
                 if chars.peek() == Some(&'"') {
                     chars.next();
-                    current.push('"');
+                    out[field_idx].push('"');
                 } else {
                     in_quotes = false;
                 }
-            } else if current.is_empty() {
+            } else if out[field_idx].is_empty() {
                 in_quotes = true;
             } else {
-                current.push('"');
+                out[field_idx].push('"');
             }
         } else if c == '[' && !in_quotes {
             bracket_depth += 1;
-            current.push(c);
+            out[field_idx].push(c);
         } else if c == ']' && !in_quotes {
             bracket_depth = bracket_depth.saturating_sub(1);
-            current.push(c);
+            out[field_idx].push(c);
         } else if c == delimiter && !in_quotes && bracket_depth == 0 {
-            out.push(std::mem::take(&mut current));
+            field_idx += 1;
+            if field_idx < out.len() {
+                out[field_idx].clear();
+            } else {
+                out.push(String::with_capacity(32));
+            }
         } else {
-            current.push(c);
+            out[field_idx].push(c);
         }
     }
-    out.push(current);
+    out.truncate(field_idx + 1);
 }
 
 /// Read logical CSV records supporting embedded newlines inside quoted fields.

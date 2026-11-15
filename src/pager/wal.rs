@@ -664,9 +664,7 @@ impl Wal {
             }
 
             if base_file.is_none() {
-                base_in_memory
-                    .entry(page_id)
-                    .or_insert_with(|| page_data.clone());
+                base_in_memory.insert(page_id, page_data.clone());
             }
         }
 
@@ -748,9 +746,7 @@ impl Wal {
             }
 
             if base_file.is_none() {
-                base_in_memory
-                    .entry(page_id)
-                    .or_insert_with(|| page_data.clone());
+                base_in_memory.insert(page_id, page_data.clone());
             }
             recovered_count += 1;
         }
@@ -870,5 +866,15 @@ mod tests {
         assert_eq!(wal.frame_count(), 0);
         assert_eq!(in_memory_pages.get(&1).unwrap(), &page1);
         assert_eq!(in_memory_pages.get(&2).unwrap(), &page2);
+
+        // Overwrite an existing page and checkpoint again; base_in_memory must reflect the new image.
+        let page2_v2 = vec![9u8; 4096];
+        wal.write_frame(2, &page2_v2, true, 2)
+            .expect("Overwrite frame 2");
+        let flushed2 = wal
+            .checkpoint(&mut base_file, &mut in_memory_pages)
+            .expect("Second checkpoint");
+        assert_eq!(flushed2, 1);
+        assert_eq!(in_memory_pages.get(&2).unwrap(), &page2_v2);
     }
 }

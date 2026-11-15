@@ -23,6 +23,7 @@ pub mod pager;
 pub mod realtime;
 pub mod session;
 pub mod sql;
+pub mod stable_hash;
 pub mod tap;
 pub mod traits;
 pub mod vector;
@@ -1396,7 +1397,7 @@ impl Connection {
         vector: &[f32],
         num_bits: usize,
     ) -> crate::vector::RaBitQuantizedVector {
-        let quantizer = crate::vector::RaBitQuantizer::new(vector.len(), num_bits);
+        let quantizer = crate::vector::RaBitQuantizer::cached(vector.len(), num_bits);
         quantizer.quantize(vector)
     }
 
@@ -1415,7 +1416,7 @@ impl Connection {
         quantized: &crate::vector::RaBitQuantizedVector,
         query: &[f32],
     ) -> f32 {
-        let quantizer = crate::vector::RaBitQuantizer::new(query.len(), quantized.num_bits());
+        let quantizer = crate::vector::RaBitQuantizer::cached(query.len(), quantized.num_bits());
         let rotated = quantizer.rotate(query);
         let norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
         1.0 - quantized.asymmetric_cosine_distance(&rotated, norm)
@@ -1551,7 +1552,7 @@ impl Connection {
         let mut pager = self.pager.write();
         let executor = self.executor.read();
         let snap_pager = pager.snapshot_clone()?;
-        let snap_executor = executor.clone();
+        let snap_executor = executor.clone_for_snapshot();
         Ok((snap_pager, snap_executor))
     }
 

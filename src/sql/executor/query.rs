@@ -1,0 +1,2567 @@
+#[allow(unused_imports)]
+use super::*;
+
+impl SQLExecutor {
+    /// Execute a query returning rows (SELECT, VECTOR NEAR, EXPLAIN, RETURNING, etc.)
+    pub fn query(&mut self, pager: &mut Pager, stmt: Statement) -> Result<Vec<Row>> {
+        if Self::is_mutation(&stmt) {
+            self.atomic_statement(pager, |executor, pager| executor.query_inner(pager, stmt))
+        } else {
+            self.query_inner(pager, stmt)
+        }
+    }
+
+    pub(super) fn query_inner(&mut self, pager: &mut Pager, stmt: Statement) -> Result<Vec<Row>> {
+        match stmt {
+            Statement::InsertMany {
+                table,
+                columns,
+                rows,
+                conflict_action,
+                returning,
+            } => {
+                let mut returned = Vec::new();
+                for values in rows {
+                    let (_, result) = self.execute_insert(
+                        pager,
+                        table.clone(),
+                        columns.clone(),
+                        values,
+                        conflict_action.clone(),
+                        returning.clone(),
+                    )?;
+                    returned.extend(result);
+                }
+                Ok(returned)
+            }
+            Statement::Insert {
+                table,
+                columns,
+                values,
+                conflict_action,
+                returning,
+            } => {
+                let (_, rows) =
+                    self.execute_insert(pager, table, columns, values, conflict_action, returning)?;
+                Ok(rows)
+            }
+            Statement::Update {
+                table,
+                assignments,
+                where_clause,
+                returning,
+            } => {
+                let (_, rows) =
+                    self.execute_update(pager, table, assignments, where_clause, returning)?;
+                Ok(rows)
+            }
+            Statement::Delete {
+                table,
+                where_clause,
+                returning,
+            } => {
+                let (_, rows) = self.execute_delete(pager, table, where_clause, returning)?;
+                Ok(rows)
+            }
+            Statement::WithCte { ctes, main_query } => {
+                self.query_with_cte(pager, ctes, *main_query)
+            }
+            Statement::Compound { left, op, right } => {
+                let mut left_rows = self.query(pager, *left)?;
+                let right_rows = self.query(pager, *right)?;
+                combine_compound_rows(&mut left_rows, right_rows, op);
+                Ok(left_rows)
+            }
+            Statement::ExternalScan { func, path, arg } => {
+                #[cfg(feature = "std")]
+                {
+                    crate::lakehouse::scan_external_rows(&func, &path, arg.as_deref(), None)
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    let _ = (func, path, arg);
+                    Err(Error::SqlSyntax(
+                        "External file scans require the 'std' feature".into(),
+                    ))
+                }
+            }
+            Statement::CopyFrom {
+                table,
+                source,
+                format,
+                options,
+            } => {
+                let count =
+                    self.execute_copy_from(pager, &table, &source, format.as_deref(), &options)?;
+                Ok(vec![Row::new(
+                    vec!["rows_copied".to_string()],
+                    vec![Value::Integer(count as i64)],
+                )])
+            }
+            Statement::CopyTo {
+                source_table,
+                source_query,
+                dest,
+                format,
+                partition_by,
+            } => {
+                let count = self.execute_copy_to(
+                    pager,
+                    source_table.as_deref(),
+                    source_query.as_deref(),
+                    &dest,
+                    format.as_deref(),
+                    partition_by.as_deref(),
+                )?;
+                Ok(vec![Row::new(
+                    vec!["rows_exported".to_string()],
+                    vec![Value::Integer(count as i64)],
+                )])
+            }
+            Statement::Explain {
+                statement,
+                query_plan,
+            } => self.explain_query_plan(pager, *statement, query_plan),
+
+            Statement::Select {
+                distinct,
+                columns,
+                table,
+                from_subquery,
+                join,
+                where_clause,
+                group_by,
+                having,
+                order_by,
+                limit,
+                offset,
+                as_of_timestamp,
+            } => {
+                if table.is_empty() {
+                    return Ok(vec![
+                        self.project_row(&Row::new(Vec::new(), Vec::new()), &columns)?,
+                    ]);
+                }
+                if let Some((sub_stmt, alias)) = from_subquery {
+                    #[cfg(all(feature = "lakehouse", feature = "olap"))]
+                    if join.is_none()
+                        && !distinct
+                        && as_of_timestamp.is_none()
+                        && let Statement::ExternalScan {
+                            ref func,
+                            ref path,
+                            arg: None,
+                        } = *sub_stmt
+                        && matches!(func.as_str(), "read_parquet" | "parquet")
+                    {
+                        let resolved_where = if let Some(ref expr) = where_clause {
+                            Some(self.resolve_where_expr(pager, expr)?)
+                        } else {
+                            None
+                        };
+                        let resolved_having = if let Some(ref expr) = having {
+                            Some(self.resolve_where_expr(pager, expr)?)
+                        } else {
+                            None
+                        };
+                        if let Some((rows, _olap_stats)) =
+                            crate::lakehouse::olap::execute_parquet_sql_select(
+                                path,
+                                &columns,
+                                resolved_where.as_ref(),
+                                group_by.as_deref(),
+                                resolved_having.as_ref(),
+                                order_by.as_ref(),
+                                limit,
+                                offset,
+                            )?
+                        {
+                            return Ok(rows);
+                        }
+                    }
+
+                    let mut cte_store = HashMap::new();
+                    let sub_rows = self.query(pager, *sub_stmt)?;
+                    cte_store.insert(alias.clone(), sub_rows);
+                    let outer_stmt = Statement::Select {
+                        distinct,
+                        columns,
+                        table: alias,
+                        from_subquery: None,
+                        join,
+                        where_clause,
+                        group_by,
+                        having,
+                        order_by,
+                        limit,
+                        offset,
+                        as_of_timestamp,
+                    };
+                    return self.query_on_ephemeral_rows(pager, outer_stmt, &cte_store);
+                }
+
+                // If target table is a persistent View, evaluate view query and apply outer filters/order/limit
+                if let Some(view_def) = self.catalog.get_view(&table).cloned() {
+                    let mut view_stmt = crate::sql::parse_sql(&view_def.query_sql)?;
+                    if let Statement::Select {
+                        as_of_timestamp: ref mut view_ts,
+                        ..
+                    } = view_stmt
+                    {
+                        *view_ts = as_of_timestamp;
+                    }
+                    let mut rows = self.query(pager, view_stmt)?;
+
+                    // Check outer WHERE filter
+                    if let Some(ref expr) = where_clause {
+                        let resolved_where = self.resolve_where_expr(pager, expr)?;
+                        rows.retain(|r| row_matches_resolved(r, &resolved_where));
+                    }
+
+                    // Apply outer ORDER BY
+                    if let Some(ref order) = order_by {
+                        rows.sort_by(|a, b| {
+                            let val_a = a.get_value(&order.column).unwrap_or(&Value::Null);
+                            let val_b = b.get_value(&order.column).unwrap_or(&Value::Null);
+                            if order.is_ascending {
+                                val_a.compare(val_b)
+                            } else {
+                                val_b.compare(val_a)
+                            }
+                        });
+                    }
+
+                    // Apply outer column projection and LIMIT
+                    let output_col_names = if columns.is_empty() {
+                        if let Some(first) = rows.first() {
+                            first.columns().to_vec()
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        columns.clone()
+                    };
+
+                    let mut result_rows = Vec::new();
+                    let skip_count = offset.unwrap_or(0);
+                    let mut skipped = 0;
+                    let mut distinct_set = RowDistinctSet::new();
+                    for row in rows {
+                        let projected = self.project_row(&row, &output_col_names)?;
+                        if distinct {
+                            if distinct_set.push_paginated(
+                                &mut result_rows,
+                                projected,
+                                skip_count,
+                                limit,
+                            ) {
+                                break;
+                            }
+                            continue;
+                        }
+                        if skipped < skip_count {
+                            skipped += 1;
+                            continue;
+                        }
+                        result_rows.push(projected);
+                        if let Some(lim) = limit
+                            && result_rows.len() >= lim
+                        {
+                            break;
+                        }
+                    }
+
+                    return Ok(result_rows);
+                }
+
+                let table_def = self
+                    .catalog
+                    .get_table(&table)
+                    .cloned()
+                    .ok_or_else(|| Error::TableNotFound(table.clone()))?;
+
+                let root_page = table_def.root_page;
+                let all_col_names = table_def.column_names();
+
+                let fts_query = if table_def.fts_config.is_some() {
+                    where_clause
+                        .as_ref()
+                        .and_then(|e| extract_fts_match_query(e, &table))
+                } else {
+                    None
+                };
+                let fts_scores: Option<HashMap<u64, f64>> = if let Some(ref q) = fts_query {
+                    self.ensure_fts_index(pager, &table_def)?;
+                    let idx_key = table.to_lowercase();
+                    let mut score_map = HashMap::new();
+                    if let Some(idx) = self.fts_indexes.get(&idx_key) {
+                        let total_docs = idx.total_docs().max(1);
+                        for (doc_id, score) in idx.search(q, total_docs) {
+                            score_map.insert(doc_id, -(score as f64));
+                        }
+                    }
+                    Some(score_map)
+                } else {
+                    None
+                };
+
+                let resolved_where = if let Some(ref expr) = where_clause {
+                    Some(self.resolve_where_expr(pager, expr)?)
+                } else {
+                    None
+                };
+
+                let resolved_having = if let Some(ref h_expr) = having {
+                    Some(self.resolve_where_expr(pager, h_expr)?)
+                } else {
+                    None
+                };
+
+                // Fast Point Lookup Optimization if WHERE matches single Primary Key column equals and no JOIN, ORDER BY, GROUP BY
+                let pk_idx = table_def.primary_key_index();
+                let is_int_pk = pk_idx.is_some_and(|idx| {
+                    table_def.columns[idx].data_type == crate::sql::catalog::DataType::Integer
+                });
+                let pk_range = if is_int_pk
+                    && as_of_timestamp.is_none()
+                    && let Some(pk_col_idx) = pk_idx
+                    && let Some(ref w_expr) = where_clause
+                {
+                    let pk_name = &table_def.columns[pk_col_idx].name;
+                    let (mn, mx, has) = extract_pk_signed_range(w_expr, pk_name);
+                    if has { Some((mn, mx)) } else { None }
+                } else {
+                    None
+                };
+
+                if as_of_timestamp.is_none()
+                    && join.is_none()
+                    && order_by.is_none()
+                    && group_by.is_none()
+                    && let (Some(pk_col_idx), Some(WhereExpr::Condition(cond))) =
+                        (pk_idx, &where_clause)
+                    && cond.op == BinaryOp::Equals
+                {
+                    let pk_name = &table_def.columns[pk_col_idx].name;
+                    if pk_name.eq_ignore_ascii_case(&cond.column)
+                        && let Value::Integer(target_key) = cond.value
+                    {
+                        if offset.unwrap_or(0) > 0 || limit == Some(0) {
+                            return Ok(Vec::new());
+                        }
+                        if let Some(payload) =
+                            self.btree.search(pager, root_page, target_key as u64)?
+                        {
+                            let full_row = decode_row(&payload, &all_col_names)?;
+                            let output_col_names = if columns.is_empty() {
+                                all_col_names.clone()
+                            } else {
+                                columns.clone()
+                            };
+                            let projected = self.project_row(&full_row, &output_col_names)?;
+                            return Ok(vec![projected]);
+                        } else {
+                            return Ok(Vec::new());
+                        }
+                    }
+                }
+
+                // Composite secondary index lookup for `WHERE a = X AND b = Y`
+                if as_of_timestamp.is_none()
+                    && join.is_none()
+                    && order_by.is_none()
+                    && group_by.is_none()
+                    && let Some(ref expr) = where_clause
+                {
+                    let mut and_eqs = HashMap::new();
+                    collect_and_eq_conditions(expr, &mut and_eqs);
+                    if and_eqs.len() >= 2 {
+                        let matched_comp_idx = self
+                            .catalog
+                            .indexes()
+                            .into_iter()
+                            .filter(|idx| {
+                                idx.table.eq_ignore_ascii_case(&table)
+                                    && partial_index_matches_query(idx, where_clause.as_ref())
+                            })
+                            .filter_map(|idx| {
+                                let cols = idx.target_columns();
+                                if cols.len() >= 2
+                                    && cols.iter().all(|c| and_eqs.contains_key(&c.to_lowercase()))
+                                {
+                                    Some((cols.len(), idx))
+                                } else {
+                                    None
+                                }
+                            })
+                            .max_by_key(|(len, _)| *len)
+                            .map(|(_, idx)| idx);
+
+                        if let Some(index_def) = matched_comp_idx {
+                            let tcols = index_def.target_columns();
+                            let dummy_cols: Vec<String> =
+                                tcols.iter().map(|c| (*c).to_string()).collect();
+                            let dummy_vals: Vec<Value> = tcols
+                                .iter()
+                                .map(|c| {
+                                    and_eqs
+                                        .get(&c.to_lowercase())
+                                        .cloned()
+                                        .unwrap_or(Value::Null)
+                                })
+                                .collect();
+                            let dummy_row = Row::new(dummy_cols, dummy_vals);
+                            if let Some((comp_val, _)) = extract_index_key_value(&dummy_row, &tcols)
+                            {
+                                let key = value_to_index_key(&comp_val);
+                                let mut matched_row_ids = Vec::new();
+                                if let Some(bucket) =
+                                    IndexBucket::load(&self.btree, pager, index_def.root_page, key)?
+                                    && let Some(rids) = bucket.get_row_ids(&comp_val)
+                                {
+                                    matched_row_ids.extend_from_slice(rids);
+                                }
+                                let output_col_names = if columns.is_empty() {
+                                    all_col_names.clone()
+                                } else {
+                                    columns.clone()
+                                };
+                                let mut result_rows = Vec::new();
+                                let skip_count = offset.unwrap_or(0);
+                                let mut skipped = 0;
+                                let mut distinct_set = RowDistinctSet::new();
+                                for rid in matched_row_ids {
+                                    if let Some(payload) =
+                                        self.btree.search(pager, root_page, rid)?
+                                    {
+                                        let full_row = decode_row(&payload, &all_col_names)?;
+                                        if let Some(ref r_expr) = resolved_where
+                                            && !row_matches_resolved(&full_row, r_expr)
+                                        {
+                                            continue;
+                                        }
+                                        let projected =
+                                            self.project_row(&full_row, &output_col_names)?;
+                                        if distinct {
+                                            if distinct_set.push_paginated(
+                                                &mut result_rows,
+                                                projected,
+                                                skip_count,
+                                                limit,
+                                            ) {
+                                                break;
+                                            }
+                                            continue;
+                                        }
+                                        if skipped < skip_count {
+                                            skipped += 1;
+                                            continue;
+                                        }
+                                        result_rows.push(projected);
+                                        if let Some(lim) = limit
+                                            && result_rows.len() >= lim
+                                        {
+                                            break;
+                                        }
+                                    }
+                                }
+                                return Ok(result_rows);
+                            }
+                        }
+                    }
+                }
+
+                // Cost-Based Optimizer (CBO) evaluation for Secondary Index vs Sequential Scan
+                let mut left_rows_from_index: Option<Vec<Row>> = None;
+                if as_of_timestamp.is_none()
+                    && join.is_none()
+                    && fts_scores.is_none()
+                    && let Some(ref w_expr) = where_clause
+                {
+                    let mut eq_conds = HashMap::new();
+                    collect_and_eq_conditions(w_expr, &mut eq_conds);
+                    let chosen_single = eq_conds.iter().find_map(|(col_key, val)| {
+                        self.find_usable_index_for_column(&table, col_key, Some(w_expr))
+                            .map(|idx| (col_key.clone(), val.clone(), idx))
+                    });
+                    if let Some((cond_col, cond_val, index_def)) = chosen_single {
+                        let optimizer = crate::sql::planner::CostOptimizer::new();
+                        let default_stats = crate::sql::planner::TableStats::new(&table, 100, 10);
+                        let stats = self
+                            .catalog
+                            .get_table_stats(&table)
+                            .unwrap_or(&default_stats);
+                        let sel = stats.estimate_selectivity(&cond_col, true);
+                        let index_cost =
+                            optimizer.estimate_index_scan(stats, &index_def.name, &cond_col, sel);
+                        let seq_cost = optimizer.estimate_seq_scan(stats, sel);
+
+                        // Execute Index Scan if Cost-Based Optimizer determines lower or equal cost
+                        if index_cost.total_cost <= seq_cost.total_cost {
+                            let key = value_to_index_key(&cond_val);
+                            let mut matched_row_ids = Vec::new();
+                            if let Some(bucket) =
+                                IndexBucket::load(&self.btree, pager, index_def.root_page, key)?
+                                && let Some(rids) = bucket.get_row_ids(&cond_val)
+                            {
+                                matched_row_ids.extend_from_slice(rids);
+                            }
+
+                            let can_stream_early_return = order_by.is_none()
+                                && group_by.is_none()
+                                && !is_aggregate_query(&columns)
+                                && !columns.iter().any(|c| has_window_function(c));
+
+                            if can_stream_early_return {
+                                let output_col_names = if columns.is_empty() {
+                                    all_col_names.clone()
+                                } else {
+                                    columns.clone()
+                                };
+                                let mut result_rows = Vec::new();
+                                let skip_count = offset.unwrap_or(0);
+                                let mut skipped = 0;
+                                let mut distinct_set = RowDistinctSet::new();
+                                for rid in matched_row_ids {
+                                    if let Some(payload) =
+                                        self.btree.search(pager, root_page, rid)?
+                                    {
+                                        let full_row = decode_row(&payload, &all_col_names)?;
+                                        if let Some(ref r_expr) = resolved_where
+                                            && !row_matches_resolved(&full_row, r_expr)
+                                        {
+                                            continue;
+                                        }
+                                        let projected =
+                                            self.project_row(&full_row, &output_col_names)?;
+                                        if distinct {
+                                            if distinct_set.push_paginated(
+                                                &mut result_rows,
+                                                projected,
+                                                skip_count,
+                                                limit,
+                                            ) {
+                                                break;
+                                            }
+                                            continue;
+                                        }
+                                        if skipped < skip_count {
+                                            skipped += 1;
+                                            continue;
+                                        }
+                                        result_rows.push(projected);
+                                        if let Some(lim) = limit
+                                            && result_rows.len() >= lim
+                                        {
+                                            break;
+                                        }
+                                    }
+                                }
+                                return Ok(result_rows);
+                            } else {
+                                let left_col_shared = Arc::new(all_col_names.clone());
+                                let mut fetched = Vec::with_capacity(matched_row_ids.len());
+                                for rid in matched_row_ids {
+                                    if let Some(payload) =
+                                        self.btree.search(pager, root_page, rid)?
+                                    {
+                                        let full_row =
+                                            decode_row_shared(&payload, &left_col_shared)?;
+                                        if let Some(ref r_expr) = resolved_where
+                                            && !row_matches_resolved(&full_row, r_expr)
+                                        {
+                                            continue;
+                                        }
+                                        fetched.push(full_row);
+                                    }
+                                }
+                                left_rows_from_index = Some(fetched);
+                            }
+                        }
+                    }
+                }
+
+                // Single-Pass Pushdown Aggregation Optimization using VectorizedAccumulator
+                if left_rows_from_index.is_none()
+                    && join.is_none()
+                    && order_by.is_none()
+                    && group_by.is_none()
+                    && as_of_timestamp.is_none()
+                    && !distinct
+                    && is_aggregate_query(&columns)
+                {
+                    struct PushdownAgg {
+                        spec: ParsedAggSpec,
+                        col_idx: Option<usize>,
+                        acc: crate::sql::vectorized::VectorizedAccumulator,
+                    }
+
+                    let mut aggs: Vec<PushdownAgg> = Vec::new();
+                    for col in &columns {
+                        if let Some(spec) = parse_aggregate_spec(col) {
+                            let col_idx = if spec.is_star {
+                                None
+                            } else {
+                                table_def.column_index(&spec.arg)
+                            };
+                            let acc = crate::sql::vectorized::VectorizedAccumulator::with_tracking(
+                                spec.needs_samples(),
+                                spec.needs_distinct(),
+                            );
+                            aggs.push(PushdownAgg { spec, col_idx, acc });
+                        } else {
+                            let output_name = parse_col_and_alias(col).1.unwrap_or(col).to_string();
+                            aggs.push(PushdownAgg {
+                                spec: ParsedAggSpec {
+                                    output_name,
+                                    func: String::new(),
+                                    arg: String::new(),
+                                    percentile_q: None,
+                                    is_star: false,
+                                    is_distinct: false,
+                                },
+                                col_idx: table_def.column_index(col),
+                                acc: crate::sql::vectorized::VectorizedAccumulator::new(),
+                            });
+                        }
+                    }
+
+                    let mut needed_mask = vec![false; all_col_names.len()];
+                    for agg in &aggs {
+                        if let Some(idx) = agg.col_idx
+                            && idx < needed_mask.len()
+                        {
+                            needed_mask[idx] = true;
+                        }
+                    }
+                    let can_project_where = resolved_where.as_ref().is_none_or(|r| {
+                        mark_resolved_where_columns(r, &table_def, &mut needed_mask)
+                    });
+
+                    let mut row_vals = Vec::with_capacity(all_col_names.len());
+                    let left_col_shared = Arc::new(all_col_names.clone());
+                    let agg_callback = |payload: &[u8]| -> Result<bool> {
+                        let full_row;
+                        let vals: &[Value] = if can_project_where {
+                            decode_row_values_into_projected(payload, &needed_mask, &mut row_vals)?;
+                            if let Some(ref r_expr) = resolved_where
+                                && !slice_matches_resolved(&row_vals, &table_def, r_expr)
+                            {
+                                return Ok(true);
+                            }
+                            &row_vals
+                        } else {
+                            full_row = decode_row_shared(payload, &left_col_shared)?;
+                            if let Some(ref r_expr) = resolved_where
+                                && !row_matches_resolved(&full_row, r_expr)
+                            {
+                                return Ok(true);
+                            }
+                            full_row.values()
+                        };
+                        for agg in &mut aggs {
+                            if agg.spec.is_star {
+                                agg.acc.count_all += 1;
+                                agg.acc.count += 1;
+                            } else if let Some(idx) = agg.col_idx
+                                && let Some(val) = vals.get(idx)
+                            {
+                                agg.acc.accumulate_value(val);
+                            }
+                        }
+                        Ok(true)
+                    };
+                    if let Some((pk_min, pk_max)) = pk_range {
+                        let mut cb = agg_callback;
+                        self.btree.scan_signed_i64_with_ref(
+                            pager,
+                            root_page,
+                            pk_min,
+                            pk_max,
+                            false,
+                            |_rid, payload| cb(payload),
+                        )?;
+                    } else {
+                        let mut cb = agg_callback;
+                        self.btree
+                            .scan_with_ref(pager, root_page, |_rid, payload| cb(payload))?;
+                    }
+
+                    let mut out_cols = Vec::with_capacity(aggs.len());
+                    let mut out_vals = Vec::with_capacity(aggs.len());
+                    for mut agg in aggs {
+                        let out_name = agg.spec.output_name.clone();
+                        let val = agg.spec.finalize(&mut agg.acc);
+                        out_cols.push(out_name);
+                        out_vals.push(val);
+                    }
+                    return Ok(vec![Row::new(out_cols, out_vals)]);
+                }
+
+                // Streaming Vectorized Hash Aggregation Pushdown for GROUP BY
+                if let Some(ref gb_cols) = group_by
+                    && join.is_none()
+                    && as_of_timestamp.is_none()
+                    && fts_scores.is_none()
+                    && !columns.iter().any(|c| has_window_function(c))
+                {
+                    let resolved_having = if let Some(ref h) = having {
+                        Some(self.resolve_where_expr(pager, h)?)
+                    } else {
+                        None
+                    };
+
+                    let output_cols = if columns.is_empty() {
+                        gb_cols.clone()
+                    } else {
+                        columns.clone()
+                    };
+
+                    enum GroupColPlan {
+                        GroupKey {
+                            out_name: String,
+                            key_pos: usize,
+                        },
+                        Aggregate {
+                            spec: ParsedAggSpec,
+                        },
+                        FirstValue {
+                            out_name: String,
+                            col_idx: Option<usize>,
+                        },
+                    }
+
+                    let gb_indices: Vec<Option<usize>> =
+                        gb_cols.iter().map(|c| table_def.column_index(c)).collect();
+                    let mut plans = Vec::with_capacity(output_cols.len());
+                    let mut agg_specs_template: Vec<(Option<usize>, bool, bool, bool)> = Vec::new();
+                    let mut needed_mask = vec![false; all_col_names.len()];
+
+                    for idx_opt in &gb_indices {
+                        if let Some(i) = *idx_opt
+                            && i < needed_mask.len()
+                        {
+                            needed_mask[i] = true;
+                        }
+                    }
+
+                    for col in &output_cols {
+                        if let Some(spec) = parse_aggregate_spec(col) {
+                            let col_idx = if spec.is_star {
+                                None
+                            } else {
+                                table_def.column_index(&spec.arg)
+                            };
+                            if let Some(i) = col_idx
+                                && i < needed_mask.len()
+                            {
+                                needed_mask[i] = true;
+                            }
+                            agg_specs_template.push((
+                                col_idx,
+                                spec.is_star,
+                                spec.needs_samples(),
+                                spec.needs_distinct(),
+                            ));
+                            plans.push(GroupColPlan::Aggregate { spec });
+                        } else {
+                            let (raw_expr, alias_opt) = parse_col_and_alias(col);
+                            let out_name = alias_opt.unwrap_or(raw_expr).to_string();
+                            if let Some(pos) = gb_cols
+                                .iter()
+                                .position(|g| g.eq_ignore_ascii_case(raw_expr))
+                            {
+                                plans.push(GroupColPlan::GroupKey {
+                                    out_name,
+                                    key_pos: pos,
+                                });
+                            } else {
+                                let col_idx = table_def.column_index(raw_expr);
+                                if let Some(i) = col_idx
+                                    && i < needed_mask.len()
+                                {
+                                    needed_mask[i] = true;
+                                }
+                                plans.push(GroupColPlan::FirstValue { out_name, col_idx });
+                            }
+                        }
+                    }
+
+                    struct StreamGroupState {
+                        keys: Vec<Value>,
+                        accs: Vec<crate::sql::vectorized::VectorizedAccumulator>,
+                        first_vals: Vec<(usize, Value)>,
+                    }
+
+                    let can_project_where = resolved_where.as_ref().is_none_or(|r| {
+                        mark_resolved_where_columns(r, &table_def, &mut needed_mask)
+                    });
+                    let left_col_shared = Arc::new(all_col_names.clone());
+                    let mut group_map: HashMap<Vec<HashableValue>, usize> = HashMap::new();
+                    let mut groups: Vec<StreamGroupState> = Vec::new();
+                    let mut row_vals = Vec::with_capacity(all_col_names.len());
+                    let mut hash_key_buf: Vec<HashableValue> = Vec::with_capacity(gb_cols.len());
+
+                    let mut group_scan_cb = |_row_id: u64, payload: &[u8]| -> Result<bool> {
+                        let full_row;
+                        let vals: &[Value] = if can_project_where {
+                            decode_row_values_into_projected(payload, &needed_mask, &mut row_vals)?;
+                            if let Some(ref r_expr) = resolved_where
+                                && !slice_matches_resolved(&row_vals, &table_def, r_expr)
+                            {
+                                return Ok(true);
+                            }
+                            &row_vals
+                        } else {
+                            full_row = decode_row_shared(payload, &left_col_shared)?;
+                            if let Some(ref r_expr) = resolved_where
+                                && !row_matches_resolved(&full_row, r_expr)
+                            {
+                                return Ok(true);
+                            }
+                            full_row.values()
+                        };
+
+                        hash_key_buf.clear();
+                        for idx_opt in &gb_indices {
+                            let v = idx_opt.and_then(|i| vals.get(i)).unwrap_or(&Value::Null);
+                            hash_key_buf.push(HashableValue::from(v));
+                        }
+
+                        let g_pos = if let Some(&pos) = group_map.get(&hash_key_buf) {
+                            pos
+                        } else {
+                            let pos = groups.len();
+                            let key_vals: Vec<Value> = gb_indices
+                                .iter()
+                                .map(|idx_opt| {
+                                    idx_opt
+                                        .and_then(|i| vals.get(i).cloned())
+                                        .unwrap_or(Value::Null)
+                                })
+                                .collect();
+                            let accs = agg_specs_template
+                                .iter()
+                                .map(|&(_, _, s, d)| {
+                                    crate::sql::vectorized::VectorizedAccumulator::with_tracking(
+                                        s, d,
+                                    )
+                                })
+                                .collect();
+                            let mut fv = Vec::new();
+                            for p in &plans {
+                                if let GroupColPlan::FirstValue {
+                                    col_idx: Some(ci), ..
+                                } = p
+                                {
+                                    fv.push((*ci, vals.get(*ci).cloned().unwrap_or(Value::Null)));
+                                }
+                            }
+                            group_map.insert(hash_key_buf.clone(), pos);
+                            groups.push(StreamGroupState {
+                                keys: key_vals,
+                                accs,
+                                first_vals: fv,
+                            });
+                            pos
+                        };
+
+                        let state = &mut groups[g_pos];
+                        for (acc_idx, &(col_idx, is_star, _, _)) in
+                            agg_specs_template.iter().enumerate()
+                        {
+                            if is_star {
+                                state.accs[acc_idx].count_all += 1;
+                                state.accs[acc_idx].count += 1;
+                            } else if let Some(ci) = col_idx
+                                && let Some(v) = vals.get(ci)
+                            {
+                                state.accs[acc_idx].accumulate_value(v);
+                            }
+                        }
+                        Ok(true)
+                    };
+
+                    if let Some((pk_min, pk_max)) = pk_range {
+                        self.btree.scan_signed_i64_with_ref(
+                            pager,
+                            root_page,
+                            pk_min,
+                            pk_max,
+                            false,
+                            |rid, payload| group_scan_cb(rid as u64, payload),
+                        )?;
+                    } else {
+                        self.btree.scan_with_ref(pager, root_page, |rid, payload| {
+                            group_scan_cb(rid, payload)
+                        })?;
+                    }
+
+                    let mut result_rows = Vec::with_capacity(groups.len());
+                    for mut state in groups {
+                        let mut g_cols = Vec::with_capacity(plans.len());
+                        let mut g_vals = Vec::with_capacity(plans.len());
+                        let mut acc_cursor = 0usize;
+                        for plan in &plans {
+                            match plan {
+                                GroupColPlan::GroupKey { out_name, key_pos } => {
+                                    g_cols.push(out_name.clone());
+                                    g_vals.push(state.keys[*key_pos].clone());
+                                }
+                                GroupColPlan::Aggregate { spec } => {
+                                    g_cols.push(spec.output_name.clone());
+                                    g_vals.push(spec.finalize(&mut state.accs[acc_cursor]));
+                                    acc_cursor += 1;
+                                }
+                                GroupColPlan::FirstValue { out_name, col_idx } => {
+                                    g_cols.push(out_name.clone());
+                                    let v = col_idx
+                                        .and_then(|ci| {
+                                            state
+                                                .first_vals
+                                                .iter()
+                                                .find(|(i, _)| *i == ci)
+                                                .map(|(_, val)| val.clone())
+                                        })
+                                        .unwrap_or(Value::Null);
+                                    g_vals.push(v);
+                                }
+                            }
+                        }
+                        let row = Row::new(g_cols, g_vals);
+                        if let Some(ref h_expr) = resolved_having
+                            && !row_matches_resolved(&row, h_expr)
+                        {
+                            continue;
+                        }
+                        result_rows.push(row);
+                    }
+
+                    if let Some(order) = order_by {
+                        result_rows.sort_by(|a, b| {
+                            let val_a = a.get_value(&order.column).unwrap_or(&Value::Null);
+                            let val_b = b.get_value(&order.column).unwrap_or(&Value::Null);
+                            if order.is_ascending {
+                                val_a.compare(val_b)
+                            } else {
+                                val_b.compare(val_a)
+                            }
+                        });
+                    }
+                    if distinct {
+                        let mut deduped = Vec::with_capacity(result_rows.len());
+                        let mut distinct_set = RowDistinctSet::new();
+                        for r in result_rows {
+                            distinct_set.push_paginated(&mut deduped, r, 0, None);
+                        }
+                        result_rows = deduped;
+                    }
+                    if let Some(off) = offset {
+                        if off < result_rows.len() {
+                            result_rows = result_rows.split_off(off);
+                        } else {
+                            result_rows.clear();
+                        }
+                    }
+                    if let Some(lim) = limit {
+                        result_rows.truncate(lim);
+                    }
+                    return Ok(result_rows);
+                }
+
+                // Table scan left table
+                let mut left_rows = Vec::new();
+                if let Some(ts) = as_of_timestamp {
+                    let is_versioned =
+                        table_def.system_versioning || self.default_system_versioning;
+                    if !is_versioned && self.catalog.get_table("__sys_time_travel").is_none() {
+                        return Err(Error::SqlSyntax(format!(
+                            "Table '{}' does not have SYSTEM_VERSIONING enabled. Enable with PRAGMA time_travel = ON or CREATE TABLE ... WITH (SYSTEM_VERSIONING = TRUE)",
+                            table
+                        )));
+                    }
+                    if let Some(sys_table) = self.catalog.get_table("__sys_time_travel") {
+                        let cells = self.btree.scan(pager, sys_table.root_page)?;
+                        for cell in cells {
+                            if let Ok(rec) = serde_json::from_slice::<TemporalRecord>(&cell.payload)
+                                && rec.table_name.eq_ignore_ascii_case(&table)
+                                && rec.valid_from <= ts
+                                && rec.valid_to > ts
+                            {
+                                let full_row = decode_row(&rec.payload, &all_col_names)?;
+                                if let Some(ref r_expr) = resolved_where
+                                    && !row_matches_resolved(&full_row, r_expr)
+                                {
+                                    continue;
+                                }
+                                left_rows.push(full_row);
+                            }
+                        }
+                    }
+                }
+
+                // ── Direct Join Projection Pre-resolution ──
+                // Check if the query is a simple SELECT over a JOIN without GROUP BY or aggregates.
+                // If so, we pre-resolve output column origins (Left vs Right table) to:
+                // 1. Skip decoding unneeded columns during both table scans (using needed_mask)
+                // 2. Eliminate intermediate merged Row allocations and re-projection overhead
+                let (direct_join_sources, left_needed_mask) = if let Some(ref jc) = join {
+                    if let Some(right_table_def) = self.catalog.get_table(&jc.table) {
+                        let can_direct = order_by.is_none()
+                            && group_by.is_none()
+                            && !distinct
+                            && !is_aggregate_query(&columns)
+                            && !columns.is_empty();
+                        if can_direct {
+                            let mut sources = Vec::with_capacity(columns.len());
+                            let mut ok = true;
+                            for col in &columns {
+                                if col.contains('(') || col.contains(' ') {
+                                    ok = false;
+                                    break;
+                                }
+                                if let Some((tbl, c)) = col.split_once('.') {
+                                    if tbl.eq_ignore_ascii_case(&table) {
+                                        if let Some(idx) = table_def.column_index(c) {
+                                            sources.push(JoinOutputCol::Left(idx));
+                                            continue;
+                                        }
+                                    } else if tbl.eq_ignore_ascii_case(&jc.table)
+                                        && let Some(idx) = right_table_def.column_index(c)
+                                    {
+                                        sources.push(JoinOutputCol::Right(idx));
+                                        continue;
+                                    }
+                                    ok = false;
+                                    break;
+                                } else {
+                                    let in_l = table_def.column_index(col);
+                                    let in_r = right_table_def.column_index(col);
+                                    match (in_l, in_r) {
+                                        (Some(idx), None) => sources.push(JoinOutputCol::Left(idx)),
+                                        (None, Some(idx)) => {
+                                            sources.push(JoinOutputCol::Right(idx))
+                                        }
+                                        _ => {
+                                            ok = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if ok {
+                                let mut mask = vec![false; all_col_names.len()];
+                                if let Some(l_idx) =
+                                    resolve_table_col_index(&table_def, &jc.left_col)
+                                    && l_idx < mask.len()
+                                {
+                                    mask[l_idx] = true;
+                                }
+                                for src in &sources {
+                                    if let JoinOutputCol::Left(idx) = src
+                                        && *idx < mask.len()
+                                    {
+                                        mask[*idx] = true;
+                                    }
+                                }
+                                (Some(sources), Some(mask))
+                            } else {
+                                (None, None)
+                            }
+                        } else {
+                            (None, None)
+                        }
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                };
+
+                // ── Indexed Seek Join (O(M log N) B-Tree Primary Key Point Lookup) ──
+                // When an INNER JOIN has a Primary Key on either the left or right table,
+                // we bypass the full table scan and hash table construction entirely,
+                // streaming the driving table and performing O(log N) point lookups into the PK B-Tree.
+                if let (Some(jc), Some(sources)) = (join.as_ref(), direct_join_sources.as_ref())
+                    && as_of_timestamp.is_none()
+                    && where_clause.is_none()
+                    && jc.join_type == JoinType::Inner
+                    && let Some(right_table_def) = self.catalog.get_table(&jc.table)
+                {
+                    let l_col_idx = resolve_table_col_index(&table_def, &jc.left_col);
+                    let r_col_idx = resolve_table_col_index(right_table_def, &jc.right_col);
+
+                    if let (Some(l_idx), Some(r_idx)) = (l_col_idx, r_col_idx) {
+                        let output_col_shared = Arc::new(columns.clone());
+                        let left_col_shared = Arc::new(all_col_names.clone());
+                        let right_col_names = right_table_def.column_names();
+                        let right_col_shared = Arc::new(right_col_names.clone());
+                        let skip_count = offset.unwrap_or(0);
+
+                        // Case A: Left table join key is its PRIMARY KEY
+                        // Driving table: right table (e.g. orders). Seek target: left table (users).
+                        if table_def.primary_key_index() == Some(l_idx) {
+                            let mut right_mask = vec![false; right_col_names.len()];
+                            right_mask[r_idx] = true;
+                            for src in sources {
+                                if let JoinOutputCol::Right(idx) = src
+                                    && *idx < right_mask.len()
+                                {
+                                    right_mask[*idx] = true;
+                                }
+                            }
+
+                            let mut driving_tuples: Vec<(i64, Vec<Value>)> = Vec::new();
+                            let mut scratch_right = Vec::with_capacity(right_col_names.len());
+                            self.btree.scan_with_ref(
+                                pager,
+                                right_table_def.root_page,
+                                |_row_id, payload| {
+                                    scratch_right.clear();
+                                    decode_row_values_into_projected(
+                                        payload,
+                                        &right_mask,
+                                        &mut scratch_right,
+                                    )?;
+                                    if let Some(Value::Integer(k)) = scratch_right.get(r_idx) {
+                                        driving_tuples
+                                            .push((*k, std::mem::take(&mut scratch_right)));
+                                    }
+                                    Ok(true)
+                                },
+                            )?;
+
+                            let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
+                            let mut final_rows = Vec::with_capacity(
+                                driving_tuples.len().min(limit.unwrap_or(usize::MAX)),
+                            );
+                            let mut skipped = 0;
+                            let mut probe_left = Vec::with_capacity(left_col_shared.len());
+
+                            for (k, r_vals) in driving_tuples {
+                                if let Some(l_payload) =
+                                    self.btree.search(pager, root_page, k as u64)?
+                                {
+                                    if skipped < skip_count {
+                                        skipped += 1;
+                                        continue;
+                                    }
+                                    probe_left.clear();
+                                    decode_row_values_into_projected(
+                                        &l_payload,
+                                        left_mask,
+                                        &mut probe_left,
+                                    )?;
+                                    let mut vals = Vec::with_capacity(sources.len());
+                                    for src in sources {
+                                        match src {
+                                            JoinOutputCol::Left(idx) => vals.push(
+                                                probe_left
+                                                    .get(*idx)
+                                                    .cloned()
+                                                    .unwrap_or(Value::Null),
+                                            ),
+                                            JoinOutputCol::Right(idx) => vals.push(
+                                                r_vals.get(*idx).cloned().unwrap_or(Value::Null),
+                                            ),
+                                        }
+                                    }
+                                    final_rows.push(Row::with_shared_columns(
+                                        output_col_shared.clone(),
+                                        vals,
+                                    ));
+                                    if let Some(lim) = limit
+                                        && final_rows.len() >= lim
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+
+                            return Ok(final_rows);
+                        }
+
+                        // Case B: Right table join key is its PRIMARY KEY
+                        // Driving table: left table. Seek target: right table.
+                        if right_table_def.primary_key_index() == Some(r_idx) {
+                            let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
+                            let mut driving_tuples: Vec<(i64, Vec<Value>)> = Vec::new();
+                            let mut scratch_left = Vec::with_capacity(left_col_shared.len());
+                            self.btree
+                                .scan_with_ref(pager, root_page, |_row_id, payload| {
+                                    scratch_left.clear();
+                                    decode_row_values_into_projected(
+                                        payload,
+                                        left_mask,
+                                        &mut scratch_left,
+                                    )?;
+                                    if let Some(Value::Integer(k)) = scratch_left.get(l_idx) {
+                                        driving_tuples
+                                            .push((*k, std::mem::take(&mut scratch_left)));
+                                    }
+                                    Ok(true)
+                                })?;
+
+                            let mut right_mask = vec![false; right_col_names.len()];
+                            right_mask[r_idx] = true;
+                            for src in sources {
+                                if let JoinOutputCol::Right(idx) = src
+                                    && *idx < right_mask.len()
+                                {
+                                    right_mask[*idx] = true;
+                                }
+                            }
+
+                            let mut final_rows = Vec::with_capacity(
+                                driving_tuples.len().min(limit.unwrap_or(usize::MAX)),
+                            );
+                            let mut skipped = 0;
+                            let mut probe_right = Vec::with_capacity(right_col_shared.len());
+
+                            for (k, l_vals) in driving_tuples {
+                                if let Some(r_payload) =
+                                    self.btree
+                                        .search(pager, right_table_def.root_page, k as u64)?
+                                {
+                                    if skipped < skip_count {
+                                        skipped += 1;
+                                        continue;
+                                    }
+                                    probe_right.clear();
+                                    decode_row_values_into_projected(
+                                        &r_payload,
+                                        &right_mask,
+                                        &mut probe_right,
+                                    )?;
+                                    let mut vals = Vec::with_capacity(sources.len());
+                                    for src in sources {
+                                        match src {
+                                            JoinOutputCol::Left(idx) => vals.push(
+                                                l_vals.get(*idx).cloned().unwrap_or(Value::Null),
+                                            ),
+                                            JoinOutputCol::Right(idx) => vals.push(
+                                                probe_right
+                                                    .get(*idx)
+                                                    .cloned()
+                                                    .unwrap_or(Value::Null),
+                                            ),
+                                        }
+                                    }
+                                    final_rows.push(Row::with_shared_columns(
+                                        output_col_shared.clone(),
+                                        vals,
+                                    ));
+                                    if let Some(lim) = limit
+                                        && final_rows.len() >= lim
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+
+                            return Ok(final_rows);
+                        }
+                    }
+                }
+
+                let wants_fts_scores = fts_scores.is_some()
+                    && (columns.iter().any(|c| {
+                        let cl = c.to_ascii_lowercase();
+                        cl == "rank" || cl.starts_with("bm25(")
+                    }) || order_by.as_ref().is_some_and(|o| {
+                        let ol = o.column.to_ascii_lowercase();
+                        ol == "rank" || ol.starts_with("bm25(")
+                    }));
+                let mut fts_left_col_shared: Option<Arc<Vec<String>>> = None;
+
+                let mut order_by_satisfied = false;
+                if let Some(fetched) = left_rows_from_index {
+                    left_rows = fetched;
+                } else if as_of_timestamp.is_none() {
+                    let has_win = columns.iter().any(|c| has_window_function(c));
+                    let pk_order_desc = if is_int_pk
+                        && join.is_none()
+                        && group_by.is_none()
+                        && !is_aggregate_query(&columns)
+                        && !has_win
+                        && !wants_fts_scores
+                        && let (Some(pk_col_idx), Some(ord)) = (pk_idx, order_by.as_ref())
+                    {
+                        let pk_name = &table_def.columns[pk_col_idx].name;
+                        let ord_col = ord
+                            .column
+                            .split_once('.')
+                            .and_then(|(tbl, c)| tbl.eq_ignore_ascii_case(&table).then_some(c))
+                            .unwrap_or(ord.column.as_str());
+                        let shadowed_by_alias = columns.iter().any(|c| {
+                            let (expr_part, alias_opt) = parse_col_and_alias(c);
+                            alias_opt.is_some_and(|a| {
+                                a.eq_ignore_ascii_case(ord_col)
+                                    && !col_name_matches(expr_part, pk_name)
+                            })
+                        });
+                        if !shadowed_by_alias && pk_name.eq_ignore_ascii_case(ord_col) {
+                            order_by_satisfied = true;
+                            Some(!ord.is_ascending)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    let can_early_terminate = join.is_none()
+                        && (order_by.is_none() || order_by_satisfied)
+                        && group_by.is_none()
+                        && !distinct
+                        && !has_win
+                        && !is_aggregate_query(&columns);
+                    let needed_rows = if can_early_terminate {
+                        limit.map(|lim| offset.unwrap_or(0).saturating_add(lim))
+                    } else {
+                        None
+                    };
+                    if needed_rows == Some(0) {
+                        return Ok(Vec::new());
+                    }
+
+                    let left_col_shared = Arc::new(all_col_names.clone());
+                    if wants_fts_scores {
+                        let mut extended = all_col_names.clone();
+                        extended.push("rank".to_string());
+                        extended.push(format!("bm25({table})"));
+                        fts_left_col_shared = Some(Arc::new(extended));
+                    }
+
+                    let mut handle_row = |row_id: u64, payload: &[u8]| -> Result<bool> {
+                        let mut full_row = if let Some(ref mask) = left_needed_mask {
+                            decode_row_shared_projected(payload, &left_col_shared, mask)?
+                        } else {
+                            decode_row_shared(payload, &left_col_shared)?
+                        };
+
+                        // Check WHERE filter on left table (with FTS5 table MATCH support)
+                        if let Some(ref r_expr) = resolved_where {
+                            if let Some(ref scores) = fts_scores {
+                                let eff_expr = resolve_fts_match_predicate(
+                                    r_expr,
+                                    &table,
+                                    scores.contains_key(&row_id),
+                                );
+                                if !row_matches_resolved(&full_row, &eff_expr) {
+                                    return Ok(true);
+                                }
+                            } else if !row_matches_resolved(&full_row, r_expr) {
+                                return Ok(true);
+                            }
+                        }
+
+                        if let (Some(scores), Some(ext_cols)) =
+                            (fts_scores.as_ref(), fts_left_col_shared.as_ref())
+                        {
+                            let rank_val = scores.get(&row_id).copied().unwrap_or(0.0);
+                            let mut vals = full_row.values().to_vec();
+                            vals.push(Value::Real(rank_val));
+                            vals.push(Value::Real(rank_val));
+                            full_row = Row::with_shared_columns(ext_cols.clone(), vals);
+                        }
+
+                        left_rows.push(full_row);
+                        if let Some(needed) = needed_rows
+                            && left_rows.len() >= needed
+                        {
+                            return Ok(false);
+                        }
+                        Ok(true)
+                    };
+
+                    if pk_range.is_some() || pk_order_desc.is_some() {
+                        let pk_min = pk_range.and_then(|r| r.0);
+                        let pk_max = pk_range.and_then(|r| r.1);
+                        let desc = pk_order_desc.unwrap_or(false);
+                        self.btree.scan_signed_i64_with_ref(
+                            pager,
+                            root_page,
+                            pk_min,
+                            pk_max,
+                            desc,
+                            |rid, payload| handle_row(rid as u64, payload),
+                        )?;
+                    } else {
+                        self.btree
+                            .scan_with_ref(pager, root_page, |row_id, payload| {
+                                handle_row(row_id, payload)
+                            })?;
+                    }
+                }
+
+                // Execute JOIN if present — optimized O(N+M) Hash Join
+                if let Some(join_clause) = join {
+                    let right_table_def = self
+                        .catalog
+                        .get_table(&join_clause.table)
+                        .ok_or_else(|| Error::TableNotFound(join_clause.table.clone()))?;
+                    let right_col_names = right_table_def.column_names();
+                    let right_col_shared = Arc::new(right_col_names.clone());
+
+                    // Precompute merged column names once
+                    let mut merged_cols_template =
+                        Vec::with_capacity(all_col_names.len() + right_col_names.len());
+                    for c in &all_col_names {
+                        merged_cols_template.push(format!("{}.{}", table, c));
+                    }
+                    for c in &right_col_names {
+                        merged_cols_template.push(format!("{}.{}", join_clause.table, c));
+                    }
+                    let merged_cols_shared = Arc::new(merged_cols_template);
+
+                    // Resolve join column indices (supporting qualified names like 'users.id' and 'orders.user_id')
+                    let l_col_idx = resolve_table_col_index(&table_def, &join_clause.left_col);
+                    let r_col_idx =
+                        resolve_table_col_index(right_table_def, &join_clause.right_col);
+
+                    // Build hash table on right (smaller) table: O(M)
+                    let mut right_rows = Vec::new();
+                    if let Some(ts) = as_of_timestamp {
+                        if let Some(sys_table) = self.catalog.get_table("__sys_time_travel") {
+                            self.btree.scan_with(pager, sys_table.root_page, |cell| {
+                                if let Ok(rec) =
+                                    serde_json::from_slice::<TemporalRecord>(&cell.payload)
+                                    && rec.table_name.eq_ignore_ascii_case(&join_clause.table)
+                                    && rec.valid_from <= ts
+                                    && rec.valid_to > ts
+                                {
+                                    let r_row = decode_row_shared(&rec.payload, &right_col_shared)?;
+                                    right_rows.push(r_row);
+                                }
+                                Ok(true)
+                            })?;
+                        }
+                    } else {
+                        let right_mask = if let Some(ref sources) = direct_join_sources {
+                            let mut mask = vec![false; right_col_names.len()];
+                            if let Some(r_idx) = r_col_idx
+                                && r_idx < mask.len()
+                            {
+                                mask[r_idx] = true;
+                            }
+                            for src in sources {
+                                if let JoinOutputCol::Right(idx) = src
+                                    && *idx < mask.len()
+                                {
+                                    mask[*idx] = true;
+                                }
+                            }
+                            Some(mask)
+                        } else {
+                            None
+                        };
+
+                        self.btree
+                            .scan_with(pager, right_table_def.root_page, |r_cell| {
+                                let r_row = if let Some(ref mask) = right_mask {
+                                    decode_row_shared_projected(
+                                        &r_cell.payload,
+                                        &right_col_shared,
+                                        mask,
+                                    )?
+                                } else {
+                                    decode_row_shared(&r_cell.payload, &right_col_shared)?
+                                };
+                                right_rows.push(r_row);
+                                Ok(true)
+                            })?;
+                    }
+
+                    // Check whether join key is an integer column for fast u64-keyed HashMap
+                    let all_int_keys = r_col_idx.is_some_and(|idx| {
+                        right_rows
+                            .first()
+                            .and_then(|r| r.values().get(idx))
+                            .is_some_and(|v| matches!(v, Value::Integer(_)))
+                    }) && l_col_idx.is_some_and(|idx| {
+                        left_rows
+                            .first()
+                            .and_then(|l| l.values().get(idx))
+                            .is_some_and(|v| matches!(v, Value::Integer(_)))
+                    });
+
+                    let is_right_or_full = join_clause.join_type == JoinType::Right
+                        || join_clause.join_type == JoinType::Full;
+                    let mut joined_rows = Vec::with_capacity(left_rows.len());
+
+                    if all_int_keys && !is_right_or_full {
+                        // ── Fast path: FastIntHasher + IntEntry (zero heap allocations for unique keys) ──
+                        let r_idx_col = r_col_idx.unwrap();
+                        let l_idx_col = l_col_idx.unwrap();
+                        let mut int_hash: HashMap<i64, IntEntry, FastIntBuildHasher> =
+                            HashMap::with_capacity_and_hasher(
+                                right_rows.len(),
+                                FastIntBuildHasher::default(),
+                            );
+
+                        for (r_idx, r_row) in right_rows.iter().enumerate() {
+                            if let Some(Value::Integer(k)) = r_row.values().get(r_idx_col) {
+                                match int_hash.get_mut(k) {
+                                    Some(IntEntry::One(prev)) => {
+                                        let first = *prev;
+                                        int_hash.insert(*k, IntEntry::Many(vec![first, r_idx]));
+                                    }
+                                    Some(IntEntry::Many(list)) => {
+                                        list.push(r_idx);
+                                    }
+                                    None => {
+                                        int_hash.insert(*k, IntEntry::One(r_idx));
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Some(ref direct_sources) = direct_join_sources {
+                            // ── Direct Join Projection: Zero intermediate Row allocations ──
+                            let output_col_shared = Arc::new(columns.clone());
+                            let mut final_rows =
+                                Vec::with_capacity(left_rows.len().min(right_rows.len() * 2));
+
+                            for l_row in &left_rows {
+                                let mut matched = false;
+                                if let Some(Value::Integer(lk)) = l_row.values().get(l_idx_col)
+                                    && let Some(entry) = int_hash.get(lk)
+                                {
+                                    matched = true;
+                                    let r_slice = match entry {
+                                        IntEntry::One(idx) => std::slice::from_ref(idx),
+                                        IntEntry::Many(v) => v.as_slice(),
+                                    };
+                                    for &r_idx in r_slice {
+                                        let r_row = &right_rows[r_idx];
+                                        let mut vals = Vec::with_capacity(direct_sources.len());
+                                        for src in direct_sources {
+                                            match src {
+                                                JoinOutputCol::Left(idx) => {
+                                                    vals.push(
+                                                        l_row
+                                                            .values()
+                                                            .get(*idx)
+                                                            .cloned()
+                                                            .unwrap_or(Value::Null),
+                                                    );
+                                                }
+                                                JoinOutputCol::Right(idx) => {
+                                                    vals.push(
+                                                        r_row
+                                                            .values()
+                                                            .get(*idx)
+                                                            .cloned()
+                                                            .unwrap_or(Value::Null),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        final_rows.push(Row::with_shared_columns(
+                                            output_col_shared.clone(),
+                                            vals,
+                                        ));
+                                    }
+                                }
+                                if !matched
+                                    && (join_clause.join_type == JoinType::Left
+                                        || join_clause.is_left)
+                                {
+                                    let mut vals = Vec::with_capacity(direct_sources.len());
+                                    for src in direct_sources {
+                                        match src {
+                                            JoinOutputCol::Left(idx) => {
+                                                vals.push(
+                                                    l_row
+                                                        .values()
+                                                        .get(*idx)
+                                                        .cloned()
+                                                        .unwrap_or(Value::Null),
+                                                );
+                                            }
+                                            JoinOutputCol::Right(_) => {
+                                                vals.push(Value::Null);
+                                            }
+                                        }
+                                    }
+                                    final_rows.push(Row::with_shared_columns(
+                                        output_col_shared.clone(),
+                                        vals,
+                                    ));
+                                }
+                            }
+
+                            // Apply offset / limit if requested
+                            let skip_count = offset.unwrap_or(0);
+                            if skip_count > 0 || limit.is_some() {
+                                let mut sliced = Vec::new();
+                                let mut skipped = 0;
+                                for r in final_rows {
+                                    if skipped < skip_count {
+                                        skipped += 1;
+                                        continue;
+                                    }
+                                    sliced.push(r);
+                                    if let Some(lim) = limit
+                                        && sliced.len() >= lim
+                                    {
+                                        break;
+                                    }
+                                }
+                                return Ok(sliced);
+                            }
+                            return Ok(final_rows);
+                        }
+
+                        // Fallback within integer path when direct_sources is None (e.g. ORDER BY present)
+                        for l_row in &left_rows {
+                            let mut matched = false;
+                            if let Some(Value::Integer(lk)) = l_row.values().get(l_idx_col)
+                                && let Some(entry) = int_hash.get(lk)
+                            {
+                                matched = true;
+                                let r_slice = match entry {
+                                    IntEntry::One(idx) => std::slice::from_ref(idx),
+                                    IntEntry::Many(v) => v.as_slice(),
+                                };
+                                for &r_idx in r_slice {
+                                    let r_row = &right_rows[r_idx];
+                                    let mut merged_vals = Vec::with_capacity(
+                                        l_row.values().len() + r_row.values().len(),
+                                    );
+                                    merged_vals.extend_from_slice(l_row.values());
+                                    merged_vals.extend_from_slice(r_row.values());
+                                    joined_rows.push(Row::with_shared_columns(
+                                        merged_cols_shared.clone(),
+                                        merged_vals,
+                                    ));
+                                }
+                            }
+                            if !matched
+                                && (join_clause.join_type == JoinType::Left || join_clause.is_left)
+                            {
+                                let mut merged_vals = Vec::with_capacity(
+                                    l_row.values().len() + right_table_def.columns.len(),
+                                );
+                                merged_vals.extend_from_slice(l_row.values());
+                                for _ in 0..right_table_def.columns.len() {
+                                    merged_vals.push(Value::Null);
+                                }
+                                joined_rows.push(Row::with_shared_columns(
+                                    merged_cols_shared.clone(),
+                                    merged_vals,
+                                ));
+                            }
+                        }
+                    } else {
+                        // ── General path: HashableValue HashMap ──
+                        let mut right_hash_table: HashMap<HashableValue, Vec<usize>> =
+                            HashMap::with_capacity(right_rows.len());
+                        for (r_idx, r_row) in right_rows.iter().enumerate() {
+                            let r_val = if let Some(idx) = r_col_idx {
+                                r_row.values().get(idx)
+                            } else {
+                                r_row.get_value(&join_clause.right_col)
+                            };
+                            if let Some(r_val) = r_val
+                                && !r_val.is_null()
+                            {
+                                right_hash_table
+                                    .entry(HashableValue::from(r_val))
+                                    .or_default()
+                                    .push(r_idx);
+                            }
+                        }
+
+                        let mut matched_right_indices = if is_right_or_full {
+                            HashSet::with_capacity(right_rows.len())
+                        } else {
+                            HashSet::new()
+                        };
+
+                        for l_row in &left_rows {
+                            let l_val = if let Some(idx) = l_col_idx {
+                                l_row.values().get(idx)
+                            } else {
+                                l_row.get_value(&join_clause.left_col)
+                            };
+                            let mut matched = false;
+
+                            if let Some(lv) = l_val
+                                && !lv.is_null()
+                                && let Some(matching_r_indices) =
+                                    right_hash_table.get(&HashableValue::from(lv))
+                            {
+                                matched = true;
+                                for &r_idx in matching_r_indices {
+                                    let r_row = &right_rows[r_idx];
+                                    if is_right_or_full {
+                                        matched_right_indices.insert(r_idx);
+                                    }
+                                    let mut merged_vals = Vec::with_capacity(
+                                        l_row.values().len() + r_row.values().len(),
+                                    );
+                                    merged_vals.extend_from_slice(l_row.values());
+                                    merged_vals.extend_from_slice(r_row.values());
+                                    joined_rows.push(Row::with_shared_columns(
+                                        merged_cols_shared.clone(),
+                                        merged_vals,
+                                    ));
+                                }
+                            }
+
+                            if !matched
+                                && (join_clause.join_type == JoinType::Left
+                                    || join_clause.join_type == JoinType::Full)
+                            {
+                                let mut merged_vals = Vec::with_capacity(
+                                    l_row.values().len() + right_col_names.len(),
+                                );
+                                merged_vals.extend_from_slice(l_row.values());
+                                merged_vals
+                                    .resize(merged_vals.len() + right_col_names.len(), Value::Null);
+                                joined_rows.push(Row::with_shared_columns(
+                                    merged_cols_shared.clone(),
+                                    merged_vals,
+                                ));
+                            }
+                        }
+
+                        if is_right_or_full {
+                            for (r_idx, r_row) in right_rows.iter().enumerate() {
+                                if !matched_right_indices.contains(&r_idx) {
+                                    let mut merged_vals = Vec::with_capacity(
+                                        all_col_names.len() + right_col_names.len(),
+                                    );
+                                    merged_vals.resize(all_col_names.len(), Value::Null);
+                                    merged_vals.extend_from_slice(r_row.values());
+                                    joined_rows.push(Row::with_shared_columns(
+                                        merged_cols_shared.clone(),
+                                        merged_vals,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+
+                    left_rows = joined_rows;
+                }
+
+                // Check for GROUP BY (High-Performance O(N) Hash Aggregation fallback for joins/temporal)
+                if let Some(ref gb_cols) = group_by {
+                    left_rows = aggregate_ephemeral_rows(
+                        &left_rows,
+                        &columns,
+                        gb_cols,
+                        resolved_having.as_ref(),
+                    );
+                } else if is_aggregate_query(&columns) {
+                    let mut agg_cols = Vec::new();
+                    let mut agg_vals = Vec::new();
+
+                    for col in &columns {
+                        if let Some(spec) = parse_aggregate_spec(col) {
+                            let computed = compute_aggregate_from_spec(&spec, &left_rows);
+                            agg_cols.push(spec.output_name);
+                            agg_vals.push(computed);
+                        } else {
+                            agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
+                            agg_vals.push(Value::Null);
+                        }
+                    }
+
+                    return Ok(vec![Row::new(agg_cols, agg_vals)]);
+                }
+
+                // Evaluate window functions if present in columns
+                let has_win_fn = columns.iter().any(|c| has_window_function(c));
+                if has_win_fn {
+                    evaluate_window_functions(&mut left_rows, &columns)?;
+                }
+
+                // Apply ORDER BY sorting if not already satisfied by ordered B+Tree PK scan
+                if let Some(order) = order_by
+                    && !order_by_satisfied
+                {
+                    let cmp = |a: &Row, b: &Row| {
+                        let val_a = a.get_value(&order.column).unwrap_or(&Value::Null);
+                        let val_b = b.get_value(&order.column).unwrap_or(&Value::Null);
+                        if order.is_ascending {
+                            val_a.compare(val_b)
+                        } else {
+                            val_b.compare(val_a)
+                        }
+                    };
+                    if let Some(lim) = limit
+                        && !distinct
+                        && !has_win_fn
+                    {
+                        let keep = offset.unwrap_or(0).saturating_add(lim);
+                        if keep == 0 {
+                            left_rows.clear();
+                        } else if keep < left_rows.len() {
+                            left_rows.select_nth_unstable_by(keep - 1, cmp);
+                            left_rows.truncate(keep);
+                            left_rows.sort_by(cmp);
+                        } else {
+                            left_rows.sort_by(cmp);
+                        }
+                    } else {
+                        left_rows.sort_by(cmp);
+                    }
+                }
+
+                // Project columns and apply LIMIT
+                let output_col_names = if columns.is_empty() {
+                    if wants_fts_scores {
+                        all_col_names.clone()
+                    } else if let Some(first_row) = left_rows.first() {
+                        first_row.columns().to_vec()
+                    } else {
+                        all_col_names.clone()
+                    }
+                } else {
+                    columns.clone()
+                };
+
+                let output_col_shared = Arc::new(output_col_names);
+
+                // Fast-path: Pre-resolve column indices for direct O(1) projection if columns are simple
+                let mut direct_indices: Option<Vec<usize>> = None;
+                if let Some(first) = left_rows.first() {
+                    let mut indices = Vec::with_capacity(output_col_shared.len());
+                    let mut all_matched = true;
+                    for col in output_col_shared.iter() {
+                        let col_lower = col.to_ascii_lowercase();
+                        let is_direct_bm25 =
+                            col_lower.starts_with("bm25(") && !col_lower.contains(" as ");
+                        if !is_direct_bm25 && (col.contains('(') || col.contains(' ')) {
+                            all_matched = false;
+                            break;
+                        }
+                        if let Some(pos) = first
+                            .columns()
+                            .iter()
+                            .position(|c| col_name_matches(c, col))
+                        {
+                            indices.push(pos);
+                        } else {
+                            all_matched = false;
+                            break;
+                        }
+                    }
+                    if all_matched {
+                        direct_indices = Some(indices);
+                    }
+                }
+
+                let mut rows = Vec::new();
+                let skip_count = offset.unwrap_or(0);
+                let mut skipped = 0;
+                let mut distinct_set = RowDistinctSet::new();
+                for row in left_rows {
+                    let projected = if let Some(ref indices) = direct_indices {
+                        let mut vals = Vec::with_capacity(indices.len());
+                        for &idx in indices {
+                            vals.push(row.values().get(idx).cloned().unwrap_or(Value::Null));
+                        }
+                        Row::with_shared_columns(output_col_shared.clone(), vals)
+                    } else {
+                        self.project_row(&row, &output_col_shared)?
+                    };
+
+                    if distinct {
+                        if distinct_set.push_paginated(&mut rows, projected, skip_count, limit) {
+                            break;
+                        }
+                        continue;
+                    }
+                    if skipped < skip_count {
+                        skipped += 1;
+                        continue;
+                    }
+                    rows.push(projected);
+
+                    if let Some(lim) = limit
+                        && rows.len() >= lim
+                    {
+                        break;
+                    }
+                }
+
+                Ok(rows)
+            }
+
+            Statement::VectorSearch {
+                columns,
+                table,
+                query_vector,
+                top_k,
+                where_clause,
+                ..
+            } => {
+                let table_def = self
+                    .catalog
+                    .get_table(&table)
+                    .cloned()
+                    .ok_or_else(|| Error::TableNotFound(table.clone()))?;
+
+                let root_page = table_def.root_page;
+                let all_col_names = table_def.column_names();
+                let output_col_names = if columns.is_empty() {
+                    all_col_names.clone()
+                } else {
+                    columns.clone()
+                };
+
+                // Compute candidate row IDs if where_clause is present (Pre-Filtering)
+                let candidate_ids = if let Some(ref expr) = where_clause {
+                    let resolved = self.resolve_where_expr(pager, expr)?;
+                    let mut matched = std::collections::HashSet::new();
+
+                    let mut used_index = false;
+                    if let ResolvedWhereExpr::Condition(cond) = &resolved
+                        && cond.op == BinaryOp::Equals
+                        && let Some(index_def) = self.find_usable_index_for_column(
+                            &table,
+                            &cond.column,
+                            where_clause.as_ref(),
+                        )
+                    {
+                        let key = value_to_index_key(&cond.value);
+                        if let Some(bucket) =
+                            IndexBucket::load(&self.btree, pager, index_def.root_page, key)?
+                            && let Some(rids) = bucket.get_row_ids(&cond.value)
+                        {
+                            for &rid in rids {
+                                matched.insert(rid);
+                            }
+                            used_index = true;
+                        }
+                    }
+
+                    if !used_index {
+                        let cells = self.btree.scan(pager, root_page)?;
+                        for cell in cells {
+                            if let Ok(full_row) = decode_row(&cell.payload, &all_col_names)
+                                && row_matches_resolved(&full_row, &resolved)
+                            {
+                                matched.insert(cell.row_id);
+                            }
+                        }
+                    }
+                    Some(matched)
+                } else {
+                    None
+                };
+
+                let mut rows = Vec::new();
+                if let Some(index) = self.vector_indexes.get(&table.to_lowercase()) {
+                    let neighbors = index.search_knn_filtered(
+                        &query_vector,
+                        top_k,
+                        DistanceMetric::Cosine,
+                        candidate_ids.as_ref(),
+                    )?;
+                    for (row_id, _) in neighbors {
+                        if let Some(payload) = self.btree.search(pager, root_page, row_id)? {
+                            let full_row = decode_row(&payload, &all_col_names)?;
+                            let projected = self.project_row(&full_row, &output_col_names)?;
+                            rows.push(projected);
+                        }
+                    }
+                } else {
+                    // Exact Flat KNN Scan: Calculate true mathematical cosine distances across filtered candidate records
+                    let cells = self.btree.scan(pager, root_page)?;
+                    if let Some((vec_idx, _)) = table_def.vector_column() {
+                        let mut scored_rows: Vec<(f32, Row)> = Vec::new();
+                        for cell in cells {
+                            if let Some(ref allowed) = candidate_ids
+                                && !allowed.contains(&cell.row_id)
+                            {
+                                continue;
+                            }
+                            if let Ok(full_row) = decode_row(&cell.payload, &all_col_names)
+                                && let Some(crate::traits::Value::Vector(v)) =
+                                    full_row.values().get(vec_idx)
+                            {
+                                let dist = crate::vector::cosine_distance(&query_vector, v);
+                                let projected = self.project_row(&full_row, &output_col_names)?;
+                                scored_rows.push((dist, projected));
+                            }
+                        }
+                        scored_rows.sort_by(|a, b| {
+                            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        for (_, row) in scored_rows.into_iter().take(top_k) {
+                            rows.push(row);
+                        }
+                    } else {
+                        for cell in cells.into_iter() {
+                            if let Some(ref allowed) = candidate_ids
+                                && !allowed.contains(&cell.row_id)
+                            {
+                                continue;
+                            }
+                            let full_row = decode_row(&cell.payload, &all_col_names)?;
+                            let projected = self.project_row(&full_row, &output_col_names)?;
+                            rows.push(projected);
+                            if rows.len() >= top_k {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                Ok(rows)
+            }
+
+            Statement::GraphTraverse {
+                start_id,
+                direction,
+                label,
+                max_depth,
+                where_clause,
+            } => {
+                let cols = vec![
+                    "node_id".to_string(),
+                    "label".to_string(),
+                    "properties".to_string(),
+                    "depth".to_string(),
+                ];
+                let mut rows = Vec::new();
+                let mut visited = std::collections::HashSet::new();
+                let mut queue = std::collections::VecDeque::new();
+
+                let resolved_where = if let Some(ref expr) = where_clause {
+                    Some(self.resolve_where_expr(pager, expr)?)
+                } else {
+                    None
+                };
+
+                if let Some(start_node) = self.graph.get_node(start_id) {
+                    visited.insert(start_id);
+                    rows.push(Row::new(
+                        cols.clone(),
+                        vec![
+                            Value::Integer(start_node.id as i64),
+                            Value::Text(start_node.label.clone()),
+                            Value::Text(start_node.properties.clone()),
+                            Value::Integer(0),
+                        ],
+                    ));
+                    queue.push_back((start_id, 0usize));
+                }
+
+                while let Some((curr_id, depth)) = queue.pop_front() {
+                    if depth >= max_depth {
+                        continue;
+                    }
+                    let neighbors = self
+                        .graph
+                        .neighbor_refs(curr_id, direction, label.as_deref());
+                    for (neighbor_node, edge) in neighbors {
+                        if visited.contains(&neighbor_node.id) {
+                            continue;
+                        }
+
+                        // Evaluate predicate filter if provided
+                        if let Some(ref rw) = resolved_where {
+                            let mut test_cols = vec![
+                                "node_id".to_string(),
+                                "id".to_string(),
+                                "target.id".to_string(),
+                                "label".to_string(),
+                                "target.label".to_string(),
+                                "depth".to_string(),
+                                "weight".to_string(),
+                                "edge.weight".to_string(),
+                                "edge.label".to_string(),
+                            ];
+                            let mut test_vals = vec![
+                                Value::Integer(neighbor_node.id as i64),
+                                Value::Integer(neighbor_node.id as i64),
+                                Value::Integer(neighbor_node.id as i64),
+                                Value::Text(neighbor_node.label.clone()),
+                                Value::Text(neighbor_node.label.clone()),
+                                Value::Integer((depth + 1) as i64),
+                                Value::Real(edge.weight as f64),
+                                Value::Real(edge.weight as f64),
+                                Value::Text(edge.label.clone()),
+                            ];
+
+                            // Extract JSON properties from neighbor_node
+                            if let Ok(serde_json::Value::Object(map)) =
+                                serde_json::from_str::<serde_json::Value>(&neighbor_node.properties)
+                            {
+                                for (k, v) in map {
+                                    let db_val = match v {
+                                        serde_json::Value::Number(n) => {
+                                            if let Some(i) = n.as_i64() {
+                                                Value::Integer(i)
+                                            } else if let Some(f) = n.as_f64() {
+                                                Value::Real(f)
+                                            } else {
+                                                Value::Null
+                                            }
+                                        }
+                                        serde_json::Value::String(s) => Value::Text(s),
+                                        serde_json::Value::Bool(b) => {
+                                            Value::Integer(if b { 1 } else { 0 })
+                                        }
+                                        serde_json::Value::Null => Value::Null,
+                                        other => Value::Text(other.to_string()),
+                                    };
+                                    test_cols.push(k.clone());
+                                    test_cols.push(format!("target.{k}"));
+                                    test_vals.push(db_val.clone());
+                                    test_vals.push(db_val);
+                                }
+                            }
+
+                            let test_row = Row::new(test_cols, test_vals);
+                            if !row_matches_resolved(&test_row, rw) {
+                                continue;
+                            }
+                        }
+
+                        if visited.insert(neighbor_node.id) {
+                            rows.push(Row::new(
+                                cols.clone(),
+                                vec![
+                                    Value::Integer(neighbor_node.id as i64),
+                                    Value::Text(neighbor_node.label.clone()),
+                                    Value::Text(neighbor_node.properties.clone()),
+                                    Value::Integer((depth + 1) as i64),
+                                ],
+                            ));
+                            queue.push_back((neighbor_node.id, depth + 1));
+                        }
+                    }
+                }
+                Ok(rows)
+            }
+
+            Statement::GraphShortestPath { start_id, end_id } => {
+                let cols = vec![
+                    "step".to_string(),
+                    "from_id".to_string(),
+                    "to_id".to_string(),
+                    "label".to_string(),
+                    "weight".to_string(),
+                    "total_cost".to_string(),
+                ];
+                let mut rows = Vec::new();
+                if let Some((path, total_cost)) =
+                    self.graph.dijkstra_shortest_path(start_id, end_id)
+                {
+                    for (step_idx, edge) in path.into_iter().enumerate() {
+                        rows.push(Row::new(
+                            cols.clone(),
+                            vec![
+                                Value::Integer((step_idx + 1) as i64),
+                                Value::Integer(edge.from_id as i64),
+                                Value::Integer(edge.to_id as i64),
+                                Value::Text(edge.label),
+                                Value::Real(edge.weight as f64),
+                                Value::Real(total_cost as f64),
+                            ],
+                        ));
+                    }
+                }
+                Ok(rows)
+            }
+
+            Statement::GraphMatch {
+                source_var,
+                source_label,
+                rel_var,
+                rel_label,
+                target_var,
+                target_label,
+                where_clause,
+                return_items,
+            } => {
+                let mut rows = Vec::new();
+                let resolved_where = if let Some(ref expr) = where_clause {
+                    Some(self.resolve_where_expr(pager, expr)?)
+                } else {
+                    None
+                };
+
+                let output_cols = return_items.clone();
+
+                for edge in self.graph.all_edges() {
+                    // Filter edge label
+                    if let Some(ref rl) = rel_label
+                        && !edge.label.eq_ignore_ascii_case(rl)
+                    {
+                        continue;
+                    }
+
+                    // Source node
+                    let source_node = match self.graph.get_node(edge.from_id) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    if let Some(ref sl) = source_label
+                        && !source_node.label.eq_ignore_ascii_case(sl)
+                    {
+                        continue;
+                    }
+
+                    // Target node
+                    let target_node = match self.graph.get_node(edge.to_id) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    if let Some(ref tl) = target_label
+                        && !target_node.label.eq_ignore_ascii_case(tl)
+                    {
+                        continue;
+                    }
+
+                    // Build column-value test environment for WHERE filter
+                    let mut test_cols = Vec::new();
+                    let mut test_vals = Vec::new();
+
+                    // Source variables
+                    test_cols.push(format!("{source_var}.id"));
+                    test_vals.push(Value::Integer(source_node.id as i64));
+                    test_cols.push(format!("{source_var}.label"));
+                    test_vals.push(Value::Text(source_node.label.clone()));
+                    test_cols.push(format!("{source_var}.properties"));
+                    test_vals.push(Value::Text(source_node.properties.clone()));
+
+                    // Target variables
+                    test_cols.push(format!("{target_var}.id"));
+                    test_vals.push(Value::Integer(target_node.id as i64));
+                    test_cols.push(format!("{target_var}.label"));
+                    test_vals.push(Value::Text(target_node.label.clone()));
+                    test_cols.push(format!("{target_var}.properties"));
+                    test_vals.push(Value::Text(target_node.properties.clone()));
+
+                    // Relationship variables
+                    if let Some(ref rv) = rel_var {
+                        test_cols.push(format!("{rv}.id"));
+                        test_vals.push(Value::Integer(edge.id as i64));
+                        test_cols.push(format!("{rv}.label"));
+                        test_vals.push(Value::Text(edge.label.clone()));
+                        test_cols.push(format!("{rv}.weight"));
+                        test_vals.push(Value::Real(edge.weight as f64));
+                        test_cols.push(format!("{rv}.properties"));
+                        test_vals.push(Value::Text(edge.properties.clone()));
+                    }
+
+                    // Unqualified fallbacks
+                    test_cols.push("edge.id".to_string());
+                    test_vals.push(Value::Integer(edge.id as i64));
+                    test_cols.push("edge.label".to_string());
+                    test_vals.push(Value::Text(edge.label.clone()));
+                    test_cols.push("edge.weight".to_string());
+                    test_vals.push(Value::Real(edge.weight as f64));
+
+                    // Parse JSON properties for source node
+                    if let Ok(serde_json::Value::Object(map)) =
+                        serde_json::from_str::<serde_json::Value>(&source_node.properties)
+                    {
+                        for (k, v) in map {
+                            let db_val = match v {
+                                serde_json::Value::Number(n) => {
+                                    if let Some(i) = n.as_i64() {
+                                        Value::Integer(i)
+                                    } else if let Some(f) = n.as_f64() {
+                                        Value::Real(f)
+                                    } else {
+                                        Value::Null
+                                    }
+                                }
+                                serde_json::Value::String(s) => Value::Text(s),
+                                serde_json::Value::Bool(b) => Value::Integer(if b { 1 } else { 0 }),
+                                serde_json::Value::Null => Value::Null,
+                                other => Value::Text(other.to_string()),
+                            };
+                            test_cols.push(format!("{source_var}.{k}"));
+                            test_vals.push(db_val);
+                        }
+                    }
+
+                    // Parse JSON properties for target node
+                    if let Ok(serde_json::Value::Object(map)) =
+                        serde_json::from_str::<serde_json::Value>(&target_node.properties)
+                    {
+                        for (k, v) in map {
+                            let db_val = match v {
+                                serde_json::Value::Number(n) => {
+                                    if let Some(i) = n.as_i64() {
+                                        Value::Integer(i)
+                                    } else if let Some(f) = n.as_f64() {
+                                        Value::Real(f)
+                                    } else {
+                                        Value::Null
+                                    }
+                                }
+                                serde_json::Value::String(s) => Value::Text(s),
+                                serde_json::Value::Bool(b) => Value::Integer(if b { 1 } else { 0 }),
+                                serde_json::Value::Null => Value::Null,
+                                other => Value::Text(other.to_string()),
+                            };
+                            test_cols.push(format!("{target_var}.{k}"));
+                            test_vals.push(db_val);
+                        }
+                    }
+
+                    let test_row = Row::new(test_cols, test_vals);
+
+                    if let Some(ref rw) = resolved_where
+                        && !row_matches_resolved(&test_row, rw)
+                    {
+                        continue;
+                    }
+
+                    // Build projected row values
+                    let mut row_vals = Vec::new();
+                    for ret_col in &output_cols {
+                        if ret_col == "*" {
+                            row_vals.push(Value::Integer(source_node.id as i64));
+                            row_vals.push(Value::Text(source_node.label.clone()));
+                            row_vals.push(Value::Text(edge.label.clone()));
+                            row_vals.push(Value::Integer(target_node.id as i64));
+                            row_vals.push(Value::Text(target_node.label.clone()));
+                        } else if ret_col == &source_var {
+                            row_vals.push(Value::Text(format!(
+                                "(:{} {{id: {}, properties: {}}})",
+                                source_node.label, source_node.id, source_node.properties
+                            )));
+                        } else if ret_col == &target_var {
+                            row_vals.push(Value::Text(format!(
+                                "(:{} {{id: {}, properties: {}}})",
+                                target_node.label, target_node.id, target_node.properties
+                            )));
+                        } else if rel_var.as_ref() == Some(ret_col) {
+                            row_vals.push(Value::Text(format!(
+                                "[:{} {{id: {}, weight: {}}}]",
+                                edge.label, edge.id, edge.weight
+                            )));
+                        } else if let Some(val) = test_row.get_value(ret_col) {
+                            row_vals.push(val.clone());
+                        } else {
+                            row_vals.push(Value::Null);
+                        }
+                    }
+
+                    rows.push(Row::new(output_cols.clone(), row_vals));
+                }
+
+                Ok(rows)
+            }
+
+            Statement::GraphAlgorithm { algorithm, options } => match algorithm.as_str() {
+                "PAGERANK" => {
+                    let damping: f32 = options
+                        .get("damping")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0.85);
+                    let iterations: usize = options
+                        .get("iterations")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(20);
+                    let tol: f32 = options
+                        .get("tolerance")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(1e-4);
+                    let ranks = self.graph.pagerank(damping, iterations, tol);
+
+                    let cols = vec![
+                        "node_id".to_string(),
+                        "label".to_string(),
+                        "pagerank".to_string(),
+                    ];
+                    let mut rows = Vec::new();
+                    let mut sorted: Vec<(u64, f32)> = ranks.into_iter().collect();
+                    sorted
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                    for (id, rank) in sorted {
+                        let label = self
+                            .graph
+                            .get_node(id)
+                            .map(|n| n.label.clone())
+                            .unwrap_or_default();
+                        rows.push(Row::new(
+                            cols.clone(),
+                            vec![
+                                Value::Integer(id as i64),
+                                Value::Text(label),
+                                Value::Real(rank as f64),
+                            ],
+                        ));
+                    }
+                    Ok(rows)
+                }
+                "CONNECTED_COMPONENTS" | "COMPONENTS" | "WCC" => {
+                    let components = self.graph.connected_components();
+                    let cols = vec![
+                        "node_id".to_string(),
+                        "label".to_string(),
+                        "component_id".to_string(),
+                    ];
+                    let mut rows = Vec::new();
+                    let mut sorted: Vec<(u64, usize)> = components.into_iter().collect();
+                    sorted.sort_by_key(|&(id, comp)| (comp, id));
+
+                    for (id, comp) in sorted {
+                        let label = self
+                            .graph
+                            .get_node(id)
+                            .map(|n| n.label.clone())
+                            .unwrap_or_default();
+                        rows.push(Row::new(
+                            cols.clone(),
+                            vec![
+                                Value::Integer(id as i64),
+                                Value::Text(label),
+                                Value::Integer(comp as i64),
+                            ],
+                        ));
+                    }
+                    Ok(rows)
+                }
+                "BETWEENNESS" | "BETWEENNESS_CENTRALITY" => {
+                    let normalized = options
+                        .get("normalized")
+                        .map(|v| v != "false" && v != "0")
+                        .unwrap_or(true);
+                    let scores = self.graph.betweenness_centrality(normalized);
+                    let cols = vec![
+                        "node_id".to_string(),
+                        "label".to_string(),
+                        "betweenness".to_string(),
+                    ];
+                    let mut rows = Vec::new();
+                    let mut sorted: Vec<(u64, f32)> = scores.into_iter().collect();
+                    sorted
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                    for (id, score) in sorted {
+                        let label = self
+                            .graph
+                            .get_node(id)
+                            .map(|n| n.label.clone())
+                            .unwrap_or_default();
+                        rows.push(Row::new(
+                            cols.clone(),
+                            vec![
+                                Value::Integer(id as i64),
+                                Value::Text(label),
+                                Value::Real(score as f64),
+                            ],
+                        ));
+                    }
+                    Ok(rows)
+                }
+                "LOUVAIN" | "COMMUNITIES" => {
+                    let communities = self.graph.louvain_communities();
+                    let cols = vec![
+                        "node_id".to_string(),
+                        "label".to_string(),
+                        "community_id".to_string(),
+                    ];
+                    let mut rows = Vec::new();
+                    let mut sorted: Vec<(u64, usize)> = communities.into_iter().collect();
+                    sorted.sort_by_key(|&(id, comm)| (comm, id));
+
+                    for (id, comm) in sorted {
+                        let label = self
+                            .graph
+                            .get_node(id)
+                            .map(|n| n.label.clone())
+                            .unwrap_or_default();
+                        rows.push(Row::new(
+                            cols.clone(),
+                            vec![
+                                Value::Integer(id as i64),
+                                Value::Text(label),
+                                Value::Integer(comm as i64),
+                            ],
+                        ));
+                    }
+                    Ok(rows)
+                }
+                unknown => Err(Error::SqlSyntax(format!(
+                    "Unknown graph algorithm '{unknown}'. Supported: PAGERANK, CONNECTED_COMPONENTS, BETWEENNESS, LOUVAIN"
+                ))),
+            },
+
+            Statement::Pragma { key, value } => {
+                let k = key.to_lowercase();
+                if k == "table_info" {
+                    let target_table = value.unwrap_or_default();
+                    let cols = vec![
+                        "cid".to_string(),
+                        "name".to_string(),
+                        "type".to_string(),
+                        "notnull".to_string(),
+                        "dflt_value".to_string(),
+                        "pk".to_string(),
+                    ];
+                    let mut rows = Vec::new();
+                    if let Some(tdef) = self.catalog.get_table(&target_table) {
+                        for (cid, col) in tdef.columns.iter().enumerate() {
+                            let dtype = format!("{:?}", col.data_type).to_uppercase();
+                            let dflt = col
+                                .default_value
+                                .as_ref()
+                                .map(|d| Value::Text(format!("{:?}", d.materialize())))
+                                .unwrap_or(Value::Null);
+                            let pk_num = if col.primary_key {
+                                1
+                            } else if let Some(pos) = tdef
+                                .primary_key_columns
+                                .iter()
+                                .position(|p| p.eq_ignore_ascii_case(&col.name))
+                            {
+                                (pos + 1) as i64
+                            } else {
+                                0
+                            };
+                            rows.push(Row::new(
+                                cols.clone(),
+                                vec![
+                                    Value::Integer(cid as i64),
+                                    Value::Text(col.name.clone()),
+                                    Value::Text(dtype),
+                                    Value::Integer(if col.not_null { 1 } else { 0 }),
+                                    dflt,
+                                    Value::Integer(pk_num),
+                                ],
+                            ));
+                        }
+                    }
+                    Ok(rows)
+                } else if k == "foreign_keys" {
+                    if let Some(v) = value {
+                        let val_lower = v.trim().to_lowercase();
+                        self.foreign_keys_enabled =
+                            val_lower == "1" || val_lower == "true" || val_lower == "on";
+                    }
+                    Ok(vec![Row::new(
+                        vec!["foreign_keys".to_string()],
+                        vec![Value::Integer(if self.foreign_keys_enabled {
+                            1
+                        } else {
+                            0
+                        })],
+                    )])
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+
+            other => Err(Error::SqlSyntax(format!(
+                "Non-query statement {other:?} passed to query()"
+            ))),
+        }
+    }
+}

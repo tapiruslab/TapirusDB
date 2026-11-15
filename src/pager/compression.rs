@@ -10,7 +10,8 @@
 use crate::error::{Error, Result};
 
 const MIN_MATCH: usize = 4;
-const HASH_TABLE_SIZE: usize = 4096;
+const HASH_TABLE_BITS: usize = 11;
+const HASH_TABLE_SIZE: usize = 1 << HASH_TABLE_BITS; // 2048 slots: 4 KB for u16, 8 KB for u32 (fits L1)
 const MAX_DISTANCE: usize = 65535;
 
 /// Magic tag identifying a TapirusDB compressed page payload
@@ -23,12 +24,9 @@ pub const LZ4_COMPRESSED_PAGE_FLAG: u8 = 0x01;
 /// Hash a 4-byte sequence for hash table lookup
 #[inline(always)]
 fn hash_4(bytes: &[u8]) -> usize {
-    let val = (bytes[0] as usize)
-        | ((bytes[1] as usize) << 8)
-        | ((bytes[2] as usize) << 16)
-        | ((bytes[3] as usize) << 24);
-    // Knuth multiplicative hash
-    (val.wrapping_mul(2654435761) >> 20) % HASH_TABLE_SIZE
+    let val = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    // Knuth multiplicative hash mapped to HASH_TABLE_SIZE bits
+    ((val.wrapping_mul(2654435761)) >> (32 - HASH_TABLE_BITS)) as usize
 }
 
 /// Compress an arbitrary byte slice using LZ4 block encoding in pure safe Rust.
@@ -49,7 +47,48 @@ pub fn compress_lz4_block(src: &[u8]) -> Vec<u8> {
         return out;
     }
 
-    let mut hash_table = [0usize; HASH_TABLE_SIZE];
+    // Use a 4 KB stack hash table for <=64 KB buffers (all standard 4K-32K DB pages)
+    // and an 8 KB table for larger inputs instead of zeroing 32 KB on every page.
+    if src.len() <= u16::MAX as usize {
+        let mut hash_table = [0u16; HASH_TABLE_SIZE];
+        compress_lz4_with_table(src, &mut hash_table)
+    } else {
+        let mut hash_table = [0usize; HASH_TABLE_SIZE];
+        compress_lz4_with_table(src, &mut hash_table)
+    }
+}
+
+trait Lz4HashSlot: Copy {
+    fn from_pos(pos: usize) -> Self;
+    fn to_pos(self) -> usize;
+}
+
+impl Lz4HashSlot for u16 {
+    #[inline(always)]
+    fn from_pos(pos: usize) -> Self {
+        pos as u16
+    }
+    #[inline(always)]
+    fn to_pos(self) -> usize {
+        self as usize
+    }
+}
+
+impl Lz4HashSlot for usize {
+    #[inline(always)]
+    fn from_pos(pos: usize) -> Self {
+        pos
+    }
+    #[inline(always)]
+    fn to_pos(self) -> usize {
+        self
+    }
+}
+
+fn compress_lz4_with_table<S: Lz4HashSlot>(
+    src: &[u8],
+    hash_table: &mut [S; HASH_TABLE_SIZE],
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(src.len());
 
     let mut anchor = 0;
@@ -59,8 +98,8 @@ pub fn compress_lz4_block(src: &[u8]) -> Vec<u8> {
 
     while ip < mflimit {
         let h = hash_4(&src[ip..ip + 4]);
-        let match_pos = hash_table[h];
-        hash_table[h] = ip;
+        let match_pos = hash_table[h].to_pos();
+        hash_table[h] = S::from_pos(ip);
 
         // Verify if match exists within MAX_DISTANCE and has at least 4 identical bytes
         if match_pos < ip
@@ -114,7 +153,7 @@ pub fn compress_lz4_block(src: &[u8]) -> Vec<u8> {
             // Update hash for boundary
             if ip < mflimit {
                 let h_next = hash_4(&src[ip - 2..ip + 2]);
-                hash_table[h_next] = ip - 2;
+                hash_table[h_next] = S::from_pos(ip - 2);
             }
         } else {
             ip += 1;

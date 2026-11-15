@@ -267,7 +267,7 @@ pub struct Pager {
     _lock_path: Option<PathBuf>,
     in_memory_pages: HashMap<PageId, Vec<u8>>,
     wal: Option<Wal>,
-    wal_overlay: HashMap<PageId, Vec<u8>>,
+    wal_overlay: HashMap<PageId, Arc<Vec<u8>>>,
     concurrent_wal_path: Option<PathBuf>,
     read_only: bool,
     concurrent_access: bool,
@@ -287,27 +287,16 @@ pub struct Pager {
     remote_writer: Option<Arc<dyn RemoteStorageAdapter>>,
 }
 
-#[allow(dead_code)]
+#[cfg(not(windows))]
 fn is_process_alive(pid: u32) -> bool {
     if pid == std::process::id() {
         return true;
-    }
-    #[cfg(windows)]
-    {
-        if let Ok(output) = std::process::Command::new("cmd")
-            .args(["/C", &format!("tasklist /FI \"PID eq {pid}\" /NH")])
-            .output()
-        {
-            let text = String::from_utf8_lossy(&output.stdout);
-            return text.contains(&format!("{pid}"));
-        }
-        true
     }
     #[cfg(unix)]
     {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
     }
-    #[cfg(not(any(windows, unix)))]
+    #[cfg(not(unix))]
     {
         true
     }
@@ -368,6 +357,9 @@ impl Pager {
     }
 
     /// Acquire the cross-process `.tapir-lock` file with optional timeout/backoff.
+    ///
+    /// On Windows, uses exclusive OS sharing (`share_mode(0)`) so the kernel immediately
+    /// releases the lock handle if an owner crashes without spawning `cmd /C tasklist`.
     fn acquire_lock_file(
         db_path: &Path,
         lock_path: &Path,
@@ -375,31 +367,72 @@ impl Pager {
     ) -> Result<File> {
         let start = web_time::Instant::now();
         loop {
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(lock_path)
-            {
+            let create_attempt = {
+                let mut opts = OpenOptions::new();
+                opts.read(true).write(true).create_new(true);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::OpenOptionsExt;
+                    opts.share_mode(0);
+                }
+                opts.open(lock_path)
+            };
+
+            match create_attempt {
                 Ok(mut lf) => {
                     let _ = write!(lf, "{}", std::process::id());
                     let _ = lf.flush();
                     return Ok(lf);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let is_stale = if let Ok(content) = std::fs::read_to_string(lock_path) {
-                        if let Ok(pid) = content.trim().parse::<u32>() {
-                            !is_process_alive(pid)
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::fs::OpenOptionsExt;
+                        match OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .share_mode(0)
+                            .open(lock_path)
+                        {
+                            Ok(mut lf) => {
+                                // Previous holder crashed or left a stale lockfile with no open handle.
+                                let _ = lf.set_len(0);
+                                let _ = lf.seek(SeekFrom::Start(0));
+                                let _ = write!(lf, "{}", std::process::id());
+                                let _ = lf.flush();
+                                return Ok(lf);
+                            }
+                            Err(open_err)
+                                if open_err.kind() == std::io::ErrorKind::PermissionDenied
+                                    || matches!(open_err.raw_os_error(), Some(32 | 33)) =>
+                            {
+                                // Active OS handle holds share_mode(0) (ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION).
+                            }
+                            Err(open_err) if open_err.kind() == std::io::ErrorKind::NotFound => {
+                                continue;
+                            }
+                            Err(open_err) => return Err(Error::Io(open_err)),
+                        }
+                    }
+
+                    #[cfg(not(windows))]
+                    {
+                        let is_stale = if let Ok(content) = std::fs::read_to_string(lock_path) {
+                            if let Ok(pid) = content.trim().parse::<u32>() {
+                                !is_process_alive(pid)
+                            } else {
+                                false
+                            }
                         } else {
                             false
-                        }
-                    } else {
-                        false
-                    };
+                        };
 
-                    if is_stale {
-                        let _ = std::fs::remove_file(lock_path);
-                        continue;
+                        if is_stale {
+                            let _ = std::fs::remove_file(lock_path);
+                            continue;
+                        }
                     }
+
                     if start.elapsed() >= timeout {
                         return Err(Error::Busy(format!(
                             "Database file '{}' is locked by another process (active lockfile: {})",
@@ -1198,7 +1231,11 @@ impl Pager {
     /// Evict clean pages when in-memory cache exceeds configured capacity.
     /// Traverses from lru_head (least recently used) in O(1) amortized time.
     fn evict_if_needed(&mut self) {
-        if self.file.is_none() && self.wal.is_none() {
+        self.evict_if_needed_except(None);
+    }
+
+    fn evict_if_needed_except(&mut self, protected: Option<PageId>) {
+        if self.file.is_none() && self.remote_reader.is_none() {
             return;
         }
         let capacity = self.cache_capacity.max(4);
@@ -1207,7 +1244,7 @@ impl Pager {
             let mut evict_target = None;
             while let Some(pid) = curr {
                 let next = self.lru_nodes.get(&pid).and_then(|n| n.next);
-                if pid != 1 {
+                if pid != 1 && Some(pid) != protected {
                     let is_active_tx = if let Some(sp) = &self.transaction_savepoint {
                         sp.undo_pages.contains_key(&pid) || sp.dirty_pages.contains(&pid)
                     } else {
@@ -1259,29 +1296,14 @@ impl Pager {
     }
 
     /// Read data from a page by its ID.
-    /// First checks in-memory cache, then WAL for the latest version; falls back to base disk file.
-    pub fn read_page(&mut self, page_id: PageId) -> Result<Vec<u8>> {
-        self.ensure_io_ready()?;
+    /// Read page bytes without perturbing `in_memory_pages` or LRU state when sourced from disk/WAL.
+    fn load_page_uncached(&mut self, page_id: PageId) -> Result<Arc<Vec<u8>>> {
         let page_size = self.page_size();
-        if page_id == 0 || page_id > self.header.total_pages {
-            return Err(Error::PageNotFound(page_id));
+
+        if let Some(data) = self.wal_overlay.get(&page_id) {
+            return Ok(Arc::clone(data));
         }
 
-        // 1. Check in-memory pages first (already decrypted plaintext)
-        if let Some(data) = self.in_memory_pages.get(&page_id).cloned() {
-            self.touch_lru(page_id);
-            return Ok(data);
-        }
-
-        // 2a. Check committed WAL overlay (for read-only / concurrent / MVCC snapshot readers)
-        if let Some(data) = self.wal_overlay.get(&page_id).cloned() {
-            self.in_memory_pages.insert(page_id, data.clone());
-            self.touch_lru(page_id);
-            self.evict_if_needed();
-            return Ok(data);
-        }
-
-        // 2b. Check active WAL index (latest version)
         if let Some(wal) = &self.wal
             && let Some(raw) = wal.read_page(page_id)
         {
@@ -1291,13 +1313,9 @@ impl Pager {
                 raw
             };
             let final_page = self.decompress_if_needed(page_id, plaintext)?;
-            self.in_memory_pages.insert(page_id, final_page.clone());
-            self.touch_lru(page_id);
-            self.evict_if_needed();
-            return Ok(final_page);
+            return Ok(Arc::new(final_page));
         }
 
-        // 3. Fall back to reading from base disk file
         if let Some(file) = &mut self.file {
             let offset = (page_id as u64 - 1) * page_size as u64;
             file.seek(SeekFrom::Start(offset))?;
@@ -1310,13 +1328,9 @@ impl Pager {
                 disk_buf
             };
             let final_page = self.decompress_if_needed(page_id, plaintext)?;
-            self.in_memory_pages.insert(page_id, final_page.clone());
-            self.touch_lru(page_id);
-            self.evict_if_needed();
-            return Ok(final_page);
+            return Ok(Arc::new(final_page));
         }
 
-        // 4. Fall back to remote storage reader if configured
         if let Some(reader) = &self.remote_reader {
             let offset = (page_id as u64 - 1) * page_size as u64;
             let raw_bytes = reader.fetch_range(offset, page_size)?;
@@ -1326,13 +1340,37 @@ impl Pager {
                 raw_bytes
             };
             let final_page = self.decompress_if_needed(page_id, plaintext)?;
-            self.in_memory_pages.insert(page_id, final_page.clone());
-            self.touch_lru(page_id);
-            self.evict_if_needed();
-            return Ok(final_page);
+            return Ok(Arc::new(final_page));
         }
 
         Err(Error::PageNotFound(page_id))
+    }
+
+    /// Ensure `page_id` is resident in `in_memory_pages` and marked MRU in LRU.
+    fn ensure_cached_page(&mut self, page_id: PageId) -> Result<()> {
+        self.ensure_io_ready()?;
+        if page_id == 0 || page_id > self.header.total_pages {
+            return Err(Error::PageNotFound(page_id));
+        }
+        if self.in_memory_pages.contains_key(&page_id) {
+            self.touch_lru(page_id);
+            return Ok(());
+        }
+        let page_arc = self.load_page_uncached(page_id)?;
+        let final_page = (*page_arc).clone();
+        self.in_memory_pages.insert(page_id, final_page);
+        self.touch_lru(page_id);
+        self.evict_if_needed_except(Some(page_id));
+        Ok(())
+    }
+
+    /// First checks in-memory cache, then WAL for the latest version; falls back to base disk file.
+    pub fn read_page(&mut self, page_id: PageId) -> Result<Vec<u8>> {
+        self.ensure_cached_page(page_id)?;
+        self.in_memory_pages
+            .get(&page_id)
+            .cloned()
+            .ok_or(Error::PageNotFound(page_id))
     }
 
     /// Inspect an in-memory page frame by reference without allocating or cloning 4KB buffers.
@@ -1341,16 +1379,28 @@ impl Pager {
         page_id: PageId,
         f: F,
     ) -> Result<R> {
+        self.ensure_io_ready()?;
         if page_id == 0 || page_id > self.header.total_pages {
             return Err(Error::PageNotFound(page_id));
         }
 
-        if !self.in_memory_pages.contains_key(&page_id) {
-            let loaded = self.read_page(page_id)?;
-            self.in_memory_pages.insert(page_id, loaded);
+        if self.in_memory_pages.contains_key(&page_id) {
+            self.touch_lru(page_id);
+            let buf = &self.in_memory_pages[&page_id];
+            return f(buf);
         }
 
-        let buf = self.in_memory_pages.get(&page_id).unwrap();
+        // Fast zero-copy path for committed MVCC snapshots / WAL overlays
+        if let Some(overlay_buf) = self.wal_overlay.get(&page_id) {
+            let arc_buf = Arc::clone(overlay_buf);
+            return f(&arc_buf);
+        }
+
+        self.ensure_cached_page(page_id)?;
+        let buf = self
+            .in_memory_pages
+            .get(&page_id)
+            .ok_or(Error::PageNotFound(page_id))?;
         f(buf)
     }
 
@@ -1401,15 +1451,7 @@ impl Pager {
         f: F,
     ) -> Result<R> {
         self.ensure_writable("modify page")?;
-        if page_id == 0 || page_id > self.header.total_pages {
-            return Err(Error::PageNotFound(page_id));
-        }
-
-        // Ensure page is loaded in in_memory_pages
-        if !self.in_memory_pages.contains_key(&page_id) {
-            let loaded = self.read_page(page_id)?;
-            self.in_memory_pages.insert(page_id, loaded);
-        }
+        self.ensure_cached_page(page_id)?;
 
         // If in an active transaction, record original page data for undo rollback if not yet recorded
         let needs_undo = self
@@ -1447,7 +1489,10 @@ impl Pager {
             }
         }
 
-        let buf = self.in_memory_pages.get_mut(&page_id).unwrap();
+        let buf = self
+            .in_memory_pages
+            .get_mut(&page_id)
+            .ok_or(Error::PageNotFound(page_id))?;
         let res = f(buf)?;
 
         if page_id == 1 {
@@ -1779,7 +1824,14 @@ impl Pager {
     /// and synchronize them directly into the in-memory page cache.
     pub fn checkpoint(&mut self) -> Result<usize> {
         if let Some(mut wal) = self.wal.take() {
-            let result = wal.checkpoint(&mut self.file, &mut self.in_memory_pages);
+            let result = if self.file.is_none() && (self.is_compressed() || self.cipher.is_some()) {
+                // Pure in-memory pagers retain all plaintext pages in `in_memory_pages`;
+                // WAL frames are disk-encoded, so avoid overwriting plaintext cache entries.
+                let mut discard_sink = HashMap::new();
+                wal.checkpoint(&mut None, &mut discard_sink)
+            } else {
+                wal.checkpoint(&mut self.file, &mut self.in_memory_pages)
+            };
             self.wal = Some(wal);
             result
         } else {
@@ -2320,7 +2372,7 @@ impl Pager {
             {
                 self.header.total_pages = sz;
             }
-            self.wal_overlay = overlay;
+            self.wal_overlay = overlay.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
             self.in_memory_pages.clear();
             self.lru_nodes.clear();
             self.lru_head = None;
@@ -2393,7 +2445,7 @@ impl Pager {
             } else {
                 for (pid, _) in wal.export_frames() {
                     if let Some(pt) = self.in_memory_pages.get(&pid) {
-                        self.wal_overlay.insert(pid, pt.clone());
+                        self.wal_overlay.insert(pid, Arc::new(pt.clone()));
                     }
                 }
             }
@@ -2422,11 +2474,25 @@ impl Pager {
 
     /// Capture an isolated, read-only committed page snapshot for non-blocking MVCC readers.
     pub fn snapshot_clone(&mut self) -> Result<Self> {
-        let total = self.header.total_pages;
-        let mut pages = HashMap::with_capacity(total as usize);
-        for pid in 1..=total {
-            pages.insert(pid, self.read_page(pid)?);
-        }
+        self.ensure_io_ready()?;
+        let pages = if self.file.is_none()
+            && self.wal.is_none()
+            && self.in_memory_pages.is_empty()
+            && !self.wal_overlay.is_empty()
+        {
+            self.wal_overlay.clone()
+        } else {
+            let total = self.header.total_pages;
+            let mut map = HashMap::with_capacity(total as usize);
+            for pid in 1..=total {
+                if let Some(cached) = self.in_memory_pages.get(&pid) {
+                    map.insert(pid, Arc::new(cached.clone()));
+                } else {
+                    map.insert(pid, self.load_page_uncached(pid)?);
+                }
+            }
+            map
+        };
         Ok(Self {
             header: self.header.clone(),
             file: None,

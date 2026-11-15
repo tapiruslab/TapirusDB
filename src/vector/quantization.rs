@@ -3,7 +3,10 @@
 //! Provides 4x memory compression (75% RAM reduction) by quantizing 32-bit floating point
 //! embeddings into compact 8-bit unsigned integers with fast approximate distance computation.
 
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 
 /// An 8-bit scalar quantized vector embedding.
 ///
@@ -490,6 +493,26 @@ impl RaBitQuantizer {
             sign_flips,
             num_bits: num_bits.clamp(1, 2),
         }
+    }
+
+    /// Return a cached shared `RaBitQuantizer` for the default deterministic seed.
+    ///
+    /// Avoids regenerating SplitMix64 sign-flip tables and allocating `padded_dim` floats
+    /// on every single vector quantization or similarity evaluation.
+    pub fn cached(dimensions: usize, num_bits: usize) -> Arc<Self> {
+        type QuantizerCache = OnceLock<RwLock<HashMap<(usize, usize), Arc<RaBitQuantizer>>>>;
+        static CACHE: QuantizerCache = OnceLock::new();
+        let key = (dimensions, num_bits.clamp(1, 2));
+        let map = CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+        if let Some(existing) = map.read().get(&key) {
+            return Arc::clone(existing);
+        }
+        let mut guard = map.write();
+        Arc::clone(
+            guard
+                .entry(key)
+                .or_insert_with(|| Arc::new(Self::new(key.0, key.1))),
+        )
     }
 
     /// In-place Fast Walsh-Hadamard Transform (FWHT) in O(N log N) additions/subtractions

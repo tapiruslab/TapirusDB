@@ -360,7 +360,7 @@ fn collect_where_columns(expr: &ResolvedWhereExpr, cols: &mut Vec<String>) -> bo
             push_unique_ci(cols, &c.column);
             true
         }
-        ResolvedWhereExpr::InList { column, .. } => {
+        ResolvedWhereExpr::InList { column, .. } | ResolvedWhereExpr::InSet { column, .. } => {
             if !is_simple_ident(column) {
                 return false;
             }
@@ -394,6 +394,12 @@ fn eval_hive_expr_partial(part_map: &[(String, Value)], expr: &ResolvedWhereExpr
             column,
             values,
             negated,
+        }
+        | ResolvedWhereExpr::InSet {
+            column,
+            values,
+            negated,
+            ..
         } => {
             let (_, pval) = part_map
                 .iter()
@@ -582,6 +588,12 @@ fn row_group_can_match(
             column,
             values,
             negated,
+        }
+        | ResolvedWhereExpr::InSet {
+            column,
+            values,
+            negated,
+            ..
         } => {
             if *negated || values.is_empty() {
                 return true;
@@ -843,6 +855,26 @@ fn eval_batch_where_at(
         ResolvedWhereExpr::Or(l, r) => {
             eval_batch_where_at(batch, batch_cols, hive_vals, l, row_idx)
                 || eval_batch_where_at(batch, batch_cols, hive_vals, r, row_idx)
+        }
+        ResolvedWhereExpr::InSet {
+            column,
+            lookup,
+            negated,
+            ..
+        } => {
+            let col_ref = resolve_batch_col(column, batch_cols, hive_vals);
+            let Some(val) = read_arrow_cell_fast(batch, &col_ref, row_idx) else {
+                return false;
+            };
+            if val.is_null() {
+                return false;
+            }
+            let in_set = lookup.contains(&val);
+            if *negated {
+                !lookup.has_null && !in_set
+            } else {
+                in_set
+            }
         }
         ResolvedWhereExpr::InList {
             column,
@@ -1526,7 +1558,9 @@ fn row_matches_having(row: &Row, expr: &ResolvedWhereExpr, aliases: &[(String, u
         ResolvedWhereExpr::Or(l, r) => {
             row_matches_having(row, l, aliases) || row_matches_having(row, r, aliases)
         }
-        ResolvedWhereExpr::InList { .. } => crate::sql::executor::row_matches_resolved(row, expr),
+        ResolvedWhereExpr::InList { .. } | ResolvedWhereExpr::InSet { .. } => {
+            crate::sql::executor::row_matches_resolved(row, expr)
+        }
     }
 }
 
