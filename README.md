@@ -196,6 +196,7 @@ docker run --rm --network none --mount source=tapirus-demo,target=/data \
   - [TLA+ Formal WAL Specification](docs/formal_verification/README.md) — Crash-safety model and CI TLC2 verification
   - [Engineering Assurance Architecture](docs/HIGH_ASSURANCE_SAFETY.md) — Safety boundaries, memory safety, and verification controls
 - **Architecture & Guides**
+  - [Complete Query Syntax Reference](docs/QUERY_SYNTAX.md) — SQL, Vector, Graph, Cypher, Parquet/OLAP, FTS5, TAP & Pragmas ([web view](https://tapirusdb.com/syntax))
   - [API Cookbook](docs/COOKBOOK.md) — Verified Rust, SQL, Vector, Graph, Encryption, and AI Memory recipes
   - [Transactional AI Memory](docs/AI_MEMORY.md) & [AI Embedded Workflows](docs/AI_EMBEDDED_WORKFLOWS.md)
   - [Editions & Build Profiles](docs/EDITIONS.md) | [IoT Capsules (`tapirus-micro`)](docs/IOT_CAPSULE.md)

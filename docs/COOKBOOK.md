@@ -146,6 +146,7 @@ console.log(JSON.parse(reopened.query_params_json('SELECT * FROM secrets WHERE i
 
 ## Further Reading
 
+- [Complete Query Syntax Reference](QUERY_SYNTAX.md)
 - [Root README](../README.md)
 - [Storage & Paging Architecture](architecture/01_STORAGE_ENGINE_AND_PAGING.md)
 - [WAL, MVCC & Recovery Architecture](architecture/02_WAL_TRANSACTIONS_AND_RECOVERY.md)
