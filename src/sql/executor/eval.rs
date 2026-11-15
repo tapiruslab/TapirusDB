@@ -198,6 +198,23 @@ pub(crate) fn slice_matches_resolved(
                 in_list
             }
         }
+        ResolvedWhereExpr::ColumnComparison {
+            left_col,
+            op,
+            right_col,
+        } => {
+            let (Some(l_idx), Some(r_idx)) = (
+                super::types::resolve_direct_table_col(table_def, left_col),
+                super::types::resolve_direct_table_col(table_def, right_col),
+            ) else {
+                return false;
+            };
+            let l_val = vals.get(l_idx).unwrap_or(&Value::Null);
+            let r_val = vals.get(r_idx).unwrap_or(&Value::Null);
+            matches_condition(l_val, op, r_val)
+        }
+        ResolvedWhereExpr::CorrelatedExists { .. }
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => false,
     }
 }
 
@@ -290,6 +307,29 @@ pub fn row_matches_resolved_with_udf(
                 in_set
             }
         }
+        ResolvedWhereExpr::ColumnComparison {
+            left_col,
+            op,
+            right_col,
+        } => {
+            let l_val = match row.get_field_or_json_path(left_col) {
+                Some(v) => v,
+                None => match try_eval_scalar_expr(row, left_col, udfs) {
+                    Ok(Some(v)) => v,
+                    _ => return false,
+                },
+            };
+            let r_val = match row.get_field_or_json_path(right_col) {
+                Some(v) => v,
+                None => match try_eval_scalar_expr(row, right_col, udfs) {
+                    Ok(Some(v)) => v,
+                    _ => return false,
+                },
+            };
+            matches_condition(&l_val, op, &r_val)
+        }
+        ResolvedWhereExpr::CorrelatedExists { .. }
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => false,
     }
 }
 

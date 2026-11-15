@@ -334,7 +334,9 @@ pub(super) fn authorize_where_subqueries(
     allowed_tables: Option<&[String]>,
 ) -> std::result::Result<(), String> {
     match expr {
-        WhereExpr::Condition(_) | WhereExpr::InList { .. } => Ok(()),
+        WhereExpr::Condition(_) | WhereExpr::InList { .. } | WhereExpr::ColumnComparison { .. } => {
+            Ok(())
+        }
         WhereExpr::And(left, right) | WhereExpr::Or(left, right) => {
             authorize_where_subqueries(left, cte_names, allowed_tables)?;
             authorize_where_subqueries(right, cte_names, allowed_tables)

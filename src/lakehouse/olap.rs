@@ -370,6 +370,20 @@ fn collect_where_columns(expr: &ResolvedWhereExpr, cols: &mut Vec<String>) -> bo
         ResolvedWhereExpr::And(l, r) | ResolvedWhereExpr::Or(l, r) => {
             collect_where_columns(l, cols) && collect_where_columns(r, cols)
         }
+        ResolvedWhereExpr::ColumnComparison {
+            left_col,
+            right_col,
+            ..
+        } => {
+            if !is_simple_ident(left_col) || !is_simple_ident(right_col) {
+                return false;
+            }
+            push_unique_ci(cols, left_col);
+            push_unique_ci(cols, right_col);
+            true
+        }
+        ResolvedWhereExpr::CorrelatedExists { .. }
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => false,
     }
 }
 
@@ -427,6 +441,21 @@ fn eval_hive_expr_partial(part_map: &[(String, Value)], expr: &ResolvedWhereExpr
                 _ => None,
             }
         }
+        ResolvedWhereExpr::ColumnComparison {
+            left_col,
+            op,
+            right_col,
+        } => {
+            let (_, lv) = part_map
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(left_col))?;
+            let (_, rv) = part_map
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(right_col))?;
+            Some(matches_condition(lv, op, rv))
+        }
+        ResolvedWhereExpr::CorrelatedExists { .. }
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => None,
     }
 }
 
@@ -623,6 +652,9 @@ fn row_group_can_match(
                 )
             })
         }
+        ResolvedWhereExpr::ColumnComparison { .. }
+        | ResolvedWhereExpr::CorrelatedExists { .. }
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => true,
     }
 }
 
@@ -896,6 +928,23 @@ fn eval_batch_where_at(
                 in_list
             }
         }
+        ResolvedWhereExpr::ColumnComparison {
+            left_col,
+            op,
+            right_col,
+        } => {
+            let l_ref = resolve_batch_col(left_col, batch_cols, hive_vals);
+            let r_ref = resolve_batch_col(right_col, batch_cols, hive_vals);
+            let (Some(lv), Some(rv)) = (
+                read_arrow_cell_fast(batch, &l_ref, row_idx),
+                read_arrow_cell_fast(batch, &r_ref, row_idx),
+            ) else {
+                return false;
+            };
+            matches_condition(&lv, op, &rv)
+        }
+        ResolvedWhereExpr::CorrelatedExists { .. }
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => false,
     }
 }
 
@@ -1561,6 +1610,28 @@ fn row_matches_having(row: &Row, expr: &ResolvedWhereExpr, aliases: &[(String, u
         ResolvedWhereExpr::InList { .. } | ResolvedWhereExpr::InSet { .. } => {
             crate::sql::executor::row_matches_resolved(row, expr)
         }
+        ResolvedWhereExpr::ColumnComparison {
+            left_col,
+            op,
+            right_col,
+        } => {
+            let resolve = |name: &str| -> Option<Value> {
+                if let Some(v) = row.get_field_or_json_path(name) {
+                    Some(v)
+                } else {
+                    aliases
+                        .iter()
+                        .find(|(raw, _)| raw.eq_ignore_ascii_case(name.trim()))
+                        .map(|(_, idx)| row.values().get(*idx).cloned().unwrap_or(Value::Null))
+                }
+            };
+            let (Some(lv), Some(rv)) = (resolve(left_col), resolve(right_col)) else {
+                return false;
+            };
+            matches_condition(&lv, op, &rv)
+        }
+        ResolvedWhereExpr::CorrelatedExists { .. }
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => false,
     }
 }
 

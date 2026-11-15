@@ -557,6 +557,7 @@ pub fn scan_csv_rows(
         }
     }
 
+    let shared_headers = std::sync::Arc::new(headers);
     let mut rows = Vec::new();
     let mut fields = Vec::with_capacity(csv_col_count);
     while read_csv_record(&mut *reader, &mut line_buf)? {
@@ -574,7 +575,7 @@ pub fn scan_csv_rows(
         }
         let mut vals: Vec<Value> = fields.iter().map(|f| parse_field_inferred(f)).collect();
         vals.extend(extra_vals.iter().cloned());
-        rows.push(Row::new(headers.clone(), vals));
+        rows.push(Row::with_shared_columns(shared_headers.clone(), vals));
     }
     Ok(rows)
 }

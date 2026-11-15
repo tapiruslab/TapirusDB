@@ -2,11 +2,11 @@ use super::eval::{matches_condition, try_eval_scalar_expr};
 use crate::btree::BTreeStorage;
 use crate::error::{Error, Result};
 use crate::pager::Pager;
-use crate::sql::catalog::{IndexDef, TableDef, TableForeignKey};
+use crate::sql::catalog::{Catalog, IndexDef, TableDef, TableForeignKey};
 use crate::sql::codec::encode_row_into;
 use crate::sql::lexer::Token;
-use crate::sql::parser::{BinaryOp, JoinClause, JoinType, WhereCondition, WhereExpr};
-use crate::traits::{Row, Value};
+use crate::sql::parser::{BinaryOp, JoinClause, JoinType, Statement, WhereCondition, WhereExpr};
+use crate::traits::{HashableValue, Row, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -168,6 +168,35 @@ pub enum ResolvedWhereExpr {
     },
     /// Evaluated boolean predicate (e.g. from EXISTS / NOT EXISTS subqueries)
     Boolean(bool),
+    /// Column-to-column comparison (e.g. `price > cost`)
+    ColumnComparison {
+        /// Left-hand column name
+        left_col: String,
+        /// Comparison operator
+        op: BinaryOp,
+        /// Right-hand column name
+        right_col: String,
+    },
+    /// Correlated `[NOT] EXISTS (SELECT ...)` evaluated per outer row with memoization
+    CorrelatedExists {
+        /// Inner SELECT subquery referencing outer columns
+        subquery: Box<Statement>,
+        /// Whether negated (`NOT EXISTS`)
+        negated: bool,
+        /// Deduplicated outer column names referenced by the subquery
+        outer_refs: Vec<String>,
+    },
+    /// Correlated `col [NOT] IN (SELECT ...)` evaluated per outer row with memoization
+    CorrelatedInSubquery {
+        /// Target LHS column name in outer row
+        column: String,
+        /// Inner SELECT subquery referencing outer columns
+        subquery: Box<Statement>,
+        /// Whether negated (`NOT IN`)
+        negated: bool,
+        /// Deduplicated outer column names referenced by the subquery
+        outer_refs: Vec<String>,
+    },
 }
 
 /// A temporal version record for point-in-time SQL time-travel queries
@@ -569,6 +598,31 @@ pub(crate) fn eval_where_three_valued(
             }
         }
         WhereExpr::InSubquery { .. } | WhereExpr::Exists { .. } => Some(true),
+        WhereExpr::ColumnComparison {
+            left_col,
+            op,
+            right_col,
+        } => {
+            let l_val = match row.get_field_or_json_path(left_col) {
+                Some(v) => v,
+                None => match try_eval_scalar_expr(row, left_col, udfs) {
+                    Ok(Some(v)) => v,
+                    _ => return None,
+                },
+            };
+            let r_val = match row.get_field_or_json_path(right_col) {
+                Some(v) => v,
+                None => match try_eval_scalar_expr(row, right_col, udfs) {
+                    Ok(Some(v)) => v,
+                    _ => return None,
+                },
+            };
+            if l_val.is_null() || r_val.is_null() {
+                None
+            } else {
+                Some(matches_condition(&l_val, op, &r_val))
+            }
+        }
     }
 }
 
@@ -1044,7 +1098,94 @@ pub(crate) fn mark_resolved_where_columns(
                 false
             }
         }
+        ResolvedWhereExpr::ColumnComparison {
+            left_col,
+            right_col,
+            ..
+        } => {
+            if let (Some(l_idx), Some(r_idx)) = (
+                resolve_direct_table_col(table_def, left_col),
+                resolve_direct_table_col(table_def, right_col),
+            ) && l_idx < mask.len()
+                && r_idx < mask.len()
+            {
+                mask[l_idx] = true;
+                mask[r_idx] = true;
+                true
+            } else {
+                false
+            }
+        }
+        ResolvedWhereExpr::CorrelatedExists { outer_refs, .. } => {
+            for r in outer_refs {
+                let Some(idx) = resolve_direct_table_col(table_def, r) else {
+                    return false;
+                };
+                if idx < mask.len() {
+                    mask[idx] = true;
+                } else {
+                    return false;
+                }
+            }
+            true
+        }
+        ResolvedWhereExpr::CorrelatedInSubquery {
+            column, outer_refs, ..
+        } => {
+            let Some(c_idx) = resolve_direct_table_col(table_def, column) else {
+                return false;
+            };
+            if c_idx >= mask.len() {
+                return false;
+            }
+            mask[c_idx] = true;
+            for r in outer_refs {
+                let Some(idx) = resolve_direct_table_col(table_def, r) else {
+                    return false;
+                };
+                if idx < mask.len() {
+                    mask[idx] = true;
+                } else {
+                    return false;
+                }
+            }
+            true
+        }
     }
+}
+
+/// Returns `true` if `expr` contains any correlated subquery node requiring per-row execution.
+pub(crate) fn resolved_where_has_correlated(expr: &ResolvedWhereExpr) -> bool {
+    match expr {
+        ResolvedWhereExpr::CorrelatedExists { .. }
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => true,
+        ResolvedWhereExpr::And(l, r) | ResolvedWhereExpr::Or(l, r) => {
+            resolved_where_has_correlated(l) || resolved_where_has_correlated(r)
+        }
+        ResolvedWhereExpr::Boolean(_)
+        | ResolvedWhereExpr::Condition(_)
+        | ResolvedWhereExpr::InList { .. }
+        | ResolvedWhereExpr::InSet { .. }
+        | ResolvedWhereExpr::ColumnComparison { .. } => false,
+    }
+}
+
+/// Split top-level `AND` conjuncts into `(non_correlated_filter, correlated_filter)`.
+pub(crate) fn split_correlated_and_predicates(
+    expr: &ResolvedWhereExpr,
+) -> (Option<ResolvedWhereExpr>, Option<ResolvedWhereExpr>) {
+    let mut conjuncts = Vec::new();
+    collect_and_conjuncts(expr, &mut conjuncts);
+    let mut non_corr = Vec::new();
+    let mut corr = Vec::new();
+    for c in conjuncts {
+        if resolved_where_has_correlated(c) {
+            corr.push(c.clone());
+        } else {
+            non_corr.push(c.clone());
+        }
+    }
+    (combine_and(non_corr), combine_and(corr))
 }
 
 /// Collect top-level `AND`-conjunctive positive `InSet` expressions.
@@ -1090,6 +1231,17 @@ fn join_predicate_table_owner(expr: &ResolvedWhereExpr, tables: &[&TableDef]) ->
         ResolvedWhereExpr::InList { column, .. } | ResolvedWhereExpr::InSet { column, .. } => {
             column_owner_in_tables(column, tables)
         }
+        ResolvedWhereExpr::ColumnComparison {
+            left_col,
+            right_col,
+            ..
+        } => {
+            let lo = column_owner_in_tables(left_col, tables)?;
+            let ro = column_owner_in_tables(right_col, tables)?;
+            (lo == ro).then_some(lo)
+        }
+        ResolvedWhereExpr::CorrelatedExists { .. }
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => None,
     }
 }
 
@@ -1181,4 +1333,569 @@ pub(crate) fn split_join_where_predicates(
         right_pushed.into_iter().map(combine_and).collect(),
         combine_and(post_items),
     )
+}
+
+#[derive(Default)]
+pub(crate) struct CorrelatedSubqueryMemo {
+    pub exists_cache: HashMap<(usize, Vec<HashableValue>), bool>,
+    pub in_cache: HashMap<(usize, Vec<HashableValue>), Arc<InValueLookup>>,
+}
+
+#[inline]
+pub(crate) fn inject_exists_limit(sub: &mut Statement) {
+    if let Statement::Select {
+        distinct,
+        order_by,
+        limit,
+        offset,
+        ..
+    } = sub
+        && limit.is_none()
+    {
+        *limit = Some(1);
+        if offset.is_none() {
+            *order_by = None;
+            *distinct = false;
+        }
+    }
+}
+
+pub(crate) fn build_outer_ref_key(row: &Row, outer_refs: &[String]) -> Vec<HashableValue> {
+    outer_refs
+        .iter()
+        .map(|col| HashableValue::from(&row.get_field_or_json_path(col).unwrap_or(Value::Null)))
+        .collect()
+}
+
+fn push_unique_outer_ref(out: &mut Vec<String>, name: &str) {
+    if !out
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(name))
+    {
+        out.push(name.to_string());
+    }
+}
+
+fn collect_inner_tables<'a>(
+    stmt: &Statement,
+    catalog: &'a Catalog,
+) -> (Vec<&'a TableDef>, Vec<String>, bool) {
+    let mut defs = Vec::new();
+    let mut names = Vec::new();
+    let mut all_known = true;
+    if let Statement::Select {
+        table,
+        join,
+        extra_joins,
+        ..
+    } = stmt
+    {
+        names.push(table.clone());
+        if let Some(td) = catalog.get_table(table) {
+            defs.push(td);
+        } else {
+            all_known = false;
+        }
+        for j in join.iter().chain(extra_joins.iter()) {
+            names.push(j.table.clone());
+            if let Some(td) = catalog.get_table(&j.table) {
+                defs.push(td);
+            } else {
+                all_known = false;
+            }
+        }
+    }
+    (defs, names, all_known)
+}
+
+fn lookup_outer_col(
+    col: &str,
+    inner_tables: &[&TableDef],
+    inner_names: &[String],
+    inner_all_known: bool,
+    outer_tables: &[&TableDef],
+) -> Option<String> {
+    let trimmed = col.trim();
+    if trimmed.is_empty() || trimmed.contains('(') || trimmed.contains(' ') {
+        return None;
+    }
+    if let Some((tbl, c)) = trimmed.split_once('.') {
+        if inner_names.iter().any(|n| n.eq_ignore_ascii_case(tbl)) {
+            return None;
+        }
+        if outer_tables
+            .iter()
+            .any(|t| t.name.eq_ignore_ascii_case(tbl) && t.column_index(c).is_some())
+        {
+            return Some(trimmed.to_string());
+        }
+        None
+    } else {
+        if !inner_all_known {
+            return None;
+        }
+        if inner_tables
+            .iter()
+            .any(|t| t.column_index(trimmed).is_some())
+        {
+            return None;
+        }
+        if outer_tables
+            .iter()
+            .any(|t| t.column_index(trimmed).is_some())
+        {
+            return Some(trimmed.to_string());
+        }
+        None
+    }
+}
+
+fn collect_where_outer_refs(
+    expr: &WhereExpr,
+    inner_tables: &[&TableDef],
+    inner_names: &[String],
+    inner_all_known: bool,
+    outer_tables: &[&TableDef],
+    catalog: &Catalog,
+    out: &mut Vec<String>,
+) {
+    match expr {
+        WhereExpr::Condition(c) => {
+            if let Some(r) = lookup_outer_col(
+                &c.column,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+            ) {
+                push_unique_outer_ref(out, &r);
+            }
+        }
+        WhereExpr::ColumnComparison {
+            left_col,
+            right_col,
+            ..
+        } => {
+            if let Some(r) = lookup_outer_col(
+                left_col,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+            ) {
+                push_unique_outer_ref(out, &r);
+            }
+            if let Some(r) = lookup_outer_col(
+                right_col,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+            ) {
+                push_unique_outer_ref(out, &r);
+            }
+        }
+        WhereExpr::InList { column, .. } => {
+            if let Some(r) = lookup_outer_col(
+                column,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+            ) {
+                push_unique_outer_ref(out, &r);
+            }
+        }
+        WhereExpr::And(l, r) | WhereExpr::Or(l, r) => {
+            collect_where_outer_refs(
+                l,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+                catalog,
+                out,
+            );
+            collect_where_outer_refs(
+                r,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+                catalog,
+                out,
+            );
+        }
+        WhereExpr::InSubquery {
+            column, subquery, ..
+        } => {
+            if let Some(r) = lookup_outer_col(
+                column,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+            ) {
+                push_unique_outer_ref(out, &r);
+            }
+            collect_statement_outer_refs(subquery, outer_tables, catalog, out);
+        }
+        WhereExpr::Exists { subquery, .. } => {
+            collect_statement_outer_refs(subquery, outer_tables, catalog, out);
+        }
+    }
+}
+
+pub(crate) fn collect_statement_outer_refs(
+    stmt: &Statement,
+    outer_tables: &[&TableDef],
+    catalog: &Catalog,
+    out: &mut Vec<String>,
+) {
+    match stmt {
+        Statement::Select {
+            where_clause,
+            having,
+            ..
+        } => {
+            let (inner_tables, inner_names, inner_all_known) = collect_inner_tables(stmt, catalog);
+            if let Some(w) = where_clause {
+                collect_where_outer_refs(
+                    w,
+                    &inner_tables,
+                    &inner_names,
+                    inner_all_known,
+                    outer_tables,
+                    catalog,
+                    out,
+                );
+            }
+            if let Some(h) = having {
+                collect_where_outer_refs(
+                    h,
+                    &inner_tables,
+                    &inner_names,
+                    inner_all_known,
+                    outer_tables,
+                    catalog,
+                    out,
+                );
+            }
+        }
+        Statement::Compound { left, right, .. } => {
+            collect_statement_outer_refs(left, outer_tables, catalog, out);
+            collect_statement_outer_refs(right, outer_tables, catalog, out);
+        }
+        _ => {}
+    }
+}
+
+enum SubstWhere {
+    Expr(WhereExpr),
+    Always(bool),
+}
+
+fn flip_comparison_op(op: &BinaryOp) -> Option<BinaryOp> {
+    Some(match op {
+        BinaryOp::Equals => BinaryOp::Equals,
+        BinaryOp::NotEquals => BinaryOp::NotEquals,
+        BinaryOp::GreaterThan => BinaryOp::LessThan,
+        BinaryOp::LessThan => BinaryOp::GreaterThan,
+        BinaryOp::GreaterOrEqual => BinaryOp::LessOrEqual,
+        BinaryOp::LessOrEqual => BinaryOp::GreaterOrEqual,
+        BinaryOp::Like
+        | BinaryOp::NotLike
+        | BinaryOp::Match
+        | BinaryOp::IsNull
+        | BinaryOp::IsNotNull => {
+            return None;
+        }
+    })
+}
+
+fn substitute_outer_where(
+    expr: &WhereExpr,
+    outer_row: &Row,
+    inner_tables: &[&TableDef],
+    inner_names: &[String],
+    inner_all_known: bool,
+    outer_tables: &[&TableDef],
+    catalog: &Catalog,
+) -> SubstWhere {
+    match expr {
+        WhereExpr::Condition(c) => {
+            if let Some(outer_col) = lookup_outer_col(
+                &c.column,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+            ) {
+                let val = outer_row
+                    .get_field_or_json_path(&outer_col)
+                    .unwrap_or(Value::Null);
+                SubstWhere::Always(matches_condition(&val, &c.op, &c.value))
+            } else {
+                SubstWhere::Expr(WhereExpr::Condition(c.clone()))
+            }
+        }
+        WhereExpr::ColumnComparison {
+            left_col,
+            op,
+            right_col,
+        } => {
+            let l_outer = lookup_outer_col(
+                left_col,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+            );
+            let r_outer = lookup_outer_col(
+                right_col,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+            );
+            match (l_outer, r_outer) {
+                (Some(lc), Some(rc)) => {
+                    let lv = outer_row.get_field_or_json_path(&lc).unwrap_or(Value::Null);
+                    let rv = outer_row.get_field_or_json_path(&rc).unwrap_or(Value::Null);
+                    SubstWhere::Always(matches_condition(&lv, op, &rv))
+                }
+                (None, Some(rc)) => {
+                    let rv = outer_row.get_field_or_json_path(&rc).unwrap_or(Value::Null);
+                    SubstWhere::Expr(WhereExpr::Condition(WhereCondition {
+                        column: left_col.clone(),
+                        op: op.clone(),
+                        value: rv,
+                    }))
+                }
+                (Some(lc), None) => {
+                    let lv = outer_row.get_field_or_json_path(&lc).unwrap_or(Value::Null);
+                    if let Some(flipped) = flip_comparison_op(op) {
+                        SubstWhere::Expr(WhereExpr::Condition(WhereCondition {
+                            column: right_col.clone(),
+                            op: flipped,
+                            value: lv,
+                        }))
+                    } else {
+                        SubstWhere::Always(false)
+                    }
+                }
+                (None, None) => SubstWhere::Expr(WhereExpr::ColumnComparison {
+                    left_col: left_col.clone(),
+                    op: op.clone(),
+                    right_col: right_col.clone(),
+                }),
+            }
+        }
+        WhereExpr::InList {
+            column,
+            values,
+            negated,
+        } => {
+            if let Some(outer_col) = lookup_outer_col(
+                column,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+            ) {
+                let val = outer_row
+                    .get_field_or_json_path(&outer_col)
+                    .unwrap_or(Value::Null);
+                if val.is_null() {
+                    return SubstWhere::Always(false);
+                }
+                let has_null = values.iter().any(|v| v.is_null());
+                let in_list = values.iter().any(|target| val.compare(target).is_eq());
+                let matched = if *negated {
+                    !has_null && !in_list
+                } else {
+                    in_list
+                };
+                SubstWhere::Always(matched)
+            } else {
+                SubstWhere::Expr(WhereExpr::InList {
+                    column: column.clone(),
+                    values: values.clone(),
+                    negated: *negated,
+                })
+            }
+        }
+        WhereExpr::And(l, r) => {
+            let ls = substitute_outer_where(
+                l,
+                outer_row,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+                catalog,
+            );
+            if matches!(ls, SubstWhere::Always(false)) {
+                return SubstWhere::Always(false);
+            }
+            let rs = substitute_outer_where(
+                r,
+                outer_row,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+                catalog,
+            );
+            match (ls, rs) {
+                (SubstWhere::Always(false), _) | (_, SubstWhere::Always(false)) => {
+                    SubstWhere::Always(false)
+                }
+                (SubstWhere::Always(true), other) | (other, SubstWhere::Always(true)) => other,
+                (SubstWhere::Expr(le), SubstWhere::Expr(re)) => {
+                    SubstWhere::Expr(WhereExpr::And(Box::new(le), Box::new(re)))
+                }
+            }
+        }
+        WhereExpr::Or(l, r) => {
+            let ls = substitute_outer_where(
+                l,
+                outer_row,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+                catalog,
+            );
+            if matches!(ls, SubstWhere::Always(true)) {
+                return SubstWhere::Always(true);
+            }
+            let rs = substitute_outer_where(
+                r,
+                outer_row,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+                catalog,
+            );
+            match (ls, rs) {
+                (SubstWhere::Always(true), _) | (_, SubstWhere::Always(true)) => {
+                    SubstWhere::Always(true)
+                }
+                (SubstWhere::Always(false), other) | (other, SubstWhere::Always(false)) => other,
+                (SubstWhere::Expr(le), SubstWhere::Expr(re)) => {
+                    SubstWhere::Expr(WhereExpr::Or(Box::new(le), Box::new(re)))
+                }
+            }
+        }
+        WhereExpr::InSubquery {
+            column,
+            subquery,
+            negated,
+        } => {
+            if let Some(sub) =
+                substitute_outer_statement(subquery, outer_row, outer_tables, catalog)
+            {
+                SubstWhere::Expr(WhereExpr::InSubquery {
+                    column: column.clone(),
+                    subquery: Box::new(sub),
+                    negated: *negated,
+                })
+            } else {
+                SubstWhere::Always(*negated)
+            }
+        }
+        WhereExpr::Exists { subquery, negated } => {
+            if let Some(sub) =
+                substitute_outer_statement(subquery, outer_row, outer_tables, catalog)
+            {
+                SubstWhere::Expr(WhereExpr::Exists {
+                    subquery: Box::new(sub),
+                    negated: *negated,
+                })
+            } else {
+                SubstWhere::Always(*negated)
+            }
+        }
+    }
+}
+
+pub(crate) fn substitute_outer_statement(
+    stmt: &Statement,
+    outer_row: &Row,
+    outer_tables: &[&TableDef],
+    catalog: &Catalog,
+) -> Option<Statement> {
+    let mut cloned = stmt.clone();
+    match &mut cloned {
+        Statement::Select {
+            columns,
+            where_clause,
+            group_by,
+            having,
+            ..
+        } => {
+            let (inner_tables, inner_names, inner_all_known) = collect_inner_tables(stmt, catalog);
+            let is_agg = group_by.is_some() || super::eval::is_aggregate_query(columns);
+            if let Some(w) = where_clause.take() {
+                match substitute_outer_where(
+                    &w,
+                    outer_row,
+                    &inner_tables,
+                    &inner_names,
+                    inner_all_known,
+                    outer_tables,
+                    catalog,
+                ) {
+                    SubstWhere::Always(false) => {
+                        if !is_agg {
+                            return None;
+                        }
+                        *where_clause = Some(WhereExpr::Condition(WhereCondition {
+                            column: "__tapirus_empty".to_string(),
+                            op: BinaryOp::Equals,
+                            value: Value::Integer(1),
+                        }));
+                    }
+                    SubstWhere::Always(true) => {
+                        *where_clause = None;
+                    }
+                    SubstWhere::Expr(e) => {
+                        *where_clause = Some(e);
+                    }
+                }
+            }
+            if let Some(h) = having.take() {
+                match substitute_outer_where(
+                    &h,
+                    outer_row,
+                    &inner_tables,
+                    &inner_names,
+                    inner_all_known,
+                    outer_tables,
+                    catalog,
+                ) {
+                    SubstWhere::Always(false) => return None,
+                    SubstWhere::Always(true) => *having = None,
+                    SubstWhere::Expr(e) => *having = Some(e),
+                }
+            }
+            Some(cloned)
+        }
+        Statement::Compound { left, right, op } => {
+            let l_sub = substitute_outer_statement(left, outer_row, outer_tables, catalog);
+            let r_sub = substitute_outer_statement(right, outer_row, outer_tables, catalog);
+            match (l_sub, r_sub) {
+                (None, None) => None,
+                (Some(s), None) | (None, Some(s)) => Some(s),
+                (Some(l), Some(r)) => Some(Statement::Compound {
+                    left: Box::new(l),
+                    right: Box::new(r),
+                    op: *op,
+                }),
+            }
+        }
+        _ => Some(cloned),
+    }
 }

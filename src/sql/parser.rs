@@ -170,6 +170,15 @@ pub enum WhereExpr {
         /// Whether the condition is negated (`NOT EXISTS`)
         negated: bool,
     },
+    /// Column-to-column comparison (e.g. `price > cost` or `a.id = b.id`)
+    ColumnComparison {
+        /// Left-hand column name
+        left_col: String,
+        /// Comparison operator
+        op: BinaryOp,
+        /// Right-hand column name
+        right_col: String,
+    },
 }
 
 impl WhereExpr {
@@ -2496,19 +2505,91 @@ fn rewrite_select_col_aliases(col: &str, aliases: &[(String, String)]) -> String
     }
 }
 
+fn rewrite_statement_outer_aliases(stmt: &mut Statement, aliases: &[(String, String)]) {
+    if aliases.is_empty() {
+        return;
+    }
+    match stmt {
+        Statement::Select {
+            columns,
+            table,
+            join,
+            extra_joins,
+            where_clause,
+            group_by,
+            having,
+            order_by,
+            ..
+        } => {
+            let filtered: Vec<(String, String)> = aliases
+                .iter()
+                .filter(|(a, _)| {
+                    !a.eq_ignore_ascii_case(table)
+                        && !join
+                            .as_ref()
+                            .is_some_and(|j| a.eq_ignore_ascii_case(&j.table))
+                        && !extra_joins.iter().any(|j| a.eq_ignore_ascii_case(&j.table))
+                })
+                .cloned()
+                .collect();
+            if filtered.is_empty() {
+                return;
+            }
+            for c in columns.iter_mut() {
+                *c = rewrite_expr_aliases(c, &filtered);
+            }
+            if let Some(w) = where_clause {
+                rewrite_where_aliases(w, &filtered);
+            }
+            if let Some(gb) = group_by {
+                for g in gb.iter_mut() {
+                    *g = rewrite_qualified_alias(g, &filtered);
+                }
+            }
+            if let Some(h) = having {
+                rewrite_where_aliases(h, &filtered);
+            }
+            if let Some(ord) = order_by {
+                ord.column = rewrite_qualified_alias(&ord.column, &filtered);
+            }
+        }
+        Statement::Compound { left, right, .. } => {
+            rewrite_statement_outer_aliases(left, aliases);
+            rewrite_statement_outer_aliases(right, aliases);
+        }
+        _ => {}
+    }
+}
+
 fn rewrite_where_aliases(expr: &mut WhereExpr, aliases: &[(String, String)]) {
     match expr {
         WhereExpr::Condition(cond) => {
             cond.column = rewrite_qualified_alias(&cond.column, aliases);
         }
+        WhereExpr::ColumnComparison {
+            left_col,
+            right_col,
+            ..
+        } => {
+            *left_col = rewrite_qualified_alias(left_col, aliases);
+            *right_col = rewrite_qualified_alias(right_col, aliases);
+        }
         WhereExpr::And(l, r) | WhereExpr::Or(l, r) => {
             rewrite_where_aliases(l, aliases);
             rewrite_where_aliases(r, aliases);
         }
-        WhereExpr::InList { column, .. } | WhereExpr::InSubquery { column, .. } => {
+        WhereExpr::InList { column, .. } => {
             *column = rewrite_qualified_alias(column, aliases);
         }
-        WhereExpr::Exists { .. } => {}
+        WhereExpr::InSubquery {
+            column, subquery, ..
+        } => {
+            *column = rewrite_qualified_alias(column, aliases);
+            rewrite_statement_outer_aliases(subquery, aliases);
+        }
+        WhereExpr::Exists { subquery, .. } => {
+            rewrite_statement_outer_aliases(subquery, aliases);
+        }
     }
 }
 
@@ -3460,6 +3541,20 @@ fn parse_primary_where_expr(tokens: &[Token], cursor: &mut usize) -> Result<Wher
     } else {
         raw_op
     };
+
+    if op != BinaryOp::Match
+        && matches!(
+            tokens.get(*cursor),
+            Some(Token::Ident(s)) if !s.eq_ignore_ascii_case("true") && !s.eq_ignore_ascii_case("false")
+        )
+    {
+        let right_col = parse_column_expression(tokens, cursor)?;
+        return Ok(WhereExpr::ColumnComparison {
+            left_col: col_name,
+            op,
+            right_col,
+        });
+    }
 
     let val = parse_value_literal(tokens, cursor)?;
     Ok(WhereExpr::Condition(WhereCondition {

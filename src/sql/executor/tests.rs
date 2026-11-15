@@ -968,3 +968,240 @@ fn test_phase4_chained_joins_predicate_pushdown_inset_indexes_and_agg_guards() {
         "Charlie"
     );
 }
+
+#[test]
+fn test_phase5_column_cmp_correlated_subquery_filtered_seek_or_union_and_vector_topk() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("phase5.db");
+    let mut pager = Pager::open_with_config(&db_path, 4096, 64).unwrap();
+    let mut executor = SQLExecutor::new(&mut pager).unwrap();
+
+    for sql in [
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, active INTEGER, tier TEXT, budget INTEGER, spent INTEGER, email TEXT);",
+        "CREATE INDEX idx_users_tier ON users(tier);",
+        "CREATE INDEX idx_users_email ON users(email);",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, qty INTEGER, status TEXT, min_tier TEXT);",
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, owner_id INTEGER, name TEXT, price INTEGER, cost INTEGER, bonus INTEGER, emb VECTOR(3));",
+        "INSERT INTO users (id, name, active, tier, budget, spent, email) VALUES (1, 'Alice', 1, 'gold', 100, 120, 'alice@x.io'), (2, 'Bob', 1, 'silver', 50, 20, 'bob@x.io'), (3, 'Charlie', 0, 'gold', 200, 250, 'charlie@x.io'), (4, 'Dana', 1, 'bronze', 80, 80, 'dana@x.io');",
+        "INSERT INTO orders (id, user_id, qty, status, min_tier) VALUES (10, 1, 2, 'paid', 'gold'), (11, 1, 5, 'pending', 'gold'), (12, 2, 4, 'paid', 'silver'), (13, 3, 6, 'paid', 'silver');",
+        "INSERT INTO items (id, owner_id, name, price, cost, bonus, emb) VALUES (100, 1, 'Laptop', 150, 90, NULL, [1.0, 0.0, 0.0]), (101, 2, 'Cable', 20, 25, 10, [0.9, 0.1, 0.0]), (102, 4, 'Monitor', 90, 60, 100, [0.0, 1.0, 0.0]), (103, 1, 'Dock', 40, 40, 30, [0.85, 0.15, 0.0]);",
+    ] {
+        executor
+            .execute(&mut pager, parse_sql(sql).unwrap())
+            .unwrap();
+    }
+
+    // 1. Column-to-column comparisons (single table with NULL handling, + cross-table & pushed JOIN)
+    let profit_items = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT name FROM items WHERE price > cost ORDER BY id ASC;").unwrap(),
+        )
+        .unwrap();
+    let profit_names: Vec<String> = profit_items
+        .iter()
+        .map(|r| r.get::<String>("name").unwrap())
+        .collect();
+    assert_eq!(profit_names, vec!["Laptop", "Monitor"]);
+
+    let null_cmp = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT name FROM items WHERE price > bonus ORDER BY id ASC;").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(null_cmp.len(), 2);
+    assert_eq!(null_cmp[0].get::<String>("name").unwrap(), "Cable");
+    assert_eq!(null_cmp[1].get::<String>("name").unwrap(), "Dock");
+
+    let cross_cmp = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT i.name AS item, u.name AS buyer \
+                 FROM items i INNER JOIN users u ON i.owner_id = u.id \
+                 WHERE i.price > u.budget AND u.spent > u.budget \
+                 ORDER BY i.id ASC;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(cross_cmp.len(), 1);
+    assert_eq!(cross_cmp[0].get::<String>("item").unwrap(), "Laptop");
+    assert_eq!(cross_cmp[0].get::<String>("buyer").unwrap(), "Alice");
+
+    // 2. Correlated EXISTS / NOT EXISTS / IN (SELECT ...) + Aggregate & LIMIT guard
+    let corr_exists = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT u.name FROM users u \
+                 WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id AND o.qty >= 4) \
+                 ORDER BY u.id ASC;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let corr_names: Vec<String> = corr_exists
+        .iter()
+        .map(|r| r.get::<String>("name").unwrap())
+        .collect();
+    assert_eq!(corr_names, vec!["Alice", "Bob", "Charlie"]);
+
+    let corr_not_exists = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT u.name FROM users u \
+                 WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id) \
+                 ORDER BY u.id ASC;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(corr_not_exists.len(), 1);
+    assert_eq!(corr_not_exists[0].get::<String>("name").unwrap(), "Dana");
+
+    let corr_in_agg = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT COUNT(*) AS cnt FROM users u \
+                 WHERE u.active = 1 AND u.id IN (SELECT o.user_id FROM orders o WHERE o.status = 'paid' AND o.min_tier = u.tier);",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(corr_in_agg[0].get::<i64>("cnt").unwrap(), 2);
+
+    // 3. Filtered Indexed Seek Join (Case A: left PK = users.id; Case B: right PK = users.id)
+    let seek_case_a = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT orders.id, users.name FROM users INNER JOIN orders ON users.id = orders.user_id \
+                 WHERE users.active = 1 AND orders.status = 'paid' LIMIT 2;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(seek_case_a.len(), 2);
+    let mut seek_a_names: Vec<String> = seek_case_a
+        .iter()
+        .map(|r| r.get::<String>("name").unwrap())
+        .collect();
+    seek_a_names.sort();
+    assert_eq!(seek_a_names, vec!["Alice", "Bob"]);
+
+    let seek_case_a_offset = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT orders.id, users.name FROM users INNER JOIN orders ON users.id = orders.user_id \
+                 WHERE users.active = 1 AND orders.status = 'paid' LIMIT 1 OFFSET 1;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(seek_case_a_offset.len(), 1);
+    assert_eq!(seek_case_a_offset[0].get::<String>("name").unwrap(), "Bob");
+
+    let seek_case_b_real = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT orders.qty, users.name FROM orders INNER JOIN users ON orders.user_id = users.id \
+                 WHERE orders.qty = 4 AND users.tier = 'silver';",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(seek_case_b_real.len(), 1);
+    assert_eq!(seek_case_b_real[0].get::<String>("name").unwrap(), "Bob");
+
+    // 4. OR PK / Secondary Index Union (deduplicating rows matching multiple branches) & EXPLAIN
+    let explain_or = executor
+        .query(
+            &mut pager,
+            parse_sql("EXPLAIN QUERY PLAN SELECT name FROM users WHERE tier = 'gold' OR email = 'alice@x.io';")
+                .unwrap(),
+        )
+        .unwrap();
+    let explain_txt = explain_or
+        .iter()
+        .filter_map(|r| r.get::<String>("detail").ok())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        explain_txt.contains("INDEX UNION"),
+        "expected INDEX UNION in EXPLAIN output, got: {explain_txt}"
+    );
+
+    let or_dedup = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT name FROM users WHERE tier = 'gold' OR email = 'alice@x.io' ORDER BY id ASC;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let or_names: Vec<String> = or_dedup
+        .iter()
+        .map(|r| r.get::<String>("name").unwrap())
+        .collect();
+    assert_eq!(or_names, vec!["Alice", "Charlie"]);
+
+    let or_pk = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT name FROM users WHERE id = 2 OR id = 4 ORDER BY id ASC;").unwrap(),
+        )
+        .unwrap();
+    let or_pk_names: Vec<String> = or_pk
+        .iter()
+        .map(|r| r.get::<String>("name").unwrap())
+        .collect();
+    assert_eq!(or_pk_names, vec!["Bob", "Dana"]);
+
+    // 5. Single-pass VectorSearch Streaming + Top-K Max-Heap (Flat Exact KNN + WHERE filter)
+    let vec_hits = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT name FROM items VECTOR NEAR emb = [1.0, 0.0, 0.0] TOP 2 WHERE price >= 40;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(vec_hits.len(), 2);
+    assert_eq!(vec_hits[0].get::<String>("name").unwrap(), "Laptop");
+    assert_eq!(vec_hits[1].get::<String>("name").unwrap(), "Dock");
+
+    let vec_zero = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT name FROM items VECTOR NEAR emb = [1.0, 0.0, 0.0] TOP 0;").unwrap(),
+        )
+        .unwrap();
+    assert!(vec_zero.is_empty());
+
+    // 6. Correlated DELETE DML support
+    let deleted = executor
+        .execute(
+            &mut pager,
+            parse_sql(
+                "DELETE FROM users WHERE NOT EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id);",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(deleted, 1);
+    let rem = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT COUNT(*) AS cnt FROM users;").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(rem[0].get::<i64>("cnt").unwrap(), 3);
+}

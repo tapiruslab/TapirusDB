@@ -203,22 +203,41 @@ impl SQLExecutor {
         &mut self.graph
     }
 
-    /// Recursively resolve a WhereExpr into a ResolvedWhereExpr, executing subqueries
+    /// Recursively resolve a WhereExpr into a ResolvedWhereExpr, executing uncorrelated subqueries
+    /// and marking correlated subqueries for per-outer-row memoized execution.
     pub fn resolve_where_expr(
         &mut self,
         pager: &mut Pager,
         expr: &WhereExpr,
     ) -> Result<ResolvedWhereExpr> {
+        self.resolve_where_expr_for_tables(pager, expr, &[])
+    }
+
+    pub(crate) fn resolve_where_expr_for_tables(
+        &mut self,
+        pager: &mut Pager,
+        expr: &WhereExpr,
+        outer_tables: &[&TableDef],
+    ) -> Result<ResolvedWhereExpr> {
         match expr {
             WhereExpr::Condition(cond) => Ok(ResolvedWhereExpr::Condition(cond.clone())),
+            WhereExpr::ColumnComparison {
+                left_col,
+                op,
+                right_col,
+            } => Ok(ResolvedWhereExpr::ColumnComparison {
+                left_col: left_col.clone(),
+                op: op.clone(),
+                right_col: right_col.clone(),
+            }),
             WhereExpr::And(left, right) => {
-                let l = self.resolve_where_expr(pager, left)?;
-                let r = self.resolve_where_expr(pager, right)?;
+                let l = self.resolve_where_expr_for_tables(pager, left, outer_tables)?;
+                let r = self.resolve_where_expr_for_tables(pager, right, outer_tables)?;
                 Ok(ResolvedWhereExpr::And(Box::new(l), Box::new(r)))
             }
             WhereExpr::Or(left, right) => {
-                let l = self.resolve_where_expr(pager, left)?;
-                let r = self.resolve_where_expr(pager, right)?;
+                let l = self.resolve_where_expr_for_tables(pager, left, outer_tables)?;
+                let r = self.resolve_where_expr_for_tables(pager, right, outer_tables)?;
                 Ok(ResolvedWhereExpr::Or(Box::new(l), Box::new(r)))
             }
             WhereExpr::InList {
@@ -236,6 +255,23 @@ impl SQLExecutor {
                 subquery,
                 negated,
             } => {
+                if !outer_tables.is_empty() {
+                    let mut outer_refs = Vec::new();
+                    collect_statement_outer_refs(
+                        subquery,
+                        outer_tables,
+                        &self.catalog,
+                        &mut outer_refs,
+                    );
+                    if !outer_refs.is_empty() {
+                        return Ok(ResolvedWhereExpr::CorrelatedInSubquery {
+                            column: column.clone(),
+                            subquery: subquery.clone(),
+                            negated: *negated,
+                            outer_refs,
+                        });
+                    }
+                }
                 let sub_rows = self.query(pager, *subquery.clone())?;
                 let mut values = Vec::with_capacity(sub_rows.len());
                 for r in sub_rows {
@@ -252,28 +288,157 @@ impl SQLExecutor {
                 })
             }
             WhereExpr::Exists { subquery, negated } => {
-                let mut sub = *subquery.clone();
-                if let Statement::Select {
-                    ref mut distinct,
-                    ref mut order_by,
-                    ref mut limit,
-                    ref offset,
-                    ..
-                } = sub
-                    && limit.is_none()
-                {
-                    *limit = Some(1);
-                    if offset.is_none() {
-                        *order_by = None;
-                        *distinct = false;
+                if !outer_tables.is_empty() {
+                    let mut outer_refs = Vec::new();
+                    collect_statement_outer_refs(
+                        subquery,
+                        outer_tables,
+                        &self.catalog,
+                        &mut outer_refs,
+                    );
+                    if !outer_refs.is_empty() {
+                        return Ok(ResolvedWhereExpr::CorrelatedExists {
+                            subquery: subquery.clone(),
+                            negated: *negated,
+                            outer_refs,
+                        });
                     }
                 }
+                let mut sub = *subquery.clone();
+                inject_exists_limit(&mut sub);
                 let sub_rows = self.query(pager, sub)?;
                 let exists = !sub_rows.is_empty();
                 let matches = if *negated { !exists } else { exists };
                 Ok(ResolvedWhereExpr::Boolean(matches))
             }
         }
+    }
+
+    pub(crate) fn eval_resolved_where_with_subqueries(
+        &mut self,
+        pager: &mut Pager,
+        row: &Row,
+        expr: &ResolvedWhereExpr,
+        outer_tables: &[&TableDef],
+        memo: &mut CorrelatedSubqueryMemo,
+    ) -> Result<bool> {
+        if !resolved_where_has_correlated(expr) {
+            return Ok(row_matches_resolved(row, expr));
+        }
+        match expr {
+            ResolvedWhereExpr::And(l, r) => {
+                if !self.eval_resolved_where_with_subqueries(pager, row, l, outer_tables, memo)? {
+                    return Ok(false);
+                }
+                self.eval_resolved_where_with_subqueries(pager, row, r, outer_tables, memo)
+            }
+            ResolvedWhereExpr::Or(l, r) => {
+                if self.eval_resolved_where_with_subqueries(pager, row, l, outer_tables, memo)? {
+                    return Ok(true);
+                }
+                self.eval_resolved_where_with_subqueries(pager, row, r, outer_tables, memo)
+            }
+            ResolvedWhereExpr::CorrelatedExists {
+                subquery,
+                negated,
+                outer_refs,
+            } => {
+                let cache_id = (subquery.as_ref() as *const Statement) as usize;
+                let key = build_outer_ref_key(row, outer_refs);
+                let exists = if let Some(&cached) = memo.exists_cache.get(&(cache_id, key.clone()))
+                {
+                    cached
+                } else {
+                    let sub_opt =
+                        substitute_outer_statement(subquery, row, outer_tables, &self.catalog);
+                    let res = match sub_opt {
+                        None => false,
+                        Some(mut sub) => {
+                            inject_exists_limit(&mut sub);
+                            !self.query(pager, sub)?.is_empty()
+                        }
+                    };
+                    memo.exists_cache.insert((cache_id, key), res);
+                    res
+                };
+                Ok(if *negated { !exists } else { exists })
+            }
+            ResolvedWhereExpr::CorrelatedInSubquery {
+                column,
+                subquery,
+                negated,
+                outer_refs,
+            } => {
+                let lhs_val = match row.get_field_or_json_path(column) {
+                    Some(v) => v,
+                    None => match try_eval_scalar_expr(row, column, None) {
+                        Ok(Some(v)) => v,
+                        _ => return Ok(false),
+                    },
+                };
+                if lhs_val.is_null() {
+                    return Ok(false);
+                }
+                let cache_id = (subquery.as_ref() as *const Statement) as usize;
+                let key = build_outer_ref_key(row, outer_refs);
+                let lookup = if let Some(cached) = memo.in_cache.get(&(cache_id, key.clone())) {
+                    cached.clone()
+                } else {
+                    let sub_opt =
+                        substitute_outer_statement(subquery, row, outer_tables, &self.catalog);
+                    let computed = match sub_opt {
+                        None => Arc::new(InValueLookup::from_values(&[])),
+                        Some(sub) => {
+                            let sub_rows = self.query(pager, sub)?;
+                            let mut values = Vec::with_capacity(sub_rows.len());
+                            for r in sub_rows {
+                                if let Some(v) = r.values().first() {
+                                    values.push(v.clone());
+                                }
+                            }
+                            Arc::new(InValueLookup::from_values(&values))
+                        }
+                    };
+                    memo.in_cache.insert((cache_id, key), computed.clone());
+                    computed
+                };
+                let in_set = lookup.contains(&lhs_val);
+                Ok(if *negated {
+                    !lookup.has_null && !in_set
+                } else {
+                    in_set
+                })
+            }
+            _ => Ok(row_matches_resolved(row, expr)),
+        }
+    }
+
+    pub(crate) fn retain_rows_with_correlated_where(
+        &mut self,
+        pager: &mut Pager,
+        rows: &mut Vec<Row>,
+        expr: &ResolvedWhereExpr,
+        outer_tables: &[&TableDef],
+    ) -> Result<()> {
+        if !resolved_where_has_correlated(expr) {
+            rows.retain(|r| row_matches_resolved(r, expr));
+            return Ok(());
+        }
+        let mut memo = CorrelatedSubqueryMemo::default();
+        let old = std::mem::take(rows);
+        rows.reserve(old.len());
+        for row in old {
+            if self.eval_resolved_where_with_subqueries(
+                pager,
+                &row,
+                expr,
+                outer_tables,
+                &mut memo,
+            )? {
+                rows.push(row);
+            }
+        }
+        Ok(())
     }
 
     /// Execute a non-query SQL or Graph command (CREATE, INSERT, etc.)

@@ -64,7 +64,9 @@ impl SQLExecutor {
 
                 let mut is_index_search = false;
                 if !is_pk_search && !has_joins {
-                    if order_by.is_none() && let Some(ref expr) = where_clause {
+                    if order_by.is_none()
+                        && let Some(ref expr) = where_clause
+                    {
                         let mut and_eqs = HashMap::new();
                         collect_and_eq_conditions(expr, &mut and_eqs);
                         if and_eqs.len() >= 2
@@ -191,6 +193,27 @@ impl SQLExecutor {
                                     break;
                                 }
                             }
+                        }
+                        if !is_pk_search
+                            && !is_index_search
+                            && let Some(tdef) = table_def
+                            && let Some(labels) =
+                                self.plan_or_index_union_labels(&table, tdef, w_expr)
+                        {
+                            is_index_search = true;
+                            rows.push(Row::new(
+                                cols.clone(),
+                                vec![
+                                    Value::Integer(id),
+                                    Value::Integer(0),
+                                    Value::Text(format!(
+                                        "SEARCH TABLE {} USING INDEX UNION ({})",
+                                        table,
+                                        labels.join(" OR ")
+                                    )),
+                                ],
+                            ));
+                            id += 1;
                         }
                     }
                 }
@@ -618,10 +641,32 @@ impl SQLExecutor {
                 rows = joined_rows;
             }
 
-            // Apply WHERE clause
+            // Apply WHERE clause (supporting correlated subqueries against CTE/ephemeral outer columns)
             if let Some(ref expr) = where_clause {
-                let resolved = self.resolve_where_expr(pager, expr)?;
-                rows.retain(|r| row_matches_resolved(r, &resolved));
+                if let Some(first_row) = rows.first() {
+                    let pseudo_cols: Vec<crate::sql::catalog::ColumnDef> = first_row
+                        .columns()
+                        .iter()
+                        .map(|name| {
+                            crate::sql::catalog::ColumnDef::new(
+                                name.clone(),
+                                crate::sql::catalog::DataType::Text,
+                            )
+                        })
+                        .collect();
+                    let pseudo_td =
+                        crate::sql::catalog::TableDef::new(table.clone(), 0, pseudo_cols);
+                    let resolved =
+                        self.resolve_where_expr_for_tables(pager, expr, &[&pseudo_td])?;
+                    self.retain_rows_with_correlated_where(
+                        pager,
+                        &mut rows,
+                        &resolved,
+                        &[&pseudo_td],
+                    )?;
+                } else {
+                    let _ = self.resolve_where_expr(pager, expr)?;
+                }
             }
 
             // Apply GROUP BY / Aggregates / Projection

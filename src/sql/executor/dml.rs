@@ -862,8 +862,49 @@ impl SQLExecutor {
 
     /// Collect matching `(row_id, full_row)` pairs for DML (`UPDATE` / `DELETE`),
     /// pushing down integer PK point/range scans or secondary-index probes when possible
-    /// and streaming projected `WHERE` filtering via `scan_with_ref` on fallback.
+    /// Collect `(row_id, full_row)` pairs matching an optional `WHERE` clause using PK/index pushdown
+    /// and streaming projected `WHERE` filtering via `scan_with_ref` on fallback, plus memoized
+    /// correlated subquery filtering when present.
     fn collect_matching_rows_for_dml(
+        &mut self,
+        pager: &mut Pager,
+        table_def: &TableDef,
+        where_clause: Option<&WhereExpr>,
+        resolved_where: Option<&ResolvedWhereExpr>,
+    ) -> Result<Vec<(u64, Row)>> {
+        if let Some(r_expr) = resolved_where
+            && resolved_where_has_correlated(r_expr)
+        {
+            let (non_corr, corr_opt) = split_correlated_and_predicates(r_expr);
+            let mut candidates = self.collect_matching_rows_scan_for_dml(
+                pager,
+                table_def,
+                where_clause,
+                non_corr.as_ref(),
+            )?;
+            if let Some(corr_expr) = corr_opt {
+                let mut memo = CorrelatedSubqueryMemo::default();
+                let outer_tables = [table_def];
+                let old = std::mem::take(&mut candidates);
+                candidates.reserve(old.len());
+                for (rid, row) in old {
+                    if self.eval_resolved_where_with_subqueries(
+                        pager,
+                        &row,
+                        &corr_expr,
+                        &outer_tables,
+                        &mut memo,
+                    )? {
+                        candidates.push((rid, row));
+                    }
+                }
+            }
+            return Ok(candidates);
+        }
+        self.collect_matching_rows_scan_for_dml(pager, table_def, where_clause, resolved_where)
+    }
+
+    fn collect_matching_rows_scan_for_dml(
         &self,
         pager: &mut Pager,
         table_def: &TableDef,
@@ -1050,7 +1091,7 @@ impl SQLExecutor {
         }
 
         let resolved_where = if let Some(ref expr) = where_clause {
-            Some(self.resolve_where_expr(pager, expr)?)
+            Some(self.resolve_where_expr_for_tables(pager, expr, &[&table_def])?)
         } else {
             None
         };
@@ -1244,7 +1285,7 @@ impl SQLExecutor {
 
         let root_page = table_def.root_page;
         let resolved_where = if let Some(ref expr) = where_clause {
-            Some(self.resolve_where_expr(pager, expr)?)
+            Some(self.resolve_where_expr_for_tables(pager, expr, &[&table_def])?)
         } else {
             None
         };

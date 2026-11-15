@@ -308,10 +308,30 @@ impl SQLExecutor {
                     None
                 };
 
+                let all_joins: Vec<crate::sql::parser::JoinClause> =
+                    join.into_iter().chain(extra_joins).collect();
+                let has_joins = !all_joins.is_empty();
+
                 let resolved_where = if let Some(ref expr) = where_clause {
-                    Some(self.resolve_where_expr(pager, expr)?)
+                    let mut outer_defs = Vec::with_capacity(1 + all_joins.len());
+                    outer_defs.push(table_def.clone());
+                    for jc in &all_joins {
+                        if let Some(rt) = self.catalog.get_table(&jc.table) {
+                            outer_defs.push(rt.clone());
+                        }
+                    }
+                    let outer_refs: Vec<&TableDef> = outer_defs.iter().collect();
+                    Some(self.resolve_where_expr_for_tables(pager, expr, &outer_refs)?)
                 } else {
                     None
+                };
+
+                let has_correlated = resolved_where
+                    .as_ref()
+                    .is_some_and(resolved_where_has_correlated);
+                let (single_scan_where, single_post_correlated) = match resolved_where.as_ref() {
+                    Some(r) if has_correlated && !has_joins => split_correlated_and_predicates(r),
+                    other => (other.cloned(), None),
                 };
 
                 let resolved_having = if let Some(ref h_expr) = having {
@@ -320,9 +340,6 @@ impl SQLExecutor {
                     None
                 };
 
-                let all_joins: Vec<crate::sql::parser::JoinClause> =
-                    join.into_iter().chain(extra_joins).collect();
-                let has_joins = !all_joins.is_empty();
                 let has_win = columns.iter().any(|c| has_window_function(c));
                 let has_agg = is_aggregate_query(&columns);
                 let wants_fts_scores = fts_scores.is_some()
@@ -365,6 +382,8 @@ impl SQLExecutor {
                     None
                 };
 
+                let mut left_rows_from_index: Option<Vec<Row>> = None;
+
                 if as_of_timestamp.is_none()
                     && !has_joins
                     && let Some((Some(lo), Some(hi))) = pk_range
@@ -381,32 +400,46 @@ impl SQLExecutor {
                         if offset.unwrap_or(0) > 0 || limit == Some(0) {
                             return Ok(Vec::new());
                         }
-                        let output_col_names = if columns.is_empty() {
-                            all_col_names.clone()
-                        } else {
-                            columns.clone()
-                        };
                         let all_col_shared = Arc::new(all_col_names.clone());
-                        return self.fetch_rows_by_row_ids(
-                            pager,
-                            root_page,
-                            &table_def,
-                            &all_col_shared,
-                            vec![lo as u64],
-                            resolved_where.as_ref(),
-                            single_table_mask.as_deref(),
-                            IndexFetchMode::EarlyReturn {
-                                output_col_names,
-                                distinct,
-                                offset,
-                                limit,
-                            },
-                        );
+                        if single_post_correlated.is_none() {
+                            let output_col_names = if columns.is_empty() {
+                                all_col_names.clone()
+                            } else {
+                                columns.clone()
+                            };
+                            return self.fetch_rows_by_row_ids(
+                                pager,
+                                root_page,
+                                &table_def,
+                                &all_col_shared,
+                                vec![lo as u64],
+                                single_scan_where.as_ref(),
+                                single_table_mask.as_deref(),
+                                IndexFetchMode::EarlyReturn {
+                                    output_col_names,
+                                    distinct,
+                                    offset,
+                                    limit,
+                                },
+                            );
+                        } else {
+                            left_rows_from_index = Some(self.fetch_rows_by_row_ids(
+                                pager,
+                                root_page,
+                                &table_def,
+                                &all_col_shared,
+                                vec![lo as u64],
+                                single_scan_where.as_ref(),
+                                single_table_mask.as_deref(),
+                                IndexFetchMode::CollectAll,
+                            )?);
+                        }
                     }
                 }
 
                 // Composite secondary index lookup for `WHERE a = X AND b = Y`
-                if as_of_timestamp.is_none()
+                if left_rows_from_index.is_none()
+                    && as_of_timestamp.is_none()
                     && !has_joins
                     && order_by.is_none()
                     && group_by.is_none()
@@ -463,35 +496,48 @@ impl SQLExecutor {
                                 {
                                     matched_row_ids.extend_from_slice(rids);
                                 }
-                                let output_col_names = if columns.is_empty() {
-                                    all_col_names.clone()
-                                } else {
-                                    columns.clone()
-                                };
                                 let all_col_shared = Arc::new(all_col_names.clone());
-                                return self.fetch_rows_by_row_ids(
-                                    pager,
-                                    root_page,
-                                    &table_def,
-                                    &all_col_shared,
-                                    matched_row_ids,
-                                    resolved_where.as_ref(),
-                                    single_table_mask.as_deref(),
-                                    IndexFetchMode::EarlyReturn {
-                                        output_col_names,
-                                        distinct,
-                                        offset,
-                                        limit,
-                                    },
-                                );
+                                if single_post_correlated.is_none() {
+                                    let output_col_names = if columns.is_empty() {
+                                        all_col_names.clone()
+                                    } else {
+                                        columns.clone()
+                                    };
+                                    return self.fetch_rows_by_row_ids(
+                                        pager,
+                                        root_page,
+                                        &table_def,
+                                        &all_col_shared,
+                                        matched_row_ids,
+                                        single_scan_where.as_ref(),
+                                        single_table_mask.as_deref(),
+                                        IndexFetchMode::EarlyReturn {
+                                            output_col_names,
+                                            distinct,
+                                            offset,
+                                            limit,
+                                        },
+                                    );
+                                } else {
+                                    left_rows_from_index = Some(self.fetch_rows_by_row_ids(
+                                        pager,
+                                        root_page,
+                                        &table_def,
+                                        &all_col_shared,
+                                        matched_row_ids,
+                                        single_scan_where.as_ref(),
+                                        single_table_mask.as_deref(),
+                                        IndexFetchMode::CollectAll,
+                                    )?);
+                                }
                             }
                         }
                     }
                 }
 
-                // Cost-Based Optimizer (CBO) evaluation for Secondary Index / Multi-Key IN Lookup vs Sequential Scan
-                let mut left_rows_from_index: Option<Vec<Row>> = None;
-                if as_of_timestamp.is_none()
+                // Cost-Based Optimizer (CBO) evaluation for Secondary Index / Multi-Key IN / OR Union vs Sequential Scan
+                if left_rows_from_index.is_none()
+                    && as_of_timestamp.is_none()
                     && !has_joins
                     && fts_scores.is_none()
                     && let Some(ref w_expr) = where_clause
@@ -502,9 +548,14 @@ impl SQLExecutor {
                         .catalog
                         .get_table_stats(&table)
                         .unwrap_or(&default_stats);
-                    let can_stream_early_return =
-                        order_by.is_none() && group_by.is_none() && !has_agg && !has_win;
+                    let can_stream_early_return = order_by.is_none()
+                        && group_by.is_none()
+                        && !has_agg
+                        && !has_win
+                        && single_post_correlated.is_none();
                     let all_col_shared = Arc::new(all_col_names.clone());
+
+                    let mut candidate_index_rids: Option<Vec<u64>> = None;
 
                     let mut eq_conds = HashMap::new();
                     collect_and_eq_conditions(w_expr, &mut eq_conds);
@@ -527,49 +578,16 @@ impl SQLExecutor {
                             {
                                 matched_row_ids.extend_from_slice(rids);
                             }
-
-                            if can_stream_early_return {
-                                let output_col_names = if columns.is_empty() {
-                                    all_col_names.clone()
-                                } else {
-                                    columns.clone()
-                                };
-                                return self.fetch_rows_by_row_ids(
-                                    pager,
-                                    root_page,
-                                    &table_def,
-                                    &all_col_shared,
-                                    matched_row_ids,
-                                    resolved_where.as_ref(),
-                                    single_table_mask.as_deref(),
-                                    IndexFetchMode::EarlyReturn {
-                                        output_col_names,
-                                        distinct,
-                                        offset,
-                                        limit,
-                                    },
-                                );
-                            } else {
-                                left_rows_from_index = Some(self.fetch_rows_by_row_ids(
-                                    pager,
-                                    root_page,
-                                    &table_def,
-                                    &all_col_shared,
-                                    matched_row_ids,
-                                    resolved_where.as_ref(),
-                                    single_table_mask.as_deref(),
-                                    IndexFetchMode::CollectAll,
-                                )?);
-                            }
+                            candidate_index_rids = Some(matched_row_ids);
                         }
                     }
 
                     // Multi-key PK / Secondary Index `IN (...)` & `IN (SELECT ...)` pushdown
-                    if left_rows_from_index.is_none()
+                    if candidate_index_rids.is_none()
                         && !has_agg
                         && group_by.is_none()
                         && !has_win
-                        && let Some(ref r_expr) = resolved_where
+                        && let Some(ref r_expr) = single_scan_where
                     {
                         let mut in_sets = Vec::new();
                         extract_top_level_in_sets(r_expr, &mut in_sets);
@@ -638,40 +656,55 @@ impl SQLExecutor {
                             }
                         }
 
-                        if let Some(matched_row_ids) = matched_in_row_ids {
-                            if can_stream_early_return {
-                                let output_col_names = if columns.is_empty() {
-                                    all_col_names.clone()
-                                } else {
-                                    columns.clone()
-                                };
-                                return self.fetch_rows_by_row_ids(
-                                    pager,
-                                    root_page,
-                                    &table_def,
-                                    &all_col_shared,
-                                    matched_row_ids,
-                                    resolved_where.as_ref(),
-                                    single_table_mask.as_deref(),
-                                    IndexFetchMode::EarlyReturn {
-                                        output_col_names,
-                                        distinct,
-                                        offset,
-                                        limit,
-                                    },
-                                );
+                        candidate_index_rids = matched_in_row_ids;
+                    }
+
+                    // OR Index Union (`WHERE id = 1 OR id = 2` or indexed branches)
+                    if candidate_index_rids.is_none()
+                        && !has_agg
+                        && group_by.is_none()
+                        && !has_win
+                        && matches!(w_expr, WhereExpr::Or(_, _))
+                        && let Some(or_rids) = self.try_collect_or_union_row_ids(
+                            pager, &table, &table_def, w_expr, stats,
+                        )?
+                    {
+                        candidate_index_rids = Some(or_rids);
+                    }
+
+                    if let Some(matched_row_ids) = candidate_index_rids {
+                        if can_stream_early_return {
+                            let output_col_names = if columns.is_empty() {
+                                all_col_names.clone()
                             } else {
-                                left_rows_from_index = Some(self.fetch_rows_by_row_ids(
-                                    pager,
-                                    root_page,
-                                    &table_def,
-                                    &all_col_shared,
-                                    matched_row_ids,
-                                    resolved_where.as_ref(),
-                                    single_table_mask.as_deref(),
-                                    IndexFetchMode::CollectAll,
-                                )?);
-                            }
+                                columns.clone()
+                            };
+                            return self.fetch_rows_by_row_ids(
+                                pager,
+                                root_page,
+                                &table_def,
+                                &all_col_shared,
+                                matched_row_ids,
+                                single_scan_where.as_ref(),
+                                single_table_mask.as_deref(),
+                                IndexFetchMode::EarlyReturn {
+                                    output_col_names,
+                                    distinct,
+                                    offset,
+                                    limit,
+                                },
+                            );
+                        } else {
+                            left_rows_from_index = Some(self.fetch_rows_by_row_ids(
+                                pager,
+                                root_page,
+                                &table_def,
+                                &all_col_shared,
+                                matched_row_ids,
+                                single_scan_where.as_ref(),
+                                single_table_mask.as_deref(),
+                                IndexFetchMode::CollectAll,
+                            )?);
                         }
                     }
                 }
@@ -679,6 +712,7 @@ impl SQLExecutor {
                 // Single-Pass Pushdown Aggregation Optimization using VectorizedAccumulator
                 if left_rows_from_index.is_none()
                     && !has_joins
+                    && !has_correlated
                     && order_by.is_none()
                     && group_by.is_none()
                     && as_of_timestamp.is_none()
@@ -1087,7 +1121,7 @@ impl SQLExecutor {
                 let left_scan_where: Option<&ResolvedWhereExpr> = if has_joins {
                     left_pushed_where.as_ref()
                 } else {
-                    resolved_where.as_ref()
+                    single_scan_where.as_ref()
                 };
 
                 // Table scan left table
@@ -1201,11 +1235,15 @@ impl SQLExecutor {
                     (None, None)
                 };
 
-                // ── Indexed Seek Join (O(M log N) B-Tree Primary Key Point Lookup) ──
+                // ── Indexed Seek Join (O(M log N) B-Tree Primary Key Point Lookup, supporting single-table WHERE filters) ──
+                let seek_left_where = left_scan_where;
+                let seek_right_where = right_pushed_wheres.first().and_then(|w| w.as_ref());
                 if all_joins.len() == 1
                     && let Some(ref sources) = direct_join_sources
                     && as_of_timestamp.is_none()
-                    && where_clause.is_none()
+                    && post_join_where.is_none()
+                    && !seek_left_where.is_some_and(resolved_where_has_correlated)
+                    && !seek_right_where.is_some_and(resolved_where_has_correlated)
                 {
                     let jc = &all_joins[0];
                     if jc.join_type == JoinType::Inner && !jc.is_left {
@@ -1233,18 +1271,36 @@ impl SQLExecutor {
                             let right_col_shared = Arc::new(right_col_names.clone());
                             let skip_count = offset.unwrap_or(0);
 
+                            let can_slice_left = seek_left_where.is_none_or(|lw| {
+                                let mut chk = vec![false; all_col_names.len()];
+                                mark_resolved_where_columns(lw, &table_def, &mut chk)
+                            });
+                            let eff_left_mask: Vec<bool> = if can_slice_left {
+                                left_needed_mask
+                                    .clone()
+                                    .unwrap_or_else(|| vec![true; all_col_names.len()])
+                            } else {
+                                vec![true; all_col_names.len()]
+                            };
+
+                            let mut right_mask = vec![false; right_col_names.len()];
+                            right_mask[r_idx] = true;
+                            for src in sources {
+                                if let JoinOutputCol::Right(idx) = src
+                                    && *idx < right_mask.len()
+                                {
+                                    right_mask[*idx] = true;
+                                }
+                            }
+                            let can_slice_right = seek_right_where.is_none_or(|rw| {
+                                mark_resolved_where_columns(rw, right_table_def, &mut right_mask)
+                            });
+                            if !can_slice_right {
+                                right_mask.fill(true);
+                            }
+
                             // Case A: Left table join key is its integer PRIMARY KEY
                             if left_is_int_pk {
-                                let mut right_mask = vec![false; right_col_names.len()];
-                                right_mask[r_idx] = true;
-                                for src in sources {
-                                    if let JoinOutputCol::Right(idx) = src
-                                        && *idx < right_mask.len()
-                                    {
-                                        right_mask[*idx] = true;
-                                    }
-                                }
-
                                 let mut driving_tuples: Vec<(i64, Vec<Value>)> = Vec::new();
                                 let mut scratch_right = Vec::with_capacity(right_col_names.len());
                                 self.btree.scan_with_ref(
@@ -1257,7 +1313,15 @@ impl SQLExecutor {
                                             &right_mask,
                                             &mut scratch_right,
                                         )?;
-                                        if let Some(Value::Integer(k)) = scratch_right.get(r_idx) {
+                                        if let Some(Value::Integer(k)) = scratch_right.get(r_idx)
+                                            && eval_projected_where(
+                                                &scratch_right,
+                                                &right_col_shared,
+                                                right_table_def,
+                                                seek_right_where,
+                                                can_slice_right,
+                                            )
+                                        {
                                             driving_tuples
                                                 .push((*k, std::mem::take(&mut scratch_right)));
                                         }
@@ -1265,7 +1329,6 @@ impl SQLExecutor {
                                     },
                                 )?;
 
-                                let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
                                 let mut final_rows = Vec::with_capacity(
                                     driving_tuples.len().min(limit.unwrap_or(usize::MAX)),
                                 );
@@ -1276,16 +1339,25 @@ impl SQLExecutor {
                                     if let Some(l_payload) =
                                         self.btree.search(pager, root_page, k as u64)?
                                     {
+                                        probe_left.clear();
+                                        decode_row_values_into_projected(
+                                            &l_payload,
+                                            &eff_left_mask,
+                                            &mut probe_left,
+                                        )?;
+                                        if !eval_projected_where(
+                                            &probe_left,
+                                            &left_col_shared,
+                                            &table_def,
+                                            seek_left_where,
+                                            can_slice_left,
+                                        ) {
+                                            continue;
+                                        }
                                         if skipped < skip_count {
                                             skipped += 1;
                                             continue;
                                         }
-                                        probe_left.clear();
-                                        decode_row_values_into_projected(
-                                            &l_payload,
-                                            left_mask,
-                                            &mut probe_left,
-                                        )?;
                                         let mut vals = Vec::with_capacity(sources.len());
                                         for src in sources {
                                             match src {
@@ -1320,7 +1392,6 @@ impl SQLExecutor {
 
                             // Case B: Right table join key is its integer PRIMARY KEY
                             if right_is_int_pk {
-                                let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
                                 let mut driving_tuples: Vec<(i64, Vec<Value>)> = Vec::new();
                                 let mut scratch_left = Vec::with_capacity(left_col_shared.len());
                                 self.btree.scan_with_ref(
@@ -1330,26 +1401,24 @@ impl SQLExecutor {
                                         scratch_left.clear();
                                         decode_row_values_into_projected(
                                             payload,
-                                            left_mask,
+                                            &eff_left_mask,
                                             &mut scratch_left,
                                         )?;
-                                        if let Some(Value::Integer(k)) = scratch_left.get(l_idx) {
+                                        if let Some(Value::Integer(k)) = scratch_left.get(l_idx)
+                                            && eval_projected_where(
+                                                &scratch_left,
+                                                &left_col_shared,
+                                                &table_def,
+                                                seek_left_where,
+                                                can_slice_left,
+                                            )
+                                        {
                                             driving_tuples
                                                 .push((*k, std::mem::take(&mut scratch_left)));
                                         }
                                         Ok(true)
                                     },
                                 )?;
-
-                                let mut right_mask = vec![false; right_col_names.len()];
-                                right_mask[r_idx] = true;
-                                for src in sources {
-                                    if let JoinOutputCol::Right(idx) = src
-                                        && *idx < right_mask.len()
-                                    {
-                                        right_mask[*idx] = true;
-                                    }
-                                }
 
                                 let mut final_rows = Vec::with_capacity(
                                     driving_tuples.len().min(limit.unwrap_or(usize::MAX)),
@@ -1363,16 +1432,25 @@ impl SQLExecutor {
                                         right_table_def.root_page,
                                         k as u64,
                                     )? {
-                                        if skipped < skip_count {
-                                            skipped += 1;
-                                            continue;
-                                        }
                                         probe_right.clear();
                                         decode_row_values_into_projected(
                                             &r_payload,
                                             &right_mask,
                                             &mut probe_right,
                                         )?;
+                                        if !eval_projected_where(
+                                            &probe_right,
+                                            &right_col_shared,
+                                            right_table_def,
+                                            seek_right_where,
+                                            can_slice_right,
+                                        ) {
+                                            continue;
+                                        }
+                                        if skipped < skip_count {
+                                            skipped += 1;
+                                            continue;
+                                        }
                                         let mut vals = Vec::with_capacity(sources.len());
                                         for src in sources {
                                             match src {
@@ -1446,6 +1524,7 @@ impl SQLExecutor {
                     };
 
                     let can_early_terminate = !has_joins
+                        && !has_correlated
                         && (order_by.is_none() || order_by_satisfied)
                         && group_by.is_none()
                         && !distinct
@@ -1965,8 +2044,25 @@ impl SQLExecutor {
                     }
 
                     if let Some(ref post_w) = post_join_where {
-                        left_rows.retain(|r| row_matches_resolved(r, post_w));
+                        let outer_tables: Vec<TableDef> = std::iter::once(table_def.clone())
+                            .chain(joined_table_defs.iter().map(|t| (*t).clone()))
+                            .collect();
+                        let outer_refs: Vec<&TableDef> = outer_tables.iter().collect();
+                        self.retain_rows_with_correlated_where(
+                            pager,
+                            &mut left_rows,
+                            post_w,
+                            &outer_refs,
+                        )?;
                     }
+                } else if let Some(ref corr_w) = single_post_correlated {
+                    let outer_td = table_def.clone();
+                    self.retain_rows_with_correlated_where(
+                        pager,
+                        &mut left_rows,
+                        corr_w,
+                        &[&outer_td],
+                    )?;
                 }
 
                 // Check for GROUP BY (High-Performance O(N) Hash Aggregation fallback for joins/temporal)
@@ -2122,6 +2218,9 @@ impl SQLExecutor {
                 where_clause,
                 ..
             } => {
+                if top_k == 0 {
+                    return Ok(Vec::new());
+                }
                 let table_def = self
                     .catalog
                     .get_table(&table)
@@ -2130,108 +2229,285 @@ impl SQLExecutor {
 
                 let root_page = table_def.root_page;
                 let all_col_names = table_def.column_names();
+                let all_col_shared = Arc::new(all_col_names.clone());
                 let output_col_names = if columns.is_empty() {
                     all_col_names.clone()
                 } else {
                     columns.clone()
                 };
 
-                // Compute candidate row IDs if where_clause is present (Pre-Filtering)
-                let candidate_ids = if let Some(ref expr) = where_clause {
-                    let resolved = self.resolve_where_expr(pager, expr)?;
-                    let mut matched = std::collections::HashSet::new();
-
-                    let mut used_index = false;
-                    if let ResolvedWhereExpr::Condition(cond) = &resolved
-                        && cond.op == BinaryOp::Equals
-                        && let Some(index_def) = self.find_usable_index_for_column(
-                            &table,
-                            &cond.column,
-                            where_clause.as_ref(),
-                        )
-                    {
-                        let key = value_to_index_key(&cond.value);
-                        if let Some(bucket) =
-                            IndexBucket::load(&self.btree, pager, index_def.root_page, key)?
-                            && let Some(rids) = bucket.get_row_ids(&cond.value)
-                        {
-                            for &rid in rids {
-                                matched.insert(rid);
-                            }
-                            used_index = true;
-                        }
-                    }
-
-                    if !used_index {
-                        let cells = self.btree.scan(pager, root_page)?;
-                        for cell in cells {
-                            if let Ok(full_row) = decode_row(&cell.payload, &all_col_names)
-                                && row_matches_resolved(&full_row, &resolved)
-                            {
-                                matched.insert(cell.row_id);
-                            }
-                        }
-                    }
-                    Some(matched)
+                let resolved_where = if let Some(ref expr) = where_clause {
+                    Some(self.resolve_where_expr_for_tables(pager, expr, &[&table_def])?)
                 } else {
                     None
                 };
+                let has_corr = resolved_where
+                    .as_ref()
+                    .is_some_and(resolved_where_has_correlated);
 
                 let mut rows = Vec::new();
-                if let Some(index) = self.vector_indexes.get(&table.to_lowercase()) {
-                    let neighbors = index.search_knn_filtered(
-                        &query_vector,
-                        top_k,
-                        DistanceMetric::Cosine,
-                        candidate_ids.as_ref(),
-                    )?;
+                if self.vector_indexes.contains_key(&table.to_lowercase()) {
+                    // HNSW Vector Index path: pre-filter candidate IDs via index or single streaming pass
+                    let candidate_ids = if let Some(ref resolved) = resolved_where {
+                        let mut matched = std::collections::HashSet::new();
+                        let mut used_index = false;
+                        if let ResolvedWhereExpr::Condition(cond) = resolved
+                            && cond.op == BinaryOp::Equals
+                            && let Some(index_def) = self.find_usable_index_for_column(
+                                &table,
+                                &cond.column,
+                                where_clause.as_ref(),
+                            )
+                        {
+                            let key = value_to_index_key(&cond.value);
+                            if let Some(bucket) =
+                                IndexBucket::load(&self.btree, pager, index_def.root_page, key)?
+                                && let Some(rids) = bucket.get_row_ids(&cond.value)
+                            {
+                                for &rid in rids {
+                                    matched.insert(rid);
+                                }
+                                used_index = true;
+                            }
+                        }
+
+                        if !used_index {
+                            let (scan_where, corr_where) = if has_corr {
+                                split_correlated_and_predicates(resolved)
+                            } else {
+                                (Some(resolved.clone()), None)
+                            };
+                            if let Some(cw) = corr_where {
+                                let mut cand_rows: Vec<(u64, Row)> = Vec::new();
+                                self.btree
+                                    .scan_with_ref(pager, root_page, |row_id, payload| {
+                                        let row = decode_row_shared(payload, &all_col_shared)?;
+                                        if scan_where
+                                            .as_ref()
+                                            .is_none_or(|sw| row_matches_resolved(&row, sw))
+                                        {
+                                            cand_rows.push((row_id, row));
+                                        }
+                                        Ok(true)
+                                    })?;
+                                let mut memo = CorrelatedSubqueryMemo::default();
+                                for (row_id, row) in cand_rows {
+                                    if self.eval_resolved_where_with_subqueries(
+                                        pager,
+                                        &row,
+                                        &cw,
+                                        &[&table_def],
+                                        &mut memo,
+                                    )? {
+                                        matched.insert(row_id);
+                                    }
+                                }
+                            } else {
+                                let mut filter_mask = vec![false; all_col_names.len()];
+                                let can_slice = mark_resolved_where_columns(
+                                    resolved,
+                                    &table_def,
+                                    &mut filter_mask,
+                                );
+                                let mut scratch = Vec::with_capacity(all_col_names.len());
+                                self.btree
+                                    .scan_with_ref(pager, root_page, |row_id, payload| {
+                                        if can_slice {
+                                            scratch.clear();
+                                            decode_row_values_into_projected(
+                                                payload,
+                                                &filter_mask,
+                                                &mut scratch,
+                                            )?;
+                                            if slice_matches_resolved(
+                                                &scratch, &table_def, resolved,
+                                            ) {
+                                                matched.insert(row_id);
+                                            }
+                                        } else {
+                                            let row = decode_row_shared(payload, &all_col_shared)?;
+                                            if row_matches_resolved(&row, resolved) {
+                                                matched.insert(row_id);
+                                            }
+                                        }
+                                        Ok(true)
+                                    })?;
+                            }
+                        }
+                        Some(matched)
+                    } else {
+                        None
+                    };
+
+                    let neighbors = self
+                        .vector_indexes
+                        .get(&table.to_lowercase())
+                        .expect("checked above")
+                        .search_knn_filtered(
+                            &query_vector,
+                            top_k,
+                            DistanceMetric::Cosine,
+                            candidate_ids.as_ref(),
+                        )?;
                     for (row_id, _) in neighbors {
                         if let Some(payload) = self.btree.search(pager, root_page, row_id)? {
-                            let full_row = decode_row(&payload, &all_col_names)?;
-                            let projected = self.project_row(&full_row, &output_col_names)?;
-                            rows.push(projected);
+                            let full_row = decode_row_shared(&payload, &all_col_shared)?;
+                            rows.push(self.project_row(&full_row, &output_col_names)?);
                         }
                     }
-                } else {
-                    // Exact Flat KNN Scan: Calculate true mathematical cosine distances across filtered candidate records
-                    let cells = self.btree.scan(pager, root_page)?;
-                    if let Some((vec_idx, _)) = table_def.vector_column() {
-                        let mut scored_rows: Vec<(f32, Row)> = Vec::new();
-                        for cell in cells {
-                            if let Some(ref allowed) = candidate_ids
-                                && !allowed.contains(&cell.row_id)
-                            {
-                                continue;
-                            }
-                            if let Ok(full_row) = decode_row(&cell.payload, &all_col_names)
-                                && let Some(crate::traits::Value::Vector(v)) =
-                                    full_row.values().get(vec_idx)
-                            {
-                                let dist = crate::vector::cosine_distance(&query_vector, v);
-                                let projected = self.project_row(&full_row, &output_col_names)?;
-                                scored_rows.push((dist, projected));
-                            }
+                } else if let Some((vec_idx, _)) = table_def.vector_column() {
+                    // Single-pass Streaming Exact Flat KNN with Projection + Bounded Max-Heap (O(N log K), O(K) memory)
+                    let mut scan_mask = compute_single_table_needed_mask(
+                        &table_def,
+                        &output_col_names,
+                        resolved_where.as_ref(),
+                        None,
+                        false,
+                    );
+                    if let Some(ref mut mask) = scan_mask
+                        && vec_idx < mask.len()
+                    {
+                        mask[vec_idx] = true;
+                    }
+
+                    let mut heap: std::collections::BinaryHeap<TopKVecEntry> =
+                        std::collections::BinaryHeap::with_capacity(top_k.saturating_add(1));
+                    let mut seq = 0usize;
+
+                    if has_corr {
+                        let Some(ref r_expr) = resolved_where else {
+                            unreachable!();
+                        };
+                        let (scan_where, corr_where) = split_correlated_and_predicates(r_expr);
+                        let mut cand_rows = Vec::new();
+                        self.btree
+                            .scan_with_ref(pager, root_page, |_row_id, payload| {
+                                let row = if let Some(ref mask) = scan_mask {
+                                    decode_row_shared_projected(payload, &all_col_shared, mask)?
+                                } else {
+                                    decode_row_shared(payload, &all_col_shared)?
+                                };
+                                if scan_where
+                                    .as_ref()
+                                    .is_none_or(|sw| row_matches_resolved(&row, sw))
+                                {
+                                    cand_rows.push(row);
+                                }
+                                Ok(true)
+                            })?;
+                        if let Some(cw) = corr_where {
+                            self.retain_rows_with_correlated_where(
+                                pager,
+                                &mut cand_rows,
+                                &cw,
+                                &[&table_def],
+                            )?;
                         }
-                        scored_rows.sort_by(|a, b| {
-                            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-                        });
-                        for (_, row) in scored_rows.into_iter().take(top_k) {
-                            rows.push(row);
+                        for row in cand_rows {
+                            if let Some(Value::Vector(v)) = row.values().get(vec_idx) {
+                                let dist = crate::vector::cosine_distance(&query_vector, v);
+                                push_top_k_heap(&mut heap, top_k, dist, &mut seq, || row.clone());
+                            }
                         }
                     } else {
-                        for cell in cells.into_iter() {
-                            if let Some(ref allowed) = candidate_ids
-                                && !allowed.contains(&cell.row_id)
-                            {
-                                continue;
-                            }
-                            let full_row = decode_row(&cell.payload, &all_col_names)?;
-                            let projected = self.project_row(&full_row, &output_col_names)?;
-                            rows.push(projected);
-                            if rows.len() >= top_k {
-                                break;
-                            }
+                        let can_slice = scan_mask.is_some()
+                            && resolved_where.as_ref().is_none_or(|w| {
+                                let mut chk = vec![false; all_col_names.len()];
+                                mark_resolved_where_columns(w, &table_def, &mut chk)
+                            });
+                        let mut scratch_vals = Vec::with_capacity(all_col_names.len());
+                        self.btree
+                            .scan_with_ref(pager, root_page, |_row_id, payload| {
+                                if let Some(ref mask) = scan_mask
+                                    && can_slice
+                                {
+                                    scratch_vals.clear();
+                                    decode_row_values_into_projected(
+                                        payload,
+                                        mask,
+                                        &mut scratch_vals,
+                                    )?;
+                                    if let Some(ref r_expr) = resolved_where
+                                        && !slice_matches_resolved(
+                                            &scratch_vals,
+                                            &table_def,
+                                            r_expr,
+                                        )
+                                    {
+                                        return Ok(true);
+                                    }
+                                    if let Some(Value::Vector(v)) = scratch_vals.get(vec_idx) {
+                                        let dist = crate::vector::cosine_distance(&query_vector, v);
+                                        push_top_k_heap(&mut heap, top_k, dist, &mut seq, || {
+                                            Row::with_shared_columns(
+                                                all_col_shared.clone(),
+                                                std::mem::take(&mut scratch_vals),
+                                            )
+                                        });
+                                    }
+                                } else {
+                                    let row = decode_row_shared(payload, &all_col_shared)?;
+                                    if let Some(ref r_expr) = resolved_where
+                                        && !row_matches_resolved(&row, r_expr)
+                                    {
+                                        return Ok(true);
+                                    }
+                                    if let Some(Value::Vector(v)) = row.values().get(vec_idx) {
+                                        let dist = crate::vector::cosine_distance(&query_vector, v);
+                                        push_top_k_heap(&mut heap, top_k, dist, &mut seq, || {
+                                            row.clone()
+                                        });
+                                    }
+                                }
+                                Ok(true)
+                            })?;
+                    }
+
+                    for entry in heap.into_sorted_vec() {
+                        rows.push(self.project_row(&entry.row, &output_col_names)?);
+                    }
+                } else {
+                    // Table without a vector column: stream matching rows up to top_k
+                    if has_corr {
+                        let Some(ref r_expr) = resolved_where else {
+                            unreachable!();
+                        };
+                        let (scan_where, corr_where) = split_correlated_and_predicates(r_expr);
+                        let mut cand_rows = Vec::new();
+                        self.btree
+                            .scan_with_ref(pager, root_page, |_row_id, payload| {
+                                let row = decode_row_shared(payload, &all_col_shared)?;
+                                if scan_where
+                                    .as_ref()
+                                    .is_none_or(|sw| row_matches_resolved(&row, sw))
+                                {
+                                    cand_rows.push(row);
+                                }
+                                Ok(true)
+                            })?;
+                        if let Some(cw) = corr_where {
+                            self.retain_rows_with_correlated_where(
+                                pager,
+                                &mut cand_rows,
+                                &cw,
+                                &[&table_def],
+                            )?;
                         }
+                        for row in cand_rows.into_iter().take(top_k) {
+                            rows.push(self.project_row(&row, &output_col_names)?);
+                        }
+                    } else {
+                        self.btree
+                            .scan_with_ref(pager, root_page, |_row_id, payload| {
+                                let row = decode_row_shared(payload, &all_col_shared)?;
+                                if let Some(ref r_expr) = resolved_where
+                                    && !row_matches_resolved(&row, r_expr)
+                                {
+                                    return Ok(true);
+                                }
+                                rows.push(self.project_row(&row, &output_col_names)?);
+                                Ok(rows.len() < top_k)
+                            })?;
                     }
                 }
 
@@ -2985,4 +3261,344 @@ fn resolve_join_key_indices(
         return (flipped_l, flipped_r);
     }
     (direct_l, direct_r)
+}
+
+#[inline]
+fn eval_projected_where(
+    vals: &[Value],
+    cols_shared: &Arc<Vec<String>>,
+    table_def: &TableDef,
+    where_opt: Option<&ResolvedWhereExpr>,
+    can_slice: bool,
+) -> bool {
+    let Some(w) = where_opt else {
+        return true;
+    };
+    if can_slice {
+        slice_matches_resolved(vals, table_def, w)
+    } else {
+        let row = Row::with_shared_columns(cols_shared.clone(), vals.to_vec());
+        row_matches_resolved(&row, w)
+    }
+}
+
+struct TopKVecEntry {
+    dist: f32,
+    seq: usize,
+    row: Row,
+}
+
+impl PartialEq for TopKVecEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.dist.to_bits() == other.dist.to_bits() && self.seq == other.seq
+    }
+}
+
+impl Eq for TopKVecEntry {}
+
+impl PartialOrd for TopKVecEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TopKVecEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let dc = match (self.dist.is_nan(), other.dist.is_nan()) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            (false, false) => self.dist.total_cmp(&other.dist),
+        };
+        dc.then_with(|| self.seq.cmp(&other.seq))
+    }
+}
+
+#[inline]
+fn push_top_k_heap<F>(
+    heap: &mut std::collections::BinaryHeap<TopKVecEntry>,
+    top_k: usize,
+    dist: f32,
+    seq: &mut usize,
+    build_row: F,
+) where
+    F: FnOnce() -> Row,
+{
+    let cur_seq = *seq;
+    *seq = cur_seq.saturating_add(1);
+    if heap.len() < top_k {
+        heap.push(TopKVecEntry {
+            dist,
+            seq: cur_seq,
+            row: build_row(),
+        });
+    } else if let Some(worst) = heap.peek() {
+        let better = if worst.dist.is_nan() {
+            !dist.is_nan()
+        } else if dist.is_nan() {
+            false
+        } else {
+            dist < worst.dist
+        };
+        if better {
+            heap.pop();
+            heap.push(TopKVecEntry {
+                dist,
+                seq: cur_seq,
+                row: build_row(),
+            });
+        }
+    }
+}
+
+pub(crate) fn collect_or_branches<'a>(expr: &'a WhereExpr, out: &mut Vec<&'a WhereExpr>) {
+    if let WhereExpr::Or(l, r) = expr {
+        collect_or_branches(l, out);
+        collect_or_branches(r, out);
+    } else {
+        out.push(expr);
+    }
+}
+
+impl super::SQLExecutor {
+    pub(crate) fn plan_or_index_union_labels(
+        &self,
+        table: &str,
+        table_def: &TableDef,
+        expr: &WhereExpr,
+    ) -> Option<Vec<String>> {
+        if !matches!(expr, WhereExpr::Or(_, _)) {
+            return None;
+        }
+        let mut branches = Vec::new();
+        collect_or_branches(expr, &mut branches);
+        if branches.len() < 2 || branches.len() > 32 {
+            return None;
+        }
+        let pk_idx = table_def.primary_key_index();
+        let is_int_pk = pk_idx.is_some_and(|idx| {
+            table_def.columns[idx].data_type == crate::sql::catalog::DataType::Integer
+        });
+        let pk_name = pk_idx.map(|i| table_def.columns[i].name.as_str());
+        let mut labels = Vec::with_capacity(branches.len());
+        for b in branches {
+            if is_int_pk
+                && let Some(pk) = pk_name
+                && let (Some(lo), Some(hi), true) = extract_pk_signed_range(b, pk)
+                && hi.saturating_sub(lo) <= 64
+            {
+                labels.push(format!("PRIMARY KEY ({pk})"));
+                continue;
+            }
+            let mut eqs = HashMap::new();
+            collect_and_eq_conditions(b, &mut eqs);
+            if eqs.len() >= 2
+                && let Some(comp_idx) = self
+                    .catalog
+                    .indexes()
+                    .into_iter()
+                    .filter(|idx| {
+                        idx.table.eq_ignore_ascii_case(table)
+                            && partial_index_matches_query(idx, Some(b))
+                    })
+                    .filter(|idx| {
+                        let cols = idx.target_columns();
+                        cols.len() >= 2 && cols.iter().all(|c| eqs.contains_key(&c.to_lowercase()))
+                    })
+                    .max_by_key(|idx| idx.target_columns().len())
+            {
+                labels.push(format!("COMPOSITE INDEX {}", comp_idx.name));
+                continue;
+            }
+            if let Some(idx_def) = eqs
+                .keys()
+                .find_map(|c| self.find_usable_index_for_column(table, c, Some(b)))
+            {
+                labels.push(format!("INDEX {}", idx_def.name));
+                continue;
+            }
+            if let WhereExpr::InList {
+                column,
+                values,
+                negated: false,
+            } = b
+            {
+                let bare = column.split_once('.').map_or(column.as_str(), |(_, c)| c);
+                if is_int_pk
+                    && pk_name.is_some_and(|pk| pk.eq_ignore_ascii_case(bare))
+                    && values.len() <= 64
+                {
+                    labels.push(format!("PRIMARY KEY ({bare})"));
+                    continue;
+                }
+                if values.len() <= 16
+                    && let Some(idx_def) = self.find_usable_index_for_column(table, bare, Some(b))
+                {
+                    labels.push(format!("INDEX {}", idx_def.name));
+                    continue;
+                }
+            }
+            return None;
+        }
+        Some(labels)
+    }
+
+    pub(crate) fn try_collect_or_union_row_ids(
+        &self,
+        pager: &mut Pager,
+        table: &str,
+        table_def: &TableDef,
+        expr: &WhereExpr,
+        stats: &crate::sql::planner::TableStats,
+    ) -> Result<Option<Vec<u64>>> {
+        let mut branches = Vec::new();
+        collect_or_branches(expr, &mut branches);
+        if branches.len() < 2 || branches.len() > 32 {
+            return Ok(None);
+        }
+        let pk_idx = table_def.primary_key_index();
+        let is_int_pk = pk_idx.is_some_and(|idx| {
+            table_def.columns[idx].data_type == crate::sql::catalog::DataType::Integer
+        });
+        let pk_name = pk_idx.map(|i| table_def.columns[i].name.as_str());
+        let mut union_rids = Vec::new();
+        let max_candidates = if stats.total_rows > 128 {
+            (stats.total_rows * 2) / 3
+        } else {
+            usize::MAX
+        };
+
+        for b in branches {
+            if is_int_pk
+                && let Some(pk) = pk_name
+                && let (Some(lo), Some(hi), true) = extract_pk_signed_range(b, pk)
+                && hi.saturating_sub(lo) <= 64
+            {
+                if lo <= hi {
+                    for k in lo..=hi {
+                        union_rids.push(k as u64);
+                    }
+                }
+                if union_rids.len() > max_candidates {
+                    return Ok(None);
+                }
+                continue;
+            }
+
+            let mut eqs = HashMap::new();
+            collect_and_eq_conditions(b, &mut eqs);
+
+            if eqs.len() >= 2
+                && let Some(comp_idx) = self
+                    .catalog
+                    .indexes()
+                    .into_iter()
+                    .filter(|idx| {
+                        idx.table.eq_ignore_ascii_case(table)
+                            && partial_index_matches_query(idx, Some(b))
+                    })
+                    .filter(|idx| {
+                        let cols = idx.target_columns();
+                        cols.len() >= 2 && cols.iter().all(|c| eqs.contains_key(&c.to_lowercase()))
+                    })
+                    .max_by_key(|idx| idx.target_columns().len())
+            {
+                let tcols = comp_idx.target_columns();
+                let dummy_cols: Vec<String> = tcols.iter().map(|c| (*c).to_string()).collect();
+                let dummy_vals: Vec<Value> = tcols
+                    .iter()
+                    .map(|c| eqs.get(&c.to_lowercase()).cloned().unwrap_or(Value::Null))
+                    .collect();
+                let dummy_row = Row::new(dummy_cols, dummy_vals);
+                if let Some((comp_val, _)) = extract_index_key_value(&dummy_row, &tcols) {
+                    let key = value_to_index_key(&comp_val);
+                    if let Some(bucket) =
+                        IndexBucket::load(&self.btree, pager, comp_idx.root_page, key)?
+                        && let Some(rids) = bucket.get_row_ids(&comp_val)
+                    {
+                        union_rids.extend_from_slice(rids);
+                    }
+                }
+                if union_rids.len() > max_candidates {
+                    return Ok(None);
+                }
+                continue;
+            }
+
+            if let Some((cond_val, idx_def)) = eqs.iter().find_map(|(c, v)| {
+                self.find_usable_index_for_column(table, c, Some(b))
+                    .map(|idx| (v, idx))
+            }) {
+                let key = value_to_index_key(cond_val);
+                if let Some(bucket) = IndexBucket::load(&self.btree, pager, idx_def.root_page, key)?
+                    && let Some(rids) = bucket.get_row_ids(cond_val)
+                {
+                    union_rids.extend_from_slice(rids);
+                }
+                if union_rids.len() > max_candidates {
+                    return Ok(None);
+                }
+                continue;
+            }
+
+            if let WhereExpr::InList {
+                column,
+                values,
+                negated: false,
+            } = b
+            {
+                let bare = column.split_once('.').map_or(column.as_str(), |(_, c)| c);
+                if is_int_pk
+                    && pk_name.is_some_and(|pk| pk.eq_ignore_ascii_case(bare))
+                    && values.len() <= 64
+                {
+                    for v in values {
+                        if let Some(k) = match v {
+                            Value::Integer(i) => Some(*i),
+                            Value::Real(r)
+                                if r.fract() == 0.0
+                                    && *r >= (i64::MIN as f64)
+                                    && *r < 9223372036854775808.0 =>
+                            {
+                                Some(*r as i64)
+                            }
+                            _ => None,
+                        } {
+                            union_rids.push(k as u64);
+                        }
+                    }
+                    if union_rids.len() > max_candidates {
+                        return Ok(None);
+                    }
+                    continue;
+                }
+                if values.len() <= 16
+                    && let Some(idx_def) = self.find_usable_index_for_column(table, bare, Some(b))
+                {
+                    for val in values {
+                        if val.is_null() {
+                            continue;
+                        }
+                        let key = value_to_index_key(val);
+                        if let Some(bucket) =
+                            IndexBucket::load(&self.btree, pager, idx_def.root_page, key)?
+                            && let Some(rids) = bucket.get_row_ids(val)
+                        {
+                            union_rids.extend_from_slice(rids);
+                        }
+                    }
+                    if union_rids.len() > max_candidates {
+                        return Ok(None);
+                    }
+                    continue;
+                }
+            }
+
+            return Ok(None);
+        }
+
+        union_rids.sort_unstable();
+        union_rids.dedup();
+        Ok(Some(union_rids))
+    }
 }
