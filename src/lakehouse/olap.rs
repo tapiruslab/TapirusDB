@@ -1399,7 +1399,10 @@ fn execute_parallel_group_by(
         }
     } else {
         let chunk_size = files.len().div_ceil(max_workers);
-        type GroupChunkResult = Result<(HashMap<Vec<HashableValue>, OlapGroupState>, ParquetOlapStats)>;
+        type GroupChunkResult = Result<(
+            HashMap<Vec<HashableValue>, OlapGroupState>,
+            ParquetOlapStats,
+        )>;
         let results: Vec<GroupChunkResult> = std::thread::scope(|s| {
             let handles: Vec<_> = files
                 .chunks(chunk_size)
