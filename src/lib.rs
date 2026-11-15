@@ -1903,6 +1903,69 @@ impl Connection {
         DatabaseConnection::query(self, sql)
     }
 
+    /// Execute a Big Data SQL query over Parquet / Lakehouse sources and return both rows and OLAP pushdown telemetry
+    #[cfg(all(feature = "lakehouse", feature = "olap"))]
+    pub fn query_olap(&self, sql: &str) -> Result<(Vec<Row>, crate::lakehouse::ParquetOlapStats)> {
+        let stmt = crate::sql::parser::parse_sql(sql)?;
+        if let crate::sql::parser::Statement::Select {
+            distinct: false,
+            columns,
+            from_subquery: Some((sub_stmt, _)),
+            join: None,
+            where_clause,
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
+            as_of_timestamp: None,
+            ..
+        } = stmt
+            && let crate::sql::parser::Statement::ExternalScan {
+                ref func,
+                ref path,
+                arg: None,
+            } = *sub_stmt
+            && matches!(func.as_str(), "read_parquet" | "parquet")
+        {
+            let (resolved_where, resolved_having) = {
+                let mut executor = self.executor.write();
+                let mut pager = self.pager.write();
+                let rw = if let Some(ref expr) = where_clause {
+                    Some(executor.resolve_where_expr(&mut pager, expr)?)
+                } else {
+                    None
+                };
+                let rh = if let Some(ref expr) = having {
+                    Some(executor.resolve_where_expr(&mut pager, expr)?)
+                } else {
+                    None
+                };
+                (rw, rh)
+            };
+            if let Some(res) = crate::lakehouse::olap::execute_parquet_sql_select(
+                path,
+                &columns,
+                resolved_where.as_ref(),
+                group_by.as_deref(),
+                resolved_having.as_ref(),
+                order_by.as_ref(),
+                limit,
+                offset,
+            )? {
+                return Ok(res);
+            }
+        }
+        let start = std::time::Instant::now();
+        let rows = self.query(sql)?;
+        let stats = crate::lakehouse::ParquetOlapStats {
+            rows_scanned: rows.len(),
+            elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+            ..Default::default()
+        };
+        Ok((rows, stats))
+    }
+
     /// Prepare a SQL statement for safe parameterized execution
     pub fn prepare<'a>(&'a self, sql: &str) -> Result<PreparedStatement<'a>> {
         let tokens = crate::sql::lexer::tokenize(sql)?;

@@ -130,8 +130,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3.14"
 
 [features]
-# Flagship Default: Complete Quad-Model Engine + Native TLS Server + Lakehouse Analytics
-default = ["quad", "tls", "lakehouse"]
+# Flagship Default: Complete Quad-Model Engine + Native TLS Server + Lakehouse Analytics + Big Data OLAP
+default = ["quad", "tls", "lakehouse", "bigdata"]
 
 # Core Data Model Building Blocks
 sql = []
@@ -177,6 +177,8 @@ tap-deep = []
 cloud-s3 = ["dep:ureq"]
 http-embeddings = ["dep:ureq"]
 lakehouse = ["std", "dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:flate2", "dep:lopdf", "dep:calamine", "dep:rust_xlsxwriter"]
+olap = ["sql", "std"]
+bigdata = ["olap", "lakehouse", "simd"]
 fault-injection = []
 
 [profile.dev]

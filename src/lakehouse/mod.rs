@@ -15,6 +15,8 @@
 pub mod csv_stream;
 #[cfg(feature = "lakehouse")]
 pub mod excel_io;
+#[cfg(all(feature = "lakehouse", feature = "olap"))]
+pub mod olap;
 #[cfg(feature = "lakehouse")]
 pub mod parquet_io;
 pub mod pdf_text;
@@ -24,6 +26,8 @@ pub mod sqlite_reader;
 pub use csv_stream::{ExportStats, IngestStats, ingest_csv_fast, ingest_jsonl_as_table};
 #[cfg(feature = "lakehouse")]
 pub use excel_io::{ingest_excel_file, scan_excel_rows, write_rows_to_excel};
+#[cfg(all(feature = "lakehouse", feature = "olap"))]
+pub use olap::ParquetOlapStats;
 #[cfg(feature = "lakehouse")]
 pub use parquet_io::{ingest_parquet_file, scan_parquet_rows, write_rows_to_parquet};
 pub use pdf_text::{

@@ -76,7 +76,7 @@ fn arrow_type_to_tapir_sql(dt: &ArrowDataType) -> String {
     }
 }
 
-fn extract_arrow_cell(col: &dyn Array, row_idx: usize) -> Value {
+pub(crate) fn extract_arrow_cell(col: &dyn Array, row_idx: usize) -> Value {
     if col.is_null(row_idx) {
         return Value::Null;
     }

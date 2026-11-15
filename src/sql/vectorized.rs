@@ -95,7 +95,115 @@ impl VectorizedAccumulator {
         }
     }
 
-    /// Process a batch of 64-bit integers with unrolled loop
+    /// Accumulate a contiguous `i64` slice, optionally computing Welford/sample/distinct stats.
+    ///
+    /// When `needs_welford`, `collect_samples`, and `collect_distinct` are all false, executes a
+    /// zero-branch SIMD/unrolled reduction loop directly on `&[i64]`.
+    #[inline]
+    pub fn accumulate_int64_slice(&mut self, values: &[i64], needs_welford: bool) {
+        if !needs_welford && !self.collect_samples && !self.collect_distinct {
+            self.accumulate_integers(values, None);
+            return;
+        }
+        for &v in values {
+            self.count_all += 1;
+            self.count += 1;
+            self.sum_i = self.sum_i.wrapping_add(v);
+            let f = v as f64;
+            self.sum_f += f;
+            self.min_i = Some(self.min_i.map_or(v, |curr| curr.min(v)));
+            self.max_i = Some(self.max_i.map_or(v, |curr| curr.max(v)));
+            self.push_numeric_stat(f);
+            if self.collect_distinct {
+                self.distinct_values
+                    .insert(HashableValue::from(&Value::Integer(v)));
+            }
+        }
+    }
+
+    /// Accumulate a contiguous `f64` slice, optionally computing Welford/sample/distinct stats.
+    #[inline]
+    pub fn accumulate_float64_slice(&mut self, values: &[f64], needs_welford: bool) {
+        if !needs_welford && !self.collect_samples && !self.collect_distinct {
+            self.accumulate_floats(values, None);
+            return;
+        }
+        self.has_float = true;
+        for &f in values {
+            self.count_all += 1;
+            self.count += 1;
+            self.sum_f += f;
+            self.min_f = Some(self.min_f.map_or(f, |curr| curr.min(f)));
+            self.max_f = Some(self.max_f.map_or(f, |curr| curr.max(f)));
+            self.push_numeric_stat(f);
+            if self.collect_distinct {
+                self.distinct_values
+                    .insert(HashableValue::from(&Value::Real(f)));
+            }
+        }
+    }
+
+    /// Merge another thread/partition's partial accumulator into `self` using Chan's parallel Welford variance merge.
+    pub fn merge(&mut self, other: &Self) {
+        if other.count_all == 0 && other.count == 0 {
+            return;
+        }
+        self.count_all += other.count_all;
+        self.count += other.count;
+        self.sum_i = self.sum_i.wrapping_add(other.sum_i);
+        self.sum_f += other.sum_f;
+        self.has_float |= other.has_float;
+
+        if let Some(om) = other.min_i {
+            self.min_i = Some(self.min_i.map_or(om, |curr| curr.min(om)));
+        }
+        if let Some(ox) = other.max_i {
+            self.max_i = Some(self.max_i.map_or(ox, |curr| curr.max(ox)));
+        }
+        if let Some(om) = other.min_f {
+            self.min_f = Some(self.min_f.map_or(om, |curr| curr.min(om)));
+        }
+        if let Some(ox) = other.max_f {
+            self.max_f = Some(self.max_f.map_or(ox, |curr| curr.max(ox)));
+        }
+        if let Some(ref os) = other.min_str
+            && self.min_str.as_ref().is_none_or(|curr| os < curr)
+        {
+            self.min_str = Some(os.clone());
+        }
+        if let Some(ref os) = other.max_str
+            && self.max_str.as_ref().is_none_or(|curr| os > curr)
+        {
+            self.max_str = Some(os.clone());
+        }
+
+        if other.numeric_count > 0 {
+            if self.numeric_count == 0 {
+                self.numeric_count = other.numeric_count;
+                self.mean = other.mean;
+                self.m2 = other.m2;
+            } else {
+                let n_a = self.numeric_count as f64;
+                let n_b = other.numeric_count as f64;
+                let total = n_a + n_b;
+                let delta = other.mean - self.mean;
+                self.mean += delta * (n_b / total);
+                self.m2 += other.m2 + delta * delta * (n_a * n_b / total);
+                self.numeric_count += other.numeric_count;
+            }
+        }
+
+        if self.collect_samples && !other.samples.is_empty() {
+            self.samples.extend_from_slice(&other.samples);
+        }
+        if self.collect_distinct && !other.distinct_values.is_empty() {
+            for val in &other.distinct_values {
+                self.distinct_values.insert(val.clone());
+            }
+        }
+    }
+
+    /// Process a batch of 64-bit integers with SIMD/unrolled reduction loop
     #[inline]
     pub fn accumulate_integers(&mut self, values: &[i64], mask: Option<&[bool]>) {
         self.count_all += values.len();
@@ -113,22 +221,45 @@ impl VectorizedAccumulator {
             }
             None => {
                 self.count += values.len();
-                // 4x unrolled accumulation loop
                 let (chunks, remainder) = values.as_chunks::<4>();
                 let mut s0 = 0i64;
                 let mut s1 = 0i64;
                 let mut s2 = 0i64;
                 let mut s3 = 0i64;
 
-                for c in chunks {
-                    s0 = s0.wrapping_add(c[0]);
-                    s1 = s1.wrapping_add(c[1]);
-                    s2 = s2.wrapping_add(c[2]);
-                    s3 = s3.wrapping_add(c[3]);
-                    let m = c[0].min(c[1]).min(c[2].min(c[3]));
-                    let mx = c[0].max(c[1]).max(c[2].max(c[3]));
-                    self.min_i = Some(self.min_i.map_or(m, |curr| curr.min(m)));
-                    self.max_i = Some(self.max_i.map_or(mx, |curr| curr.max(mx)));
+                #[cfg(feature = "simd")]
+                {
+                    if let Some((first, rest)) = chunks.split_first() {
+                        let mut v_sum = wide::i64x4::from(*first);
+                        let mut m = first[0].min(first[1]).min(first[2].min(first[3]));
+                        let mut mx = first[0].max(first[1]).max(first[2].max(first[3]));
+                        for c in rest {
+                            let vc = wide::i64x4::from(*c);
+                            v_sum = v_sum + vc;
+                            m = m.min(c[0].min(c[1]).min(c[2].min(c[3])));
+                            mx = mx.max(c[0].max(c[1]).max(c[2].max(c[3])));
+                        }
+                        let [a0, a1, a2, a3] = v_sum.to_array();
+                        s0 = a0;
+                        s1 = a1;
+                        s2 = a2;
+                        s3 = a3;
+                        self.min_i = Some(self.min_i.map_or(m, |curr| curr.min(m)));
+                        self.max_i = Some(self.max_i.map_or(mx, |curr| curr.max(mx)));
+                    }
+                }
+                #[cfg(not(feature = "simd"))]
+                {
+                    for c in chunks {
+                        s0 = s0.wrapping_add(c[0]);
+                        s1 = s1.wrapping_add(c[1]);
+                        s2 = s2.wrapping_add(c[2]);
+                        s3 = s3.wrapping_add(c[3]);
+                        let m = c[0].min(c[1]).min(c[2].min(c[3]));
+                        let mx = c[0].max(c[1]).max(c[2].max(c[3]));
+                        self.min_i = Some(self.min_i.map_or(m, |curr| curr.min(m)));
+                        self.max_i = Some(self.max_i.map_or(mx, |curr| curr.max(mx)));
+                    }
                 }
 
                 self.sum_i = self
@@ -149,7 +280,7 @@ impl VectorizedAccumulator {
         }
     }
 
-    /// Process a batch of 64-bit floats with unrolled loop
+    /// Process a batch of 64-bit floats with SIMD/unrolled reduction loop
     #[inline]
     pub fn accumulate_floats(&mut self, values: &[f64], mask: Option<&[bool]>) {
         self.count_all += values.len();
@@ -173,15 +304,43 @@ impl VectorizedAccumulator {
                 let mut s2 = 0.0f64;
                 let mut s3 = 0.0f64;
 
-                for c in chunks {
-                    s0 += c[0];
-                    s1 += c[1];
-                    s2 += c[2];
-                    s3 += c[3];
-                    let m = c[0].min(c[1]).min(c[2].min(c[3]));
-                    let mx = c[0].max(c[1]).max(c[2].max(c[3]));
-                    self.min_f = Some(self.min_f.map_or(m, |curr| curr.min(m)));
-                    self.max_f = Some(self.max_f.map_or(mx, |curr| curr.max(mx)));
+                #[cfg(feature = "simd")]
+                {
+                    if let Some((first, rest)) = chunks.split_first() {
+                        let mut v_sum = wide::f64x4::from(*first);
+                        let mut v_min = v_sum;
+                        let mut v_max = v_sum;
+                        for c in rest {
+                            let vc = wide::f64x4::from(*c);
+                            v_sum += vc;
+                            v_min = v_min.min(vc);
+                            v_max = v_max.max(vc);
+                        }
+                        let [a0, a1, a2, a3] = v_sum.to_array();
+                        s0 = a0;
+                        s1 = a1;
+                        s2 = a2;
+                        s3 = a3;
+                        let mins = v_min.to_array();
+                        let maxs = v_max.to_array();
+                        let m = mins[0].min(mins[1]).min(mins[2].min(mins[3]));
+                        let mx = maxs[0].max(maxs[1]).max(maxs[2].max(maxs[3]));
+                        self.min_f = Some(self.min_f.map_or(m, |curr| curr.min(m)));
+                        self.max_f = Some(self.max_f.map_or(mx, |curr| curr.max(mx)));
+                    }
+                }
+                #[cfg(not(feature = "simd"))]
+                {
+                    for c in chunks {
+                        s0 += c[0];
+                        s1 += c[1];
+                        s2 += c[2];
+                        s3 += c[3];
+                        let m = c[0].min(c[1]).min(c[2].min(c[3]));
+                        let mx = c[0].max(c[1]).max(c[2].max(c[3]));
+                        self.min_f = Some(self.min_f.map_or(m, |curr| curr.min(m)));
+                        self.max_f = Some(self.max_f.map_or(mx, |curr| curr.max(mx)));
+                    }
                 }
 
                 self.sum_f += s0 + s1 + s2 + s3;
@@ -414,6 +573,40 @@ mod tests {
             assert!((std - 36.469165).abs() < 0.01, "got stddev={std}");
         } else {
             panic!("Expected Real stddev");
+        }
+    }
+
+    #[test]
+    fn test_vectorized_parallel_merge() {
+        let mut seq = VectorizedAccumulator::with_tracking(true, true);
+        let mut left = VectorizedAccumulator::with_tracking(true, true);
+        let mut right = VectorizedAccumulator::with_tracking(true, true);
+
+        let left_vals = [10.0, 20.0, 20.0, 35.0];
+        let right_vals = [40.0, 55.0, 70.0, 100.0];
+        for v in left_vals {
+            seq.accumulate_value(&Value::Real(v));
+            left.accumulate_value(&Value::Real(v));
+        }
+        for v in right_vals {
+            seq.accumulate_value(&Value::Real(v));
+            right.accumulate_value(&Value::Real(v));
+        }
+        left.merge(&right);
+
+        assert_eq!(left.finalize_count(true), seq.finalize_count(true));
+        assert_eq!(left.finalize_sum(), seq.finalize_sum());
+        assert_eq!(left.finalize_avg(), seq.finalize_avg());
+        assert_eq!(left.finalize_min(), seq.finalize_min());
+        assert_eq!(left.finalize_max(), seq.finalize_max());
+        assert_eq!(
+            left.finalize_count_distinct(),
+            seq.finalize_count_distinct()
+        );
+        assert_eq!(left.finalize_median(), seq.finalize_median());
+        match (left.finalize_stddev(true), seq.finalize_stddev(true)) {
+            (Value::Real(a), Value::Real(b)) => assert!((a - b).abs() < 1e-9),
+            other => panic!("Unexpected stddev pair: {other:?}"),
         }
     }
 }

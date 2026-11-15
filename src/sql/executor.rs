@@ -3129,6 +3129,43 @@ impl SQLExecutor {
                     ]);
                 }
                 if let Some((sub_stmt, alias)) = from_subquery {
+                    #[cfg(all(feature = "lakehouse", feature = "olap"))]
+                    if join.is_none()
+                        && !distinct
+                        && as_of_timestamp.is_none()
+                        && let Statement::ExternalScan {
+                            ref func,
+                            ref path,
+                            arg: None,
+                        } = *sub_stmt
+                        && matches!(func.as_str(), "read_parquet" | "parquet")
+                    {
+                        let resolved_where = if let Some(ref expr) = where_clause {
+                            Some(self.resolve_where_expr(pager, expr)?)
+                        } else {
+                            None
+                        };
+                        let resolved_having = if let Some(ref expr) = having {
+                            Some(self.resolve_where_expr(pager, expr)?)
+                        } else {
+                            None
+                        };
+                        if let Some((rows, _olap_stats)) =
+                            crate::lakehouse::olap::execute_parquet_sql_select(
+                                path,
+                                &columns,
+                                resolved_where.as_ref(),
+                                group_by.as_deref(),
+                                resolved_having.as_ref(),
+                                order_by.as_ref(),
+                                limit,
+                                offset,
+                            )?
+                        {
+                            return Ok(rows);
+                        }
+                    }
+
                     let mut cte_store = HashMap::new();
                     let sub_rows = self.query(pager, *sub_stmt)?;
                     cte_store.insert(alias.clone(), sub_rows);
@@ -4007,27 +4044,34 @@ impl SQLExecutor {
                                 }
                             }
 
-                            let mut driving_tuples: Vec<(i64, Row)> = Vec::new();
-                            self.btree
-                                .scan_with(pager, right_table_def.root_page, |r_cell| {
-                                    let r_row = decode_row_shared_projected(
-                                        &r_cell.payload,
-                                        &right_col_shared,
+                            let mut driving_tuples: Vec<(i64, Vec<Value>)> = Vec::new();
+                            let mut scratch_right = Vec::with_capacity(right_col_names.len());
+                            self.btree.scan_with_ref(
+                                pager,
+                                right_table_def.root_page,
+                                |_row_id, payload| {
+                                    scratch_right.clear();
+                                    decode_row_values_into_projected(
+                                        payload,
                                         &right_mask,
+                                        &mut scratch_right,
                                     )?;
-                                    if let Some(Value::Integer(k)) = r_row.values().get(r_idx) {
-                                        driving_tuples.push((*k, r_row));
+                                    if let Some(Value::Integer(k)) = scratch_right.get(r_idx) {
+                                        driving_tuples
+                                            .push((*k, std::mem::take(&mut scratch_right)));
                                     }
                                     Ok(true)
-                                })?;
+                                },
+                            )?;
 
                             let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
                             let mut final_rows = Vec::with_capacity(
                                 driving_tuples.len().min(limit.unwrap_or(usize::MAX)),
                             );
                             let mut skipped = 0;
+                            let mut probe_left = Vec::with_capacity(left_col_shared.len());
 
-                            for (k, r_row) in driving_tuples {
+                            for (k, r_vals) in driving_tuples {
                                 if let Some(l_payload) =
                                     self.btree.search(pager, root_page, k as u64)?
                                 {
@@ -4035,27 +4079,23 @@ impl SQLExecutor {
                                         skipped += 1;
                                         continue;
                                     }
-                                    let l_row = decode_row_shared_projected(
+                                    probe_left.clear();
+                                    decode_row_values_into_projected(
                                         &l_payload,
-                                        &left_col_shared,
                                         left_mask,
+                                        &mut probe_left,
                                     )?;
                                     let mut vals = Vec::with_capacity(sources.len());
                                     for src in sources {
                                         match src {
                                             JoinOutputCol::Left(idx) => vals.push(
-                                                l_row
-                                                    .values()
+                                                probe_left
                                                     .get(*idx)
                                                     .cloned()
                                                     .unwrap_or(Value::Null),
                                             ),
                                             JoinOutputCol::Right(idx) => vals.push(
-                                                r_row
-                                                    .values()
-                                                    .get(*idx)
-                                                    .cloned()
-                                                    .unwrap_or(Value::Null),
+                                                r_vals.get(*idx).cloned().unwrap_or(Value::Null),
                                             ),
                                         }
                                     }
@@ -4078,18 +4118,22 @@ impl SQLExecutor {
                         // Driving table: left table. Seek target: right table.
                         if right_table_def.primary_key_index() == Some(r_idx) {
                             let left_mask = left_needed_mask.as_deref().unwrap_or(&[]);
-                            let mut driving_tuples: Vec<(i64, Row)> = Vec::new();
-                            self.btree.scan_with(pager, root_page, |l_cell| {
-                                let l_row = decode_row_shared_projected(
-                                    &l_cell.payload,
-                                    &left_col_shared,
-                                    left_mask,
-                                )?;
-                                if let Some(Value::Integer(k)) = l_row.values().get(l_idx) {
-                                    driving_tuples.push((*k, l_row));
-                                }
-                                Ok(true)
-                            })?;
+                            let mut driving_tuples: Vec<(i64, Vec<Value>)> = Vec::new();
+                            let mut scratch_left = Vec::with_capacity(left_col_shared.len());
+                            self.btree
+                                .scan_with_ref(pager, root_page, |_row_id, payload| {
+                                    scratch_left.clear();
+                                    decode_row_values_into_projected(
+                                        payload,
+                                        left_mask,
+                                        &mut scratch_left,
+                                    )?;
+                                    if let Some(Value::Integer(k)) = scratch_left.get(l_idx) {
+                                        driving_tuples
+                                            .push((*k, std::mem::take(&mut scratch_left)));
+                                    }
+                                    Ok(true)
+                                })?;
 
                             let mut right_mask = vec![false; right_col_names.len()];
                             right_mask[r_idx] = true;
@@ -4105,8 +4149,9 @@ impl SQLExecutor {
                                 driving_tuples.len().min(limit.unwrap_or(usize::MAX)),
                             );
                             let mut skipped = 0;
+                            let mut probe_right = Vec::with_capacity(right_col_shared.len());
 
-                            for (k, l_row) in driving_tuples {
+                            for (k, l_vals) in driving_tuples {
                                 if let Some(r_payload) =
                                     self.btree
                                         .search(pager, right_table_def.root_page, k as u64)?
@@ -4115,24 +4160,20 @@ impl SQLExecutor {
                                         skipped += 1;
                                         continue;
                                     }
-                                    let r_row = decode_row_shared_projected(
+                                    probe_right.clear();
+                                    decode_row_values_into_projected(
                                         &r_payload,
-                                        &right_col_shared,
                                         &right_mask,
+                                        &mut probe_right,
                                     )?;
                                     let mut vals = Vec::with_capacity(sources.len());
                                     for src in sources {
                                         match src {
                                             JoinOutputCol::Left(idx) => vals.push(
-                                                l_row
-                                                    .values()
-                                                    .get(*idx)
-                                                    .cloned()
-                                                    .unwrap_or(Value::Null),
+                                                l_vals.get(*idx).cloned().unwrap_or(Value::Null),
                                             ),
                                             JoinOutputCol::Right(idx) => vals.push(
-                                                r_row
-                                                    .values()
+                                                probe_right
                                                     .get(*idx)
                                                     .cloned()
                                                     .unwrap_or(Value::Null),
@@ -7249,7 +7290,7 @@ pub fn row_matches_conditions(row: &Row, conditions: &[WhereCondition]) -> bool 
     true
 }
 
-fn parse_col_and_alias(col: &str) -> (&str, Option<&str>) {
+pub(crate) fn parse_col_and_alias(col: &str) -> (&str, Option<&str>) {
     let trimmed = col.trim();
     if let Some(pos) = trimmed.to_ascii_uppercase().rfind(" AS ") {
         let expr = trimmed[..pos].trim();
@@ -8081,28 +8122,31 @@ fn strip_quotes(s: &str) -> &str {
 }
 
 #[derive(Debug, Clone)]
-struct ParsedAggSpec {
-    output_name: String,
-    func: String,
-    arg: String,
-    percentile_q: Option<f64>,
-    is_star: bool,
-    is_distinct: bool,
+pub(crate) struct ParsedAggSpec {
+    pub(crate) output_name: String,
+    pub(crate) func: String,
+    pub(crate) arg: String,
+    pub(crate) percentile_q: Option<f64>,
+    pub(crate) is_star: bool,
+    pub(crate) is_distinct: bool,
 }
 
 impl ParsedAggSpec {
-    fn needs_samples(&self) -> bool {
+    pub(crate) fn needs_samples(&self) -> bool {
         matches!(
             self.func.as_str(),
             "MEDIAN" | "PERCENTILE" | "PERCENTILE_CONT"
         )
     }
 
-    fn needs_distinct(&self) -> bool {
+    pub(crate) fn needs_distinct(&self) -> bool {
         self.is_distinct
     }
 
-    fn finalize(&self, acc: &mut crate::sql::vectorized::VectorizedAccumulator) -> Value {
+    pub(crate) fn finalize(
+        &self,
+        acc: &mut crate::sql::vectorized::VectorizedAccumulator,
+    ) -> Value {
         match self.func.as_str() {
             "COUNT" if self.is_distinct => acc.finalize_count_distinct(),
             "COUNT" => acc.finalize_count(self.is_star),
@@ -8123,7 +8167,7 @@ impl ParsedAggSpec {
     }
 }
 
-fn parse_aggregate_spec(col: &str) -> Option<ParsedAggSpec> {
+pub(crate) fn parse_aggregate_spec(col: &str) -> Option<ParsedAggSpec> {
     let (expr, alias_opt) = parse_col_and_alias(col);
     let expr_upper = expr.to_ascii_uppercase();
     if expr_upper.contains(" OVER ") || expr_upper.contains(" OVER(") {
@@ -8191,7 +8235,7 @@ fn parse_aggregate_spec(col: &str) -> Option<ParsedAggSpec> {
     })
 }
 
-fn is_aggregate_query(columns: &[String]) -> bool {
+pub(crate) fn is_aggregate_query(columns: &[String]) -> bool {
     columns.iter().any(|c| parse_aggregate_spec(c).is_some())
 }
 
