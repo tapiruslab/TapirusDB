@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- Chained multi-table `JOIN` execution (three or more joined tables), column-to-column `WHERE` comparisons (`col_a op col_b`), correlated subqueries (`EXISTS`, `NOT EXISTS`, `IN`, `NOT IN`) with memoized evaluation (`CorrelatedSubqueryMemo`), and `NOT IN` / `NOT EXISTS` predicate support in `src/sql/parser.rs` and `src/sql/executor/`.
+
+### Performance
+- Split monolithic `src/bin/tapirus.rs` and `src/sql/executor.rs` into focused submodules (`src/bin/tapirus/*`, `src/sql/executor/*`) and introduced deterministic hashing helpers (`src/stable_hash.rs`), Pager/WAL/B+Tree hot-path refinements, LZ4/replication improvements, and `Arc<Vec<String>>` shared headers in streaming CSV scans (`src/lakehouse/csv_stream.rs`).
+- Added SQL planner and execution optimizations: `WHERE` predicate pushdown onto table/index scans, multi-key `IN (...)` secondary index lookups, zero-allocation projection scans, filtered `Indexed Seek Join`, `OR` primary-key / secondary-index union planning (shown as `USING INDEX UNION` in `EXPLAIN` / `EXPLAIN QUERY PLAN`), and single-pass streaming `VectorSearch` with a bounded top-K max-heap.
+
 ## [1.1.0] - 2026-11-15
 
 ### Added

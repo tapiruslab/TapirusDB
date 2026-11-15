@@ -1,6 +1,6 @@
 # AI and embedded workflows
 
-These are `1.0.5` source APIs across the Rust core, native Python/Node.js SDKs, `@tapirus/wasm`, `tapirus serve`, and `tapirus mcp`.
+These are `1.1.0+` source APIs across the Rust core, native Python/Node.js SDKs, `@tapirus/wasm`, `tapirus serve`, and `tapirus mcp`.
 
 ## Source lifecycle and multi-tenant isolation
 

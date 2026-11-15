@@ -6,7 +6,7 @@ Updated: **15 November 2026** (Source version **`1.1.0`**, MSRV **Rust `1.88+`**
 
 | Verification Gate | Command / Pipeline | Observed Result |
 | --- | --- | --- |
-| **Full Rust Workspace Suite** | `cargo test --locked --workspace --offline` | **367 passed, 0 failed** across **61 test runs** (`2` ignored subprocess crash helpers invoked by durability suites) |
+| **Full Rust Workspace Suite** | `cargo test --locked --workspace --offline` | **381 passed, 0 failed** across **62 test runs** (`2` ignored subprocess crash helpers invoked by durability suites) |
 | **Formatter & Strict Lints** | `cargo fmt --all -- --check` & `cargo clippy --locked --workspace --all-targets --all-features --offline -- -D warnings` | **Passed** (`exit 0`, zero warnings across workspace including `tapirus-ffi` and `tapirus-wasm`) |
 | **MSRV Compiler Check** | `cargo +1.88.0 check --locked --workspace --all-targets --all-features` | **Passed** in CI (`msrv` job) |
 | **TLA+ Formal WAL Check** | `tlc2.TLC -workers auto -config docs/formal_verification/TAPIRUS_WAL.cfg docs/formal_verification/TAPIRUS_WAL.tla` | **Passed** in CI (`552,520` states generated, `120,535` distinct states, `0` invariant violations) |

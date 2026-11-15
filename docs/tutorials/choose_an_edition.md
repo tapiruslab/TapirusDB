@@ -1,6 +1,6 @@
 # Choose a TapirusDB edition
 
-Pick the entry point your application needs (`1.0.5+`). All editions use the interoperable native `.tapir` file format and run embedded in-process without external database services.
+Pick the entry point your application needs (`1.1.0+`). All editions use the interoperable native `.tapir` file format and run embedded in-process without external database services.
 
 | If you need | Build | Public entry point |
 |---|---|---|

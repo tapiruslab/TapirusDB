@@ -1,6 +1,6 @@
 # TapirusDB Complete Query Syntax Reference
 
-> **Applies to:** TapirusDB `v1.1.0` (and `olap` / `bigdata` pushdowns on `main`) across Rust (`Connection` / `SessionDatabase`), Python, Node.js, Browser WASM (`@tapirus/wasm` & `@tapirus/wasm-lite`), CLI (`tapirus`), and HTTP/TLS (`tapirus serve`).
+> **Applies to:** TapirusDB `v1.1.0` (plus `olap`/`bigdata` pushdowns and Phase 1–5 SQL planner/execution upgrades on `main`) across Rust (`Connection` / `SessionDatabase`), Python, Node.js, Browser WASM (`@tapirus/wasm` & `@tapirus/wasm-lite`), CLI (`tapirus`), and HTTP/TLS (`tapirus serve`).
 
 This guide is designed so **any developer**—whether coming from SQLite/Postgres or building vector, graph, or Parquet analytics—can find the exact working query syntax in seconds.
 
@@ -133,24 +133,39 @@ WHERE age BETWEEN 25 AND 55
   AND dept_id IS NOT NULL
 GROUP BY dept_id, role
 HAVING COUNT(*) >= 1
-ORDER BY dept_id ASC, next_age DESC
+ORDER BY dept_id ASC
 LIMIT 50 OFFSET 0;
 ```
+> Note: `ORDER BY` currently accepts a single sort expression (`ORDER BY col [ASC|DESC]`).
 
-**Supported `WHERE` predicates:** `=`, `!=` / `<>`, `<`, `<=`, `>`, `>=`, `AND`, `OR`, `IN (...)`, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, `LIKE`, `IS NULL`, `IS NOT NULL`, `BETWEEN ... AND ...`.
+**Supported `WHERE` predicates:** `=`, `!=` / `<>`, `<`, `<=`, `>`, `>=`, column-to-column comparisons (`e.age > e.min_age`), `AND`, `OR`, `[NOT] IN (...)`, `[NOT] IN (SELECT ...)`, `[NOT] EXISTS (SELECT ...)` (including correlated subqueries referencing outer columns), `LIKE`, `IS NULL`, `IS NOT NULL`, `BETWEEN ... AND ...`.
 
 **Supported infix expressions in projections:** `+`, `-`, `*`, `/`, `%`, string concatenation `||`, parentheses `(...)`.
 
-### Joins & Derived Subqueries
+### Joins, Correlated Subqueries & Derived Subqueries
 ```sql
 SELECT e.id, e.role, d.name AS department
 FROM employees e
 INNER JOIN departments d ON e.dept_id = d.id;
 
+-- Chained multi-table JOINs (3+ tables) & filtered indexed seek join
+SELECT e.id, d.name AS department, l.city
+FROM employees e
+INNER JOIN departments d ON e.dept_id = d.id
+LEFT JOIN locations l ON d.location_id = l.id
+WHERE e.age > d.min_age;
+
 -- Also supported:
 -- LEFT [OUTER] JOIN ... ON ...
 -- RIGHT [OUTER] JOIN ... ON ...
 -- FULL [OUTER] JOIN ... ON ...
+
+-- Correlated EXISTS / NOT EXISTS & IN subqueries
+SELECT d.id, d.name
+FROM departments d
+WHERE EXISTS (
+    SELECT 1 FROM employees e WHERE e.dept_id = d.id AND e.age >= 30
+);
 
 -- Derived subquery in FROM
 SELECT sub.dept_id, sub.total
@@ -386,6 +401,7 @@ PRAGMA foreign_keys = on;           -- 1/true/on or 0/false/off
 PRAGMA time_travel = on;            -- temporal versioning default
 
 EXPLAIN SELECT * FROM employees WHERE dept_id = 10;
+EXPLAIN SELECT * FROM employees WHERE dept_id = 10 OR role = 'lead'; -- uses USING INDEX UNION when indexed
 EXPLAIN QUERY PLAN SELECT * FROM employees WHERE dept_id = 10;
 
 ANALYZE employees;                  -- collect table/index statistics (or omit table for all)
