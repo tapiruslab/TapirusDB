@@ -354,6 +354,7 @@ pub fn ingest_unstructured_file(
     }
 }
 
+#[cfg(feature = "lakehouse")]
 fn normalize_whitespace(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut last_was_space = true;
