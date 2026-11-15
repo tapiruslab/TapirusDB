@@ -361,6 +361,7 @@ pub(super) fn authorize_sql_statement_ast(
             table,
             from_subquery,
             join,
+            extra_joins,
             where_clause,
             having,
             ..
@@ -375,7 +376,7 @@ pub(super) fn authorize_sql_statement_ast(
             } else {
                 check_allowed_table(table, cte_names, allowed_tables)?;
             }
-            if let Some(j) = join {
+            for j in join.iter().chain(extra_joins.iter()) {
                 check_allowed_table(&j.table, cte_names, allowed_tables)?;
             }
             if let Some(w) = where_clause {

@@ -1913,6 +1913,7 @@ impl Connection {
             columns,
             from_subquery: Some((sub_stmt, _)),
             join: None,
+            extra_joins,
             where_clause,
             group_by,
             having,
@@ -1922,6 +1923,7 @@ impl Connection {
             as_of_timestamp: None,
             ..
         } = stmt
+            && extra_joins.is_empty()
             && let crate::sql::parser::Statement::ExternalScan {
                 ref func,
                 ref path,

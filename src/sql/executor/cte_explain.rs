@@ -15,11 +15,13 @@ impl SQLExecutor {
             Statement::Select {
                 table,
                 join,
+                extra_joins,
                 where_clause,
                 order_by,
                 limit,
                 ..
             } => {
+                let has_joins = join.is_some() || !extra_joins.is_empty();
                 let table_def = self.catalog.get_table(&table);
                 let pk_idx = table_def.and_then(|t| t.primary_key_index());
                 let mut id = 0;
@@ -31,37 +33,38 @@ impl SQLExecutor {
                     .get_table_stats(&table)
                     .unwrap_or(&default_stats);
 
-                // Check if fast point lookup by PK is used
+                // Check if fast point lookup by PK is used (including compound AND predicates)
                 let mut is_pk_search = false;
-                if join.is_none()
-                    && order_by.is_none()
-                    && let (Some(pk_col_idx), Some(WhereExpr::Condition(cond))) =
-                        (pk_idx, &where_clause)
-                    && cond.op == BinaryOp::Equals
+                if !has_joins
                     && let Some(tdef) = table_def
-                    && tdef.columns[pk_col_idx]
-                        .name
-                        .eq_ignore_ascii_case(&cond.column)
+                    && let Some(pk_col_idx) = pk_idx
+                    && tdef.columns[pk_col_idx].data_type == crate::sql::catalog::DataType::Integer
+                    && let Some(ref w_expr) = where_clause
                 {
-                    is_pk_search = true;
-                    let cost = optimizer.estimate_pk_lookup(stats);
-                    rows.push(Row::new(
-                        cols.clone(),
-                        vec![
-                            Value::Integer(id),
-                            Value::Integer(0),
-                            Value::Text(format!(
-                                "SEARCH TABLE {} USING PRIMARY KEY ({} = {:?}) {}",
-                                table, cond.column, cond.value, cost
-                            )),
-                        ],
-                    ));
-                    id += 1;
+                    let pk_name = &tdef.columns[pk_col_idx].name;
+                    if let (Some(lo), Some(hi), true) = extract_pk_signed_range(w_expr, pk_name)
+                        && lo == hi
+                    {
+                        is_pk_search = true;
+                        let cost = optimizer.estimate_pk_lookup(stats);
+                        rows.push(Row::new(
+                            cols.clone(),
+                            vec![
+                                Value::Integer(id),
+                                Value::Integer(0),
+                                Value::Text(format!(
+                                    "SEARCH TABLE {} USING PRIMARY KEY ({} = {}) {}",
+                                    table, pk_name, lo, cost
+                                )),
+                            ],
+                        ));
+                        id += 1;
+                    }
                 }
 
                 let mut is_index_search = false;
-                if !is_pk_search && join.is_none() && order_by.is_none() {
-                    if let Some(ref expr) = where_clause {
+                if !is_pk_search && !has_joins {
+                    if order_by.is_none() && let Some(ref expr) = where_clause {
                         let mut and_eqs = HashMap::new();
                         collect_and_eq_conditions(expr, &mut and_eqs);
                         if and_eqs.len() >= 2
@@ -130,6 +133,66 @@ impl SQLExecutor {
                             id += 1;
                         }
                     }
+                    if !is_index_search && let Some(ref w_expr) = where_clause {
+                        let mut in_cols = Vec::new();
+                        collect_top_level_in_cols(w_expr, &mut in_cols);
+                        if let Some(tdef) = table_def
+                            && let Some(pk_col_idx) = pk_idx
+                            && tdef.columns[pk_col_idx].data_type
+                                == crate::sql::catalog::DataType::Integer
+                        {
+                            let pk_name = &tdef.columns[pk_col_idx].name;
+                            if in_cols.iter().any(|c| {
+                                let bare = c.split_once('.').map_or(*c, |(_, col)| col);
+                                bare.eq_ignore_ascii_case(pk_name)
+                            }) {
+                                is_pk_search = true;
+                                let cost = optimizer.estimate_pk_lookup(stats);
+                                rows.push(Row::new(
+                                    cols.clone(),
+                                    vec![
+                                        Value::Integer(id),
+                                        Value::Integer(0),
+                                        Value::Text(format!(
+                                            "SEARCH TABLE {} USING PRIMARY KEY ({} IN (...)) {}",
+                                            table, pk_name, cost
+                                        )),
+                                    ],
+                                ));
+                                id += 1;
+                            }
+                        }
+                        if !is_pk_search {
+                            for col_spec in in_cols {
+                                let bare = col_spec.split_once('.').map_or(col_spec, |(_, c)| c);
+                                if let Some(idx_def) =
+                                    self.find_usable_index_for_column(&table, bare, Some(w_expr))
+                                {
+                                    is_index_search = true;
+                                    let sel = stats.estimate_selectivity(bare, true);
+                                    let cost = optimizer.estimate_index_scan(
+                                        stats,
+                                        &idx_def.name,
+                                        bare,
+                                        sel,
+                                    );
+                                    rows.push(Row::new(
+                                        cols.clone(),
+                                        vec![
+                                            Value::Integer(id),
+                                            Value::Integer(0),
+                                            Value::Text(format!(
+                                                "SEARCH TABLE {} USING INDEX {} ({} IN (...)) {}",
+                                                table, idx_def.name, bare, cost
+                                            )),
+                                        ],
+                                    ));
+                                    id += 1;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 let mut pk_order_pushdown = false;
@@ -142,14 +205,14 @@ impl SQLExecutor {
                     let pk_col_name =
                         pk_idx.and_then(|idx| table_def.map(|t| t.columns[idx].name.as_str()));
                     let has_pk_range = is_int_pk
-                        && join.is_none()
+                        && !has_joins
                         && pk_col_name.is_some_and(|pk_name| {
                             where_clause
                                 .as_ref()
                                 .is_some_and(|w| extract_pk_signed_range(w, pk_name).2)
                         });
                     pk_order_pushdown = is_int_pk
-                        && join.is_none()
+                        && !has_joins
                         && pk_col_name.is_some_and(|pk_name| {
                             order_by.as_ref().is_some_and(|ord| {
                                 let ord_col = ord
@@ -207,15 +270,15 @@ impl SQLExecutor {
                     id += 1;
                 }
 
-                if let Some(j) = join {
+                for j in join.iter().chain(extra_joins.iter()) {
                     rows.push(Row::new(
                         cols.clone(),
                         vec![
                             Value::Integer(id),
                             Value::Integer(0),
                             Value::Text(format!(
-                                "SEARCH SUBQUERY / JOIN TABLE {} ON {}.{} = {}.{}",
-                                j.table, table, j.left_col, j.table, j.right_col
+                                "SEARCH SUBQUERY / JOIN TABLE {} ON {} = {}",
+                                j.table, j.left_col, j.right_col
                             )),
                         ],
                     ));
@@ -352,11 +415,13 @@ impl SQLExecutor {
             Statement::Select {
                 ref table,
                 ref join,
+                ref extra_joins,
                 ..
             } if cte_store.contains_key(&table.to_ascii_lowercase())
                 || join
-                    .as_ref()
-                    .is_some_and(|j| cte_store.contains_key(&j.table.to_ascii_lowercase())) =>
+                    .iter()
+                    .chain(extra_joins.iter())
+                    .any(|j| cte_store.contains_key(&j.table.to_ascii_lowercase())) =>
             {
                 self.query_on_ephemeral_rows(pager, stmt, cte_store)
             }
@@ -433,6 +498,7 @@ impl SQLExecutor {
             columns,
             table,
             join,
+            extra_joins,
             where_clause,
             group_by,
             having,
@@ -455,6 +521,7 @@ impl SQLExecutor {
                         table: table.clone(),
                         from_subquery: None,
                         join: None,
+                        extra_joins: Vec::new(),
                         where_clause: None,
                         group_by: None,
                         having: None,
@@ -470,8 +537,8 @@ impl SQLExecutor {
 
             let mut rows = base_rows;
 
-            // Handle optional JOIN
-            if let Some(ref j) = join {
+            // Handle chained JOINs
+            for j in join.iter().chain(extra_joins.iter()) {
                 let right_rows = if let Some(r_cte) = cte_store.get(&j.table.to_ascii_lowercase()) {
                     r_cte.clone()
                 } else if self.catalog.table_exists(&j.table) {
@@ -483,6 +550,7 @@ impl SQLExecutor {
                             table: j.table.clone(),
                             from_subquery: None,
                             join: None,
+                            extra_joins: Vec::new(),
                             where_clause: None,
                             group_by: None,
                             having: None,
@@ -500,8 +568,19 @@ impl SQLExecutor {
                 for left_r in &rows {
                     let mut matched = false;
                     for right_r in &right_rows {
-                        let left_v = left_r.get_value(&j.left_col);
-                        let right_v = right_r.get_value(&j.right_col);
+                        let (left_v, right_v) = if left_r.get_value(&j.left_col).is_some()
+                            && right_r.get_value(&j.right_col).is_some()
+                        {
+                            (
+                                left_r.get_value(&j.left_col),
+                                right_r.get_value(&j.right_col),
+                            )
+                        } else {
+                            (
+                                left_r.get_value(&j.right_col),
+                                right_r.get_value(&j.left_col),
+                            )
+                        };
                         if let (Some(lv), Some(rv)) = (left_v, right_v)
                             && lv == rv
                             && !lv.is_null()
@@ -617,5 +696,27 @@ impl SQLExecutor {
         } else {
             Err(Error::SqlSyntax("Expected SELECT in CTE main query".into()))
         }
+    }
+}
+
+fn collect_top_level_in_cols<'a>(expr: &'a WhereExpr, out: &mut Vec<&'a str>) {
+    match expr {
+        WhereExpr::And(l, r) => {
+            collect_top_level_in_cols(l, out);
+            collect_top_level_in_cols(r, out);
+        }
+        WhereExpr::InList {
+            column,
+            negated: false,
+            ..
+        }
+        | WhereExpr::InSubquery {
+            column,
+            negated: false,
+            ..
+        } => {
+            out.push(column.as_str());
+        }
+        _ => {}
     }
 }

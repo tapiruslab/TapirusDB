@@ -809,3 +809,162 @@ fn test_phase3_inset_exists_like_dml_pushdown_and_filtered_agg() {
         .unwrap();
     assert!(orphan_orders.is_empty());
 }
+
+#[test]
+fn test_phase4_chained_joins_predicate_pushdown_inset_indexes_and_agg_guards() {
+    let mut pager = Pager::open_in_memory(4096, 128).expect("Pager open");
+    let mut executor = SQLExecutor::new(&mut pager).expect("Executor new");
+
+    for ddl in [
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, tier TEXT);",
+        "CREATE TABLE products (id INTEGER PRIMARY KEY, title TEXT, tag TEXT, price INTEGER);",
+        "CREATE INDEX idx_products_tag ON products (tag);",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, product_id INTEGER, qty INTEGER);",
+        "CREATE INDEX idx_orders_user ON orders (user_id);",
+    ] {
+        executor
+            .execute(&mut pager, parse_sql(ddl).unwrap())
+            .unwrap();
+    }
+
+    for row_sql in [
+        "INSERT INTO users VALUES (1, 'Alice', 'gold');",
+        "INSERT INTO users VALUES (2, 'Bob', 'silver');",
+        "INSERT INTO users VALUES (3, 'Charlie', 'gold');",
+        "INSERT INTO products VALUES (10, 'Laptop', 'tech', 1200);",
+        "INSERT INTO products VALUES (11, 'Mouse', 'tech', 25);",
+        "INSERT INTO products VALUES (12, 'Desk', 'office', 350);",
+        "INSERT INTO products VALUES (13, 'Pen', 'office', 5);",
+        "INSERT INTO orders VALUES (100, 1, 10, 1);",
+        "INSERT INTO orders VALUES (101, 1, 12, 2);",
+        "INSERT INTO orders VALUES (102, 2, 10, 4);",
+        "INSERT INTO orders VALUES (103, 3, 13, 10);",
+        "INSERT INTO orders VALUES (104, 3, 11, 3);",
+    ] {
+        executor
+            .execute(&mut pager, parse_sql(row_sql).unwrap())
+            .unwrap();
+    }
+
+    // 1. PK Point Lookup must NOT bypass aggregates (COUNT/SUM with WHERE pk = X)
+    let agg_pk = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT COUNT(*), SUM(price) FROM products WHERE id = 10;").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(agg_pk.len(), 1);
+    assert_eq!(
+        agg_pk[0].values(),
+        &[Value::Integer(1), Value::Integer(1200)]
+    );
+
+    let agg_empty = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT COUNT(*) FROM products WHERE id > 99 AND id < 10;").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(agg_empty.len(), 1);
+    assert_eq!(agg_empty[0].values(), &[Value::Integer(0)]);
+
+    // 2. Compound-AND PK lookup + projected scan + ORDER BY
+    let compound_pk = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT id, title FROM products WHERE id = 12 AND tag = 'office' ORDER BY title;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(compound_pk.len(), 1);
+    assert_eq!(compound_pk[0].get::<String>("title").unwrap(), "Desk");
+
+    // 3. Multi-key PK IN (...) & Secondary Index IN (...) + EXPLAIN plan verification
+    let pk_in = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT id, title FROM products WHERE id IN (13, 10, 99) ORDER BY id DESC;")
+                .unwrap(),
+        )
+        .unwrap();
+    let pk_in_ids: Vec<i64> = pk_in.iter().map(|r| r.get::<i64>("id").unwrap()).collect();
+    assert_eq!(pk_in_ids, vec![13, 10]);
+
+    let idx_in = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT id FROM products WHERE tag IN ('tech', 'missing') ORDER BY id ASC;")
+                .unwrap(),
+        )
+        .unwrap();
+    let idx_in_ids: Vec<i64> = idx_in.iter().map(|r| r.get::<i64>("id").unwrap()).collect();
+    assert_eq!(idx_in_ids, vec![10, 11]);
+
+    let explain_pk_in = executor
+        .query(
+            &mut pager,
+            parse_sql("EXPLAIN SELECT id FROM products WHERE id IN (10, 12);").unwrap(),
+        )
+        .unwrap();
+    let detail = explain_pk_in[0].get::<String>("detail").unwrap();
+    assert!(
+        detail.contains("PRIMARY KEY") && detail.contains("IN"),
+        "Expected PK IN plan, got {detail}"
+    );
+
+    // 4. Chained 3-table JOIN with table aliases, right/multi-table WHERE predicates, reversed ON keys, ORDER BY, LIMIT
+    let joined = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT u.name AS buyer, p.title AS item, o.qty AS qty \
+                 FROM orders o \
+                 INNER JOIN users u ON o.user_id = u.id \
+                 INNER JOIN products p ON p.id = o.product_id \
+                 WHERE u.tier = 'gold' AND p.price >= 25 \
+                 ORDER BY o.qty DESC \
+                 LIMIT 2;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(joined.len(), 2);
+    assert_eq!(joined[0].get::<String>("buyer").unwrap(), "Charlie");
+    assert_eq!(joined[0].get::<String>("item").unwrap(), "Mouse");
+    assert_eq!(joined[0].get::<i64>("qty").unwrap(), 3);
+    assert_eq!(joined[1].get::<String>("buyer").unwrap(), "Alice");
+    assert_eq!(joined[1].get::<String>("item").unwrap(), "Desk");
+    assert_eq!(joined[1].get::<i64>("qty").unwrap(), 2);
+
+    // 5. Right-side predicate on single INNER JOIN must NOT falsely drop left rows on wrong table
+    let right_filtered = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT users.name, orders.id FROM users INNER JOIN orders ON users.id = orders.user_id WHERE orders.qty = 4;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(right_filtered.len(), 1);
+    assert_eq!(right_filtered[0].get::<String>("name").unwrap(), "Bob");
+
+    // 6. LEFT JOIN with right-table WHERE filter must preserve standard SQL post-join semantics
+    let left_join_filtered = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT users.name, orders.qty FROM users LEFT JOIN orders ON users.id = orders.user_id WHERE orders.qty >= 4 ORDER BY users.id ASC;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(left_join_filtered.len(), 2);
+    assert_eq!(left_join_filtered[0].get::<String>("name").unwrap(), "Bob");
+    assert_eq!(
+        left_join_filtered[1].get::<String>("name").unwrap(),
+        "Charlie"
+    );
+}

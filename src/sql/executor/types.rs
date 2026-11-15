@@ -5,7 +5,7 @@ use crate::pager::Pager;
 use crate::sql::catalog::{IndexDef, TableDef, TableForeignKey};
 use crate::sql::codec::encode_row_into;
 use crate::sql::lexer::Token;
-use crate::sql::parser::{BinaryOp, WhereCondition, WhereExpr};
+use crate::sql::parser::{BinaryOp, JoinClause, JoinType, WhereCondition, WhereExpr};
 use crate::traits::{Row, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -91,6 +91,49 @@ impl InValueLookup {
             Value::Text(s) => self.texts.contains(s.as_str()),
             other => self.others.iter().any(|t| t == other),
         }
+    }
+
+    /// Number of distinct candidate values stored in this lookup table.
+    #[inline]
+    pub fn distinct_len(&self) -> usize {
+        self.ints.len() + self.reals.len() + self.texts.len() + self.others.len()
+    }
+
+    /// Extract all distinct `i64` keys (including exact-integer `Real`s), sorted ascending.
+    pub fn collect_sorted_int_keys(&self) -> Vec<i64> {
+        let mut keys: Vec<i64> = self.ints.iter().copied().collect();
+        for &bits in &self.reals {
+            let r = f64::from_bits(bits);
+            if r.fract() == 0.0 && r >= (i64::MIN as f64) && r < 9223372036854775808.0 {
+                let cand = r as i64;
+                if (cand as f64) == r && !self.ints.contains(&cand) {
+                    keys.push(cand);
+                }
+            }
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        keys
+    }
+
+    /// Extract all deduplicated non-NULL candidate values for index probing.
+    pub fn collect_probe_values(&self) -> Vec<Value> {
+        let mut vals = Vec::with_capacity(self.distinct_len());
+        for &i in &self.ints {
+            vals.push(Value::Integer(i));
+        }
+        for &bits in &self.reals {
+            vals.push(Value::Real(f64::from_bits(bits)));
+        }
+        for s in &self.texts {
+            vals.push(Value::Text(s.clone()));
+        }
+        for o in &self.others {
+            if !vals.iter().any(|v| v == o) {
+                vals.push(o.clone());
+            }
+        }
+        vals
     }
 }
 
@@ -1002,4 +1045,140 @@ pub(crate) fn mark_resolved_where_columns(
             }
         }
     }
+}
+
+/// Collect top-level `AND`-conjunctive positive `InSet` expressions.
+pub(crate) fn extract_top_level_in_sets<'a>(
+    expr: &'a ResolvedWhereExpr,
+    out: &mut Vec<(&'a str, &'a InValueLookup)>,
+) {
+    match expr {
+        ResolvedWhereExpr::And(l, r) => {
+            extract_top_level_in_sets(l, out);
+            extract_top_level_in_sets(r, out);
+        }
+        ResolvedWhereExpr::InSet {
+            column,
+            lookup,
+            negated: false,
+            ..
+        } => {
+            out.push((column.as_str(), lookup.as_ref()));
+        }
+        _ => {}
+    }
+}
+
+fn collect_and_conjuncts<'a>(expr: &'a ResolvedWhereExpr, out: &mut Vec<&'a ResolvedWhereExpr>) {
+    if let ResolvedWhereExpr::And(l, r) = expr {
+        collect_and_conjuncts(l, out);
+        collect_and_conjuncts(r, out);
+    } else {
+        out.push(expr);
+    }
+}
+
+fn join_predicate_table_owner(expr: &ResolvedWhereExpr, tables: &[&TableDef]) -> Option<usize> {
+    match expr {
+        ResolvedWhereExpr::Boolean(_) => Some(0),
+        ResolvedWhereExpr::And(l, r) | ResolvedWhereExpr::Or(l, r) => {
+            let lo = join_predicate_table_owner(l, tables)?;
+            let ro = join_predicate_table_owner(r, tables)?;
+            (lo == ro).then_some(lo)
+        }
+        ResolvedWhereExpr::Condition(cond) => column_owner_in_tables(&cond.column, tables),
+        ResolvedWhereExpr::InList { column, .. } | ResolvedWhereExpr::InSet { column, .. } => {
+            column_owner_in_tables(column, tables)
+        }
+    }
+}
+
+fn column_owner_in_tables(col: &str, tables: &[&TableDef]) -> Option<usize> {
+    let trimmed = col.trim();
+    if trimmed.contains("->") || trimmed.contains('(') || trimmed.contains(' ') {
+        return None;
+    }
+    if let Some((tbl, c)) = trimmed.split_once('.') {
+        let mut owner = None;
+        for (idx, tdef) in tables.iter().enumerate() {
+            if tdef.name.eq_ignore_ascii_case(tbl) && tdef.column_index(c).is_some() {
+                if owner.is_some() {
+                    return None;
+                }
+                owner = Some(idx);
+            }
+        }
+        owner
+    } else {
+        let mut owner = None;
+        for (idx, tdef) in tables.iter().enumerate() {
+            if tdef.column_index(trimmed).is_some() {
+                if owner.is_some() {
+                    return None;
+                }
+                owner = Some(idx);
+            }
+        }
+        owner
+    }
+}
+
+fn combine_and(items: Vec<ResolvedWhereExpr>) -> Option<ResolvedWhereExpr> {
+    let mut iter = items.into_iter();
+    let mut acc = iter.next()?;
+    for next in iter {
+        acc = ResolvedWhereExpr::And(Box::new(acc), Box::new(next));
+    }
+    Some(acc)
+}
+
+/// Partition a resolved `WHERE` predicate into per-table pushdowns and a post-join residual filter.
+///
+/// Only pushes left-table filters when no `RIGHT`/`FULL` outer join can manufacture left `NULL`s,
+/// and only pushes right-table `k` filters when every join up to `k` is `INNER`.
+pub(crate) fn split_join_where_predicates(
+    expr: &ResolvedWhereExpr,
+    tables: &[&TableDef],
+    joins: &[&JoinClause],
+) -> (
+    Option<ResolvedWhereExpr>,
+    Vec<Option<ResolvedWhereExpr>>,
+    Option<ResolvedWhereExpr>,
+) {
+    let mut right_pushed = vec![Vec::new(); joins.len()];
+    let has_right_or_full = joins
+        .iter()
+        .any(|j| j.join_type == JoinType::Right || j.join_type == JoinType::Full);
+    if has_right_or_full {
+        return (None, vec![None; joins.len()], Some(expr.clone()));
+    }
+
+    let mut conjuncts = Vec::new();
+    collect_and_conjuncts(expr, &mut conjuncts);
+    let mut left_items = Vec::new();
+    let mut post_items = Vec::new();
+
+    for c in conjuncts {
+        match join_predicate_table_owner(c, tables) {
+            Some(0) => left_items.push(c.clone()),
+            Some(owner_idx) if owner_idx > 0 => {
+                let join_pos = owner_idx - 1;
+                let all_inner_prefix = joins[..=join_pos]
+                    .iter()
+                    .all(|j| j.join_type == JoinType::Inner && !j.is_left);
+                if all_inner_prefix {
+                    right_pushed[join_pos].push(c.clone());
+                } else {
+                    post_items.push(c.clone());
+                }
+            }
+            _ => post_items.push(c.clone()),
+        }
+    }
+
+    (
+        combine_and(left_items),
+        right_pushed.into_iter().map(combine_and).collect(),
+        combine_and(post_items),
+    )
 }

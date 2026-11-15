@@ -263,6 +263,8 @@ pub enum Statement {
         from_subquery: Option<(Box<Statement>, String)>,
         /// Optional table JOIN
         join: Option<JoinClause>,
+        /// Additional chained JOIN clauses (2nd JOIN onward)
+        extra_joins: Vec<JoinClause>,
         /// Optional WHERE expression (supports AND, OR, IN, Subqueries)
         where_clause: Option<WhereExpr>,
         /// Optional GROUP BY columns
@@ -2426,6 +2428,90 @@ fn is_clause_boundary_ident(word: &str) -> bool {
         || word.eq_ignore_ascii_case("INTERSECT")
 }
 
+fn rewrite_qualified_alias(col: &str, aliases: &[(String, String)]) -> String {
+    if let Some((prefix, rest)) = col.split_once('.')
+        && let Some((_, real_table)) = aliases.iter().find(|(a, _)| a.eq_ignore_ascii_case(prefix))
+    {
+        return format!("{real_table}.{rest}");
+    }
+    col.to_string()
+}
+
+fn rewrite_expr_aliases(expr: &str, aliases: &[(String, String)]) -> String {
+    let mut out = String::with_capacity(expr.len() + 8);
+    let bytes = expr.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    while i < bytes.len() {
+        let ch = expr[i..].chars().next().expect("valid utf8 boundary");
+        if ch == '\'' {
+            in_single = !in_single;
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        if !in_single
+            && (ch.is_ascii_alphanumeric() || ch == '_')
+            && (i == 0
+                || !(bytes[i - 1].is_ascii_alphanumeric()
+                    || bytes[i - 1] == b'_'
+                    || bytes[i - 1] == b'.'))
+            && let Some(rel_dot) = expr[i..].find('.')
+        {
+            let ident = &expr[i..i + rel_dot];
+            if !ident.is_empty()
+                && ident
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                && let Some((_, real_table)) =
+                    aliases.iter().find(|(a, _)| a.eq_ignore_ascii_case(ident))
+            {
+                out.push_str(real_table);
+                out.push('.');
+                i += rel_dot + 1;
+                continue;
+            }
+        }
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn rewrite_select_col_aliases(col: &str, aliases: &[(String, String)]) -> String {
+    let trimmed = col.trim();
+    if let Some(pos) = trimmed.to_ascii_uppercase().rfind(" AS ") {
+        let expr = trimmed[..pos].trim();
+        let alias = trimmed[pos + 4..].trim();
+        if !alias.is_empty() {
+            let rewritten = rewrite_expr_aliases(expr, aliases);
+            return format!("{rewritten} AS {alias}");
+        }
+    }
+    let rewritten = rewrite_expr_aliases(trimmed, aliases);
+    if rewritten != trimmed && !trimmed.contains('(') && !trimmed.contains(' ') {
+        format!("{rewritten} AS {trimmed}")
+    } else {
+        rewritten
+    }
+}
+
+fn rewrite_where_aliases(expr: &mut WhereExpr, aliases: &[(String, String)]) {
+    match expr {
+        WhereExpr::Condition(cond) => {
+            cond.column = rewrite_qualified_alias(&cond.column, aliases);
+        }
+        WhereExpr::And(l, r) | WhereExpr::Or(l, r) => {
+            rewrite_where_aliases(l, aliases);
+            rewrite_where_aliases(r, aliases);
+        }
+        WhereExpr::InList { column, .. } | WhereExpr::InSubquery { column, .. } => {
+            *column = rewrite_qualified_alias(column, aliases);
+        }
+        WhereExpr::Exists { .. } => {}
+    }
+}
+
 fn parse_compound_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     let mut stmt = parse_select(tokens, cursor)?;
     while matches!(tokens.get(*cursor), Some(Token::Ident(s)) if s.eq_ignore_ascii_case("UNION")) {
@@ -2486,6 +2572,7 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             table: String::new(),
             from_subquery: None,
             join: None,
+            extra_joins: Vec::new(),
             where_clause: None,
             group_by: None,
             having: None,
@@ -2497,6 +2584,7 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     }
     expect_token(tokens, cursor, &Token::From)?;
 
+    let mut alias_map: Vec<(String, String)> = Vec::new();
     let (table_name, from_subquery) = if check_token(tokens, *cursor, &Token::OpenParen) {
         *cursor += 1;
         let subquery = parse_select(tokens, cursor)?;
@@ -2536,18 +2624,26 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             && !(*cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::Of)
         {
             *cursor += 1;
-            let _alias = parse_identifier_or_keyword(tokens, cursor)?;
+            let alias = parse_identifier_or_keyword(tokens, cursor)?;
+            if !alias.eq_ignore_ascii_case(&name) {
+                alias_map.push((alias, name.clone()));
+            }
         } else if let Some(Token::Ident(alias)) = tokens.get(*cursor)
             && !is_clause_boundary_ident(alias)
         {
+            let alias = alias.clone();
             *cursor += 1;
+            if !alias.eq_ignore_ascii_case(&name) {
+                alias_map.push((alias, name.clone()));
+            }
         }
         (name, None)
     };
 
-    // Optional JOIN clause: [INNER|LEFT|RIGHT] [OUTER] JOIN other_table ON left_col = right_col
+    // Optional chained JOIN clauses: {[INNER|LEFT|RIGHT|FULL] [OUTER] JOIN other_table ON left_col = right_col}...
     let mut join = None;
-    if check_token(tokens, *cursor, &Token::Left)
+    let mut extra_joins = Vec::new();
+    while check_token(tokens, *cursor, &Token::Left)
         || check_token(tokens, *cursor, &Token::Right)
         || check_token(tokens, *cursor, &Token::Full)
         || check_token(tokens, *cursor, &Token::Inner)
@@ -2595,11 +2691,18 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         };
         if check_token(tokens, *cursor, &Token::As) {
             *cursor += 1;
-            let _ = parse_identifier_or_keyword(tokens, cursor)?;
+            let alias = parse_identifier_or_keyword(tokens, cursor)?;
+            if !alias.eq_ignore_ascii_case(&right_table) {
+                alias_map.push((alias, right_table.clone()));
+            }
         } else if let Some(Token::Ident(alias)) = tokens.get(*cursor)
             && !is_clause_boundary_ident(alias)
         {
+            let alias = alias.clone();
             *cursor += 1;
+            if !alias.eq_ignore_ascii_case(&right_table) {
+                alias_map.push((alias, right_table.clone()));
+            }
         }
 
         expect_token(tokens, cursor, &Token::On)?;
@@ -2607,13 +2710,18 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         expect_token(tokens, cursor, &Token::Equals)?;
         let right_col = parse_column_ident(tokens, cursor)?;
 
-        join = Some(JoinClause {
+        let jc = JoinClause {
             table: right_table,
             left_col,
             right_col,
             is_left: join_type == JoinType::Left,
             join_type,
-        });
+        };
+        if join.is_none() {
+            join = Some(jc);
+        } else {
+            extra_joins.push(jc);
+        }
     }
 
     // Check for VECTOR NEAR ... TOP k
@@ -2827,12 +2935,38 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         offset = Some(n);
     }
 
+    let mut where_clause = where_clause;
+    if !alias_map.is_empty() {
+        for col in &mut columns {
+            *col = rewrite_select_col_aliases(col, &alias_map);
+        }
+        for j in join.iter_mut().chain(extra_joins.iter_mut()) {
+            j.left_col = rewrite_qualified_alias(&j.left_col, &alias_map);
+            j.right_col = rewrite_qualified_alias(&j.right_col, &alias_map);
+        }
+        if let Some(ref mut w) = where_clause {
+            rewrite_where_aliases(w, &alias_map);
+        }
+        if let Some(ref mut gb) = group_by {
+            for col in gb.iter_mut() {
+                *col = rewrite_qualified_alias(col, &alias_map);
+            }
+        }
+        if let Some(ref mut h) = having {
+            rewrite_where_aliases(h, &alias_map);
+        }
+        if let Some(ref mut ord) = order_by {
+            ord.column = rewrite_qualified_alias(&ord.column, &alias_map);
+        }
+    }
+
     Ok(Statement::Select {
         distinct,
         columns,
         table: table_name,
         from_subquery,
         join,
+        extra_joins,
         where_clause,
         group_by,
         having,
