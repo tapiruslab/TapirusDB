@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Conditional `CASE [operand] WHEN ... THEN ... [ELSE ...] END` and explicit `CAST(expr AS INTEGER|REAL|TEXT|BOOLEAN|BLOB)` across the SQL lexer, parser (`parse_column_primary`, nested `CREATE TRIGGER` depth tracking), and executor (`eval.rs`).
+- Computed `GENERATED ALWAYS AS (<expr>) [STORED|VIRTUAL]` columns in `ColumnDef` (`CREATE TABLE`, `ALTER TABLE ADD COLUMN` backfill, automatic calculation on `INSERT` / `ON CONFLICT DO UPDATE` / `UPDATE`, constraint & index updates, and strict rejection of direct writes).
+- Expression indexes (`CREATE [UNIQUE] INDEX idx ON tbl (LOWER(col)) [WHERE ...]`) with target validation, key evaluation via `eval_projected_expr`, and query-planner matching (`normalize_index_expr`, `USING INDEX`).
+- Scalar expression and correlated/uncorrelated `(SELECT ...)` subquery support in `UPDATE ... SET col = <expr>` (`Statement::Update.assignment_exprs`, `execute_update`, and HTTP AST RBAC checks in `authorize_sql_statement_ast`).
 - Multi-column `ORDER BY` (`ORDER BY col1 [ASC|DESC], col2 [ASC|DESC], ...`) across the SQL parser, executor (including projected aliases and multi-column Parquet OLAP sorting), CTE/EXPLAIN planner, and query engine.
 - Uncorrelated and correlated scalar subqueries `(SELECT ...)` in `WHERE`, `HAVING`, and `SELECT` projection lists (including standalone columns, composite scalar/arithmetic expressions, shadowed inner aliases, `WITH` CTE subquery visibility via `active_ctes`, strict cardinality enforcement, `LIMIT 2` early stop, and HTTP AST RBAC enforcement in `authorize_sql_statement_ast`).
 - Chained multi-table `JOIN` execution (three or more joined tables), column-to-column `WHERE` comparisons (`col_a op col_b`), correlated subqueries (`EXISTS`, `NOT EXISTS`, `IN`, `NOT IN`) with memoized evaluation (`CorrelatedSubqueryMemo`), and `NOT IN` / `NOT EXISTS` predicate support in `src/sql/parser.rs` and `src/sql/executor/`.

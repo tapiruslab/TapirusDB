@@ -48,11 +48,18 @@ impl SQLExecutor {
             Statement::Update {
                 table,
                 assignments,
+                assignment_exprs,
                 where_clause,
                 returning,
             } => {
-                let (_, rows) =
-                    self.execute_update(pager, table, assignments, where_clause, returning)?;
+                let (_, rows) = self.execute_update(
+                    pager,
+                    table,
+                    assignments,
+                    assignment_exprs,
+                    where_clause,
+                    returning,
+                )?;
                 Ok(rows)
             }
             Statement::Delete {

@@ -976,11 +976,18 @@ impl SQLExecutor {
             Statement::Update {
                 table,
                 assignments,
+                assignment_exprs,
                 where_clause,
                 returning,
             } => {
-                let (affected, _) =
-                    self.execute_update(pager, table, assignments, where_clause, returning)?;
+                let (affected, _) = self.execute_update(
+                    pager,
+                    table,
+                    assignments,
+                    assignment_exprs,
+                    where_clause,
+                    returning,
+                )?;
                 Ok(affected)
             }
 
@@ -1044,16 +1051,7 @@ impl SQLExecutor {
                 } else {
                     columns
                 };
-                for col in &target_cols {
-                    let base_col = col.split('.').next().unwrap_or(col);
-                    if table_def.column_index(base_col).is_none()
-                        && table_def.column_index(col).is_none()
-                    {
-                        return Err(Error::Corrupted(format!(
-                            "Column '{col}' not found in table '{table}' for index '{name}'"
-                        )));
-                    }
-                }
+                validate_index_targets(&table_def, &target_cols, &table, &name)?;
 
                 let resolved_predicate = match where_clause {
                     Some(ref expr) => Some(self.resolve_where_expr(pager, expr)?),
@@ -1199,8 +1197,9 @@ impl SQLExecutor {
 
             Statement::AlterTableAddColumn { table, column } => {
                 let default_fill = column.default_value.as_ref().map(DefaultValue::materialize);
+                let has_gen = column.generated_expr.is_some();
                 self.catalog.add_column(pager, &table, column)?;
-                if let Some(fill_val) = default_fill
+                if (default_fill.is_some() || has_gen)
                     && let Some(tdef) = self.catalog.get_table(&table).cloned()
                 {
                     let col_count = tdef.columns.len();
@@ -1216,7 +1215,10 @@ impl SQLExecutor {
                         let mut vals = row.values().to_vec();
                         if vals.len() < col_count {
                             vals.resize(col_count - 1, Value::Null);
-                            vals.push(fill_val.clone());
+                            vals.push(default_fill.clone().unwrap_or(Value::Null));
+                            if has_gen {
+                                self.compute_generated_columns(&table, &tdef.columns, &mut vals)?;
+                            }
                             let new_payload = encode_row(&vals);
                             self.btree
                                 .insert(pager, tdef.root_page, cell.row_id, &new_payload)?;
@@ -1455,4 +1457,89 @@ impl SQLExecutor {
             ),
         }
     }
+
+    pub(crate) fn compute_generated_columns(
+        &self,
+        table: &str,
+        table_cols: &[ColumnDef],
+        values: &mut [Value],
+    ) -> Result<()> {
+        if !table_cols.iter().any(|c| c.generated_expr.is_some()) {
+            return Ok(());
+        }
+        let col_names: Vec<String> = table_cols.iter().map(|c| c.name.clone()).collect();
+        for (col_idx, col_def) in table_cols.iter().enumerate() {
+            let Some(ref gen_expr) = col_def.generated_expr else {
+                continue;
+            };
+            let snapshot_row = Row::new(col_names.clone(), values.to_vec());
+            let computed =
+                eval_projected_expr(&snapshot_row, gen_expr, gen_expr, Some(&self.udf_registry))?;
+            let coerced = col_def
+                .data_type
+                .coerce_value(computed)
+                .map_err(|e| match e {
+                    Error::DimensionMismatch(exp, got) => Error::DimensionMismatch(exp, got),
+                    Error::ConstraintViolation(msg) => {
+                        Error::ConstraintViolation(format!("{table}.{}: {msg}", col_def.name))
+                    }
+                    other => other,
+                })?;
+            if col_idx < values.len() {
+                values[col_idx] = coerced;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_index_targets(
+    table_def: &TableDef,
+    target_cols: &[String],
+    table: &str,
+    name: &str,
+) -> Result<()> {
+    use crate::sql::lexer::Token;
+
+    for col in target_cols {
+        let base_col = col.split('.').next().unwrap_or(col);
+        if resolve_table_col_index(table_def, col).is_some()
+            || table_def.column_index(base_col).is_some()
+        {
+            continue;
+        }
+        let Ok(toks) = tokenize(col) else {
+            return Err(Error::Corrupted(format!(
+                "Invalid index target '{col}' on table '{table}' for index '{name}'"
+            )));
+        };
+        if toks.is_empty() {
+            return Err(Error::Corrupted(format!(
+                "Empty index expression on table '{table}' for index '{name}'"
+            )));
+        }
+        for i in 0..toks.len() {
+            let Token::Ident(ref id) = toks[i] else {
+                continue;
+            };
+            if i > 0 && toks[i - 1] == Token::Dot {
+                continue;
+            }
+            if toks.get(i + 1) == Some(&Token::OpenParen) {
+                continue;
+            }
+            if toks.get(i + 1) == Some(&Token::Dot) && id.eq_ignore_ascii_case(&table_def.name) {
+                continue;
+            }
+            if id.eq_ignore_ascii_case("TRUE") || id.eq_ignore_ascii_case("FALSE") {
+                continue;
+            }
+            if table_def.column_index(id).is_none() {
+                return Err(Error::Corrupted(format!(
+                    "Column '{id}' not found in table '{table}' for index '{name}'"
+                )));
+            }
+        }
+    }
+    Ok(())
 }

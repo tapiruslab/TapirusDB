@@ -13,7 +13,7 @@ Updated: **16 November 2026**.
 
 | Distribution | Package / Target | Location & Runtime | Verification Path |
 | --- | --- | --- | --- |
-| **Rust Engine (`tapirus`)** | Core Quad + `lite`, `document`, `graph-only`, `vector-only` | `Cargo.toml` · Rust `1.88+` | `cargo test --locked --workspace --offline` (`383` tests across `62` runs + `5` `edition_profiles` = `388` passed, plus `10` `io_fault_recovery_tests` under `--features fault-injection`, `0` failed) + CI multi-OS matrix |
+| **Rust Engine (`tapirus`)** | Core Quad + `lite`, `document`, `graph-only`, `vector-only` | `Cargo.toml` · Rust `1.88+` | `cargo test --locked --workspace --offline` (`385` tests across `62` runs + `5` `edition_profiles` = `390` passed, plus `10` `io_fault_recovery_tests` under `--features fault-injection`, `0` failed) + CI multi-OS matrix |
 | **Browser / WASM (`@tapirus/wasm` & `@tapirus/wasm-lite`)** | Quad WASM (`2,034,651` B) & ultra-lightweight SQL/Crypto Lite WASM (`1,225,340` B raw / `422,497` B gzip) | `crates/tapirus-wasm/` | Verified via Node consumer tarball + Lite smoke test (`TapirusWasm.new_encrypted`, `import_encrypted_bytes`, `WITH RECURSIVE`, partial indexes, `.tapir` interchange) |
 | **Python Native SDK (`tapirus`)** | `PyO3` `abi3` native wheel + CLI tools (`tapirus-migrate`, `tapirus-agent`, `tapirus-eval`) | `sdks/python/` · Python `3.10–3.15` | Multi-OS CI wheel builds + second-process persistence, encryption, and AI scope consumer suite |
 | **Node.js Native SDK (`tapirus`)** | Synchronous `N-API` `.node` addon | `sdks/nodejs/` · Node `22 / 24 / 26` | Cross-OS CI consumer tarball installation + parameterized SQL, CDC, vector, and AI memory suite |

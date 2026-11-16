@@ -399,12 +399,14 @@ pub enum Statement {
         /// Return projections (e.g. `["a", "r", "b"]` or `["*"]`)
         return_items: Vec<String>,
     },
-    /// UPDATE table SET col1 = val1, col2 = val2 [WHERE ...] [RETURNING ...]
+    /// UPDATE table SET col1 = val1, col2 = expr2 [WHERE ...] [RETURNING ...]
     Update {
         /// Target table
         table: String,
-        /// Column assignments
+        /// Literal column assignments
         assignments: Vec<(String, Value)>,
+        /// Scalar expression or subquery assignments
+        assignment_exprs: Vec<(String, String)>,
         /// Optional WHERE expression
         where_clause: Option<WhereExpr>,
         /// Optional RETURNING column projections
@@ -812,6 +814,12 @@ pub fn tokens_to_sql(tokens: &[Token]) -> String {
             Token::Release => s.push_str("RELEASE"),
             Token::Rename => s.push_str("RENAME"),
             Token::To => s.push_str("TO"),
+            Token::Case => s.push_str("CASE"),
+            Token::When => s.push_str("WHEN"),
+            Token::Then => s.push_str("THEN"),
+            Token::Else => s.push_str("ELSE"),
+            Token::End => s.push_str("END"),
+            Token::Cast => s.push_str("CAST"),
         }
     }
     s
@@ -1208,8 +1216,9 @@ fn parse_column_def(tokens: &[Token], cursor: &mut usize) -> Result<ColumnDef> {
     let mut default_value = None;
     let mut check_expr = None;
     let mut references = None;
+    let mut generated_expr = None;
 
-    // Optional column constraints: CONSTRAINT <name>, PRIMARY KEY [AUTOINCREMENT], NOT NULL, NULL, UNIQUE, DEFAULT, CHECK, REFERENCES
+    // Optional column constraints: CONSTRAINT <name>, PRIMARY KEY [AUTOINCREMENT], NOT NULL, NULL, UNIQUE, DEFAULT, CHECK, REFERENCES, [GENERATED ALWAYS] AS (...) [STORED|VIRTUAL]
     while *cursor < tokens.len() {
         if check_token(tokens, *cursor, &Token::Comma)
             || check_token(tokens, *cursor, &Token::CloseParen)
@@ -1248,6 +1257,28 @@ fn parse_column_def(tokens: &[Token], cursor: &mut usize) -> Result<ColumnDef> {
                 return Err(Error::SqlSyntax("Empty CHECK constraint expression".into()));
             }
             check_expr = Some(sql);
+        } else if is_ident_ci(tokens, *cursor, "GENERATED")
+            || check_token(tokens, *cursor, &Token::As)
+        {
+            if is_ident_ci(tokens, *cursor, "GENERATED") {
+                *cursor += 1;
+                if is_ident_ci(tokens, *cursor, "ALWAYS") {
+                    *cursor += 1;
+                }
+            }
+            expect_token(tokens, cursor, &Token::As)?;
+            expect_token(tokens, cursor, &Token::OpenParen)?;
+            let gen_sql = parse_column_expr_no_alias(tokens, cursor)?;
+            expect_token(tokens, cursor, &Token::CloseParen)?;
+            if is_ident_ci(tokens, *cursor, "STORED") || is_ident_ci(tokens, *cursor, "VIRTUAL") {
+                *cursor += 1;
+            }
+            if gen_sql.trim().is_empty() {
+                return Err(Error::SqlSyntax(
+                    "Empty GENERATED ALWAYS AS expression".into(),
+                ));
+            }
+            generated_expr = Some(gen_sql);
         } else if is_ident_ci(tokens, *cursor, "REFERENCES") {
             let (ref_table, ref_cols, on_delete, on_update) =
                 parse_references_tail(tokens, cursor)?;
@@ -1262,6 +1293,12 @@ fn parse_column_def(tokens: &[Token], cursor: &mut usize) -> Result<ColumnDef> {
         }
     }
 
+    if generated_expr.is_some() && default_value.is_some() {
+        return Err(Error::SqlSyntax(format!(
+            "Generated column '{col_name}' cannot also specify DEFAULT"
+        )));
+    }
+
     Ok(ColumnDef {
         name: col_name,
         data_type,
@@ -1271,6 +1308,7 @@ fn parse_column_def(tokens: &[Token], cursor: &mut usize) -> Result<ColumnDef> {
         default_value,
         check_expr,
         references,
+        generated_expr,
     })
 }
 
@@ -1524,6 +1562,7 @@ fn parse_create_virtual_table(tokens: &[Token], cursor: &mut usize) -> Result<St
             default_value: None,
             check_expr: None,
             references: None,
+            generated_expr: None,
         })
         .collect();
 
@@ -1598,7 +1637,7 @@ fn parse_create_trigger(tokens: &[Token], cursor: &mut usize) -> Result<Statemen
     }
 
     let mut when_sql = None;
-    if is_ident_ci(tokens, *cursor, "WHEN") {
+    if check_token(tokens, *cursor, &Token::When) {
         *cursor += 1;
         let when_start = *cursor;
         let mut paren_depth = 0usize;
@@ -1625,9 +1664,10 @@ fn parse_create_trigger(tokens: &[Token], cursor: &mut usize) -> Result<Statemen
     let mut begin_depth = 1usize;
     let mut body_end = None;
     while *cursor < tokens.len() {
-        if check_token(tokens, *cursor, &Token::Begin) {
+        if check_token(tokens, *cursor, &Token::Begin) || check_token(tokens, *cursor, &Token::Case)
+        {
             begin_depth += 1;
-        } else if is_ident_ci(tokens, *cursor, "END") {
+        } else if check_token(tokens, *cursor, &Token::End) {
             begin_depth -= 1;
             if begin_depth == 0 {
                 body_end = Some(*cursor);
@@ -2349,6 +2389,42 @@ fn parse_column_primary(tokens: &[Token], cursor: &mut usize) -> Result<String> 
             expect_token(tokens, cursor, &Token::CloseParen)?;
             format!("{func_name}({col}, {arg2})")
         }
+        Token::Cast => {
+            *cursor += 1;
+            expect_token(tokens, cursor, &Token::OpenParen)?;
+            let inner = parse_column_expr_no_alias(tokens, cursor)?;
+            expect_token(tokens, cursor, &Token::As)?;
+            let target_type = match get_token(tokens, cursor)? {
+                Token::Integer => "INTEGER".to_string(),
+                Token::Real => "REAL".to_string(),
+                Token::Text => "TEXT".to_string(),
+                Token::Blob => "BLOB".to_string(),
+                Token::Timestamp => "TEXT".to_string(),
+                Token::Ident(id) => match id.to_ascii_uppercase().as_str() {
+                    "INT" | "INTEGER" | "BIGINT" | "SMALLINT" => "INTEGER".to_string(),
+                    "REAL" | "FLOAT" | "DOUBLE" | "NUMERIC" => "REAL".to_string(),
+                    "TEXT" | "VARCHAR" | "CHAR" | "STRING" => "TEXT".to_string(),
+                    "BOOL" | "BOOLEAN" => "BOOLEAN".to_string(),
+                    "BLOB" => "BLOB".to_string(),
+                    _ => {
+                        return Err(Error::SqlSyntax(format!(
+                            "Unsupported CAST target type '{id}'"
+                        )));
+                    }
+                },
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected type name in CAST(... AS <type>), got {other:?}"
+                    )));
+                }
+            };
+            if check_token(tokens, *cursor, &Token::OpenParen) {
+                let _ = parse_parenthesized_balanced_slice(tokens, cursor)?;
+            }
+            expect_token(tokens, cursor, &Token::CloseParen)?;
+            format!("CAST({inner} AS {target_type})")
+        }
+        Token::Case => parse_case_expression(tokens, cursor)?,
         Token::Ident(id)
             if *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::OpenParen =>
         {
@@ -2372,6 +2448,88 @@ fn parse_column_primary(tokens: &[Token], cursor: &mut usize) -> Result<String> 
     };
 
     Ok(expr)
+}
+
+fn parse_case_expression(tokens: &[Token], cursor: &mut usize) -> Result<String> {
+    expect_token(tokens, cursor, &Token::Case)?;
+    let mut out = String::from("CASE");
+    let has_operand = !check_token(tokens, *cursor, &Token::When);
+    if has_operand {
+        let operand = parse_column_expr_no_alias(tokens, cursor)?;
+        out.push(' ');
+        out.push_str(&operand);
+    }
+
+    let mut branches = 0usize;
+    while check_token(tokens, *cursor, &Token::When) {
+        branches += 1;
+        *cursor += 1;
+        let when_start = *cursor;
+        let mut paren_depth = 0usize;
+        let mut case_depth = 0usize;
+        let mut found_then = false;
+        while *cursor < tokens.len() {
+            match &tokens[*cursor] {
+                Token::OpenParen => paren_depth += 1,
+                Token::CloseParen => paren_depth = paren_depth.saturating_sub(1),
+                Token::Case => case_depth += 1,
+                Token::End => case_depth = case_depth.saturating_sub(1),
+                Token::Then if paren_depth == 0 && case_depth == 0 => {
+                    found_then = true;
+                    break;
+                }
+                _ => {}
+            }
+            *cursor += 1;
+        }
+        if !found_then {
+            return Err(Error::SqlSyntax(
+                "Expected THEN in CASE WHEN expression".into(),
+            ));
+        }
+        let when_slice = &tokens[when_start..*cursor];
+        if when_slice.is_empty() {
+            return Err(Error::SqlSyntax(
+                "Empty condition after WHEN in CASE".into(),
+            ));
+        }
+        let mut sub_cur = 0usize;
+        if has_operand {
+            let _ = parse_column_expr_no_alias(when_slice, &mut sub_cur)?;
+        } else {
+            let _ = parse_or_expr(when_slice, &mut sub_cur)?;
+        }
+        if sub_cur != when_slice.len() {
+            return Err(Error::SqlSyntax(format!(
+                "Unexpected token in CASE WHEN clause: {:?}",
+                when_slice.get(sub_cur)
+            )));
+        }
+
+        expect_token(tokens, cursor, &Token::Then)?;
+        let then_expr = parse_column_expr_no_alias(tokens, cursor)?;
+        out.push_str(" WHEN ");
+        out.push_str(&tokens_to_sql(when_slice));
+        out.push_str(" THEN ");
+        out.push_str(&then_expr);
+    }
+
+    if branches == 0 {
+        return Err(Error::SqlSyntax(
+            "CASE expression requires at least one WHEN ... THEN branch".into(),
+        ));
+    }
+
+    if check_token(tokens, *cursor, &Token::Else) {
+        *cursor += 1;
+        let else_expr = parse_column_expr_no_alias(tokens, cursor)?;
+        out.push_str(" ELSE ");
+        out.push_str(&else_expr);
+    }
+
+    expect_token(tokens, cursor, &Token::End)?;
+    out.push_str(" END");
+    Ok(out)
 }
 
 fn parse_column_ident(tokens: &[Token], cursor: &mut usize) -> Result<String> {
@@ -3257,11 +3415,23 @@ fn parse_update(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     expect_token(tokens, cursor, &Token::Set)?;
 
     let mut assignments = Vec::new();
+    let mut assignment_exprs = Vec::new();
     while *cursor < tokens.len() {
         let col_name = parse_identifier_or_keyword(tokens, cursor)?;
         expect_token(tokens, cursor, &Token::Equals)?;
-        let val = parse_value_literal(tokens, cursor)?;
-        assignments.push((col_name, val));
+        let mut try_cur = *cursor;
+        if let Ok(val) = parse_value_literal(tokens, &mut try_cur)
+            && matches!(
+                tokens.get(try_cur),
+                None | Some(Token::Comma | Token::Where | Token::Returning | Token::Semicolon)
+            )
+        {
+            *cursor = try_cur;
+            assignments.push((col_name, val));
+        } else {
+            let expr_sql = parse_column_expr_no_alias(tokens, cursor)?;
+            assignment_exprs.push((col_name, expr_sql));
+        }
 
         if check_token(tokens, *cursor, &Token::Comma) {
             *cursor += 1;
@@ -3270,7 +3440,7 @@ fn parse_update(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         }
     }
 
-    if assignments.is_empty() {
+    if assignments.is_empty() && assignment_exprs.is_empty() {
         return Err(Error::SqlSyntax(
             "UPDATE statement missing SET assignments".into(),
         ));
@@ -3282,6 +3452,7 @@ fn parse_update(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     Ok(Statement::Update {
         table: table_name,
         assignments,
+        assignment_exprs,
         where_clause,
         returning,
     })
@@ -3531,7 +3702,7 @@ fn parse_create_index(tokens: &[Token], cursor: &mut usize) -> Result<Statement>
     expect_token(tokens, cursor, &Token::OpenParen)?;
     let mut columns = Vec::new();
     loop {
-        columns.push(parse_column_ident(tokens, cursor)?);
+        columns.push(parse_column_expr_no_alias(tokens, cursor)?);
         if check_token(tokens, *cursor, &Token::Comma) {
             *cursor += 1;
         } else {
@@ -4939,5 +5110,72 @@ mod tests {
             parse_sql("SELECT (SELECT FROM users) FROM users;").is_err(),
             "Malformed scalar subquery inside SELECT projection must fail parse"
         );
+    }
+
+    #[test]
+    fn test_parse_case_cast_generated_expr_index_and_update_subquery() {
+        let sql = "SELECT CASE WHEN score >= 90 THEN 'A' WHEN score >= 80 THEN 'B' ELSE 'C' END AS grade, CASE dept_id WHEN 1 THEN 'Eng' ELSE 'Ops' END AS dept_name, CAST(score AS REAL), CAST(code + 1 AS TEXT) AS code_str FROM staff;";
+        let stmt = parse_sql(sql).expect("Parse CASE & CAST");
+        match stmt {
+            Statement::Select { columns, .. } => {
+                assert_eq!(columns.len(), 4);
+                assert!(columns[0].starts_with("CASE WHEN"));
+                assert!(columns[1].starts_with("CASE dept_id WHEN"));
+                assert_eq!(columns[2], "CAST(score AS REAL)");
+                assert_eq!(columns[3], "CAST(code + 1 AS TEXT) AS code_str");
+            }
+            _ => panic!("Expected Select"),
+        }
+
+        let ddl = "CREATE TABLE line_items (id INTEGER PRIMARY KEY, price REAL NOT NULL, qty INTEGER NOT NULL, total REAL GENERATED ALWAYS AS (price * qty) STORED, label TEXT AS (CAST(qty AS TEXT)) VIRTUAL);";
+        match parse_sql(ddl).expect("Parse generated columns DDL") {
+            Statement::CreateTable { columns, .. } => {
+                assert_eq!(columns.len(), 5);
+                assert_eq!(columns[3].generated_expr.as_deref(), Some("price * qty"));
+                assert_eq!(
+                    columns[4].generated_expr.as_deref(),
+                    Some("CAST(qty AS TEXT)")
+                );
+            }
+            _ => panic!("Expected CreateTable"),
+        }
+
+        let idx_sql =
+            "CREATE UNIQUE INDEX idx_lower_email ON users (LOWER(email)) WHERE active = 1;";
+        match parse_sql(idx_sql).expect("Parse expression index") {
+            Statement::CreateIndex {
+                column,
+                columns,
+                unique,
+                predicate_sql,
+                ..
+            } => {
+                assert!(unique);
+                assert_eq!(column, "LOWER(email)");
+                assert_eq!(columns, vec!["LOWER(email)"]);
+                assert!(predicate_sql.is_some());
+            }
+            _ => panic!("Expected CreateIndex"),
+        }
+
+        let upd_sql = "UPDATE items SET tag = 'fixed', price = price * 1.1, tier = (SELECT name FROM tiers t WHERE t.id = items.tier_id) WHERE id = 1 RETURNING price;";
+        match parse_sql(upd_sql).expect("Parse UPDATE expressions & subquery") {
+            Statement::Update {
+                assignments,
+                assignment_exprs,
+                returning,
+                ..
+            } => {
+                assert_eq!(
+                    assignments,
+                    vec![("tag".to_string(), Value::Text("fixed".into()))]
+                );
+                assert_eq!(assignment_exprs.len(), 2);
+                assert_eq!(assignment_exprs[0].0, "price");
+                assert_eq!(assignment_exprs[1].0, "tier");
+                assert_eq!(returning, Some(vec!["price".to_string()]));
+            }
+            _ => panic!("Expected Update"),
+        }
     }
 }

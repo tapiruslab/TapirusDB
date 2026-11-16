@@ -47,6 +47,7 @@ impl SQLExecutor {
             let has_fks =
                 self.foreign_keys_enabled && !collect_table_foreign_keys(table_def).is_empty();
             let has_unique_cols = table_def.columns.iter().any(|c| c.unique && !c.primary_key);
+            let has_generated = table_def.columns.iter().any(|c| c.generated_expr.is_some());
             let is_temporal = table_def.system_versioning || self.default_system_versioning;
             let has_fts = table_def.fts_config.is_some();
 
@@ -55,6 +56,7 @@ impl SQLExecutor {
                 || has_checks
                 || has_fks
                 || has_unique_cols
+                || has_generated
                 || is_temporal
                 || has_fts;
 
@@ -602,18 +604,35 @@ impl SQLExecutor {
                     let idx = table_def
                         .column_index(c_name)
                         .ok_or_else(|| Error::Corrupted(format!("Unknown column: {c_name}")))?;
+                    if table_cols[idx].generated_expr.is_some() {
+                        return Err(Error::ConstraintViolation(format!(
+                            "Cannot explicitly write to generated column '{table}.{}'",
+                            table_cols[idx].name
+                        )));
+                    }
                     row_vals[idx] = val;
                 }
                 row_vals
             } else {
-                if values.len() != table_cols.len() {
+                let non_gen_indices: Vec<usize> = table_cols
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.generated_expr.is_none())
+                    .map(|(i, _)| i)
+                    .collect();
+                if values.len() == non_gen_indices.len() {
+                    let mut row_vals = vec![Value::Null; table_cols.len()];
+                    for (idx, val) in non_gen_indices.into_iter().zip(values) {
+                        row_vals[idx] = val;
+                    }
+                    row_vals
+                } else {
                     return Err(Error::SqlSyntax(format!(
                         "INSERT requires {} values, got {}",
-                        table_cols.len(),
+                        non_gen_indices.len(),
                         values.len()
                     )));
                 }
-                values
             };
 
             // Determine row_id (from primary key column or auto-increment)
@@ -649,8 +668,11 @@ impl SQLExecutor {
             table_def_snapshot = table_def.clone();
         }
 
-        // Enforce column data type validation and coercion
+        // Enforce column data type validation and coercion for supplied values, then compute generated columns
         for (col_idx, col_def) in table_cols.iter().enumerate() {
+            if col_def.generated_expr.is_some() {
+                continue;
+            }
             if let Some(val) = aligned_values.get_mut(col_idx) {
                 let orig = std::mem::replace(val, Value::Null);
                 *val = col_def.data_type.coerce_value(orig).map_err(|e| match e {
@@ -662,6 +684,7 @@ impl SQLExecutor {
                 })?;
             }
         }
+        self.compute_generated_columns(&table, &table_cols, &mut aligned_values)?;
 
         // Enforce NOT NULL constraints
         for (col_idx, col_def) in table_cols.iter().enumerate() {
@@ -741,10 +764,19 @@ impl SQLExecutor {
                             .position(|c| c.name.eq_ignore_ascii_case(&col_name))
                             && col_idx < values.len()
                         {
+                            if table_cols[col_idx].generated_expr.is_some() {
+                                return Err(Error::ConstraintViolation(format!(
+                                    "Cannot explicitly update generated column '{table}.{}'",
+                                    table_cols[col_idx].name
+                                )));
+                            }
                             values[col_idx] = new_val;
                         }
                     }
                     for (col_idx, col_def) in table_cols.iter().enumerate() {
+                        if col_def.generated_expr.is_some() {
+                            continue;
+                        }
                         if let Some(val) = values.get_mut(col_idx) {
                             let orig = std::mem::replace(val, Value::Null);
                             *val = col_def.data_type.coerce_value(orig).map_err(|e| match e {
@@ -756,12 +788,15 @@ impl SQLExecutor {
                                 ),
                                 other => other,
                             })?;
-                            if col_def.not_null && val.is_null() {
-                                return Err(Error::ConstraintViolation(format!(
-                                    "NOT NULL constraint failed: {table}.{}",
-                                    col_def.name
-                                )));
-                            }
+                        }
+                    }
+                    self.compute_generated_columns(&table, &table_cols, &mut values)?;
+                    for (col_idx, col_def) in table_cols.iter().enumerate() {
+                        if col_def.not_null && values.get(col_idx).is_some_and(Value::is_null) {
+                            return Err(Error::ConstraintViolation(format!(
+                                "NOT NULL constraint failed: {table}.{}",
+                                col_def.name
+                            )));
                         }
                     }
                     let updated_row = Row::new(all_col_names.clone(), values.clone());
@@ -1068,6 +1103,7 @@ impl SQLExecutor {
         pager: &mut Pager,
         table: String,
         assignments: Vec<(String, Value)>,
+        assignment_exprs: Vec<(String, String)>,
         where_clause: Option<WhereExpr>,
         returning: Option<Vec<String>>,
     ) -> Result<(usize, Vec<Row>)> {
@@ -1081,14 +1117,43 @@ impl SQLExecutor {
         let all_col_names = table_def.column_names();
         let shared_col_names = Arc::new(all_col_names);
 
-        // Pre-resolve assignment column indices once
+        // Pre-resolve assignment column indices once and reject writes to generated columns
         let mut resolved_assignments = Vec::with_capacity(assignments.len());
         for (col_name, val) in assignments {
             let idx = table_def
                 .column_index(&col_name)
                 .ok_or_else(|| Error::Corrupted(format!("Unknown column in SET: {col_name}")))?;
+            if table_def.columns[idx].generated_expr.is_some() {
+                return Err(Error::ConstraintViolation(format!(
+                    "Cannot explicitly update generated column '{table}.{}'",
+                    table_def.columns[idx].name
+                )));
+            }
             resolved_assignments.push((idx, val));
         }
+
+        let mut resolved_expr_indices = Vec::with_capacity(assignment_exprs.len());
+        let mut raw_expr_cols = Vec::with_capacity(assignment_exprs.len());
+        for (col_name, expr_sql) in assignment_exprs {
+            let idx = table_def
+                .column_index(&col_name)
+                .ok_or_else(|| Error::Corrupted(format!("Unknown column in SET: {col_name}")))?;
+            if table_def.columns[idx].generated_expr.is_some() {
+                return Err(Error::ConstraintViolation(format!(
+                    "Cannot explicitly update generated column '{table}.{}'",
+                    table_def.columns[idx].name
+                )));
+            }
+            resolved_expr_indices.push(idx);
+            raw_expr_cols.push(expr_sql);
+        }
+
+        let expr_plan = if raw_expr_cols.is_empty() {
+            Vec::new()
+        } else {
+            self.prepare_projection_plan(pager, &raw_expr_cols, &[&table_def])?
+        };
+        let mut expr_memo = CorrelatedSubqueryMemo::default();
 
         let resolved_where = if let Some(ref expr) = where_clause {
             Some(self.resolve_where_expr_for_tables(pager, expr, &[&table_def])?)
@@ -1114,9 +1179,24 @@ impl SQLExecutor {
                         values[col_idx] = new_val.clone();
                     }
                 }
+                for (plan_idx, col_plan) in expr_plan.iter().enumerate() {
+                    let target_idx = resolved_expr_indices[plan_idx];
+                    if target_idx < values.len() {
+                        values[target_idx] = self.eval_prepared_projection_col(
+                            pager,
+                            &full_row,
+                            col_plan,
+                            &[&table_def],
+                            &mut expr_memo,
+                        )?;
+                    }
+                }
 
-                // Enforce column data type validation and coercion
+                // Enforce column data type validation and coercion for assigned columns, then compute generated columns
                 for (col_idx, col_def) in table_def.columns.iter().enumerate() {
+                    if col_def.generated_expr.is_some() {
+                        continue;
+                    }
                     if let Some(val) = values.get_mut(col_idx) {
                         let orig = std::mem::replace(val, Value::Null);
                         *val = col_def.data_type.coerce_value(orig).map_err(|e| match e {
@@ -1131,6 +1211,7 @@ impl SQLExecutor {
                         })?;
                     }
                 }
+                self.compute_generated_columns(&table, &table_def.columns, &mut values)?;
 
                 // Enforce NOT NULL constraints
                 for (col_idx, col_def) in table_def.columns.iter().enumerate() {

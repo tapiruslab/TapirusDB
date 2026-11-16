@@ -715,6 +715,18 @@ pub fn project_row_with_udf(
     Ok(Row::new(names, vals))
 }
 
+#[inline]
+pub(crate) fn keyword_at(bytes: &[u8], idx: usize, kw: &[u8]) -> bool {
+    let end = idx + kw.len();
+    if end > bytes.len() || !bytes[idx..end].eq_ignore_ascii_case(kw) {
+        return false;
+    }
+    let left_ok = idx == 0 || !(bytes[idx - 1].is_ascii_alphanumeric() || bytes[idx - 1] == b'_');
+    let right_ok =
+        end == bytes.len() || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
+    left_ok && right_ok
+}
+
 pub(crate) fn split_func_args(inner: &str) -> Vec<&str> {
     if inner.trim().is_empty() {
         return Vec::new();
@@ -723,17 +735,39 @@ pub(crate) fn split_func_args(inner: &str) -> Vec<&str> {
     let mut cur_start = 0;
     let mut in_single_quote = false;
     let mut in_double_quote = false;
+    let mut paren_depth: u32 = 0;
     let mut bracket_depth: u32 = 0;
+    let mut case_depth: u32 = 0;
+    let bytes = inner.as_bytes();
 
     for (idx, ch) in inner.char_indices() {
         match ch {
             '\'' if !in_double_quote => in_single_quote = !in_single_quote,
             '"' if !in_single_quote => in_double_quote = !in_double_quote,
+            '(' if !in_single_quote && !in_double_quote => paren_depth += 1,
+            ')' if !in_single_quote && !in_double_quote => {
+                paren_depth = paren_depth.saturating_sub(1);
+            }
             '[' if !in_single_quote && !in_double_quote => bracket_depth += 1,
             ']' if !in_single_quote && !in_double_quote => {
                 bracket_depth = bracket_depth.saturating_sub(1)
             }
-            ',' if !in_single_quote && !in_double_quote && bracket_depth == 0 => {
+            c if !in_single_quote
+                && !in_double_quote
+                && (c.eq_ignore_ascii_case(&'c') || c.eq_ignore_ascii_case(&'e')) =>
+            {
+                if keyword_at(bytes, idx, b"CASE") {
+                    case_depth += 1;
+                } else if keyword_at(bytes, idx, b"END") {
+                    case_depth = case_depth.saturating_sub(1);
+                }
+            }
+            ',' if !in_single_quote
+                && !in_double_quote
+                && paren_depth == 0
+                && bracket_depth == 0
+                && case_depth == 0 =>
+            {
                 args.push(inner[cur_start..idx].trim());
                 cur_start = idx + 1;
             }
@@ -831,6 +865,7 @@ pub(crate) fn find_top_level_infix(expr: &str) -> Option<(usize, usize, InfixOp)
     let bytes = expr.as_bytes();
     let mut depth_paren = 0usize;
     let mut depth_bracket = 0usize;
+    let mut depth_case = 0usize;
     let mut in_sq = false;
     let mut in_dq = false;
 
@@ -848,28 +883,38 @@ pub(crate) fn find_top_level_infix(expr: &str) -> Option<(usize, usize, InfixOp)
             b')' if !in_sq && !in_dq => depth_paren = depth_paren.saturating_sub(1),
             b'[' if !in_sq && !in_dq => depth_bracket += 1,
             b']' if !in_sq && !in_dq => depth_bracket = depth_bracket.saturating_sub(1),
-            _ if !in_sq && !in_dq && depth_paren == 0 && depth_bracket == 0 => {
-                if b == b'|' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
-                    tier1 = Some((i, 2, InfixOp::Concat));
-                    i += 2;
+            _ if !in_sq && !in_dq => {
+                if keyword_at(bytes, i, b"CASE") {
+                    depth_case += 1;
+                    i += 4;
                     continue;
-                } else if b == b'+' {
-                    tier2 = Some((i, 1, InfixOp::Add));
-                } else if b == b'-' {
-                    let prev_non_ws = expr[..i].trim_end().as_bytes().last().copied();
-                    let is_binary = matches!(
-                        prev_non_ws,
-                        Some(c) if c.is_ascii_alphanumeric() || matches!(c, b'_' | b')' | b'\'' | b'"')
-                    );
-                    if is_binary {
-                        tier2 = Some((i, 1, InfixOp::Sub));
+                } else if keyword_at(bytes, i, b"END") {
+                    depth_case = depth_case.saturating_sub(1);
+                    i += 3;
+                    continue;
+                } else if depth_paren == 0 && depth_bracket == 0 && depth_case == 0 {
+                    if b == b'|' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
+                        tier1 = Some((i, 2, InfixOp::Concat));
+                        i += 2;
+                        continue;
+                    } else if b == b'+' {
+                        tier2 = Some((i, 1, InfixOp::Add));
+                    } else if b == b'-' {
+                        let prev_non_ws = expr[..i].trim_end().as_bytes().last().copied();
+                        let is_binary = matches!(
+                            prev_non_ws,
+                            Some(c) if c.is_ascii_alphanumeric() || matches!(c, b'_' | b')' | b'\'' | b'"')
+                        );
+                        if is_binary {
+                            tier2 = Some((i, 1, InfixOp::Sub));
+                        }
+                    } else if b == b'*' && !expr[..i].trim().is_empty() {
+                        tier3 = Some((i, 1, InfixOp::Mul));
+                    } else if b == b'/' {
+                        tier3 = Some((i, 1, InfixOp::Div));
+                    } else if b == b'%' {
+                        tier3 = Some((i, 1, InfixOp::Mod));
                     }
-                } else if b == b'*' && !expr[..i].trim().is_empty() {
-                    tier3 = Some((i, 1, InfixOp::Mul));
-                } else if b == b'/' {
-                    tier3 = Some((i, 1, InfixOp::Div));
-                } else if b == b'%' {
-                    tier3 = Some((i, 1, InfixOp::Mod));
                 }
             }
             _ => {}
@@ -987,8 +1032,15 @@ pub fn try_eval_scalar_expr(
     if let Some(infix_val) = eval_infix_expr(row, trimmed, udfs)? {
         return Ok(Some(infix_val));
     }
+    if let Some(case_val) = try_eval_case_expr(row, trimmed, udfs)? {
+        return Ok(Some(case_val));
+    }
     if !trimmed.contains('(') || !trimmed.ends_with(')') {
         return Ok(None);
+    }
+
+    if let Some(cast_val) = try_eval_cast_expr(row, trimmed, udfs)? {
+        return Ok(Some(cast_val));
     }
 
     if let Some(tap_val) = try_eval_tap_function(row, trimmed)? {
@@ -1473,4 +1525,282 @@ pub(crate) fn enrich_rows_with_order_aliases(
         *row = Row::new(new_cols, new_vals);
     }
     Ok(())
+}
+
+fn try_eval_cast_expr(
+    row: &Row,
+    trimmed: &str,
+    udfs: Option<&crate::sql::udf::UdfRegistry>,
+) -> Result<Option<Value>> {
+    if !keyword_at(trimmed.as_bytes(), 0, b"CAST") {
+        return Ok(None);
+    }
+    let after_kw = trimmed[4..].trim_start();
+    if !after_kw.starts_with('(') || !after_kw.ends_with(')') {
+        return Ok(None);
+    }
+    let inner = &after_kw[1..after_kw.len() - 1];
+    let bytes = inner.as_bytes();
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut case_depth = 0usize;
+    let mut in_sq = false;
+    let mut in_dq = false;
+    let mut as_pos = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_dq => in_sq = !in_sq,
+            b'"' if !in_sq => in_dq = !in_dq,
+            b'(' if !in_sq && !in_dq => paren_depth += 1,
+            b')' if !in_sq && !in_dq => paren_depth = paren_depth.saturating_sub(1),
+            b'[' if !in_sq && !in_dq => bracket_depth += 1,
+            b']' if !in_sq && !in_dq => bracket_depth = bracket_depth.saturating_sub(1),
+            _ if !in_sq && !in_dq => {
+                if keyword_at(bytes, i, b"CASE") {
+                    case_depth += 1;
+                    i += 4;
+                    continue;
+                } else if keyword_at(bytes, i, b"END") {
+                    case_depth = case_depth.saturating_sub(1);
+                    i += 3;
+                    continue;
+                } else if paren_depth == 0
+                    && bracket_depth == 0
+                    && case_depth == 0
+                    && keyword_at(bytes, i, b"AS")
+                {
+                    as_pos = Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let Some(pos) = as_pos else {
+        return Ok(None);
+    };
+    let lhs_raw = inner[..pos].trim();
+    let target_raw = inner[pos + 2..].trim().to_ascii_uppercase();
+    let val = eval_func_arg(row, lhs_raw, udfs)?;
+    Ok(Some(cast_value_as(val, &target_raw)))
+}
+
+fn cast_value_as(val: Value, target_ty: &str) -> Value {
+    if val.is_null() {
+        return Value::Null;
+    }
+    let base_ty = target_ty
+        .split('(')
+        .next()
+        .unwrap_or(target_ty)
+        .trim()
+        .to_ascii_uppercase();
+    match base_ty.as_str() {
+        "INTEGER" | "INT" | "BIGINT" | "SMALLINT" => match val {
+            Value::Integer(i) => Value::Integer(i),
+            Value::Real(f) => Value::Integer(f as i64),
+            Value::Text(s) => {
+                let t = s.trim();
+                if let Ok(i) = t.parse::<i64>() {
+                    Value::Integer(i)
+                } else if let Ok(f) = t.parse::<f64>() {
+                    Value::Integer(f as i64)
+                } else {
+                    Value::Integer(0)
+                }
+            }
+            Value::Blob(_) | Value::Vector(_) => Value::Integer(0),
+            Value::Null => Value::Null,
+        },
+        "REAL" | "FLOAT" | "DOUBLE" | "NUMERIC" => match val {
+            Value::Real(f) => Value::Real(f),
+            Value::Integer(i) => Value::Real(i as f64),
+            Value::Text(s) => Value::Real(s.trim().parse::<f64>().unwrap_or(0.0)),
+            Value::Blob(_) | Value::Vector(_) => Value::Real(0.0),
+            Value::Null => Value::Null,
+        },
+        "BOOLEAN" | "BOOL" => match val {
+            Value::Integer(i) => Value::Integer(i64::from(i != 0)),
+            Value::Real(f) => Value::Integer(i64::from(f != 0.0)),
+            Value::Text(s) => Value::Integer(i64::from(matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "true" | "1" | "t" | "yes" | "y"
+            ))),
+            Value::Blob(b) => Value::Integer(i64::from(!b.is_empty())),
+            Value::Vector(v) => Value::Integer(i64::from(!v.is_empty())),
+            Value::Null => Value::Null,
+        },
+        "BLOB" => match val {
+            Value::Blob(b) => Value::Blob(b),
+            Value::Text(s) => Value::Blob(s.into_bytes()),
+            other => Value::Blob(other.to_string().into_bytes()),
+        },
+        _ => match val {
+            Value::Text(s) => Value::Text(s),
+            other => Value::Text(other.to_string()),
+        },
+    }
+}
+
+fn try_eval_case_expr(
+    row: &Row,
+    trimmed: &str,
+    udfs: Option<&crate::sql::udf::UdfRegistry>,
+) -> Result<Option<Value>> {
+    let bytes = trimmed.as_bytes();
+    if bytes.len() < 7
+        || !keyword_at(bytes, 0, b"CASE")
+        || !keyword_at(bytes, bytes.len() - 3, b"END")
+    {
+        return Ok(None);
+    }
+
+    // Verify outer CASE ... END wraps the entire expression (case_depth stays > 0 until final END).
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut case_depth = 0usize;
+    let mut in_sq = false;
+    let mut in_dq = false;
+    let mut when_positions = Vec::new();
+    let mut then_positions = Vec::new();
+    let mut else_pos = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_dq => in_sq = !in_sq,
+            b'"' if !in_sq => in_dq = !in_dq,
+            b'(' if !in_sq && !in_dq => paren_depth += 1,
+            b')' if !in_sq && !in_dq => paren_depth = paren_depth.saturating_sub(1),
+            b'[' if !in_sq && !in_dq => bracket_depth += 1,
+            b']' if !in_sq && !in_dq => bracket_depth = bracket_depth.saturating_sub(1),
+            _ if !in_sq && !in_dq => {
+                if keyword_at(bytes, i, b"CASE") {
+                    case_depth += 1;
+                    i += 4;
+                    continue;
+                } else if keyword_at(bytes, i, b"END") {
+                    case_depth = case_depth.saturating_sub(1);
+                    if case_depth == 0 {
+                        if i + 3 != bytes.len() {
+                            return Ok(None);
+                        }
+                        break;
+                    }
+                    i += 3;
+                    continue;
+                } else if case_depth == 1 && paren_depth == 0 && bracket_depth == 0 {
+                    if keyword_at(bytes, i, b"WHEN") {
+                        when_positions.push(i);
+                        i += 4;
+                        continue;
+                    } else if keyword_at(bytes, i, b"THEN") {
+                        then_positions.push(i);
+                        i += 4;
+                        continue;
+                    } else if keyword_at(bytes, i, b"ELSE") {
+                        else_pos = Some(i);
+                        i += 4;
+                        continue;
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if when_positions.is_empty() || when_positions.len() != then_positions.len() {
+        return Ok(None);
+    }
+
+    let operand_raw = trimmed[4..when_positions[0]].trim();
+    let operand_val = if operand_raw.is_empty() {
+        None
+    } else {
+        Some(eval_func_arg(row, operand_raw, udfs)?)
+    };
+
+    let end_kw = bytes.len() - 3;
+    for idx in 0..when_positions.len() {
+        let w_pos = when_positions[idx];
+        let t_pos = then_positions[idx];
+        if t_pos < w_pos + 4 {
+            return Ok(None);
+        }
+        let cond_sql = trimmed[w_pos + 4..t_pos].trim();
+        let next_bound = if idx + 1 < when_positions.len() {
+            when_positions[idx + 1]
+        } else {
+            else_pos.unwrap_or(end_kw)
+        };
+        if next_bound < t_pos + 4 {
+            return Ok(None);
+        }
+        let res_sql = trimmed[t_pos + 4..next_bound].trim();
+
+        let matched = if let Some(ref op_v) = operand_val {
+            let cmp_v = eval_func_arg(row, cond_sql, udfs)?;
+            !op_v.is_null() && matches_condition(op_v, &BinaryOp::Equals, &cmp_v)
+        } else {
+            let toks = crate::sql::lexer::tokenize(cond_sql)?;
+            let mut cur = 0usize;
+            let where_ast = crate::sql::parser::parse_where_expr_public(&toks, &mut cur)?;
+            if cur != toks.len() {
+                return Err(Error::SqlSyntax(format!(
+                    "Unexpected token in CASE WHEN condition: '{cond_sql}'"
+                )));
+            }
+            let resolved = where_expr_to_simple_resolved(&where_ast);
+            row_matches_resolved_with_udf(row, &resolved, udfs)
+        };
+
+        if matched {
+            return eval_func_arg(row, res_sql, udfs).map(Some);
+        }
+    }
+
+    if let Some(ep) = else_pos {
+        let else_sql = trimmed[ep + 4..end_kw].trim();
+        return eval_func_arg(row, else_sql, udfs).map(Some);
+    }
+
+    Ok(Some(Value::Null))
+}
+
+fn where_expr_to_simple_resolved(expr: &crate::sql::parser::WhereExpr) -> ResolvedWhereExpr {
+    use crate::sql::parser::WhereExpr;
+    match expr {
+        WhereExpr::Condition(c) => ResolvedWhereExpr::Condition(c.clone()),
+        WhereExpr::ColumnComparison {
+            left_col,
+            op,
+            right_col,
+        } => ResolvedWhereExpr::ColumnComparison {
+            left_col: left_col.clone(),
+            op: op.clone(),
+            right_col: right_col.clone(),
+        },
+        WhereExpr::InList {
+            column,
+            values,
+            negated,
+        } => ResolvedWhereExpr::InList {
+            column: column.clone(),
+            values: values.clone(),
+            negated: *negated,
+        },
+        WhereExpr::And(l, r) => ResolvedWhereExpr::And(
+            Box::new(where_expr_to_simple_resolved(l)),
+            Box::new(where_expr_to_simple_resolved(r)),
+        ),
+        WhereExpr::Or(l, r) => ResolvedWhereExpr::Or(
+            Box::new(where_expr_to_simple_resolved(l)),
+            Box::new(where_expr_to_simple_resolved(r)),
+        ),
+        WhereExpr::InSubquery { .. }
+        | WhereExpr::Exists { .. }
+        | WhereExpr::ScalarSubqueryComparison { .. }
+        | WhereExpr::SubqueryComparison { .. } => ResolvedWhereExpr::Boolean(false),
+    }
 }

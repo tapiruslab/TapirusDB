@@ -537,6 +537,13 @@ fn http_api_key_sql_rbac_enforces_roles_and_table_allowlists()
         send_sql("rw-orders", "INSERT INTO public_items VALUES (2, 'nope');")
             .starts_with("HTTP/1.1 403 Forbidden")
     );
+    assert!(
+        send_sql(
+            "rw-orders",
+            "UPDATE orders SET total = (SELECT id FROM secrets LIMIT 1) WHERE id = 10;"
+        )
+        .starts_with("HTTP/1.1 403 Forbidden")
+    );
     assert!(send_sql("rw-orders", "DROP TABLE orders;").starts_with("HTTP/1.1 403 Forbidden"));
 
     Ok(())

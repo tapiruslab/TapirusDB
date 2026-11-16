@@ -488,9 +488,46 @@ pub struct VectorSnapshotRecord {
     pub table_fingerprint: Option<u32>,
 }
 
-/// Extract a composite or single-column index value from a row.
-/// Returns `None` if all indexed columns are `NULL` (SQL indexes omit all-NULL tuples).
-/// The boolean indicates whether ALL columns in the key are non-NULL (for SQL UNIQUE checks).
+#[inline]
+fn eval_index_key_component(row: &Row, target: &str) -> Option<Value> {
+    if let Some(val) = row.get_field_or_json_path(target) {
+        return Some(val);
+    }
+    super::eval::eval_projected_expr(row, target, target, None).ok()
+}
+
+/// Normalize an index target expression (single column or scalar expression) for index-planner matching.
+pub(crate) fn normalize_index_expr(expr: &str, table: Option<&str>) -> String {
+    let mut s = super::eval::strip_outer_parens(expr).trim().to_string();
+    if let Some(tbl) = table {
+        let prefix = format!("{}.", tbl.to_ascii_lowercase());
+        if let Ok(toks) = crate::sql::lexer::tokenize(&s) {
+            let mut stripped = Vec::with_capacity(toks.len());
+            let mut i = 0usize;
+            while i < toks.len() {
+                if let crate::sql::lexer::Token::Ident(ref id) = toks[i]
+                    && toks.get(i + 1) == Some(&crate::sql::lexer::Token::Dot)
+                    && id.eq_ignore_ascii_case(tbl)
+                {
+                    i += 2;
+                    continue;
+                }
+                stripped.push(toks[i].clone());
+                i += 1;
+            }
+            let _ = prefix;
+            s = crate::sql::lexer::tokens_to_sql(&stripped);
+        }
+    }
+    s.chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// Extract a composite, expression, or single-column index value from a row.
+/// Returns `None` if all indexed components evaluate to `NULL` (SQL indexes omit all-NULL tuples).
+/// The boolean indicates whether ALL components in the key are non-NULL (for SQL UNIQUE checks).
 pub(crate) fn extract_index_key_value<S: AsRef<str>>(
     row: &Row,
     cols: &[S],
@@ -499,7 +536,7 @@ pub(crate) fn extract_index_key_value<S: AsRef<str>>(
         return None;
     }
     if cols.len() == 1 {
-        let val = row.get_field_or_json_path(cols[0].as_ref())?;
+        let val = eval_index_key_component(row, cols[0].as_ref())?;
         if val.is_null() {
             return None;
         }
@@ -509,9 +546,7 @@ pub(crate) fn extract_index_key_value<S: AsRef<str>>(
     let mut any_non_null = false;
     let mut all_non_null = true;
     for col in cols {
-        let v = row
-            .get_field_or_json_path(col.as_ref())
-            .unwrap_or(Value::Null);
+        let v = eval_index_key_component(row, col.as_ref()).unwrap_or(Value::Null);
         if v.is_null() {
             all_non_null = false;
         } else {

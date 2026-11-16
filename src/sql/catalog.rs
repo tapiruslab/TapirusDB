@@ -306,6 +306,9 @@ pub struct ColumnDef {
     /// Optional inline FOREIGN KEY reference specification
     #[serde(default)]
     pub references: Option<ForeignKeyRef>,
+    /// Optional expression SQL for GENERATED ALWAYS AS (...) columns
+    #[serde(default)]
+    pub generated_expr: Option<String>,
 }
 
 impl ColumnDef {
@@ -320,6 +323,7 @@ impl ColumnDef {
             default_value: None,
             check_expr: None,
             references: None,
+            generated_expr: None,
         }
     }
 
@@ -356,6 +360,12 @@ impl ColumnDef {
     /// Attach a FOREIGN KEY reference to this column
     pub fn with_references(mut self, fk: ForeignKeyRef) -> Self {
         self.references = Some(fk);
+        self
+    }
+
+    /// Mark this column as a GENERATED ALWAYS AS (...) computed column
+    pub fn with_generated(mut self, expr_sql: impl Into<String>) -> Self {
+        self.generated_expr = Some(expr_sql.into());
         self
     }
 }

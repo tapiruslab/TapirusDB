@@ -471,6 +471,7 @@ pub(super) fn authorize_sql_statement_ast(
         }
         Statement::Update {
             table,
+            assignment_exprs,
             where_clause,
             ..
         } => {
@@ -478,6 +479,11 @@ pub(super) fn authorize_sql_statement_ast(
                 return Err("Read-only API key cannot execute UPDATE statements.".to_string());
             }
             check_allowed_table(table, cte_names, allowed_tables)?;
+            for (_, expr) in assignment_exprs {
+                for sub in tapirus::sql::parser::extract_select_scalar_subqueries(expr) {
+                    authorize_sql_statement_ast(&sub, access, cte_names, allowed_tables)?;
+                }
+            }
             if let Some(w) = where_clause {
                 authorize_where_subqueries(w, cte_names, allowed_tables)?;
             }

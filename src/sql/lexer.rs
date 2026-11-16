@@ -92,6 +92,12 @@ pub enum Token {
     Ignore,
     Analyze,
     Pragma,
+    Case,
+    When,
+    Then,
+    Else,
+    End,
+    Cast,
 
     // Window Function Keywords
     Over,
@@ -474,6 +480,12 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
                 "IGNORE" => Token::Ignore,
                 "ANALYZE" => Token::Analyze,
                 "PRAGMA" => Token::Pragma,
+                "CASE" => Token::Case,
+                "WHEN" => Token::When,
+                "THEN" => Token::Then,
+                "ELSE" => Token::Else,
+                "END" => Token::End,
+                "CAST" => Token::Cast,
                 "SAVEPOINT" => Token::Savepoint,
                 "RELEASE" => Token::Release,
                 "RENAME" => Token::Rename,
@@ -598,6 +610,12 @@ pub(crate) fn tokens_to_sql(tokens: &[Token]) -> String {
             Token::Ignore => "IGNORE".to_string(),
             Token::Analyze => "ANALYZE".to_string(),
             Token::Pragma => "PRAGMA".to_string(),
+            Token::Case => "CASE".to_string(),
+            Token::When => "WHEN".to_string(),
+            Token::Then => "THEN".to_string(),
+            Token::Else => "ELSE".to_string(),
+            Token::End => "END".to_string(),
+            Token::Cast => "CAST".to_string(),
             Token::Over => "OVER".to_string(),
             Token::Partition => "PARTITION".to_string(),
             Token::RowNumber => "ROW_NUMBER".to_string(),
@@ -676,6 +694,7 @@ pub(crate) fn tokens_to_sql(tokens: &[Token]) -> String {
                         | Token::Ntile
                         | Token::Lag
                         | Token::Lead
+                        | Token::Cast
                         | Token::Ident(_)
                 )
             ));

@@ -22,12 +22,14 @@ impl SQLExecutor {
         column: &str,
         query_where: Option<&WhereExpr>,
     ) -> Option<IndexDef> {
+        let norm_target = normalize_index_expr(column, Some(table));
         let candidates: Vec<&IndexDef> = self
             .catalog
             .indexes_for_table(table)
             .into_iter()
             .filter(|idx| {
-                idx.column.eq_ignore_ascii_case(column)
+                (idx.column.eq_ignore_ascii_case(column)
+                    || normalize_index_expr(&idx.column, Some(table)) == norm_target)
                     && partial_index_matches_query(idx, query_where)
             })
             .collect();
@@ -618,6 +620,7 @@ impl SQLExecutor {
                                         pager,
                                         child_def.name.clone(),
                                         assignments.clone(),
+                                        Vec::new(),
                                         Some(cond),
                                         None,
                                     )
@@ -711,6 +714,7 @@ impl SQLExecutor {
                                 pager,
                                 child_def.name.clone(),
                                 assignments,
+                                Vec::new(),
                                 Some(cond),
                                 None,
                             )

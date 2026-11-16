@@ -140,7 +140,14 @@ LIMIT 50 OFFSET 0;
 
 **Supported `WHERE` predicates:** `=`, `!=` / `<>`, `<`, `<=`, `>`, `>=`, column-to-column comparisons (`e.age > e.min_age`), scalar subquery comparisons (`col <op> (SELECT ...)` and `(SELECT ...) <op> val_or_col`), `AND`, `OR`, `[NOT] IN (...)`, `[NOT] IN (SELECT ...)`, `[NOT] EXISTS (SELECT ...)` (including correlated subqueries referencing outer columns), `LIKE`, `IS NULL`, `IS NOT NULL`, `BETWEEN ... AND ...`.
 
-**Supported infix expressions in projections:** `+`, `-`, `*`, `/`, `%`, string concatenation `||`, parentheses `(...)`, and scalar subqueries `(SELECT ...)` (0 rows -> `NULL`, >1 row -> runtime error).
+**Supported scalar & conditional expressions in projections, `CHECK`, generated columns, `UPDATE SET`, and `WHERE`:**
+- Infix arithmetic (`+`, `-`, `*`, `/`, `%`), string concatenation `||`, parentheses `(...)`
+- Conditional branching: `CASE [expr] WHEN cond_or_val THEN res [...] [ELSE fallback] END`
+- Explicit type casting: `CAST(expr AS INTEGER|INT|REAL|FLOAT|TEXT|VARCHAR|BOOLEAN|BLOB)`
+- Scalar subqueries `(SELECT ...)` (0 rows -> `NULL`, >1 row -> runtime error)
+- Expression indexes: `CREATE [UNIQUE] INDEX idx ON tbl (LOWER(email)) [WHERE ...]`
+- Generated columns: `col TYPE [GENERATED ALWAYS] AS (expr) [STORED|VIRTUAL]` (computed automatically on `INSERT`, `ON CONFLICT DO UPDATE`, `UPDATE`, and `ALTER TABLE ADD COLUMN`)
+- Computed `UPDATE SET`: `UPDATE orders SET price = price * 1.1, tier = (SELECT label FROM tiers WHERE id = orders.tier_id) WHERE id = 1;`
 
 ### Joins, Correlated Subqueries & Derived Subqueries
 ```sql

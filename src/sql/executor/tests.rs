@@ -1378,3 +1378,174 @@ fn test_executor_multi_column_order_by_and_scalar_subqueries() {
         "DROP TABLE depts must fail FK check while staff references it"
     );
 }
+
+#[test]
+fn test_executor_phase7_case_cast_generated_expr_index_and_update_subqueries() {
+    let mut pager = Pager::open_in_memory(4096, 256).expect("Pager open");
+    let mut executor = SQLExecutor::new(&mut pager).expect("Init executor");
+
+    // 1. GENERATED ALWAYS AS (...) columns + CHECK / NOT NULL + CAST + CASE
+    for ddl in [
+        "CREATE TABLE tiers (id INTEGER PRIMARY KEY, label TEXT, bonus REAL);",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, tier_id INTEGER, price REAL NOT NULL, qty INTEGER NOT NULL, total REAL GENERATED ALWAYS AS (price * qty) STORED, kind TEXT AS (CASE WHEN qty >= 5 THEN 'bulk' ELSE 'single' END) VIRTUAL, tier_note TEXT);",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);",
+        "CREATE UNIQUE INDEX idx_users_lower_email ON users (LOWER(email));",
+    ] {
+        executor
+            .execute(&mut pager, parse_sql(ddl).unwrap())
+            .unwrap();
+    }
+
+    for ins in [
+        "INSERT INTO tiers VALUES (1, 'gold', 2.0), (2, 'silver', 1.0);",
+        "INSERT INTO orders (id, tier_id, price, qty, tier_note) VALUES (1, 1, 10.0, 2, 'init'), (2, 2, 5.0, 6, 'init');",
+        "INSERT INTO orders VALUES (3, 1, 8.0, 5, 'positional');",
+        "INSERT INTO users VALUES (1, 'Alice@Tapirus.DB'), (2, 'Bob@Tapirus.DB');",
+    ] {
+        executor
+            .execute(&mut pager, parse_sql(ins).unwrap())
+            .unwrap();
+    }
+
+    // Direct writes to generated columns must fail cleanly on INSERT and UPDATE
+    assert!(
+        executor
+            .execute(
+                &mut pager,
+                parse_sql("INSERT INTO orders (id, tier_id, price, qty, total) VALUES (9, 1, 1.0, 1, 99.0);").unwrap()
+            )
+            .is_err()
+    );
+    assert!(
+        executor
+            .execute(
+                &mut pager,
+                parse_sql("UPDATE orders SET total = 999.0 WHERE id = 1;").unwrap()
+            )
+            .is_err()
+    );
+
+    // 2. CASE (searched & simple), CAST, and computed generated columns
+    let rows = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT id, total, kind, CASE tier_id WHEN 1 THEN 'vip' ELSE 'std' END AS grp, CAST(total AS INTEGER) AS total_int, CASE WHEN total >= 40.0 THEN 'high' ELSE 'normal' END AS band FROM orders ORDER BY id ASC;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].get::<f64>("total").unwrap(), 20.0);
+    assert_eq!(rows[0].get::<String>("kind").unwrap(), "single");
+    assert_eq!(rows[0].get::<String>("grp").unwrap(), "vip");
+    assert_eq!(rows[0].get::<i64>("total_int").unwrap(), 20);
+    assert_eq!(rows[0].get::<String>("band").unwrap(), "normal");
+
+    assert_eq!(rows[1].get::<f64>("total").unwrap(), 30.0);
+    assert_eq!(rows[1].get::<String>("kind").unwrap(), "bulk");
+    assert_eq!(rows[2].get::<f64>("total").unwrap(), 40.0);
+    assert_eq!(rows[2].get::<String>("band").unwrap(), "high");
+
+    // 3. Expression index UNIQUE enforcement & lookup + EXPLAIN USING INDEX
+    assert!(
+        executor
+            .execute(
+                &mut pager,
+                parse_sql("INSERT INTO users VALUES (3, 'alice@tapirus.db');").unwrap()
+            )
+            .is_err(),
+        "UNIQUE expression index on LOWER(email) must reject case-variant duplicates"
+    );
+    let user_hit = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT id, email FROM users WHERE LOWER(email) = 'alice@tapirus.db';")
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(user_hit.len(), 1);
+    assert_eq!(user_hit[0].get::<i64>("id").unwrap(), 1);
+
+    let explain = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "EXPLAIN QUERY PLAN SELECT id FROM users WHERE LOWER(email) = 'alice@tapirus.db';",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(
+        explain.iter().any(|r| r
+            .get::<String>("detail")
+            .unwrap_or_default()
+            .contains("USING INDEX idx_users_lower_email")),
+        "EXPLAIN must choose expression index: {explain:?}"
+    );
+
+    // 4. UPDATE with scalar expression + correlated scalar subquery + recomputed generated columns + expression index maintenance
+    executor
+        .execute(
+            &mut pager,
+            parse_sql(
+                "UPDATE orders SET price = price + CAST(2 AS REAL), qty = 5, tier_note = (SELECT label FROM tiers t WHERE t.id = orders.tier_id) WHERE id = 1;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let updated = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT price, qty, total, kind, tier_note FROM orders WHERE id = 1;")
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(updated[0].get::<f64>("price").unwrap(), 12.0);
+    assert_eq!(updated[0].get::<i64>("qty").unwrap(), 5);
+    assert_eq!(updated[0].get::<f64>("total").unwrap(), 60.0);
+    assert_eq!(updated[0].get::<String>("kind").unwrap(), "bulk");
+    assert_eq!(updated[0].get::<String>("tier_note").unwrap(), "gold");
+
+    executor
+        .execute(
+            &mut pager,
+            parse_sql("UPDATE users SET email = 'Alice.New@Tapirus.DB' WHERE id = 1;").unwrap(),
+        )
+        .unwrap();
+    assert!(
+        executor
+            .query(
+                &mut pager,
+                parse_sql("SELECT id FROM users WHERE LOWER(email) = 'alice@tapirus.db';").unwrap()
+            )
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        executor
+            .query(
+                &mut pager,
+                parse_sql("SELECT id FROM users WHERE LOWER(email) = 'alice.new@tapirus.db';")
+                    .unwrap()
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // 5. ALTER TABLE ADD COLUMN ... GENERATED ALWAYS AS (...) backfills existing rows
+    executor
+        .execute(
+            &mut pager,
+            parse_sql("ALTER TABLE orders ADD COLUMN doubled_total REAL GENERATED ALWAYS AS (total * 2) STORED;").unwrap(),
+        )
+        .unwrap();
+    let alter_check = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT doubled_total FROM orders WHERE id = 1;").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(alter_check[0].get::<f64>("doubled_total").unwrap(), 120.0);
+}
