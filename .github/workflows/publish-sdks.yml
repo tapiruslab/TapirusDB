@@ -58,12 +58,12 @@ jobs:
           python scripts/check-release-version.py --tag "$TAG"
           # Release Pre-built Binaries runs in parallel on v* tags; wait up to 20 min for it to finalize.
           for attempt in $(seq 1 80); do
-            draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .draft 2>/dev/null || true)"
+            draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || true)"
             if [ "$draft" = false ]; then
               echo "Verified public GitHub release for $TAG"
               exit 0
             fi
-            echo "Waiting for non-draft GitHub release for $TAG (attempt $attempt/80, draft='$draft')..."
+            echo "Waiting for non-draft GitHub release for $TAG (attempt $attempt/80, isDraft='$draft')..."
             sleep 15
           done
           echo 'SDK publication requires a completed public GitHub release.' >&2

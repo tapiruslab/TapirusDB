@@ -72,6 +72,10 @@ for file, pattern in [("install.ps1", r"\$Version = '([^']+)'"), ("install.sh", 
         raise SystemExit(f'{file}: installer default does not match engine {expected}')
 reference = os.environ.get("GITHUB_REF", "")
 tag = args.tag or (reference.removeprefix("refs/tags/") if reference.startswith("refs/tags/") else None)
-if tag and tag != f"v{expected}":
-    raise SystemExit(f'Release tag {tag} does not match v{expected}')
+if tag:
+    if tag != f"v{expected}":
+        raise SystemExit(f'Release tag {tag} does not match v{expected}')
+    notes = root / "docs" / "releases" / f"{tag}.md"
+    if not notes.is_file() or not notes.read_text(encoding="utf-8").strip():
+        raise SystemExit(f'Release tag {tag} requires non-empty release notes at docs/releases/{tag}.md')
 print(f'Engine, workspace SDKs, npm packages and installer defaults agree on {expected}')

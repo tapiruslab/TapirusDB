@@ -1,6 +1,6 @@
 # TapirusDB Language SDKs & Bindings
 
-TapirusDB provides native in-process bindings, WebAssembly packages (`@tapirus/wasm` & `@tapirus/wasm-lite`), C-ABI compatibility shims, and authenticated HTTP/TLS daemon clients across major languages, all sharing the interoperable `.tapir` database format (`v1.2.0`).
+TapirusDB provides native in-process bindings, WebAssembly packages (`@tapirus/wasm` & `@tapirus/wasm-lite`), C-ABI compatibility shims, and authenticated HTTP/TLS daemon clients across major languages, all sharing the interoperable `.tapir` database format (`v1.2.1`).
 
 | Language / Runtime | Source Path | Architecture & Capabilities |
 | --- | --- | --- |

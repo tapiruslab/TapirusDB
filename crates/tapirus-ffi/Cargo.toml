@@ -1,6 +1,6 @@
 [package]
 name = "tapirus-ffi"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 rust-version = "1.88"
 authors = ["TapirusDB Contributors <contact@tapirusdb.com>"]
@@ -13,5 +13,5 @@ name = "tapirus"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-tapirus = { version = "1.2.0", path = "../.." }
+tapirus = { version = "1.2.1", path = "../.." }
 serde_json = "1.0"

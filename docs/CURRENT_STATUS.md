@@ -5,8 +5,8 @@ Updated: **16 November 2026**.
 ## Source & Release Baseline
 
 - **Current source branch:** [main branch](https://github.com/tapiruslab/TapirusDB/tree/main)
-- **Current version:** `1.2.0` across the Rust workspace, CLI binaries, C FFI (`tapirus-ffi`), WebAssembly (`@tapirus/wasm` & `@tapirus/wasm-lite`), bare-metal (`tapirus-micro`), Python SDK (`sdks/python`), and Node.js SDK (`sdks/nodejs`).
-- **Latest release tag:** [v1.2.0](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.2.0)
+- **Current version:** `1.2.1` across the Rust workspace, CLI binaries, C FFI (`tapirus-ffi`), WebAssembly (`@tapirus/wasm` & `@tapirus/wasm-lite`), bare-metal (`tapirus-micro`), Python SDK (`sdks/python`), and Node.js SDK (`sdks/nodejs`).
+- **Latest release tag:** [v1.2.1](https://github.com/tapiruslab/TapirusDB/releases/tag/v1.2.1)
 - **Rust MSRV:** `1.88+` (enforced by CI `msrv` job on `1.88.0`).
 
 ## Distribution Matrix
@@ -26,6 +26,6 @@ Updated: **16 November 2026**.
 - **Dependency Advisory Gate:** `python scripts/check-dependency-advisories.py` checks `223` `Cargo.lock` registry packages against OSV (`0` active production advisories; `chacha20poly1305 0.11.0`, `ctutils 0.4.8`, `sha2 0.11.1`). A single `development-only` dev-dependency entry (`libsqlite3-sys 0.30.1`, `RUSTSEC-2026-0459`) exists strictly in the benchmark comparison harness and is excluded from production builds (`release_blocking: false`).
 - **Browser & Native Encryption:** Both native engines and WASM (`@tapirus/wasm` & `@tapirus/wasm-lite`) provide 256-bit XChaCha20-Poly1305 page AEAD encryption, PBKDF2-HMAC-SHA256 derivation, Page 1 header AEAD AAD authentication, and `Zeroize` key scrubbing on non-`Clone` `DatabaseCipher`.
 - **Formal WAL Verification:** `docs/formal_verification/TAPIRUS_WAL.tla` passes exhaustive **TLC2** model checking in CI (`552,520` generated states, `120,535` distinct states, `0` invariant violations).
-- **External Audit Scope Pack:** `docs/security/EXTERNAL_AUDIT_RFP.md` defines the third-party cryptographic and daemon audit scope (`v1.2.0` / `main`).
+- **External Audit Scope Pack:** `docs/security/EXTERNAL_AUDIT_RFP.md` defines the third-party cryptographic and daemon audit scope (`v1.2.1` / `main`).
 
 See [SECURITY.md](../SECURITY.md), [Security Architecture & Threat Model](security/SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md), [Release Validation](RELEASE_VALIDATION.md), and [Stack Support](STACK_SUPPORT.md) for full details.

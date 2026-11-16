@@ -57,7 +57,7 @@ When commissioning an external audit firm (e.g., Trail of Bits, NCC Group, Quark
 
 ## 4. Commissioning & Publishing an External Audit Report
 
-See [`EXTERNAL_AUDIT_RFP.md`](EXTERNAL_AUDIT_RFP.md) for the `v1.2.0+` external firm scope pack and reproducible verification commands.
+See [`EXTERNAL_AUDIT_RFP.md`](EXTERNAL_AUDIT_RFP.md) for the `v1.2.1` external firm scope pack and reproducible verification commands.
 
 Once an external audit completes:
 1. Place the auditor's signed PDF/Markdown report under `docs/security/reports/<YYYY>-<firm>-report.pdf` (with SHA-256 checksum).

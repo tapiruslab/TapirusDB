@@ -1,4 +1,4 @@
-# TapirusDB v1.2.0+ — Independent Third-Party Security Audit RFP & Evidence Pack
+# TapirusDB v1.2.1 — Independent Third-Party Security Audit RFP & Evidence Pack
 
 > **Honest Status Notice:**
 > This file is a maintainer-prepared **Request for Proposal (RFP) & Audit Scope Brief** to commission an independent third-party security audit firm (for example: Trail of Bits, NCC Group, Quarkslab, Cure53, or Include Security).
@@ -9,15 +9,15 @@
 ## 1. Engagement Overview
 
 - **Target Repository:** `https://github.com/tapiruslab/TapirusDB`
-- **Target Release Baseline:** `v1.2.0` (`ea6e0cd`) + `main` (Phases 1–9, MSRV Rust `1.88+`)
+- **Target Release Baseline:** `v1.2.1` (Phases 1–9, MSRV Rust `1.88+`)
 - **Primary Architecture Reference:** [`SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md`](SECURITY_ARCHITECTURE_AND_THREAT_MODEL.md)
 - **Safety Invariant:** `#![forbid(unsafe_code)]` across `src/` (`tapirus` core crate & CLI daemon); explicit FFI `unsafe` isolated to `crates/tapirus-ffi/`
 
 ---
 
-## 2. In-Scope Attack Surfaces for v1.2.0+
+## 2. In-Scope Attack Surfaces for v1.2.1
 
-Auditors should review the entire storage, cryptography, daemon, and WebAssembly surface, paying close attention to the `v1.1.0`–`v1.2.0+` additions:
+Auditors should review the entire storage, cryptography, daemon, and WebAssembly surface, paying close attention to the `v1.1.0`–`v1.2.1` additions:
 
 1. **Cryptography, AEAD Framing & Zeroization (`src/crypto/mod.rs`, `src/pager/`)**
    - Page-level XChaCha20-Poly1305 (256-bit key, 24-byte `getrandom` nonce, 16-byte tag)
@@ -47,7 +47,7 @@ cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets --all-features --offline -- -D warnings
 cargo test --locked --workspace --offline
 python scripts/check-dependency-advisories.py
-python scripts/check-release-version.py --tag v1.2.0
+python scripts/check-release-version.py --tag v1.2.1
 ```
 
 Formal WAL crash-safety specification (checked in CI `formal-verification` job):
@@ -57,7 +57,7 @@ Formal WAL crash-safety specification (checked in CI `formal-verification` job):
 
 ## 4. Expected Deliverables Upon Engagement
 
-1. Signed PDF security assessment report (placed under `docs/security/reports/<YYYY>-<firm>-v1.2.0.pdf` alongside `.sha256`).
+1. Signed PDF security assessment report (placed under `docs/security/reports/<YYYY>-<firm>-v1.2.1.pdf` alongside `.sha256`).
 2. Severity-classified findings (Critical / High / Medium / Low / Informational) mapped to audited commit SHA and remediations.
 3. Public attestation summary linked in `SECURITY.md` and `docs/RELEASE_VALIDATION.md`.
 

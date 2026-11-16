@@ -1,6 +1,6 @@
 # Release Validation & Verification Summary
 
-Updated: **16 November 2026** (Source version **`1.2.0`**, MSRV **Rust `1.88+`**).
+Updated: **16 November 2026** (Source version **`1.2.1`**, MSRV **Rust `1.88+`**).
 
 ## Core Verification Gate
 
