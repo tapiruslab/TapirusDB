@@ -232,6 +232,13 @@ pub enum OnConflict {
     Ignore,
     /// Update specific columns on conflict (UPSERT: ON CONFLICT DO UPDATE SET ...)
     DoUpdate(Vec<(String, Value)>),
+    /// Update specific columns on conflict with scalar / `EXCLUDED.<col>` expressions
+    DoUpdateExprs {
+        /// Plain literal assignments
+        values: Vec<(String, Value)>,
+        /// Scalar expression assignments (including `EXCLUDED.col`)
+        exprs: Vec<(String, String)>,
+    },
 }
 
 /// Abstract Syntax Tree (AST) representing an executable statement in TapirusDB
@@ -370,14 +377,20 @@ pub enum Statement {
         /// Main outer query executed with CTE results available
         main_query: Box<Statement>,
     },
-    /// Compound SELECT combined via UNION / UNION ALL
+    /// Compound SELECT combined via UNION / UNION ALL / INTERSECT / EXCEPT
     Compound {
         /// Left-hand SELECT statement
         left: Box<Statement>,
-        /// Set operation (`UNION` or `UNION ALL`)
+        /// Set operation (`UNION`, `UNION ALL`, `INTERSECT`, or `EXCEPT`)
         op: SetOperation,
         /// Right-hand SELECT statement
         right: Box<Statement>,
+        /// Optional ORDER BY applied to the combined compound result set
+        order_by: Vec<OrderByClause>,
+        /// Optional LIMIT applied after combining & sorting
+        limit: Option<usize>,
+        /// Optional OFFSET applied after combining & sorting
+        offset: Option<usize>,
     },
     /// GRAPH SHORTEST_PATH FROM start_id TO end_id
     GraphShortestPath {
@@ -2056,18 +2069,37 @@ fn parse_insert(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
                 *cursor += 1;
                 expect_token(tokens, cursor, &Token::Set)?;
                 let mut updates = Vec::new();
+                let mut exprs = Vec::new();
                 while *cursor < tokens.len() {
                     let col = parse_identifier_or_keyword(tokens, cursor)?;
                     expect_token(tokens, cursor, &Token::Equals)?;
-                    let val = parse_value_literal(tokens, cursor)?;
-                    updates.push((col, val));
+                    let mut try_cur = *cursor;
+                    if let Ok(val) = parse_value_literal(tokens, &mut try_cur)
+                        && matches!(
+                            tokens.get(try_cur),
+                            None | Some(Token::Comma | Token::Returning | Token::Semicolon)
+                        )
+                    {
+                        *cursor = try_cur;
+                        updates.push((col, val));
+                    } else {
+                        let expr_sql = parse_column_expr_no_alias(tokens, cursor)?;
+                        exprs.push((col, expr_sql));
+                    }
                     if check_token(tokens, *cursor, &Token::Comma) {
                         *cursor += 1;
                     } else {
                         break;
                     }
                 }
-                conflict_action = OnConflict::DoUpdate(updates);
+                conflict_action = if exprs.is_empty() {
+                    OnConflict::DoUpdate(updates)
+                } else {
+                    OnConflict::DoUpdateExprs {
+                        values: updates,
+                        exprs,
+                    }
+                };
             }
         }
     }
@@ -2505,6 +2537,21 @@ fn parse_column_primary(tokens: &[Token], cursor: &mut usize) -> Result<String> 
             }
             expect_token(tokens, cursor, &Token::CloseParen)?;
             format!("{func_name}({})", args.join(", "))
+        }
+        Token::Ident(id)
+            if id.eq_ignore_ascii_case("CURRENT_DATE")
+                || id.eq_ignore_ascii_case("CURRENT_TIME")
+                || id.eq_ignore_ascii_case("CURRENT_TIMESTAMP") =>
+        {
+            let res = if id.eq_ignore_ascii_case("CURRENT_DATE") {
+                "DATE('now')"
+            } else if id.eq_ignore_ascii_case("CURRENT_TIME") {
+                "TIME('now')"
+            } else {
+                "DATETIME('now')"
+            };
+            *cursor += 1;
+            res.to_string()
         }
         _ => parse_column_ident(tokens, cursor)?,
     };
@@ -3012,11 +3059,23 @@ fn parse_compound_select(tokens: &[Token], cursor: &mut usize) -> Result<Stateme
         if !check_token(tokens, *cursor, &Token::Select) {
             return Err(Error::SqlSyntax(format!("Expected SELECT after {op:?}")));
         }
-        let right = parse_select(tokens, cursor)?;
+        let mut right = parse_select(tokens, cursor)?;
+        let (order_by, limit, offset) = match &mut right {
+            Statement::Select {
+                order_by,
+                limit,
+                offset,
+                ..
+            } => (std::mem::take(order_by), limit.take(), offset.take()),
+            _ => (Vec::new(), None, None),
+        };
         stmt = Statement::Compound {
             left: Box::new(stmt),
             op,
             right: Box::new(right),
+            order_by,
+            limit,
+            offset,
         };
     }
     Ok(stmt)
@@ -3644,7 +3703,7 @@ fn parse_create_view(tokens: &[Token], cursor: &mut usize) -> Result<Statement> 
     expect_token(tokens, cursor, &Token::As)?;
 
     let query_start = *cursor;
-    let query_stmt = parse_select(tokens, cursor)?;
+    let query_stmt = parse_compound_select(tokens, cursor)?;
     let query_sql = tokens_to_sql(&tokens[query_start..*cursor]);
 
     Ok(Statement::CreateView {
@@ -5271,7 +5330,7 @@ mod tests {
     fn test_parse_phase8_intersect_except_cross_join_and_iif() {
         let inter_sql = "SELECT id FROM a INTERSECT SELECT id FROM b EXCEPT SELECT id FROM c;";
         match parse_sql(inter_sql).expect("Parse INTERSECT / EXCEPT") {
-            Statement::Compound { left, op, right: _ } => {
+            Statement::Compound { left, op, .. } => {
                 assert_eq!(op, SetOperation::Except);
                 match *left {
                     Statement::Compound { op: left_op, .. } => {
@@ -5314,6 +5373,59 @@ mod tests {
                 assert_eq!(columns.len(), 2);
                 assert!(columns[0].starts_with("IIF("));
                 assert!(columns[1].starts_with("REPLACE("));
+            }
+            other => panic!("Expected Select, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_phase9_compound_order_excluded_and_datetime() {
+        let upsert_sql = "INSERT INTO items VALUES (1, 'a', 5) ON CONFLICT (id) DO UPDATE SET tag = 'fixed', hits = hits + EXCLUDED.hits RETURNING id;";
+        match parse_sql(upsert_sql).expect("Parse ON CONFLICT DO UPDATE with EXCLUDED expr") {
+            Statement::Insert {
+                conflict_action: OnConflict::DoUpdateExprs { values, exprs },
+                returning,
+                ..
+            } => {
+                assert_eq!(
+                    values,
+                    vec![("tag".to_string(), Value::Text("fixed".into()))]
+                );
+                assert_eq!(
+                    exprs,
+                    vec![("hits".to_string(), "hits + EXCLUDED.hits".to_string())]
+                );
+                assert_eq!(returning, Some(vec!["id".to_string()]));
+            }
+            other => panic!("Expected Insert with DoUpdateExprs, got {other:?}"),
+        }
+
+        let compound_sql =
+            "SELECT v FROM t1 UNION SELECT v FROM t2 ORDER BY v DESC LIMIT 5 OFFSET 1;";
+        match parse_sql(compound_sql).expect("Parse compound ORDER BY/LIMIT/OFFSET") {
+            Statement::Compound {
+                op,
+                order_by,
+                limit,
+                offset,
+                ..
+            } => {
+                assert_eq!(op, SetOperation::Union);
+                assert_eq!(order_by.len(), 1);
+                assert_eq!(order_by[0].column, "v");
+                assert!(!order_by[0].is_ascending);
+                assert_eq!(limit, Some(5));
+                assert_eq!(offset, Some(1));
+            }
+            other => panic!("Expected Compound, got {other:?}"),
+        }
+
+        let dt_sql = "SELECT DATE('2026-11-16', '+1 day'), CURRENT_DATE, CURRENT_TIMESTAMP;";
+        match parse_sql(dt_sql).expect("Parse date functions and CURRENT_DATE") {
+            Statement::Select { columns, .. } => {
+                assert_eq!(columns.len(), 3);
+                assert_eq!(columns[1], "DATE('now')");
+                assert_eq!(columns[2], "DATETIME('now')");
             }
             other => panic!("Expected Select, got {other:?}"),
         }

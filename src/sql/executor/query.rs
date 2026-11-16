@@ -73,10 +73,18 @@ impl SQLExecutor {
             Statement::WithCte { ctes, main_query } => {
                 self.query_with_cte(pager, ctes, *main_query)
             }
-            Statement::Compound { left, op, right } => {
+            Statement::Compound {
+                left,
+                op,
+                right,
+                order_by,
+                limit,
+                offset,
+            } => {
                 let mut left_rows = self.query(pager, *left)?;
                 let right_rows = self.query(pager, *right)?;
                 combine_compound_rows(&mut left_rows, right_rows, op);
+                finalize_compound_rows(&mut left_rows, &order_by, limit, offset);
                 Ok(left_rows)
             }
             Statement::ExternalScan { func, path, arg } => {

@@ -755,22 +755,61 @@ impl SQLExecutor {
                     self.close_temporal_version(pager, &table, row_id, now_ts)?;
                     self.btree.delete(pager, root_page, row_id)?;
                 }
-                OnConflict::DoUpdate(updates) => {
+                OnConflict::DoUpdate(_) | OnConflict::DoUpdateExprs { .. } => {
+                    let (updates, exprs) = match conflict_action {
+                        OnConflict::DoUpdate(u) => (u, Vec::new()),
+                        OnConflict::DoUpdateExprs { values, exprs } => (values, exprs),
+                        _ => unreachable!(),
+                    };
                     let old_row = decode_row(&existing_payload, &all_col_names)?;
                     let mut values: Vec<Value> = old_row.values().to_vec();
-                    for (col_name, new_val) in updates {
-                        if let Some(col_idx) = table_cols
-                            .iter()
-                            .position(|c| c.name.eq_ignore_ascii_case(&col_name))
-                            && col_idx < values.len()
+                    let eval_row = if !exprs.is_empty() {
+                        let mut eval_cols = Vec::with_capacity(all_col_names.len() * 2);
+                        let mut eval_vals = Vec::with_capacity(all_col_names.len() * 2);
+                        for (col_name, old_val) in all_col_names.iter().zip(old_row.values().iter())
                         {
-                            if table_cols[col_idx].generated_expr.is_some() {
-                                return Err(Error::ConstraintViolation(format!(
-                                    "Cannot explicitly update generated column '{table}.{}'",
-                                    table_cols[col_idx].name
-                                )));
+                            eval_cols.push(format!("{table}.{col_name}"));
+                            eval_vals.push(old_val.clone());
+                        }
+                        for (col_name, new_val) in
+                            all_col_names.iter().zip(candidate_row.values().iter())
+                        {
+                            eval_cols.push(format!("EXCLUDED.{col_name}"));
+                            eval_vals.push(new_val.clone());
+                        }
+                        Some(Row::new(eval_cols, eval_vals))
+                    } else {
+                        None
+                    };
+                    let apply_col_assignment =
+                        |col_name: &str, new_val: Value, vals: &mut Vec<Value>| -> Result<()> {
+                            if let Some(col_idx) = table_cols
+                                .iter()
+                                .position(|c| c.name.eq_ignore_ascii_case(col_name))
+                                && col_idx < vals.len()
+                            {
+                                if table_cols[col_idx].generated_expr.is_some() {
+                                    return Err(Error::ConstraintViolation(format!(
+                                        "Cannot explicitly update generated column '{table}.{}'",
+                                        table_cols[col_idx].name
+                                    )));
+                                }
+                                vals[col_idx] = new_val;
                             }
-                            values[col_idx] = new_val;
+                            Ok(())
+                        };
+                    for (col_name, new_val) in updates {
+                        apply_col_assignment(&col_name, new_val, &mut values)?;
+                    }
+                    if let Some(ref erow) = eval_row {
+                        for (col_name, expr_sql) in exprs {
+                            let computed = eval_projected_expr(
+                                erow,
+                                &expr_sql,
+                                &expr_sql,
+                                Some(&self.udf_registry),
+                            )?;
+                            apply_col_assignment(&col_name, computed, &mut values)?;
                         }
                     }
                     for (col_idx, col_def) in table_cols.iter().enumerate() {

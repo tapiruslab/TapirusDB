@@ -821,6 +821,27 @@ pub(crate) fn combine_compound_rows(
     }
 }
 
+pub(crate) fn finalize_compound_rows(
+    rows: &mut Vec<Row>,
+    order_by: &[crate::sql::parser::OrderByClause],
+    limit: Option<usize>,
+    offset: Option<usize>,
+) {
+    if !order_by.is_empty() {
+        rows.sort_by(|a, b| super::eval::compare_rows_by_order(a, b, order_by));
+    }
+    if let Some(off) = offset {
+        if off < rows.len() {
+            *rows = rows.split_off(off);
+        } else {
+            rows.clear();
+        }
+    }
+    if let Some(lim) = limit {
+        rows.truncate(lim);
+    }
+}
+
 pub(crate) fn apply_cte_column_names(rows: Vec<Row>, explicit_cols: Option<&[String]>) -> Vec<Row> {
     let Some(cols) = explicit_cols else {
         return rows;
@@ -2076,7 +2097,14 @@ pub(crate) fn substitute_outer_statement(
             }
             Some(cloned)
         }
-        Statement::Compound { left, right, op } => {
+        Statement::Compound {
+            left,
+            right,
+            op,
+            order_by,
+            limit,
+            offset,
+        } => {
             let l_sub = substitute_outer_statement(left, outer_row, outer_tables, catalog);
             let r_sub = substitute_outer_statement(right, outer_row, outer_tables, catalog);
             match (l_sub, r_sub) {
@@ -2086,6 +2114,9 @@ pub(crate) fn substitute_outer_statement(
                     left: Box::new(l),
                     right: Box::new(r),
                     op: *op,
+                    order_by: order_by.clone(),
+                    limit: *limit,
+                    offset: *offset,
                 }),
             }
         }

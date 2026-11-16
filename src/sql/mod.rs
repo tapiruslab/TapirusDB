@@ -2,6 +2,7 @@
 
 pub mod catalog;
 pub mod codec;
+pub mod datetime;
 pub mod executor;
 pub mod lexer;
 pub mod parser;

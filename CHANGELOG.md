@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- `ON CONFLICT DO UPDATE SET` expression and `EXCLUDED.<col>` evaluation (`OnConflict::DoUpdateExprs`, e.g. `hits = hits + EXCLUDED.hits`), evaluating against `(existing_row, EXCLUDED)` before type coercion, generated-column recomputation, constraints, FK cascades, and index maintenance.
+- Compound query (`UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`) trailing `ORDER BY`, `LIMIT`, and `OFFSET` execution (`finalize_compound_rows`) and compound query definitions in `CREATE VIEW`.
+- Pure Safe-Rust SQLite date & time built-ins in `src/sql/datetime.rs` (`DATE`, `TIME`, `DATETIME`, `STRFTIME`, `UNIXEPOCH`, `JULIANDAY`, `'now'`, `'unixepoch'`, `'start of day|month|year'`, `±N` unit modifiers) plus `CURRENT_DATE`, `CURRENT_TIME`, and `CURRENT_TIMESTAMP` expressions.
+
 ## [1.2.0] - 2026-11-16
 
 ### Added

@@ -30,6 +30,7 @@ This guide is designed so **any developer**—whether coming from SQLite/Postgre
 ## 2. Data Types & Table DDL
 
 ### Column Data Types
+
 - `INTEGER` — 64-bit signed integer (`i64`)
 - `REAL` — 64-bit IEEE float (`f64`)
 - `TEXT` — UTF-8 string (also stores JSON objects/arrays queried via `->>`)
@@ -37,6 +38,7 @@ This guide is designed so **any developer**—whether coming from SQLite/Postgre
 - `VECTOR(D)` — fixed-dimension dense `f32` vector (e.g., `VECTOR(384)`, `VECTOR(1536)`)
 
 ### `CREATE TABLE`, Constraints & Views
+
 ```sql
 CREATE TABLE IF NOT EXISTS employees (
     id INTEGER PRIMARY KEY,
@@ -62,6 +64,7 @@ DROP VIEW IF EXISTS senior_staff;
 ```
 
 ### `ALTER TABLE` & `DROP TABLE`
+
 ```sql
 ALTER TABLE employees ADD COLUMN phone TEXT;
 ALTER TABLE employees RENAME COLUMN phone TO mobile;
@@ -75,6 +78,7 @@ DROP TABLE IF EXISTS staff;
 ## 3. Writing Data (`INSERT`, `UPDATE`, `DELETE`) & Transactions
 
 ### Single-Row, Multi-Row Batch & Conflict Resolution
+
 ```sql
 -- Standard multi-row SQL insert (fast batch path)
 INSERT INTO employees (id, dept_id, age, role)
@@ -99,12 +103,14 @@ ON CONFLICT DO NOTHING;
 > **Performance tip:** For high-volume Rust ingestion (>1,000 rows), `Connection::insert_rows_batch()` bypasses per-row SQL parsing (`380k–471k rows/sec` in release builds), while wrapping SQL statements in `BEGIN; ... COMMIT;` uses the batched commit fast path.
 
 ### `UPDATE` & `DELETE`
+
 ```sql
 UPDATE employees SET role = 'principal', age = age + 1 WHERE id = 1 RETURNING id, role;
 DELETE FROM employees WHERE age < 18 RETURNING id;
 ```
 
 ### Transactions & Savepoints
+
 ```sql
 BEGIN;
   INSERT INTO departments (id, name) VALUES (20, 'Research');
@@ -121,6 +127,7 @@ COMMIT;
 ## 4. Querying Data (`SELECT`, Joins, CTEs, Set Ops, Windows)
 
 ### Core `SELECT` Clause
+
 ```sql
 SELECT DISTINCT dept_id,
        role,
@@ -136,21 +143,25 @@ HAVING COUNT(*) >= 1
 ORDER BY dept_id ASC, next_age DESC
 LIMIT 50 OFFSET 0;
 ```
+
 > Note: `ORDER BY` supports multiple sort keys (`ORDER BY col1 [ASC|DESC], col2 [ASC|DESC], ...`), including computed projection aliases.
 
 **Supported `WHERE` predicates:** `=`, `!=` / `<>`, `<`, `<=`, `>`, `>=`, column-to-column comparisons (`e.age > e.min_age`), scalar subquery comparisons (`col <op> (SELECT ...)` and `(SELECT ...) <op> val_or_col`), `AND`, `OR`, `[NOT] IN (...)`, `[NOT] IN (SELECT ...)`, `[NOT] EXISTS (SELECT ...)` (including correlated subqueries referencing outer columns), `LIKE`, `IS NULL`, `IS NOT NULL`, `BETWEEN ... AND ...`.
 
 **Supported scalar & conditional expressions in projections, `CHECK`, generated columns, `UPDATE SET`, and `WHERE`:**
+
 - Infix arithmetic (`+`, `-`, `*`, `/`, `%`), string concatenation `||`, parentheses `(...)`
 - Conditional branching: `CASE [expr] WHEN cond_or_val THEN res [...] [ELSE fallback] END` and `IIF(cond, true_val, false_val)`
 - Explicit type casting: `CAST(expr AS INTEGER|INT|REAL|FLOAT|TEXT|VARCHAR|BOOLEAN|BLOB)`
 - SQLite scalar built-ins: `IFNULL`, `NULLIF`, `COALESCE`, `CONCAT`, `REPLACE`, `INSTR`, `SUBSTR`, `TRIM`/`LTRIM`/`RTRIM` (with optional characters argument), `UPPER`, `LOWER`, `LENGTH`/`LEN`, `REVERSE`, `TYPEOF`, `ABS`, `ROUND`, `FLOOR`, `CEIL`/`CEILING`, `SQRT`, `POWER`/`POW`, `MOD`, `HEX`
+- SQLite date & time built-ins (UTC): `DATE`, `TIME`, `DATETIME`, `STRFTIME`, `UNIXEPOCH`, `JULIANDAY` (with `'now'`, `'unixepoch'`, `'start of day|month|year'`, `±N` unit modifiers) plus `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`
 - Scalar subqueries `(SELECT ...)` (0 rows -> `NULL`, >1 row -> runtime error)
 - Expression indexes: `CREATE [UNIQUE] INDEX idx ON tbl (LOWER(email)) [WHERE ...]`
 - Generated columns: `col TYPE [GENERATED ALWAYS] AS (expr) [STORED|VIRTUAL]` (computed automatically on `INSERT`, `ON CONFLICT DO UPDATE`, `UPDATE`, and `ALTER TABLE ADD COLUMN`)
-- Computed `UPDATE SET`: `UPDATE orders SET price = price * 1.1, tier = (SELECT label FROM tiers WHERE id = orders.tier_id) WHERE id = 1;`
+- Computed `UPDATE SET` & `ON CONFLICT DO UPDATE SET` (`EXCLUDED.<col>` & expressions): `INSERT INTO orders (id, qty) VALUES (1, 2) ON CONFLICT (id) DO UPDATE SET qty = qty + EXCLUDED.qty;` and `UPDATE orders SET price = price * 1.1, tier = (SELECT label FROM tiers WHERE id = orders.tier_id) WHERE id = 1;`
 
 ### Joins, Correlated Subqueries & Derived Subqueries
+
 ```sql
 SELECT e.id, e.role, d.name AS department
 FROM employees e
@@ -186,6 +197,7 @@ WHERE sub.total > 5;
 ```
 
 ### CTEs (`WITH [RECURSIVE]`) & Set Operations (`UNION [ALL]`, `INTERSECT`, `EXCEPT`)
+
 ```sql
 WITH RECURSIVE org_tree AS (
     SELECT id, manager_id, name, 0 AS depth FROM org WHERE manager_id IS NULL
@@ -215,7 +227,9 @@ SELECT name FROM banned_users;
 ```
 
 ### Window Functions
+
 Supported window functions with `OVER ([PARTITION BY col] [ORDER BY col [ASC|DESC]])`:
+
 - Ranking: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `NTILE(n)`
 - Offset: `LAG(col, [offset])`, `LEAD(col, [offset])`
 - Aggregate windows: `COUNT(*)`, `COUNT(col)`, `SUM(col)`, `AVG(col)`, `MIN(col)`, `MAX(col)`
@@ -233,6 +247,7 @@ FROM payroll;
 ## 5. Indexes, Full-Text Search (FTS5), Triggers & Time Travel
 
 ### Standard, Composite, Unique & Partial Indexes
+
 ```sql
 CREATE INDEX IF NOT EXISTS idx_emp_dept_role ON employees (dept_id, role);
 CREATE UNIQUE INDEX idx_emp_email ON employees (email);
@@ -245,6 +260,7 @@ DROP INDEX IF EXISTS idx_high_latency;
 ```
 
 ### FTS5 Full-Text Search
+
 ```sql
 CREATE VIRTUAL TABLE docs_fts USING fts5(title, body);
 INSERT INTO docs_fts (title, body) VALUES ('WAL Guide', 'Atomic crash recovery and snapshots');
@@ -252,6 +268,7 @@ SELECT title, body FROM docs_fts WHERE docs_fts MATCH 'recovery';
 ```
 
 ### Triggers & `RAISE`
+
 ```sql
 CREATE TRIGGER IF NOT EXISTS prevent_negative_balance
 BEFORE UPDATE ON accounts
@@ -263,9 +280,11 @@ END;
 
 DROP TRIGGER IF EXISTS prevent_negative_balance;
 ```
+
 Supported timings: `BEFORE` / `AFTER` on `INSERT` / `UPDATE` / `DELETE`; `RAISE` actions: `ABORT`, `FAIL`, `ROLLBACK`, `IGNORE`.
 
 ### Time-Travel Query
+
 ```sql
 PRAGMA time_travel = on;
 SELECT * FROM audit_log AS OF TIMESTAMP 1731600000;
@@ -276,6 +295,7 @@ SELECT * FROM audit_log AS OF TIMESTAMP 1731600000;
 ## 6. JSON Documents & Vector AI Search
 
 ### JSON Extraction inside SQL
+
 ```sql
 SELECT id, profile->>'city' AS city
 FROM employees
@@ -283,6 +303,7 @@ WHERE profile->>'tier' = 'enterprise';
 ```
 
 ### Vector Nearest-Neighbor Query (`VECTOR NEAR ... TOP k`)
+
 ```sql
 SELECT id, title
 FROM docs
@@ -291,6 +312,7 @@ WHERE category = 'engineering';
 ```
 
 ### Scalar Vector Distance Functions
+
 ```sql
 SELECT id,
        VECTOR_COSINE(embedding, [0.12, -0.44, 0.89, 0.03]) AS sim,
@@ -306,6 +328,7 @@ LIMIT 5;
 ## 7. Graph & GraphRAG Query Syntax
 
 ### Insert Nodes & Weighted Directed Edges
+
 ```sql
 GRAPH INSERT NODE 1 LABEL 'Service' PROPERTIES '{"name":"auth-api","tier":1}';
 GRAPH INSERT NODE 2 LABEL 'Database' PROPERTIES '{"name":"users-db"}';
@@ -313,6 +336,7 @@ GRAPH INSERT EDGE 1 -> 2 LABEL 'DEPENDS_ON' WEIGHT 0.95 PROPERTIES '{"critical":
 ```
 
 ### Pattern Matching (`GRAPH MATCH`)
+
 ```sql
 GRAPH MATCH (s:Service)-[r:DEPENDS_ON]->(d:Database)
 WHERE s.tier = 1
@@ -320,6 +344,7 @@ RETURN s, r, d;
 ```
 
 ### Multi-Hop Traversal & Shortest Path
+
 ```sql
 GRAPH TRAVERSE FROM 1 OUTGOING LABEL 'DEPENDS_ON' MAX_DEPTH 3 WHERE target.tier = 2;
 -- Direction: OUTGOING | INCOMING | BOTH
@@ -328,6 +353,7 @@ GRAPH SHORTEST_PATH FROM 1 TO 42;
 ```
 
 ### Built-In Graph Algorithms in SQL
+
 ```sql
 GRAPH ALGORITHM PAGERANK damping=0.85 iterations=20 tolerance=0.0001;
 GRAPH ALGORITHM CONNECTED_COMPONENTS;
@@ -340,6 +366,7 @@ GRAPH ALGORITHM LOUVAIN;
 ## 8. Big Data, Lakehouse & Vectorized Analytics
 
 ### Query External Files Directly in SQL (`ExternalScan`)
+
 | Function | Formats Read | Example |
 | :--- | :--- | :--- |
 | `read_parquet('path')` | Apache Parquet (+ Hive globs `a/**/*.parquet`) | `SELECT * FROM read_parquet('lake/**/*.parquet') LIMIT 20;` |
@@ -351,6 +378,7 @@ GRAPH ALGORITHM LOUVAIN;
 | `read_text('path')` / `read_md('path')` | Plain text, logs, Markdown | `SELECT * FROM read_md('docs/*.md');` |
 
 ### Statistical & Vectorized Aggregate Functions
+
 ```sql
 SELECT region,
        COUNT(*),
@@ -375,6 +403,7 @@ LIMIT 20;
 > **Modular OLAP engine (`olap` + `bigdata` features on `main`):** Automatically applies Hive partition directory pruning, Parquet row-group min/max zone-map pruning, column projection pushdown (`ProjectionMask`), metadata-only `COUNT(*)`, and multi-file parallel execution. In Rust, inspect pushdown telemetry directly via `let (rows, stats) = db.query_olap(sql)?;`.
 
 ### Bi-Directional `COPY FROM` / `COPY TO`
+
 ```sql
 -- Bulk load from Parquet, CSV, TSV, JSONL, SQLite, SQL dump, PDF, or Text
 COPY events FROM 'incoming/events.parquet' (FORMAT PARQUET);
@@ -412,9 +441,11 @@ FROM tickets;
 ## 10. Built-In Scalar Functions, Pragmas & Maintenance
 
 ### Scalar Functions
+
 `UPPER(s)`, `LOWER(s)`, `LENGTH(x)` / `LEN(x)`, `ABS(n)`, `ROUND(n, [decimals])`, `COALESCE(v1, v2, ...)`, `CONCAT(s1, s2, ...)`, `SUBSTR(s, start, [len])`, `TRIM(s)`, `REVERSE(s)`.
 
 ### Pragmas, Diagnostics & Maintenance
+
 ```sql
 PRAGMA table_info('employees');     -- cid, name, type, notnull, dflt_value, pk
 PRAGMA foreign_keys = on;           -- 1/true/on or 0/false/off

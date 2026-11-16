@@ -1653,3 +1653,93 @@ fn test_executor_phase8_intersect_except_cross_join_and_sqlite_builtins() {
     assert!(fns[1].values()[3].is_null());
     assert_eq!(fns[1].get::<String>("trimmed").unwrap(), "ab");
 }
+
+#[test]
+fn test_executor_phase9_datetime_compound_order_and_excluded_upsert() {
+    let mut pager = Pager::open_in_memory(4096, 256).expect("Pager open");
+    let mut executor = SQLExecutor::new(&mut pager).expect("Init executor");
+
+    for ddl in [
+        "CREATE TABLE metrics (id INTEGER PRIMARY KEY, name TEXT, hits INTEGER NOT NULL DEFAULT 1, note TEXT);",
+        "CREATE TABLE left_ids (v INTEGER);",
+        "CREATE TABLE right_ids (v INTEGER);",
+    ] {
+        executor
+            .execute(&mut pager, parse_sql(ddl).unwrap())
+            .unwrap();
+    }
+
+    // 1. ON CONFLICT DO UPDATE SET with EXCLUDED.<col> and arithmetic/COALESCE expressions
+    executor
+        .execute(
+            &mut pager,
+            parse_sql("INSERT INTO metrics VALUES (1, 'home', 5, 'initial');").unwrap(),
+        )
+        .unwrap();
+    executor
+        .execute(
+            &mut pager,
+            parse_sql(
+                "INSERT INTO metrics VALUES (1, 'home-v2', 3, NULL), (2, 'docs', 10, 'fresh') ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, hits = hits + EXCLUDED.hits, note = COALESCE(EXCLUDED.note, note);",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    let rows = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT id, name, hits, note FROM metrics ORDER BY id ASC;").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get::<String>("name").unwrap(), "home-v2");
+    assert_eq!(rows[0].get::<i64>("hits").unwrap(), 8);
+    assert_eq!(rows[0].get::<String>("note").unwrap(), "initial");
+    assert_eq!(rows[1].get::<String>("name").unwrap(), "docs");
+    assert_eq!(rows[1].get::<i64>("hits").unwrap(), 10);
+
+    // 2. Trailing ORDER BY / LIMIT / OFFSET on compound queries
+    executor
+        .execute(
+            &mut pager,
+            parse_sql("INSERT INTO left_ids VALUES (10), (30), (20);").unwrap(),
+        )
+        .unwrap();
+    executor
+        .execute(
+            &mut pager,
+            parse_sql("INSERT INTO right_ids VALUES (5), (25), (20);").unwrap(),
+        )
+        .unwrap();
+
+    let sorted_union = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT v FROM left_ids UNION SELECT v FROM right_ids ORDER BY v DESC LIMIT 3 OFFSET 1;").unwrap(),
+        )
+        .unwrap();
+    let vals: Vec<i64> = sorted_union
+        .iter()
+        .map(|r| r.get::<i64>("v").unwrap())
+        .collect();
+    assert_eq!(vals, vec![25, 20, 10]);
+
+    // 3. Pure-Rust Date / Time SQLite built-ins + CURRENT_DATE/DATETIME
+    let dt = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT DATE('2026-01-31', '+1 month') AS d, TIME('2026-11-16 08:09:10', '+1 hour') AS t, DATETIME('2026-11-16 12:30:00', 'start of month') AS bom, STRFTIME('%Y-%m-%d', 1700000000, 'unixepoch') AS fmt, UNIXEPOCH('2026-11-16 00:00:00') AS ep, LENGTH(CURRENT_DATE) AS cd_len, LENGTH(CURRENT_TIMESTAMP) AS ts_len FROM metrics WHERE id = 1;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(dt[0].get::<String>("d").unwrap(), "2026-02-28");
+    assert_eq!(dt[0].get::<String>("t").unwrap(), "09:09:10");
+    assert_eq!(dt[0].get::<String>("bom").unwrap(), "2026-11-01 00:00:00");
+    assert_eq!(dt[0].get::<String>("fmt").unwrap(), "2023-11-14");
+    assert_eq!(dt[0].get::<i64>("ep").unwrap(), 1_794_787_200);
+    assert_eq!(dt[0].get::<i64>("cd_len").unwrap(), 10);
+    assert_eq!(dt[0].get::<i64>("ts_len").unwrap(), 19);
+}

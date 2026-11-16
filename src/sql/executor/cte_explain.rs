@@ -404,7 +404,9 @@ impl SQLExecutor {
         for cte in ctes {
             let cte_key = cte.name.to_ascii_lowercase();
             let mapped_res = if cte.recursive
-                && let Statement::Compound { left, op, right } = *cte.query
+                && let Statement::Compound {
+                    left, op, right, ..
+                } = *cte.query
             {
                 self.execute_recursive_cte(
                     pager,
@@ -444,10 +446,18 @@ impl SQLExecutor {
         cte_store: &HashMap<String, Vec<Row>>,
     ) -> Result<Vec<Row>> {
         match stmt {
-            Statement::Compound { left, op, right } => {
+            Statement::Compound {
+                left,
+                op,
+                right,
+                order_by,
+                limit,
+                offset,
+            } => {
                 let mut left_rows = self.eval_cte_statement(pager, *left, cte_store)?;
                 let right_rows = self.eval_cte_statement(pager, *right, cte_store)?;
                 combine_compound_rows(&mut left_rows, right_rows, op);
+                finalize_compound_rows(&mut left_rows, &order_by, limit, offset);
                 Ok(left_rows)
             }
             Statement::Select {

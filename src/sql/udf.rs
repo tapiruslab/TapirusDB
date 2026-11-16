@@ -417,5 +417,13 @@ impl UdfRegistry {
                 Some(other) => Ok(Value::Text(hex_bytes(other.to_string().as_bytes()))),
             }
         });
+
+        // SQLite Date & Time built-ins (Pure-Rust UTC proleptic Gregorian)
+        self.register("DATE", crate::sql::datetime::eval_date);
+        self.register("TIME", crate::sql::datetime::eval_time);
+        self.register("DATETIME", crate::sql::datetime::eval_datetime);
+        self.register("STRFTIME", crate::sql::datetime::eval_strftime);
+        self.register("UNIXEPOCH", crate::sql::datetime::eval_unixepoch);
+        self.register("JULIANDAY", crate::sql::datetime::eval_julianday);
     }
 }
