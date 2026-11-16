@@ -1,12 +1,12 @@
 # SDK Stack & Package Validation Matrix
 
-Updated: **15 November 2026** (synchronized at **`1.1.0`**, MSRV **Rust `1.88+`**).
+Updated: **16 November 2026** (synchronized at **`1.1.0`**, MSRV **Rust `1.88+`**).
 
 ## Unified Source & Package Matrix
 
 | Distribution | Runtime Floor & Source | Packaging & CI Verification |
 |---|---|---|
-| **Rust Core & Editions** | Rust `1.88+` · `tapirus`, `tapirus-micro`, `tapirus-ffi`, `tapirus-wasm` | `cargo test --locked --workspace --offline` (`381` tests across `62` runs + `5` edition_profiles), Rust `1.88.0` `msrv` job, strict Clippy (`-D warnings`), and bare-metal `thumbv7em-none-eabihf` / `riscv32imac-unknown-none-elf` builds. |
+| **Rust Core & Editions** | Rust `1.88+` · `tapirus`, `tapirus-micro`, `tapirus-ffi`, `tapirus-wasm` | `cargo test --locked --workspace --offline` (`383` tests across `62` runs + `5` `edition_profiles` + `10` `io_fault_recovery_tests`), Rust `1.88.0` `msrv` job, strict Clippy (`-D warnings`), and bare-metal `thumbv7em-none-eabihf` / `riscv32imac-unknown-none-elf` builds. |
 | **Python Native Wheel (`tapirus`)** | Python `3.10–3.15` · `sdks/python/` (`PyO3` `abi3`) | Native wheel builds across Linux x64, macOS Intel/ARM64, and Windows x64; tests bound SQL, 64-bit ints, blobs, vectors, `SessionDatabase`, AI scopes, encryption, reopen, plus `tapirus-migrate`, `tapirus-agent`, and `tapirus-eval`. |
 | **Node.js Native SDK (`tapirus`)** | Node.js `22 / 24 / 26` · `sdks/nodejs/` (`N-API`) | Cross-OS `.node` addon builds & consumer tarball installation tests covering SQL, `bigint`, vector search, CDC `subscribe`, AI Memory, and multi-process reopen. Legacy `packages/npm` stays synchronized and private. |
 | **Browser / WASM (`@tapirus/wasm`)** | WebAssembly (`wasm32-unknown-unknown`) · `crates/tapirus-wasm/` | Built with `wasm-bindgen`; tested in CI via Node tarball consumer + browser IndexedDB persistence + `TapirusWasm.new_encrypted` / `import_encrypted_bytes`. |

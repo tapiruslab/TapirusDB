@@ -1,17 +1,17 @@
 # Release Validation & Verification Summary
 
-Updated: **15 November 2026** (Source version **`1.1.0`**, MSRV **Rust `1.88+`**).
+Updated: **16 November 2026** (Source version **`1.1.0`**, MSRV **Rust `1.88+`**).
 
 ## Core Verification Gate
 
 | Verification Gate | Command / Pipeline | Observed Result |
 | --- | --- | --- |
-| **Full Rust Workspace Suite** | `cargo test --locked --workspace --offline` | **381 passed, 0 failed** across **62 test runs** (`2` ignored subprocess crash helpers invoked by durability suites) |
+| **Full Rust Workspace Suite** | `cargo test --locked --workspace --offline` | **383 passed, 0 failed** across **62 test runs** (`2` ignored subprocess crash helpers invoked by durability suites) |
 | **Formatter & Strict Lints** | `cargo fmt --all -- --check` & `cargo clippy --locked --workspace --all-targets --all-features --offline -- -D warnings` | **Passed** (`exit 0`, zero warnings across workspace including `tapirus-ffi` and `tapirus-wasm`) |
 | **MSRV Compiler Check** | `cargo +1.88.0 check --locked --workspace --all-targets --all-features` | **Passed** in CI (`msrv` job) |
 | **TLA+ Formal WAL Check** | `tlc2.TLC -workers auto -config docs/formal_verification/TAPIRUS_WAL.cfg docs/formal_verification/TAPIRUS_WAL.tla` | **Passed** in CI (`552,520` states generated, `120,535` distinct states, `0` invariant violations) |
 | **OSV Dependency Advisories** | `python scripts/check-dependency-advisories.py` | **223** `Cargo.lock` packages checked — **0 active production findings** (`libsqlite3-sys 0.30.1` `RUSTSEC-2026-0459` scoped `development-only`, `release_blocking: false`) |
-| **Edition & Target Builds** | `edition_profiles` (`5 passed, 0 failed`), `tapirus-micro`, `@tapirus/wasm` (`2,034,651` B), `@tapirus/wasm-lite` (`1,225,340` B raw / `422,497` B gzip) | **All passed** (`exit 0`); CI also cross-compiles `thumbv7em-none-eabihf` & `riscv32imac-unknown-none-elf` |
+| **Edition, Fault-Injection & Target Builds** | `edition_profiles` (`5 passed, 0 failed`), `io_fault_recovery_tests` (`10 passed, 0 failed`), `tapirus-micro` (`5 passed, 0 failed`), `@tapirus/wasm` (`2,034,651` B), `@tapirus/wasm-lite` (`1,225,340` B raw / `422,497` B gzip) | **All passed** (`exit 0`); CI also cross-compiles `thumbv7em-none-eabihf` & `riscv32imac-unknown-none-elf` |
 | **Native SDK Consumer Suites** | Python `3.10–3.15` wheels, Node `22/24/26` tarballs, `@tapirus/wasm`, `@tapirus/wasm-lite`, Go & PHP real-daemon runners | Verified locally (`Node` + `WASM` + `WASM-lite`) and across multi-OS CI runners |
 
 ## Scoped Benchmark Baseline (`release_readiness`)
