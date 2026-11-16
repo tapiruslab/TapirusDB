@@ -282,15 +282,30 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
       - uses: actions/download-artifact@v8
         with:
           name: npm-package
           path: dist
       - name: Publish to npm Registry
-        run: npm publish ./dist/*.tgz --access public --provenance
+        shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for tarball in ./dist/*.tgz; do
+            if npm publish "$tarball" --access public --provenance; then
+              continue
+            fi
+            if [ -n "${NPM_TOKEN:-}" ]; then
+              tmp_npmrc="$(mktemp)"
+              trap 'rm -f "$tmp_npmrc"' EXIT
+              printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$tmp_npmrc"
+              NPM_CONFIG_USERCONFIG="$tmp_npmrc" npm publish "$tarball" --access public --provenance
+              rm -f "$tmp_npmrc"
+              trap - EXIT
+            else
+              exit 1
+            fi
+          done
 
   # ============================================================================
   # 3. WEBASSEMBLY PACKAGE (@tapirus/wasm)
@@ -345,15 +360,27 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
       - uses: actions/download-artifact@v8
         with:
           name: wasm-package
           path: dist
       - name: Publish @tapirus/wasm and @tapirus/wasm-lite to npm Registry
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           for tarball in ./dist/*.tgz; do
-            npm publish "$tarball" --access public --provenance
+            if npm publish "$tarball" --access public --provenance; then
+              continue
+            fi
+            if [ -n "${NPM_TOKEN:-}" ]; then
+              tmp_npmrc="$(mktemp)"
+              trap 'rm -f "$tmp_npmrc"' EXIT
+              printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$tmp_npmrc"
+              NPM_CONFIG_USERCONFIG="$tmp_npmrc" npm publish "$tarball" --access public --provenance
+              rm -f "$tmp_npmrc"
+              trap - EXIT
+            else
+              exit 1
+            fi
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
