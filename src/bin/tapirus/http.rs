@@ -341,14 +341,15 @@ pub(super) fn authorize_where_subqueries(
             authorize_where_subqueries(left, cte_names, allowed_tables)?;
             authorize_where_subqueries(right, cte_names, allowed_tables)
         }
-        WhereExpr::InSubquery { subquery, .. } | WhereExpr::Exists { subquery, .. } => {
-            authorize_sql_statement_ast(
-                subquery,
-                SqlRoleAccess::ReadOnly,
-                cte_names,
-                allowed_tables,
-            )
-        }
+        WhereExpr::InSubquery { subquery, .. }
+        | WhereExpr::Exists { subquery, .. }
+        | WhereExpr::ScalarSubqueryComparison { subquery, .. }
+        | WhereExpr::SubqueryComparison { subquery, .. } => authorize_sql_statement_ast(
+            subquery,
+            SqlRoleAccess::ReadOnly,
+            cte_names,
+            allowed_tables,
+        ),
     }
 }
 
@@ -360,6 +361,7 @@ pub(super) fn authorize_sql_statement_ast(
 ) -> std::result::Result<(), String> {
     match stmt {
         Statement::Select {
+            columns,
             table,
             from_subquery,
             join,
@@ -377,6 +379,16 @@ pub(super) fn authorize_sql_statement_ast(
                 )?;
             } else {
                 check_allowed_table(table, cte_names, allowed_tables)?;
+            }
+            for col in columns {
+                for sub_stmt in tapirus::sql::parser::extract_select_scalar_subqueries(col) {
+                    authorize_sql_statement_ast(
+                        &sub_stmt,
+                        SqlRoleAccess::ReadOnly,
+                        cte_names,
+                        allowed_tables,
+                    )?;
+                }
             }
             for j in join.iter().chain(extra_joins.iter()) {
                 check_allowed_table(&j.table, cte_names, allowed_tables)?;

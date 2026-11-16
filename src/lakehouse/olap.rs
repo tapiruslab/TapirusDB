@@ -80,7 +80,7 @@ pub(crate) fn execute_parquet_sql_select(
     where_expr: Option<&ResolvedWhereExpr>,
     group_by: Option<&[String]>,
     having: Option<&ResolvedWhereExpr>,
-    order_by: Option<&OrderByClause>,
+    order_by: &[OrderByClause],
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<Option<(Vec<Row>, ParquetOlapStats)>> {
@@ -162,20 +162,18 @@ pub(crate) fn execute_parquet_sql_select(
         return Ok(None);
     }
 
-    if let Some(ord) = order_by
-        && !has_agg
-        && group_by.is_none()
-        && !select_all
-    {
-        if !is_simple_ident(&ord.column) {
-            return Ok(None);
-        }
-        // Only project order_by column if it's not an alias defined in SELECT.
-        let is_alias = proj_plans
-            .iter()
-            .any(|p| p.output_name.eq_ignore_ascii_case(&ord.column));
-        if !is_alias {
-            push_unique_ci(&mut referenced_cols, &ord.column);
+    if !order_by.is_empty() && !has_agg && group_by.is_none() && !select_all {
+        for ord in order_by {
+            if !is_simple_ident(&ord.column) {
+                return Ok(None);
+            }
+            // Only project order_by column if it's not an alias defined in SELECT.
+            let is_alias = proj_plans
+                .iter()
+                .any(|p| p.output_name.eq_ignore_ascii_case(&ord.column));
+            if !is_alias {
+                push_unique_ci(&mut referenced_cols, &ord.column);
+            }
         }
     }
 
@@ -383,7 +381,8 @@ fn collect_where_columns(expr: &ResolvedWhereExpr, cols: &mut Vec<String>) -> bo
             true
         }
         ResolvedWhereExpr::CorrelatedExists { .. }
-        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => false,
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. }
+        | ResolvedWhereExpr::CorrelatedScalarSubquery { .. } => false,
     }
 }
 
@@ -455,7 +454,8 @@ fn eval_hive_expr_partial(part_map: &[(String, Value)], expr: &ResolvedWhereExpr
             Some(matches_condition(lv, op, rv))
         }
         ResolvedWhereExpr::CorrelatedExists { .. }
-        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => None,
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. }
+        | ResolvedWhereExpr::CorrelatedScalarSubquery { .. } => None,
     }
 }
 
@@ -654,7 +654,8 @@ fn row_group_can_match(
         }
         ResolvedWhereExpr::ColumnComparison { .. }
         | ResolvedWhereExpr::CorrelatedExists { .. }
-        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => true,
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. }
+        | ResolvedWhereExpr::CorrelatedScalarSubquery { .. } => true,
     }
 }
 
@@ -944,7 +945,8 @@ fn eval_batch_where_at(
             matches_condition(&lv, op, &rv)
         }
         ResolvedWhereExpr::CorrelatedExists { .. }
-        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => false,
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. }
+        | ResolvedWhereExpr::CorrelatedScalarSubquery { .. } => false,
     }
 }
 
@@ -1460,7 +1462,7 @@ fn execute_parallel_group_by(
     referenced_cols: &[String],
     where_expr: Option<&ResolvedWhereExpr>,
     having: Option<&ResolvedWhereExpr>,
-    order_by: Option<&OrderByClause>,
+    order_by: &[OrderByClause],
     limit: Option<usize>,
     offset: Option<usize>,
     max_workers: usize,
@@ -1558,16 +1560,8 @@ fn execute_parallel_group_by(
         rows.push(row);
     }
 
-    if let Some(ord) = order_by {
-        rows.sort_by(|a, b| {
-            let va = a.get_value(&ord.column).unwrap_or(&Value::Null);
-            let vb = b.get_value(&ord.column).unwrap_or(&Value::Null);
-            if ord.is_ascending {
-                va.compare(vb)
-            } else {
-                vb.compare(va)
-            }
-        });
+    if !order_by.is_empty() {
+        rows.sort_by(|a, b| crate::sql::executor::compare_rows_by_order(a, b, order_by));
     }
 
     let skip = offset.unwrap_or(0);
@@ -1631,7 +1625,8 @@ fn row_matches_having(row: &Row, expr: &ResolvedWhereExpr, aliases: &[(String, u
             matches_condition(&lv, op, &rv)
         }
         ResolvedWhereExpr::CorrelatedExists { .. }
-        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => false,
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. }
+        | ResolvedWhereExpr::CorrelatedScalarSubquery { .. } => false,
     }
 }
 
@@ -1657,12 +1652,12 @@ fn execute_projected_scan(
     proj_plans: &[ProjectedColPlan],
     referenced_cols: &[String],
     where_expr: Option<&ResolvedWhereExpr>,
-    order_by: Option<&OrderByClause>,
+    order_by: &[OrderByClause],
     limit: Option<usize>,
     offset: Option<usize>,
     max_workers: usize,
 ) -> Result<(Vec<Row>, ParquetOlapStats)> {
-    let early_cap = if order_by.is_none() {
+    let early_cap = if order_by.is_empty() {
         limit.map(|l| offset.unwrap_or(0).saturating_add(l))
     } else {
         None
@@ -1684,7 +1679,7 @@ fn execute_projected_scan(
                 proj_plans,
                 referenced_cols,
                 where_expr,
-                order_by.map(|o| o.column.as_str()),
+                order_by,
                 rem,
             )?;
             rows.append(&mut chunk);
@@ -1707,7 +1702,7 @@ fn execute_projected_scan(
                                 proj_plans,
                                 referenced_cols,
                                 where_expr,
-                                order_by.map(|o| o.column.as_str()),
+                                order_by,
                                 None,
                             )?;
                             local_rows.append(&mut r);
@@ -1727,16 +1722,8 @@ fn execute_projected_scan(
         }
     }
 
-    if let Some(ord) = order_by {
-        rows.sort_by(|a, b| {
-            let va = a.get_value(&ord.column).unwrap_or(&Value::Null);
-            let vb = b.get_value(&ord.column).unwrap_or(&Value::Null);
-            if ord.is_ascending {
-                va.compare(vb)
-            } else {
-                vb.compare(va)
-            }
-        });
+    if !order_by.is_empty() {
+        rows.sort_by(|a, b| crate::sql::executor::compare_rows_by_order(a, b, order_by));
     }
 
     // If an extra order_by column was appended only for sorting, strip back to projected columns.
@@ -1778,7 +1765,7 @@ fn scan_single_projected_file(
     proj_plans: &[ProjectedColPlan],
     referenced_cols: &[String],
     where_expr: Option<&ResolvedWhereExpr>,
-    order_col: Option<&str>,
+    order_by: &[OrderByClause],
     limit: Option<usize>,
 ) -> Result<(Vec<Row>, ParquetOlapStats)> {
     let opened = open_parquet_with_pushdown(lake_file, select_all, referenced_cols, where_expr)?;
@@ -1827,11 +1814,14 @@ fn scan_single_projected_file(
             out_col_names.push(p.output_name.clone());
             source_col_names.push(p.source_name.clone());
         }
-        if let Some(oc) = order_col
-            && !out_col_names.iter().any(|c| c.eq_ignore_ascii_case(oc))
-        {
-            out_col_names.push(oc.to_string());
-            source_col_names.push(oc.to_string());
+        for ord in order_by {
+            if !out_col_names
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(&ord.column))
+            {
+                out_col_names.push(ord.column.clone());
+                source_col_names.push(ord.column.clone());
+            }
         }
     }
 

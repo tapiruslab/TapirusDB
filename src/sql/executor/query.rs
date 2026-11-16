@@ -139,9 +139,19 @@ impl SQLExecutor {
                 as_of_timestamp,
             } => {
                 if table.is_empty() {
-                    return Ok(vec![
-                        self.project_row(&Row::new(Vec::new(), Vec::new()), &columns)?,
-                    ]);
+                    let empty_row = Row::new(Vec::new(), Vec::new());
+                    if has_projection_subquery(&columns) {
+                        let plan = self.prepare_projection_plan(pager, &columns, &[])?;
+                        let mut memo = CorrelatedSubqueryMemo::default();
+                        return Ok(vec![self.project_row_with_plan(
+                            pager,
+                            &empty_row,
+                            &plan,
+                            &[],
+                            &mut memo,
+                        )?]);
+                    }
+                    return Ok(vec![self.project_row(&empty_row, &columns)?]);
                 }
                 if let Some((sub_stmt, alias)) = from_subquery {
                     #[cfg(all(feature = "lakehouse", feature = "olap"))]
@@ -173,7 +183,7 @@ impl SQLExecutor {
                                 resolved_where.as_ref(),
                                 group_by.as_deref(),
                                 resolved_having.as_ref(),
-                                order_by.as_ref(),
+                                order_by.as_slice(),
                                 limit,
                                 offset,
                             )?
@@ -221,20 +231,7 @@ impl SQLExecutor {
                         rows.retain(|r| row_matches_resolved(r, &resolved_where));
                     }
 
-                    // Apply outer ORDER BY
-                    if let Some(ref order) = order_by {
-                        rows.sort_by(|a, b| {
-                            let val_a = a.get_value(&order.column).unwrap_or(&Value::Null);
-                            let val_b = b.get_value(&order.column).unwrap_or(&Value::Null);
-                            if order.is_ascending {
-                                val_a.compare(val_b)
-                            } else {
-                                val_b.compare(val_a)
-                            }
-                        });
-                    }
-
-                    // Apply outer column projection and LIMIT
+                    // Determine output column names before ORDER BY so scalar-subquery aliases can sort cleanly
                     let output_col_names = if columns.is_empty() {
                         if let Some(first) = rows.first() {
                             first.columns().to_vec()
@@ -244,13 +241,42 @@ impl SQLExecutor {
                     } else {
                         columns.clone()
                     };
+                    let has_proj_sub = has_projection_subquery(&output_col_names);
+                    let proj_plan = if has_proj_sub {
+                        Some(self.prepare_projection_plan(pager, &output_col_names, &[])?)
+                    } else {
+                        None
+                    };
+                    let mut proj_memo = CorrelatedSubqueryMemo::default();
 
+                    // Apply outer ORDER BY
+                    if !order_by.is_empty() {
+                        if let Some(ref plan) = proj_plan {
+                            self.enrich_rows_with_order_plan(
+                                pager,
+                                &mut rows,
+                                plan,
+                                &order_by,
+                                &[],
+                                &mut proj_memo,
+                            )?;
+                        } else {
+                            enrich_rows_with_order_aliases(self, &mut rows, &columns, &order_by)?;
+                        }
+                        rows.sort_by(|a, b| compare_rows_by_order(a, b, &order_by));
+                    }
+
+                    // Apply outer column projection and LIMIT
                     let mut result_rows = Vec::new();
                     let skip_count = offset.unwrap_or(0);
                     let mut skipped = 0;
                     let mut distinct_set = RowDistinctSet::new();
                     for row in rows {
-                        let projected = self.project_row(&row, &output_col_names)?;
+                        let projected = if let Some(ref plan) = proj_plan {
+                            self.project_row_with_plan(pager, &row, plan, &[], &mut proj_memo)?
+                        } else {
+                            self.project_row(&row, &output_col_names)?
+                        };
                         if distinct {
                             if distinct_set.push_paginated(
                                 &mut result_rows,
@@ -275,6 +301,35 @@ impl SQLExecutor {
                     }
 
                     return Ok(result_rows);
+                }
+
+                if !self.active_ctes.is_empty()
+                    && (self.active_ctes.contains_key(&table.to_ascii_lowercase())
+                        || join
+                            .iter()
+                            .chain(extra_joins.iter())
+                            .any(|j| self.active_ctes.contains_key(&j.table.to_ascii_lowercase())))
+                {
+                    let cte_store = self.active_ctes.clone();
+                    return self.query_on_ephemeral_rows(
+                        pager,
+                        Statement::Select {
+                            distinct,
+                            columns,
+                            table,
+                            from_subquery: None,
+                            join,
+                            extra_joins,
+                            where_clause,
+                            group_by,
+                            having,
+                            order_by,
+                            limit,
+                            offset,
+                            as_of_timestamp,
+                        },
+                        &cte_store,
+                    );
                 }
 
                 let table_def = self
@@ -342,11 +397,12 @@ impl SQLExecutor {
 
                 let has_win = columns.iter().any(|c| has_window_function(c));
                 let has_agg = is_aggregate_query(&columns);
+                let has_proj_sub = has_projection_subquery(&columns);
                 let wants_fts_scores = fts_scores.is_some()
                     && (columns.iter().any(|c| {
                         let cl = c.to_ascii_lowercase();
                         cl == "rank" || cl.starts_with("bm25(")
-                    }) || order_by.as_ref().is_some_and(|o| {
+                    }) || order_by.iter().any(|o| {
                         let ol = o.column.to_ascii_lowercase();
                         ol == "rank" || ol.starts_with("bm25(")
                     }));
@@ -358,7 +414,7 @@ impl SQLExecutor {
                             &table_def,
                             &columns,
                             resolved_where.as_ref(),
-                            order_by.as_ref(),
+                            &order_by,
                             wants_fts_scores,
                         )
                     } else {
@@ -441,7 +497,7 @@ impl SQLExecutor {
                 if left_rows_from_index.is_none()
                     && as_of_timestamp.is_none()
                     && !has_joins
-                    && order_by.is_none()
+                    && order_by.is_empty()
                     && group_by.is_none()
                     && !has_agg
                     && !has_win
@@ -548,10 +604,11 @@ impl SQLExecutor {
                         .catalog
                         .get_table_stats(&table)
                         .unwrap_or(&default_stats);
-                    let can_stream_early_return = order_by.is_none()
+                    let can_stream_early_return = order_by.is_empty()
                         && group_by.is_none()
                         && !has_agg
                         && !has_win
+                        && !has_proj_sub
                         && single_post_correlated.is_none();
                     let all_col_shared = Arc::new(all_col_names.clone());
 
@@ -713,11 +770,12 @@ impl SQLExecutor {
                 if left_rows_from_index.is_none()
                     && !has_joins
                     && !has_correlated
-                    && order_by.is_none()
+                    && order_by.is_empty()
                     && group_by.is_none()
                     && as_of_timestamp.is_none()
                     && !distinct
                     && has_agg
+                    && !has_proj_sub
                 {
                     struct PushdownAgg {
                         spec: ParsedAggSpec,
@@ -731,7 +789,7 @@ impl SQLExecutor {
                             let col_idx = if spec.is_star {
                                 None
                             } else {
-                                table_def.column_index(&spec.arg)
+                                resolve_table_col_index(&table_def, &spec.arg)
                             };
                             let acc = crate::sql::vectorized::VectorizedAccumulator::with_tracking(
                                 spec.needs_samples(),
@@ -749,7 +807,7 @@ impl SQLExecutor {
                                     is_star: false,
                                     is_distinct: false,
                                 },
-                                col_idx: table_def.column_index(col),
+                                col_idx: resolve_table_col_index(&table_def, col),
                                 acc: crate::sql::vectorized::VectorizedAccumulator::new(),
                             });
                         }
@@ -860,8 +918,10 @@ impl SQLExecutor {
                         },
                     }
 
-                    let gb_indices: Vec<Option<usize>> =
-                        gb_cols.iter().map(|c| table_def.column_index(c)).collect();
+                    let gb_indices: Vec<Option<usize>> = gb_cols
+                        .iter()
+                        .map(|c| resolve_table_col_index(&table_def, c))
+                        .collect();
                     let mut plans = Vec::with_capacity(output_cols.len());
                     let mut agg_specs_template: Vec<(Option<usize>, bool, bool, bool)> = Vec::new();
                     let mut needed_mask = vec![false; all_col_names.len()];
@@ -879,7 +939,7 @@ impl SQLExecutor {
                             let col_idx = if spec.is_star {
                                 None
                             } else {
-                                table_def.column_index(&spec.arg)
+                                resolve_table_col_index(&table_def, &spec.arg)
                             };
                             if let Some(i) = col_idx
                                 && i < needed_mask.len()
@@ -905,7 +965,7 @@ impl SQLExecutor {
                                     key_pos: pos,
                                 });
                             } else {
-                                let col_idx = table_def.column_index(raw_expr);
+                                let col_idx = resolve_table_col_index(&table_def, raw_expr);
                                 if let Some(i) = col_idx
                                     && i < needed_mask.len()
                                 {
@@ -1066,16 +1126,8 @@ impl SQLExecutor {
                         result_rows.push(row);
                     }
 
-                    if let Some(order) = order_by {
-                        result_rows.sort_by(|a, b| {
-                            let val_a = a.get_value(&order.column).unwrap_or(&Value::Null);
-                            let val_b = b.get_value(&order.column).unwrap_or(&Value::Null);
-                            if order.is_ascending {
-                                val_a.compare(val_b)
-                            } else {
-                                val_b.compare(val_a)
-                            }
-                        });
+                    if !order_by.is_empty() {
+                        result_rows.sort_by(|a, b| compare_rows_by_order(a, b, &order_by));
                     }
                     if distinct {
                         let mut deduped = Vec::with_capacity(result_rows.len());
@@ -1136,22 +1188,26 @@ impl SQLExecutor {
                         )));
                     }
                     if let Some(sys_table) = self.catalog.get_table("__sys_time_travel") {
-                        let cells = self.btree.scan(pager, sys_table.root_page)?;
-                        for cell in cells {
-                            if let Ok(rec) = serde_json::from_slice::<TemporalRecord>(&cell.payload)
-                                && rec.table_name.eq_ignore_ascii_case(&table)
-                                && rec.valid_from <= ts
-                                && rec.valid_to > ts
-                            {
-                                let full_row = decode_row(&rec.payload, &all_col_names)?;
-                                if let Some(r_expr) = left_scan_where
-                                    && !row_matches_resolved(&full_row, r_expr)
+                        self.btree.scan_with_ref(
+                            pager,
+                            sys_table.root_page,
+                            |_row_id, payload| {
+                                if let Ok(rec) = serde_json::from_slice::<TemporalRecord>(payload)
+                                    && rec.table_name.eq_ignore_ascii_case(&table)
+                                    && rec.valid_from <= ts
+                                    && rec.valid_to > ts
                                 {
-                                    continue;
+                                    let full_row = decode_row(&rec.payload, &all_col_names)?;
+                                    if let Some(r_expr) = left_scan_where
+                                        && !row_matches_resolved(&full_row, r_expr)
+                                    {
+                                        return Ok(true);
+                                    }
+                                    left_rows.push(full_row);
                                 }
-                                left_rows.push(full_row);
-                            }
-                        }
+                                Ok(true)
+                            },
+                        )?;
                     }
                 }
 
@@ -1162,10 +1218,11 @@ impl SQLExecutor {
                 {
                     let jc = &all_joins[0];
                     let right_table_def = joined_table_defs[0];
-                    let can_direct = order_by.is_none()
+                    let can_direct = order_by.is_empty()
                         && group_by.is_none()
                         && !distinct
                         && !has_agg
+                        && !has_proj_sub
                         && !columns.is_empty();
                     if can_direct {
                         let mut sources = Vec::with_capacity(columns.len());
@@ -1498,8 +1555,10 @@ impl SQLExecutor {
                         && !has_agg
                         && !has_win
                         && !wants_fts_scores
-                        && let (Some(pk_col_idx), Some(ord)) = (pk_idx, order_by.as_ref())
+                        && order_by.len() == 1
+                        && let Some(pk_col_idx) = pk_idx
                     {
+                        let ord = &order_by[0];
                         let pk_name = &table_def.columns[pk_col_idx].name;
                         let ord_col = ord
                             .column
@@ -1525,7 +1584,7 @@ impl SQLExecutor {
 
                     let can_early_terminate = !has_joins
                         && !has_correlated
-                        && (order_by.is_none() || order_by_satisfied)
+                        && (order_by.is_empty() || order_by_satisfied)
                         && group_by.is_none()
                         && !distinct
                         && !has_win
@@ -2076,12 +2135,30 @@ impl SQLExecutor {
                 } else if is_aggregate_query(&columns) {
                     let mut agg_cols = Vec::new();
                     let mut agg_vals = Vec::new();
+                    let empty_row = Row::new(Vec::new(), Vec::new());
 
                     for col in &columns {
                         if let Some(spec) = parse_aggregate_spec(col) {
                             let computed = compute_aggregate_from_spec(&spec, &left_rows);
                             agg_cols.push(spec.output_name);
                             agg_vals.push(computed);
+                        } else if !crate::sql::parser::extract_select_scalar_subqueries(col)
+                            .is_empty()
+                        {
+                            let plan = self.prepare_projection_plan(
+                                pager,
+                                std::slice::from_ref(col),
+                                &[],
+                            )?;
+                            let mut memo = CorrelatedSubqueryMemo::default();
+                            agg_cols.push(plan[0].out_name.clone());
+                            agg_vals.push(self.eval_prepared_projection_col(
+                                pager,
+                                &empty_row,
+                                &plan[0],
+                                &[],
+                                &mut memo,
+                            )?);
                         } else {
                             agg_cols.push(parse_col_and_alias(col).1.unwrap_or(col).to_string());
                             agg_vals.push(Value::Null);
@@ -2097,19 +2174,38 @@ impl SQLExecutor {
                     evaluate_window_functions(&mut left_rows, &columns)?;
                 }
 
-                // Apply ORDER BY sorting if not already satisfied by ordered B+Tree PK scan
-                if let Some(order) = order_by
-                    && !order_by_satisfied
-                {
-                    let cmp = |a: &Row, b: &Row| {
-                        let val_a = a.get_value(&order.column).unwrap_or(&Value::Null);
-                        let val_b = b.get_value(&order.column).unwrap_or(&Value::Null);
-                        if order.is_ascending {
-                            val_a.compare(val_b)
-                        } else {
-                            val_b.compare(val_a)
+                let mut outer_defs = Vec::new();
+                if has_proj_sub {
+                    outer_defs.push(table_def.clone());
+                    for jc in &all_joins {
+                        if let Some(rt) = self.catalog.get_table(&jc.table) {
+                            outer_defs.push(rt.clone());
                         }
-                    };
+                    }
+                }
+                let outer_refs_slice: Vec<&TableDef> = outer_defs.iter().collect();
+                let proj_plan = if has_proj_sub {
+                    Some(self.prepare_projection_plan(pager, &columns, &outer_refs_slice)?)
+                } else {
+                    None
+                };
+                let mut proj_memo = CorrelatedSubqueryMemo::default();
+
+                // Apply ORDER BY sorting if not already satisfied by ordered B+Tree PK scan
+                if !order_by.is_empty() && !order_by_satisfied {
+                    if let Some(ref plan) = proj_plan {
+                        self.enrich_rows_with_order_plan(
+                            pager,
+                            &mut left_rows,
+                            plan,
+                            &order_by,
+                            &outer_refs_slice,
+                            &mut proj_memo,
+                        )?;
+                    } else {
+                        enrich_rows_with_order_aliases(self, &mut left_rows, &columns, &order_by)?;
+                    }
+                    let cmp = |a: &Row, b: &Row| compare_rows_by_order(a, b, &order_by);
                     if let Some(lim) = limit
                         && !distinct
                         && !has_win_fn
@@ -2146,7 +2242,9 @@ impl SQLExecutor {
 
                 // Fast-path: Pre-resolve column indices for direct O(1) projection if columns are simple
                 let mut direct_indices: Option<Vec<usize>> = None;
-                if let Some(first) = left_rows.first() {
+                if proj_plan.is_none()
+                    && let Some(first) = left_rows.first()
+                {
                     let mut indices = Vec::with_capacity(output_col_shared.len());
                     let mut all_matched = true;
                     for col in output_col_shared.iter() {
@@ -2178,7 +2276,15 @@ impl SQLExecutor {
                 let mut skipped = 0;
                 let mut distinct_set = RowDistinctSet::new();
                 for row in left_rows {
-                    let projected = if let Some(ref indices) = direct_indices {
+                    let projected = if let Some(ref plan) = proj_plan {
+                        self.project_row_with_plan(
+                            pager,
+                            &row,
+                            plan,
+                            &outer_refs_slice,
+                            &mut proj_memo,
+                        )?
+                    } else if let Some(ref indices) = direct_indices {
                         let mut vals = Vec::with_capacity(indices.len());
                         for &idx in indices {
                             vals.push(row.values().get(idx).cloned().unwrap_or(Value::Null));
@@ -2361,7 +2467,7 @@ impl SQLExecutor {
                         &table_def,
                         &output_col_names,
                         resolved_where.as_ref(),
-                        None,
+                        &[],
                         false,
                     );
                     if let Some(ref mut mask) = scan_mask
@@ -3164,7 +3270,7 @@ fn compute_single_table_needed_mask(
     table_def: &TableDef,
     columns: &[String],
     resolved_where: Option<&ResolvedWhereExpr>,
-    order_by: Option<&crate::sql::parser::OrderByClause>,
+    order_by: &[crate::sql::parser::OrderByClause],
     wants_fts_scores: bool,
 ) -> Option<Vec<bool>> {
     if columns.is_empty() || wants_fts_scores {
@@ -3203,7 +3309,7 @@ fn compute_single_table_needed_mask(
         return None;
     }
 
-    if let Some(ord) = order_by {
+    for ord in order_by {
         if let Some(idx) = resolve_direct_table_col(table_def, &ord.column)
             && idx < mask.len()
         {

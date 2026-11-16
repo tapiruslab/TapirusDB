@@ -1205,3 +1205,176 @@ fn test_phase5_column_cmp_correlated_subquery_filtered_seek_or_union_and_vector_
         .unwrap();
     assert_eq!(rem[0].get::<i64>("cnt").unwrap(), 3);
 }
+
+#[test]
+fn test_executor_multi_column_order_by_and_scalar_subqueries() {
+    let mut pager = Pager::open_in_memory(4096, 256).expect("Pager open");
+    let mut executor = SQLExecutor::new(&mut pager).expect("Init executor");
+
+    for ddl in [
+        "CREATE TABLE depts (id INTEGER PRIMARY KEY, name TEXT);",
+        "CREATE TABLE staff (id INTEGER PRIMARY KEY, name TEXT, dept_id INTEGER REFERENCES depts(id), score INTEGER);",
+        "CREATE TABLE tasks (id INTEGER PRIMARY KEY, staff_id INTEGER, points INTEGER);",
+    ] {
+        executor
+            .execute(&mut pager, parse_sql(ddl).unwrap())
+            .unwrap();
+    }
+
+    for ins in [
+        "INSERT INTO depts (id, name) VALUES (1, 'Eng'), (2, 'Ops');",
+        "INSERT INTO staff (id, name, dept_id, score) VALUES (1, 'Alice', 1, 80), (2, 'Bob', 1, 95), (3, 'Cara', 1, 95), (4, 'Dan', 2, 70), (5, 'Eve', 2, 90);",
+        "INSERT INTO tasks (id, staff_id, points) VALUES (1, 1, 10), (2, 1, 20), (3, 2, 50), (4, 3, 5), (5, 5, 40);",
+    ] {
+        executor
+            .execute(&mut pager, parse_sql(ins).unwrap())
+            .unwrap();
+    }
+
+    // 1. Multi-column ORDER BY with mixed ASC/DESC, tie-breaking, and OFFSET/LIMIT
+    let ord_rows = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT id, name, dept_id, score FROM staff ORDER BY dept_id ASC, score DESC, id ASC LIMIT 3 OFFSET 1;").unwrap(),
+        )
+        .unwrap();
+    let ord_ids: Vec<i64> = ord_rows
+        .iter()
+        .map(|r| r.get::<i64>("id").unwrap())
+        .collect();
+    assert_eq!(ord_ids, vec![3, 1, 5]); // row order overall: (2, 3, 1, 5, 4)
+
+    // Multi-column ORDER BY sorting by projected alias + base column
+    let alias_ord = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT id, score * 2 AS doubled FROM staff ORDER BY dept_id DESC, doubled ASC;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let alias_ids: Vec<i64> = alias_ord
+        .iter()
+        .map(|r| r.get::<i64>("id").unwrap())
+        .collect();
+    assert_eq!(alias_ids, vec![4, 5, 1, 2, 3]);
+
+    // 2. Uncorrelated scalar subqueries in WHERE (both RHS and LHS) + PK seek pushdown
+    let above_avg = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT id FROM staff WHERE score > (SELECT AVG(score) FROM staff) ORDER BY id ASC;").unwrap(),
+        )
+        .unwrap();
+    let above_ids: Vec<i64> = above_avg
+        .iter()
+        .map(|r| r.get::<i64>("id").unwrap())
+        .collect();
+    assert_eq!(above_ids, vec![2, 3, 5]); // AVG(80,95,95,70,90) = 86
+
+    let max_pk = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT name FROM staff WHERE id = (SELECT MAX(id) FROM staff);").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(max_pk.len(), 1);
+    assert_eq!(max_pk[0].get::<String>("name").unwrap(), "Eve");
+
+    let lhs_sub = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT id FROM staff WHERE (SELECT MIN(score) FROM staff) = score;")
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(lhs_sub.len(), 1);
+    assert_eq!(lhs_sub[0].get::<i64>("id").unwrap(), 4);
+
+    // 3. Scalar subquery cardinality rules: 0 rows -> NULL; >1 rows -> error
+    let zero_row_sub = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT (SELECT name FROM staff WHERE id = 999) AS missing;").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(zero_row_sub[0].get_value("missing"), Some(&Value::Null));
+
+    let multi_row_err = executor.query(
+        &mut pager,
+        parse_sql("SELECT id FROM staff WHERE score = (SELECT score FROM staff);").unwrap(),
+    );
+    assert!(
+        multi_row_err.is_err(),
+        "Scalar subquery returning >1 row must error"
+    );
+
+    // 4. Correlated scalar subquery in WHERE (LHS form & RHS form) and SELECT projection list
+    let corr_where = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT s.id FROM staff s WHERE (SELECT COUNT(*) FROM tasks t WHERE t.staff_id = s.id) >= 2;").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(corr_where.len(), 1);
+    assert_eq!(corr_where[0].get::<i64>("id").unwrap(), 1);
+
+    let proj_corr = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT s.name, (SELECT COUNT(*) FROM tasks t WHERE t.staff_id = s.id) AS task_count, COALESCE((SELECT SUM(t.points) FROM tasks t WHERE t.staff_id = s.id), 0) AS pts FROM staff s ORDER BY task_count DESC, s.id ASC;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(proj_corr.len(), 5);
+    assert_eq!(proj_corr[0].get::<String>("name").unwrap(), "Alice");
+    assert_eq!(proj_corr[0].get::<i64>("task_count").unwrap(), 2);
+    assert_eq!(proj_corr[0].get::<i64>("pts").unwrap(), 30);
+    assert_eq!(proj_corr[1].get::<String>("name").unwrap(), "Bob");
+    assert_eq!(proj_corr[2].get::<String>("name").unwrap(), "Cara");
+    assert_eq!(proj_corr[3].get::<String>("name").unwrap(), "Eve");
+    assert_eq!(proj_corr[4].get::<String>("name").unwrap(), "Dan");
+    assert_eq!(proj_corr[4].get::<i64>("task_count").unwrap(), 0);
+    assert_eq!(proj_corr[4].get::<i64>("pts").unwrap(), 0);
+
+    // Shadowed inner alias `s` does not collide with outer alias `s`
+    let shadowed_proj = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT s.id, (SELECT COUNT(*) FROM tasks s WHERE s.points > 25) AS big_tasks FROM staff s WHERE s.id = 1;").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(shadowed_proj[0].get::<i64>("big_tasks").unwrap(), 2);
+
+    // Composite arithmetic + scalar subquery and CTE projection scalar subquery
+    let cte_proj = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "WITH top_staff AS (SELECT id, score FROM staff WHERE score >= 90) SELECT ts.id, ts.score - (SELECT MIN(score) FROM top_staff) AS margin FROM top_staff ts ORDER BY ts.id ASC;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(cte_proj.len(), 3);
+    assert_eq!(cte_proj[0].get::<i64>("margin").unwrap(), 5);
+
+    // 5. Exercise scan_with_ref paths: CREATE INDEX, ANALYZE, and DROP TABLE FK enforcement
+    executor
+        .execute(
+            &mut pager,
+            parse_sql("CREATE INDEX idx_staff_dept ON staff(dept_id);").unwrap(),
+        )
+        .unwrap();
+    executor
+        .execute(&mut pager, parse_sql("ANALYZE staff;").unwrap())
+        .unwrap();
+    let drop_parent_err = executor.execute(&mut pager, parse_sql("DROP TABLE depts;").unwrap());
+    assert!(
+        drop_parent_err.is_err(),
+        "DROP TABLE depts must fail FK check while staff references it"
+    );
+}

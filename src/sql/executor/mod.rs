@@ -69,6 +69,7 @@ pub struct SQLExecutor {
     statement_cache: HashMap<String, Statement>,
     statement_cache_order: std::collections::VecDeque<String>,
     predicate_cache: HashMap<String, WhereExpr>,
+    active_ctes: HashMap<String, Vec<Row>>,
     insert_scratch_buf: Vec<u8>,
     insert_scratch_vals: Vec<Value>,
     /// Thread-safe registry for user-defined functions (UDF) and standard scalar extensions
@@ -97,6 +98,7 @@ impl SQLExecutor {
             statement_cache: HashMap::new(),
             statement_cache_order: std::collections::VecDeque::new(),
             predicate_cache: HashMap::new(),
+            active_ctes: HashMap::new(),
             insert_scratch_buf: Vec::with_capacity(256),
             insert_scratch_vals: Vec::with_capacity(16),
             udf_registry: crate::sql::udf::UdfRegistry::new(),
@@ -147,6 +149,7 @@ impl SQLExecutor {
             statement_cache: HashMap::new(),
             statement_cache_order: std::collections::VecDeque::new(),
             predicate_cache: HashMap::new(),
+            active_ctes: self.active_ctes.clone(),
             insert_scratch_buf: Vec::new(),
             insert_scratch_vals: Vec::new(),
             udf_registry: self.udf_registry.clone(),
@@ -311,6 +314,88 @@ impl SQLExecutor {
                 let matches = if *negated { !exists } else { exists };
                 Ok(ResolvedWhereExpr::Boolean(matches))
             }
+            WhereExpr::ScalarSubqueryComparison {
+                column,
+                op,
+                subquery,
+            } => {
+                if !outer_tables.is_empty() {
+                    let mut outer_refs = Vec::new();
+                    collect_statement_outer_refs(
+                        subquery,
+                        outer_tables,
+                        &self.catalog,
+                        &mut outer_refs,
+                    );
+                    if !outer_refs.is_empty() {
+                        return Ok(ResolvedWhereExpr::CorrelatedScalarSubquery {
+                            column: Some(column.clone()),
+                            op: op.clone(),
+                            subquery: subquery.clone(),
+                            literal: None,
+                            outer_refs,
+                        });
+                    }
+                }
+                let val = self.eval_scalar_subquery_value(pager, subquery.as_ref().clone())?;
+                Ok(ResolvedWhereExpr::Condition(WhereCondition {
+                    column: column.clone(),
+                    op: op.clone(),
+                    value: val,
+                }))
+            }
+            WhereExpr::SubqueryComparison {
+                subquery,
+                op,
+                value,
+            } => {
+                if !outer_tables.is_empty() {
+                    let mut outer_refs = Vec::new();
+                    collect_statement_outer_refs(
+                        subquery,
+                        outer_tables,
+                        &self.catalog,
+                        &mut outer_refs,
+                    );
+                    if !outer_refs.is_empty() {
+                        return Ok(ResolvedWhereExpr::CorrelatedScalarSubquery {
+                            column: None,
+                            op: op.clone(),
+                            subquery: subquery.clone(),
+                            literal: Some(value.clone()),
+                            outer_refs,
+                        });
+                    }
+                }
+                let sub_val = self.eval_scalar_subquery_value(pager, subquery.as_ref().clone())?;
+                Ok(ResolvedWhereExpr::Boolean(matches_condition(
+                    &sub_val, op, value,
+                )))
+            }
+        }
+    }
+
+    pub(crate) fn eval_scalar_subquery_value(
+        &mut self,
+        pager: &mut Pager,
+        mut subquery: Statement,
+    ) -> Result<Value> {
+        inject_scalar_limit(&mut subquery);
+        let sub_rows = self.query(pager, subquery)?;
+        if sub_rows.len() > 1 {
+            return Err(Error::SqlSyntax(
+                "Scalar subquery returned more than 1 row".into(),
+            ));
+        }
+        if let Some(first) = sub_rows.first() {
+            if first.values().len() > 1 {
+                return Err(Error::SqlSyntax(
+                    "Scalar subquery must return a single column".into(),
+                ));
+            }
+            Ok(first.values().first().cloned().unwrap_or(Value::Null))
+        } else {
+            Ok(Value::Null)
         }
     }
 
@@ -409,6 +494,42 @@ impl SQLExecutor {
                     in_set
                 })
             }
+            ResolvedWhereExpr::CorrelatedScalarSubquery {
+                column,
+                op,
+                subquery,
+                literal,
+                outer_refs,
+            } => {
+                let cache_id = (subquery.as_ref() as *const Statement) as usize;
+                let key = build_outer_ref_key(row, outer_refs);
+                let sub_val = if let Some(cached) = memo.scalar_cache.get(&(cache_id, key.clone()))
+                {
+                    cached.clone()
+                } else {
+                    let sub_opt =
+                        substitute_outer_statement(subquery, row, outer_tables, &self.catalog);
+                    let computed = match sub_opt {
+                        None => Value::Null,
+                        Some(sub) => self.eval_scalar_subquery_value(pager, sub)?,
+                    };
+                    memo.scalar_cache.insert((cache_id, key), computed.clone());
+                    computed
+                };
+                if let Some(col) = column {
+                    let lhs_val = match row.get_field_or_json_path(col) {
+                        Some(v) => v,
+                        None => match try_eval_scalar_expr(row, col, Some(&self.udf_registry)) {
+                            Ok(Some(v)) => v,
+                            _ => return Ok(false),
+                        },
+                    };
+                    Ok(matches_condition(&lhs_val, op, &sub_val))
+                } else {
+                    let rhs_val = literal.as_ref().unwrap_or(&Value::Null);
+                    Ok(matches_condition(&sub_val, op, rhs_val))
+                }
+            }
             _ => Ok(row_matches_resolved(row, expr)),
         }
     }
@@ -437,6 +558,203 @@ impl SQLExecutor {
             )? {
                 rows.push(row);
             }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prepare_projection_plan(
+        &mut self,
+        pager: &mut Pager,
+        columns: &[String],
+        outer_tables: &[&TableDef],
+    ) -> Result<Vec<PreparedProjColumn>> {
+        let mut plan = Vec::with_capacity(columns.len());
+        for col in columns {
+            let (expr, alias) = parse_col_and_alias(col);
+            let out_name = alias.unwrap_or(expr).to_string();
+            let raw_pieces = crate::sql::parser::parse_proj_subquery_pieces(expr);
+            let mut pieces = Vec::with_capacity(raw_pieces.len());
+            for piece in raw_pieces {
+                match piece {
+                    crate::sql::parser::ProjSubqueryPiece::Raw(s) => {
+                        pieces.push(PreparedProjPiece::Raw(s));
+                    }
+                    crate::sql::parser::ProjSubqueryPiece::Subquery(stmt) => {
+                        let mut outer_refs = Vec::new();
+                        if !outer_tables.is_empty() {
+                            collect_statement_outer_refs(
+                                &stmt,
+                                outer_tables,
+                                &self.catalog,
+                                &mut outer_refs,
+                            );
+                        }
+                        if outer_refs.is_empty() {
+                            let val = self.eval_scalar_subquery_value(pager, *stmt)?;
+                            pieces.push(PreparedProjPiece::Uncorrelated(val));
+                        } else {
+                            pieces.push(PreparedProjPiece::Correlated { stmt, outer_refs });
+                        }
+                    }
+                }
+            }
+            let is_pure_subquery =
+                pieces.len() == 1 && !matches!(pieces[0], PreparedProjPiece::Raw(_));
+            plan.push(PreparedProjColumn {
+                raw_col: col.clone(),
+                expr: expr.to_string(),
+                out_name,
+                pieces,
+                is_pure_subquery,
+            });
+        }
+        Ok(plan)
+    }
+
+    pub(crate) fn eval_prepared_proj_piece(
+        &mut self,
+        pager: &mut Pager,
+        row: &Row,
+        piece: &PreparedProjPiece,
+        outer_tables: &[&TableDef],
+        memo: &mut CorrelatedSubqueryMemo,
+    ) -> Result<Option<Value>> {
+        match piece {
+            PreparedProjPiece::Raw(_) => Ok(None),
+            PreparedProjPiece::Uncorrelated(v) => Ok(Some(v.clone())),
+            PreparedProjPiece::Correlated { stmt, outer_refs } => {
+                let cache_id = (stmt.as_ref() as *const Statement) as usize;
+                let key = build_outer_ref_key(row, outer_refs);
+                if let Some(cached) = memo.scalar_cache.get(&(cache_id, key.clone())) {
+                    return Ok(Some(cached.clone()));
+                }
+                let sub_opt = substitute_outer_statement(stmt, row, outer_tables, &self.catalog);
+                let computed = match sub_opt {
+                    None => Value::Null,
+                    Some(sub) => self.eval_scalar_subquery_value(pager, sub)?,
+                };
+                memo.scalar_cache.insert((cache_id, key), computed.clone());
+                Ok(Some(computed))
+            }
+        }
+    }
+
+    pub(crate) fn eval_prepared_projection_col(
+        &mut self,
+        pager: &mut Pager,
+        row: &Row,
+        col_plan: &PreparedProjColumn,
+        outer_tables: &[&TableDef],
+        memo: &mut CorrelatedSubqueryMemo,
+    ) -> Result<Value> {
+        if col_plan.pieces.is_empty() {
+            return eval_projected_expr(
+                row,
+                &col_plan.expr,
+                &col_plan.raw_col,
+                Some(&self.udf_registry),
+            );
+        }
+        if col_plan.is_pure_subquery {
+            return Ok(self
+                .eval_prepared_proj_piece(pager, row, &col_plan.pieces[0], outer_tables, memo)?
+                .unwrap_or(Value::Null));
+        }
+        let mut substituted = String::new();
+        for piece in &col_plan.pieces {
+            if !substituted.is_empty() {
+                substituted.push(' ');
+            }
+            match piece {
+                PreparedProjPiece::Raw(s) => substituted.push_str(s),
+                _ => {
+                    let v = self
+                        .eval_prepared_proj_piece(pager, row, piece, outer_tables, memo)?
+                        .unwrap_or(Value::Null);
+                    match v {
+                        Value::Null => substituted.push_str("NULL"),
+                        Value::Integer(i) => substituted.push_str(&i.to_string()),
+                        Value::Real(f) => substituted.push_str(&f.to_string()),
+                        Value::Text(s) => {
+                            substituted.push('\'');
+                            substituted.push_str(&s.replace('\'', "''"));
+                            substituted.push('\'');
+                        }
+                        other => substituted.push_str(&other.to_string()),
+                    }
+                }
+            }
+        }
+        eval_projected_expr(
+            row,
+            &substituted,
+            &col_plan.raw_col,
+            Some(&self.udf_registry),
+        )
+    }
+
+    pub(crate) fn project_row_with_plan(
+        &mut self,
+        pager: &mut Pager,
+        row: &Row,
+        plan: &[PreparedProjColumn],
+        outer_tables: &[&TableDef],
+        memo: &mut CorrelatedSubqueryMemo,
+    ) -> Result<Row> {
+        let mut names = Vec::with_capacity(plan.len());
+        let mut vals = Vec::with_capacity(plan.len());
+        for col_plan in plan {
+            names.push(col_plan.out_name.clone());
+            vals.push(self.eval_prepared_projection_col(
+                pager,
+                row,
+                col_plan,
+                outer_tables,
+                memo,
+            )?);
+        }
+        Ok(Row::new(names, vals))
+    }
+
+    pub(crate) fn enrich_rows_with_order_plan(
+        &mut self,
+        pager: &mut Pager,
+        rows: &mut [Row],
+        plan: &[PreparedProjColumn],
+        order_by: &[crate::sql::parser::OrderByClause],
+        outer_tables: &[&TableDef],
+        memo: &mut CorrelatedSubqueryMemo,
+    ) -> Result<()> {
+        if rows.is_empty() || order_by.is_empty() {
+            return Ok(());
+        }
+        let mut missing_indices = Vec::new();
+        for ord in order_by {
+            if rows[0].get_value(&ord.column).is_some() {
+                continue;
+            }
+            if let Some((idx, _)) = plan
+                .iter()
+                .enumerate()
+                .find(|(_, p)| p.out_name.eq_ignore_ascii_case(&ord.column))
+                && !missing_indices.contains(&idx)
+            {
+                missing_indices.push(idx);
+            }
+        }
+        if missing_indices.is_empty() {
+            return Ok(());
+        }
+        for row in rows.iter_mut() {
+            let mut new_cols = row.columns().to_vec();
+            let mut new_vals = row.values().to_vec();
+            for &idx in &missing_indices {
+                let val =
+                    self.eval_prepared_projection_col(pager, row, &plan[idx], outer_tables, memo)?;
+                new_cols.push(plan[idx].out_name.clone());
+                new_vals.push(val);
+            }
+            *row = Row::new(new_cols, new_vals);
         }
         Ok(())
     }
@@ -748,34 +1066,35 @@ impl SQLExecutor {
                 pager.write_page(index_root, &index_buf)?;
 
                 // Populate inverted index posting list with existing rows matching partial predicate (if any)
-                let cells = self.btree.scan(pager, table_def.root_page)?;
                 let all_col_names = table_def.column_names();
                 let mut buckets: HashMap<u64, IndexBucket> = HashMap::new();
 
-                for cell in cells {
-                    let full_row = decode_row(&cell.payload, &all_col_names)?;
-                    if let Some(ref pred) = resolved_predicate
-                        && !row_matches_resolved(&full_row, pred)
-                    {
-                        continue;
-                    }
-                    if let Some((col_val, all_non_null)) =
-                        extract_index_key_value(&full_row, &target_cols)
-                    {
-                        let key = value_to_index_key(&col_val);
-                        let bucket = buckets.entry(key).or_default();
-                        if unique
-                            && all_non_null
-                            && bucket.get_row_ids(&col_val).is_some_and(|r| !r.is_empty())
+                self.btree
+                    .scan_with_ref(pager, table_def.root_page, |row_id, payload| {
+                        let full_row = decode_row(payload, &all_col_names)?;
+                        if let Some(ref pred) = resolved_predicate
+                            && !row_matches_resolved(&full_row, pred)
                         {
-                            return Err(Error::ConstraintViolation(format!(
-                                "UNIQUE index '{name}' failed: duplicate key in {table}({})",
-                                target_cols.join(", ")
-                            )));
+                            return Ok(true);
                         }
-                        bucket.add_row_id(col_val, cell.row_id);
-                    }
-                }
+                        if let Some((col_val, all_non_null)) =
+                            extract_index_key_value(&full_row, &target_cols)
+                        {
+                            let key = value_to_index_key(&col_val);
+                            let bucket = buckets.entry(key).or_default();
+                            if unique
+                                && all_non_null
+                                && bucket.get_row_ids(&col_val).is_some_and(|r| !r.is_empty())
+                            {
+                                return Err(Error::ConstraintViolation(format!(
+                                    "UNIQUE index '{name}' failed: duplicate key in {table}({})",
+                                    target_cols.join(", ")
+                                )));
+                            }
+                            bucket.add_row_id(col_val, row_id);
+                        }
+                        Ok(true)
+                    })?;
 
                 for (key, bucket) in buckets {
                     let idx_payload = bucket.to_bytes();
@@ -814,21 +1133,25 @@ impl SQLExecutor {
                             for fk in collect_table_foreign_keys(&child_def) {
                                 if fk.ref_table.eq_ignore_ascii_case(&table) {
                                     let child_cols = child_def.column_names();
-                                    let cells = self.btree.scan(pager, child_def.root_page)?;
-                                    for cell in cells {
-                                        let row = decode_row(&cell.payload, &child_cols)?;
-                                        let has_non_null_ref = fk.columns.iter().all(|c| {
-                                            !row.get_field_or_json_path(c)
-                                                .unwrap_or(Value::Null)
-                                                .is_null()
-                                        });
-                                        if has_non_null_ref {
-                                            return Err(Error::ConstraintViolation(format!(
-                                                "FOREIGN KEY constraint failed on DROP TABLE '{table}': referenced by '{}'",
-                                                child_def.name
-                                            )));
-                                        }
-                                    }
+                                    self.btree.scan_with_ref(
+                                        pager,
+                                        child_def.root_page,
+                                        |_row_id, payload| {
+                                            let row = decode_row(payload, &child_cols)?;
+                                            let has_non_null_ref = fk.columns.iter().all(|c| {
+                                                !row.get_field_or_json_path(c)
+                                                    .unwrap_or(Value::Null)
+                                                    .is_null()
+                                            });
+                                            if has_non_null_ref {
+                                                return Err(Error::ConstraintViolation(format!(
+                                                    "FOREIGN KEY constraint failed on DROP TABLE '{table}': referenced by '{}'",
+                                                    child_def.name
+                                                )));
+                                            }
+                                            Ok(true)
+                                        },
+                                    )?;
                                 }
                             }
                         }
@@ -1049,37 +1372,37 @@ impl SQLExecutor {
                 let mut analyzed_count = 0;
                 for tname in tables_to_analyze {
                     if let Some(tdef) = self.catalog.get_table(&tname).cloned() {
-                        let cells = self.btree.scan(pager, tdef.root_page)?;
-                        let total_rows = cells.len();
+                        let mut total_rows = 0usize;
                         let all_cols = tdef.column_names();
                         let mut distinct_map = HashMap::new();
                         let mut null_map = HashMap::new();
-                        let mut total_bytes = 0;
+                        let mut total_bytes = 0usize;
 
                         for col in &all_cols {
                             distinct_map.insert(col.clone(), std::collections::HashSet::new());
                             null_map.insert(col.clone(), 0usize);
                         }
 
-                        for cell in &cells {
-                            total_bytes += cell.payload.len();
-                            if let Ok(row) = decode_row(&cell.payload, &all_cols) {
-                                for col in &all_cols {
-                                    if let Some(v) = row.get_field_or_json_path(col) {
-                                        if v.is_null() {
-                                            if let Some(n) = null_map.get_mut(col) {
-                                                *n += 1;
-                                            }
-                                        } else {
-                                            if let Some(set) = distinct_map.get_mut(col) {
+                        self.btree
+                            .scan_with_ref(pager, tdef.root_page, |_row_id, payload| {
+                                total_rows += 1;
+                                total_bytes += payload.len();
+                                if let Ok(row) = decode_row(payload, &all_cols) {
+                                    for col in &all_cols {
+                                        if let Some(v) = row.get_field_or_json_path(col) {
+                                            if v.is_null() {
+                                                if let Some(n) = null_map.get_mut(col) {
+                                                    *n += 1;
+                                                }
+                                            } else if let Some(set) = distinct_map.get_mut(col) {
                                                 let key = format!("{v:?}");
                                                 set.insert(key);
                                             }
                                         }
                                     }
                                 }
-                            }
-                        }
+                                Ok(true)
+                            })?;
 
                         let mut column_distinct = HashMap::new();
                         for (k, v) in distinct_map {

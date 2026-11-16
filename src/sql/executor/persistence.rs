@@ -23,7 +23,7 @@ impl SQLExecutor {
                 where_clause: None,
                 group_by: None,
                 having: None,
-                order_by: None,
+                order_by: Vec::new(),
                 limit: None,
                 offset: None,
                 as_of_timestamp: None,
@@ -120,7 +120,7 @@ impl SQLExecutor {
                 where_clause: None,
                 group_by: None,
                 having: None,
-                order_by: None,
+                order_by: Vec::new(),
                 limit: None,
                 offset: None,
                 as_of_timestamp: None,
@@ -461,22 +461,26 @@ impl SQLExecutor {
     pub fn load_graph_from_disk(&mut self, pager: &mut Pager) -> Result<()> {
         if let Some(table) = self.catalog.get_table("__sys_graph_nodes") {
             let root_page = table.root_page;
-            let cells = self.btree.scan(pager, root_page)?;
-            for cell in cells {
-                if let Ok(node) = serde_json::from_slice::<crate::graph::Node>(&cell.payload) {
-                    self.graph.restore_node(node);
+            let btree = &self.btree;
+            let graph = &mut self.graph;
+            btree.scan_with_ref(pager, root_page, |_row_id, payload| {
+                if let Ok(node) = serde_json::from_slice::<crate::graph::Node>(payload) {
+                    graph.restore_node(node);
                 }
-            }
+                Ok(true)
+            })?;
         }
 
         if let Some(table) = self.catalog.get_table("__sys_graph_edges") {
             let root_page = table.root_page;
-            let cells = self.btree.scan(pager, root_page)?;
-            for cell in cells {
-                if let Ok(edge) = serde_json::from_slice::<crate::graph::Edge>(&cell.payload) {
-                    self.graph.restore_edge(edge);
+            let btree = &self.btree;
+            let graph = &mut self.graph;
+            btree.scan_with_ref(pager, root_page, |_row_id, payload| {
+                if let Ok(edge) = serde_json::from_slice::<crate::graph::Edge>(payload) {
+                    graph.restore_edge(edge);
                 }
-            }
+                Ok(true)
+            })?;
         }
 
         Ok(())
@@ -629,21 +633,26 @@ impl SQLExecutor {
         }
         if let Some(tdef) = self.catalog.get_table("__sys_time_travel") {
             let root_page = tdef.root_page;
-            let cells = self.btree.scan(pager, root_page)?;
-            for cell in cells {
-                if let Ok(mut record) = serde_json::from_slice::<TemporalRecord>(&cell.payload)
-                    && record.table_name.eq_ignore_ascii_case(table)
-                    && record.row_id == row_id
-                    && record.valid_to == u64::MAX
-                {
-                    record.valid_to = end_time;
-                    let updated_payload = serde_json::to_vec(&record).map_err(|e| {
-                        Error::Corrupted(format!("Failed to serialize temporal record: {e}"))
-                    })?;
-                    self.btree
-                        .insert(pager, root_page, cell.row_id, &updated_payload)?;
-                    break;
-                }
+            let mut match_update: Option<(u64, Vec<u8>)> = None;
+            self.btree
+                .scan_with_ref(pager, root_page, |cell_row_id, payload| {
+                    if let Ok(mut record) = serde_json::from_slice::<TemporalRecord>(payload)
+                        && record.table_name.eq_ignore_ascii_case(table)
+                        && record.row_id == row_id
+                        && record.valid_to == u64::MAX
+                    {
+                        record.valid_to = end_time;
+                        let updated_payload = serde_json::to_vec(&record).map_err(|e| {
+                            Error::Corrupted(format!("Failed to serialize temporal record: {e}"))
+                        })?;
+                        match_update = Some((cell_row_id, updated_payload));
+                        return Ok(false);
+                    }
+                    Ok(true)
+                })?;
+            if let Some((cell_row_id, updated_payload)) = match_update {
+                self.btree
+                    .insert(pager, root_page, cell_row_id, &updated_payload)?;
             }
         }
         Ok(())
@@ -683,10 +692,12 @@ impl SQLExecutor {
             .get_table(table)
             .ok_or_else(|| Error::TableNotFound(table.into()))?;
         let mut hash = crc32fast::Hasher::new();
-        for cell in self.btree.scan(pager, definition.root_page)? {
-            hash.update(&cell.row_id.to_le_bytes());
-            hash.update(&cell.payload);
-        }
+        self.btree
+            .scan_with_ref(pager, definition.root_page, |row_id, payload| {
+                hash.update(&row_id.to_le_bytes());
+                hash.update(payload);
+                Ok(true)
+            })?;
         Ok(hash.finalize())
     }
 
@@ -704,11 +715,19 @@ impl SQLExecutor {
                 let p = pager.vector_index_page();
                 if p != 0 { Some(p) } else { None }
             });
-        if let Some(root_page) = snap_root
-            && let Ok(cells) = self.btree.scan(pager, root_page)
-        {
-            for cell in cells {
-                if let Ok(rec) = serde_json::from_slice::<VectorSnapshotRecord>(&cell.payload) {
+        if let Some(root_page) = snap_root {
+            let mut snapshots = Vec::new();
+            if self
+                .btree
+                .scan_with_ref(pager, root_page, |_row_id, payload| {
+                    if let Ok(rec) = serde_json::from_slice::<VectorSnapshotRecord>(payload) {
+                        snapshots.push(rec);
+                    }
+                    Ok(true)
+                })
+                .is_ok()
+            {
+                for rec in snapshots {
                     if !self.catalog.table_exists(&rec.table_name)
                         || rec.table_fingerprint
                             != Some(self.table_fingerprint(pager, &rec.table_name)?)
@@ -724,23 +743,33 @@ impl SQLExecutor {
         }
 
         // 2. Fallback: for any vector table lacking a persistent snapshot, construct from rows
-        for table in self.catalog.tables() {
-            let tname = table.name.to_lowercase();
-            if !loaded_tables.contains(&tname)
-                && let Some((vec_idx, dims)) = table.vector_column()
-            {
-                let mut index = HnswIndex::new(dims, DistanceMetric::Cosine);
-                let cells = self.btree.scan(pager, table.root_page)?;
-                let all_col_names = table.column_names();
-                for cell in cells {
-                    if let Ok(row) = decode_row(&cell.payload, &all_col_names)
+        let missing_vector_tables: Vec<_> = self
+            .catalog
+            .tables()
+            .into_iter()
+            .filter_map(|table| {
+                let tname = table.name.to_lowercase();
+                if !loaded_tables.contains(&tname)
+                    && let Some((vec_idx, dims)) = table.vector_column()
+                {
+                    Some((tname, table.root_page, vec_idx, dims, table.column_names()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (tname, tbl_root, vec_idx, dims, all_col_names) in missing_vector_tables {
+            let mut index = HnswIndex::new(dims, DistanceMetric::Cosine);
+            self.btree
+                .scan_with_ref(pager, tbl_root, |row_id, payload| {
+                    if let Ok(row) = decode_row(payload, &all_col_names)
                         && let Some(crate::traits::Value::Vector(vec)) = row.values().get(vec_idx)
                     {
-                        index.insert_vector(cell.row_id, vec)?;
+                        index.insert_vector(row_id, vec)?;
                     }
-                }
-                self.vector_indexes.insert(tname, index);
-            }
+                    Ok(true)
+                })?;
+            self.vector_indexes.insert(tname, index);
         }
         Ok(())
     }
@@ -807,10 +836,11 @@ impl SQLExecutor {
         let store = crate::vector::PagedVectorStore::new(cache_capacity);
         let vec_table_name = format!("__sys_paged_vec_{}", table_name.to_lowercase());
         if let Some(t) = self.catalog.get_table(&vec_table_name) {
-            let cells = self.btree.scan(pager, t.root_page)?;
-            for cell in cells {
-                store.load_page(cell.row_id, cell.payload);
-            }
+            self.btree
+                .scan_with_ref(pager, t.root_page, |row_id, payload| {
+                    store.load_page(row_id, payload.to_vec());
+                    Ok(true)
+                })?;
         }
 
         Ok(Some(crate::vector::PagedHnswIndex::import_header(

@@ -197,6 +197,21 @@ pub enum ResolvedWhereExpr {
         /// Deduplicated outer column names referenced by the subquery
         outer_refs: Vec<String>,
     },
+    /// Correlated scalar subquery comparison:
+    /// - `column: Some(col), literal: None` represents `col <op> (SELECT ...)`
+    /// - `column: None, literal: Some(val)` represents `(SELECT ...) <op> val`
+    CorrelatedScalarSubquery {
+        /// Optional LHS column name when form is `col <op> (SELECT ...)`
+        column: Option<String>,
+        /// Comparison operator
+        op: BinaryOp,
+        /// Inner SELECT subquery referencing outer columns
+        subquery: Box<Statement>,
+        /// Optional RHS literal value when form is `(SELECT ...) <op> val`
+        literal: Option<Value>,
+        /// Deduplicated outer column names referenced by the subquery
+        outer_refs: Vec<String>,
+    },
 }
 
 /// A temporal version record for point-in-time SQL time-travel queries
@@ -597,7 +612,10 @@ pub(crate) fn eval_where_three_valued(
                 Some(if *negated { !found } else { found })
             }
         }
-        WhereExpr::InSubquery { .. } | WhereExpr::Exists { .. } => Some(true),
+        WhereExpr::InSubquery { .. }
+        | WhereExpr::Exists { .. }
+        | WhereExpr::ScalarSubqueryComparison { .. }
+        | WhereExpr::SubqueryComparison { .. } => Some(true),
         WhereExpr::ColumnComparison {
             left_col,
             op,
@@ -1151,6 +1169,30 @@ pub(crate) fn mark_resolved_where_columns(
             }
             true
         }
+        ResolvedWhereExpr::CorrelatedScalarSubquery {
+            column, outer_refs, ..
+        } => {
+            if let Some(col) = column {
+                let Some(c_idx) = resolve_direct_table_col(table_def, col) else {
+                    return false;
+                };
+                if c_idx >= mask.len() {
+                    return false;
+                }
+                mask[c_idx] = true;
+            }
+            for r in outer_refs {
+                let Some(idx) = resolve_direct_table_col(table_def, r) else {
+                    return false;
+                };
+                if idx < mask.len() {
+                    mask[idx] = true;
+                } else {
+                    return false;
+                }
+            }
+            true
+        }
     }
 }
 
@@ -1158,7 +1200,8 @@ pub(crate) fn mark_resolved_where_columns(
 pub(crate) fn resolved_where_has_correlated(expr: &ResolvedWhereExpr) -> bool {
     match expr {
         ResolvedWhereExpr::CorrelatedExists { .. }
-        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => true,
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. }
+        | ResolvedWhereExpr::CorrelatedScalarSubquery { .. } => true,
         ResolvedWhereExpr::And(l, r) | ResolvedWhereExpr::Or(l, r) => {
             resolved_where_has_correlated(l) || resolved_where_has_correlated(r)
         }
@@ -1241,7 +1284,8 @@ fn join_predicate_table_owner(expr: &ResolvedWhereExpr, tables: &[&TableDef]) ->
             (lo == ro).then_some(lo)
         }
         ResolvedWhereExpr::CorrelatedExists { .. }
-        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => None,
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. }
+        | ResolvedWhereExpr::CorrelatedScalarSubquery { .. } => None,
     }
 }
 
@@ -1339,6 +1383,42 @@ pub(crate) fn split_join_where_predicates(
 pub(crate) struct CorrelatedSubqueryMemo {
     pub exists_cache: HashMap<(usize, Vec<HashableValue>), bool>,
     pub in_cache: HashMap<(usize, Vec<HashableValue>), Arc<InValueLookup>>,
+    pub scalar_cache: HashMap<(usize, Vec<HashableValue>), Value>,
+}
+
+#[derive(Clone)]
+pub(crate) enum PreparedProjPiece {
+    Raw(String),
+    Uncorrelated(Value),
+    Correlated {
+        stmt: Box<Statement>,
+        outer_refs: Vec<String>,
+    },
+}
+
+pub(crate) struct PreparedProjColumn {
+    pub(crate) raw_col: String,
+    pub(crate) expr: String,
+    pub(crate) out_name: String,
+    pub(crate) pieces: Vec<PreparedProjPiece>,
+    pub(crate) is_pure_subquery: bool,
+}
+
+#[inline]
+pub(crate) fn has_projection_subquery(columns: &[String]) -> bool {
+    columns
+        .iter()
+        .any(|c| c.contains('(') && c.to_ascii_uppercase().contains("SELECT"))
+}
+
+#[inline]
+pub(crate) fn inject_scalar_limit(sub: &mut Statement) {
+    if let Statement::Select { limit, offset, .. } = sub
+        && limit.is_none()
+        && offset.is_none()
+    {
+        *limit = Some(2);
+    }
 }
 
 #[inline]
@@ -1354,7 +1434,7 @@ pub(crate) fn inject_exists_limit(sub: &mut Statement) {
     {
         *limit = Some(1);
         if offset.is_none() {
-            *order_by = None;
+            order_by.clear();
             *distinct = false;
         }
     }
@@ -1540,7 +1620,21 @@ fn collect_where_outer_refs(
             }
             collect_statement_outer_refs(subquery, outer_tables, catalog, out);
         }
-        WhereExpr::Exists { subquery, .. } => {
+        WhereExpr::Exists { subquery, .. } | WhereExpr::SubqueryComparison { subquery, .. } => {
+            collect_statement_outer_refs(subquery, outer_tables, catalog, out);
+        }
+        WhereExpr::ScalarSubqueryComparison {
+            column, subquery, ..
+        } => {
+            if let Some(r) = lookup_outer_col(
+                column,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+            ) {
+                push_unique_outer_ref(out, &r);
+            }
             collect_statement_outer_refs(subquery, outer_tables, catalog, out);
         }
     }
@@ -1816,6 +1910,53 @@ fn substitute_outer_where(
                 })
             } else {
                 SubstWhere::Always(*negated)
+            }
+        }
+        WhereExpr::ScalarSubqueryComparison {
+            column,
+            op,
+            subquery,
+        } => {
+            let sub = substitute_outer_statement(subquery, outer_row, outer_tables, catalog);
+            let outer_col = lookup_outer_col(
+                column,
+                inner_tables,
+                inner_names,
+                inner_all_known,
+                outer_tables,
+            );
+            match (outer_col, sub) {
+                (_, None) => SubstWhere::Always(false),
+                (Some(oc), Some(s)) => {
+                    let val = outer_row.get_field_or_json_path(&oc).unwrap_or(Value::Null);
+                    SubstWhere::Expr(WhereExpr::SubqueryComparison {
+                        subquery: Box::new(s),
+                        op: flip_comparison_op(op).unwrap_or_else(|| op.clone()),
+                        value: val,
+                    })
+                }
+                (None, Some(s)) => SubstWhere::Expr(WhereExpr::ScalarSubqueryComparison {
+                    column: column.clone(),
+                    op: op.clone(),
+                    subquery: Box::new(s),
+                }),
+            }
+        }
+        WhereExpr::SubqueryComparison {
+            subquery,
+            op,
+            value,
+        } => {
+            if let Some(sub) =
+                substitute_outer_statement(subquery, outer_row, outer_tables, catalog)
+            {
+                SubstWhere::Expr(WhereExpr::SubqueryComparison {
+                    subquery: Box::new(sub),
+                    op: op.clone(),
+                    value: value.clone(),
+                })
+            } else {
+                SubstWhere::Always(matches_condition(&Value::Null, op, value))
             }
         }
     }

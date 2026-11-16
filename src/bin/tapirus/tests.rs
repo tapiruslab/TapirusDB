@@ -491,12 +491,26 @@ fn http_api_key_sql_rbac_enforces_roles_and_table_allowlists()
         .is_ok()
     );
 
-    // 2. Read-only key cannot access non-allowlisted table directly, via JOIN, or via subquery
+    // 2. Read-only key cannot access non-allowlisted table directly, via JOIN, or via subqueries (EXISTS / scalar)
     assert!(send_sql("ro-public", "SELECT * FROM secrets;").starts_with("HTTP/1.1 403 Forbidden"));
     assert!(
         send_sql(
             "ro-public",
             "SELECT p.id FROM public_items p WHERE EXISTS (SELECT id FROM secrets);"
+        )
+        .starts_with("HTTP/1.1 403 Forbidden")
+    );
+    assert!(
+        send_sql(
+            "ro-public",
+            "SELECT p.id, (SELECT COUNT(*) FROM secrets) AS leak FROM public_items p;"
+        )
+        .starts_with("HTTP/1.1 403 Forbidden")
+    );
+    assert!(
+        send_sql(
+            "ro-public",
+            "SELECT p.id FROM public_items p WHERE p.id = (SELECT id FROM secrets LIMIT 1);"
         )
         .starts_with("HTTP/1.1 403 Forbidden")
     );

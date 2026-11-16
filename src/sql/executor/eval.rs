@@ -1,3 +1,4 @@
+use super::SQLExecutor;
 use super::types::ResolvedWhereExpr;
 use crate::error::{Error, Result};
 use crate::sql::parser::{BinaryOp, WhereCondition};
@@ -214,7 +215,8 @@ pub(crate) fn slice_matches_resolved(
             matches_condition(l_val, op, r_val)
         }
         ResolvedWhereExpr::CorrelatedExists { .. }
-        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => false,
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. }
+        | ResolvedWhereExpr::CorrelatedScalarSubquery { .. } => false,
     }
 }
 
@@ -329,7 +331,8 @@ pub fn row_matches_resolved_with_udf(
             matches_condition(&l_val, op, &r_val)
         }
         ResolvedWhereExpr::CorrelatedExists { .. }
-        | ResolvedWhereExpr::CorrelatedInSubquery { .. } => false,
+        | ResolvedWhereExpr::CorrelatedInSubquery { .. }
+        | ResolvedWhereExpr::CorrelatedScalarSubquery { .. } => false,
     }
 }
 
@@ -349,7 +352,7 @@ pub fn row_matches_conditions(row: &Row, conditions: &[WhereCondition]) -> bool 
 
 pub(crate) fn parse_col_and_alias(col: &str) -> (&str, Option<&str>) {
     let trimmed = col.trim();
-    if let Some(pos) = trimmed.to_ascii_uppercase().rfind(" AS ") {
+    if let Some(pos) = crate::sql::parser::find_top_level_as(trimmed) {
         let expr = trimmed[..pos].trim();
         let alias = trimmed[pos + 4..].trim();
         if !alias.is_empty() {
@@ -673,6 +676,28 @@ pub fn project_row(row: &Row, requested_cols: &[String]) -> Result<Row> {
     project_row_with_udf(row, requested_cols, None)
 }
 
+pub(crate) fn eval_projected_expr(
+    row: &Row,
+    expr: &str,
+    raw_col: &str,
+    udfs: Option<&crate::sql::udf::UdfRegistry>,
+) -> Result<Value> {
+    if let Some(fn_val) = try_eval_scalar_expr(row, expr, udfs)? {
+        Ok(fn_val)
+    } else if (expr.starts_with('\'') && expr.ends_with('\''))
+        || expr.parse::<f64>().is_ok()
+        || expr.eq_ignore_ascii_case("NULL")
+    {
+        eval_func_arg(row, expr, udfs)
+    } else {
+        Ok(row
+            .get_field_or_json_path(expr)
+            .or_else(|| row.get_field_or_json_path(raw_col))
+            .or_else(|| row.get_value(expr).cloned())
+            .unwrap_or(Value::Null))
+    }
+}
+
 /// Project a row with custom scalar UDF registry and standard SQL scalar functions
 pub fn project_row_with_udf(
     row: &Row,
@@ -683,19 +708,7 @@ pub fn project_row_with_udf(
     let mut vals = Vec::with_capacity(requested_cols.len());
     for col in requested_cols {
         let (expr, alias) = parse_col_and_alias(col);
-        let val = if let Some(fn_val) = try_eval_scalar_expr(row, expr, udfs)? {
-            fn_val
-        } else if (expr.starts_with('\'') && expr.ends_with('\''))
-            || expr.parse::<f64>().is_ok()
-            || expr.eq_ignore_ascii_case("NULL")
-        {
-            eval_func_arg(row, expr, udfs)?
-        } else {
-            row.get_field_or_json_path(expr)
-                .or_else(|| row.get_field_or_json_path(col))
-                .or_else(|| row.get_value(expr).cloned())
-                .unwrap_or(Value::Null)
-        };
+        let val = eval_projected_expr(row, expr, col, udfs)?;
         names.push(alias.unwrap_or(expr).to_string());
         vals.push(val);
     }
@@ -1394,4 +1407,70 @@ pub(crate) fn aggregate_ephemeral_rows(
     }
 
     grouped_rows
+}
+
+pub(crate) fn compare_rows_by_order(
+    a: &Row,
+    b: &Row,
+    order_by: &[crate::sql::parser::OrderByClause],
+) -> std::cmp::Ordering {
+    for ord in order_by {
+        let va = a.get_value(&ord.column).unwrap_or(&Value::Null);
+        let vb = b.get_value(&ord.column).unwrap_or(&Value::Null);
+        let cmp = if ord.is_ascending {
+            va.compare(vb)
+        } else {
+            vb.compare(va)
+        };
+        if cmp != std::cmp::Ordering::Equal {
+            return cmp;
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// Append projected SELECT alias columns referenced by `ORDER BY` when raw rows lack them,
+/// so multi-column `ORDER BY` works uniformly across base columns and computed aliases.
+pub(crate) fn enrich_rows_with_order_aliases(
+    executor: &SQLExecutor,
+    rows: &mut [Row],
+    columns: &[String],
+    order_by: &[crate::sql::parser::OrderByClause],
+) -> Result<()> {
+    if rows.is_empty() || order_by.is_empty() || columns.is_empty() {
+        return Ok(());
+    }
+    let mut missing_aliases: Vec<(String, String, String)> = Vec::new();
+    for ord in order_by {
+        if rows[0].get_value(&ord.column).is_some()
+            || missing_aliases
+                .iter()
+                .any(|(_, _, alias)| alias.eq_ignore_ascii_case(&ord.column))
+        {
+            continue;
+        }
+        for col in columns {
+            let (expr, alias_opt) = parse_col_and_alias(col);
+            if let Some(alias) = alias_opt
+                && alias.eq_ignore_ascii_case(&ord.column)
+            {
+                missing_aliases.push((col.clone(), expr.to_string(), alias.to_string()));
+                break;
+            }
+        }
+    }
+    if missing_aliases.is_empty() {
+        return Ok(());
+    }
+    for row in rows.iter_mut() {
+        let mut new_cols = row.columns().to_vec();
+        let mut new_vals = row.values().to_vec();
+        for (raw_col, expr, alias) in &missing_aliases {
+            let val = eval_projected_expr(row, expr, raw_col, Some(&executor.udf_registry))?;
+            new_cols.push(alias.clone());
+            new_vals.push(val);
+        }
+        *row = Row::new(new_cols, new_vals);
+    }
+    Ok(())
 }

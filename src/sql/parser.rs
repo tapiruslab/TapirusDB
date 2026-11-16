@@ -179,6 +179,24 @@ pub enum WhereExpr {
         /// Right-hand column name
         right_col: String,
     },
+    /// Scalar subquery comparison: `col <op> (SELECT ...)`
+    ScalarSubqueryComparison {
+        /// Target column name
+        column: String,
+        /// Comparison operator
+        op: BinaryOp,
+        /// Inner SELECT subquery
+        subquery: Box<Statement>,
+    },
+    /// Left-hand scalar subquery comparison: `(SELECT ...) <op> value` or `IS [NOT] NULL`
+    SubqueryComparison {
+        /// Inner SELECT subquery
+        subquery: Box<Statement>,
+        /// Comparison operator
+        op: BinaryOp,
+        /// Right-hand literal value
+        value: Value,
+    },
 }
 
 impl WhereExpr {
@@ -280,8 +298,8 @@ pub enum Statement {
         group_by: Option<Vec<String>>,
         /// Optional HAVING filter expression
         having: Option<WhereExpr>,
-        /// Optional ORDER BY clause
-        order_by: Option<OrderByClause>,
+        /// Optional ORDER BY clauses
+        order_by: Vec<OrderByClause>,
         /// Optional row limit
         limit: Option<usize>,
         /// Optional row offset for pagination
@@ -2091,7 +2109,7 @@ fn parse_window_spec(tokens: &[Token], cursor: &mut usize) -> Result<String> {
     Ok(format!("OVER ({})", parts.join(" ")))
 }
 
-fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<String> {
+fn parse_column_expr_no_alias(tokens: &[Token], cursor: &mut usize) -> Result<String> {
     let mut expr = parse_column_primary(tokens, cursor)?;
 
     while let Some(tok) = tokens.get(*cursor) {
@@ -2108,6 +2126,12 @@ fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<Strin
         let rhs = parse_column_primary(tokens, cursor)?;
         expr = format!("{expr} {op} {rhs}");
     }
+
+    Ok(expr)
+}
+
+fn parse_column_expression(tokens: &[Token], cursor: &mut usize) -> Result<String> {
+    let mut expr = parse_column_expr_no_alias(tokens, cursor)?;
 
     // Check optional AS alias
     if check_token(tokens, *cursor, &Token::As) {
@@ -2126,28 +2150,53 @@ fn parse_column_primary(tokens: &[Token], cursor: &mut usize) -> Result<String> 
         ));
     }
     if check_token(tokens, *cursor, &Token::OpenParen) {
-        *cursor += 1;
-        let mut inner = parse_column_primary(tokens, cursor)?;
-        while let Some(tok) = tokens.get(*cursor) {
-            let op = match tok {
-                Token::Plus => "+",
-                Token::Dash => "-",
-                Token::Asterisk => "*",
-                Token::Slash => "/",
-                Token::Percent => "%",
-                Token::Concat => "||",
-                _ => break,
-            };
+        if tokens.get(*cursor + 1) == Some(&Token::Select) {
+            let sub_start = *cursor + 1;
             *cursor += 1;
-            let rhs = parse_column_primary(tokens, cursor)?;
-            inner = format!("{inner} {op} {rhs}");
+            let _validated = parse_compound_select(tokens, cursor)?;
+            let sub_end = *cursor;
+            expect_token(tokens, cursor, &Token::CloseParen)?;
+            return Ok(format!(
+                "({})",
+                crate::sql::lexer::tokens_to_sql(&tokens[sub_start..sub_end])
+            ));
         }
+        *cursor += 1;
+        let inner = parse_column_expr_no_alias(tokens, cursor)?;
         expect_token(tokens, cursor, &Token::CloseParen)?;
         return Ok(format!("({inner})"));
     }
     let expr = match &tokens[*cursor] {
-        Token::StringLit(_) | Token::IntLit(_) | Token::FloatLit(_) | Token::Null | Token::Dash => {
-            parse_func_arg_expr(tokens, cursor)?
+        Token::StringLit(s) => {
+            let res = format!("'{}'", s.replace('\'', "''"));
+            *cursor += 1;
+            res
+        }
+        Token::IntLit(n) => {
+            let res = n.to_string();
+            *cursor += 1;
+            res
+        }
+        Token::FloatLit(f) => {
+            let res = f.to_string();
+            *cursor += 1;
+            res
+        }
+        Token::Null => {
+            *cursor += 1;
+            "NULL".to_string()
+        }
+        Token::Dash => {
+            *cursor += 1;
+            match get_token(tokens, cursor)? {
+                Token::IntLit(n) => format!("-{n}"),
+                Token::FloatLit(f) => format!("-{f}"),
+                other => {
+                    return Err(Error::SqlSyntax(format!(
+                        "Expected number after '-', got {other:?}"
+                    )));
+                }
+            }
         }
         Token::RowNumber | Token::Rank | Token::DenseRank
             if check_token(tokens, *cursor + 1, &Token::OpenParen) =>
@@ -2342,61 +2391,11 @@ fn parse_func_arg_expr(tokens: &[Token], cursor: &mut usize) -> Result<String> {
             "Unexpected end of function arguments".into(),
         ));
     }
-    match &tokens[*cursor] {
-        Token::StringLit(s) => {
-            let res = format!("'{}'", s.replace("'", "''"));
-            *cursor += 1;
-            Ok(res)
-        }
-        Token::IntLit(n) => {
-            let res = n.to_string();
-            *cursor += 1;
-            Ok(res)
-        }
-        Token::FloatLit(f) => {
-            let res = f.to_string();
-            *cursor += 1;
-            Ok(res)
-        }
-        Token::Dash => {
-            *cursor += 1;
-            match get_token(tokens, cursor)? {
-                Token::IntLit(n) => Ok(format!("-{n}")),
-                Token::FloatLit(f) => Ok(format!("-{f}")),
-                other => Err(Error::SqlSyntax(format!(
-                    "Expected number after '-', got {other:?}"
-                ))),
-            }
-        }
-        Token::Asterisk => {
-            *cursor += 1;
-            Ok("*".to_string())
-        }
-        Token::Null => {
-            *cursor += 1;
-            Ok("NULL".to_string())
-        }
-        Token::Ident(id)
-            if *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::OpenParen =>
-        {
-            let func_name = id.clone();
-            *cursor += 2;
-            let mut args = Vec::new();
-            if !check_token(tokens, *cursor, &Token::CloseParen) {
-                while *cursor < tokens.len() {
-                    args.push(parse_func_arg_expr(tokens, cursor)?);
-                    if check_token(tokens, *cursor, &Token::Comma) {
-                        *cursor += 1;
-                    } else {
-                        break;
-                    }
-                }
-            }
-            expect_token(tokens, cursor, &Token::CloseParen)?;
-            Ok(format!("{func_name}({})", args.join(", ")))
-        }
-        _ => parse_column_ident(tokens, cursor),
+    if check_token(tokens, *cursor, &Token::Asterisk) {
+        *cursor += 1;
+        return Ok("*".to_string());
     }
+    parse_column_expr_no_alias(tokens, cursor)
 }
 
 fn parse_optional_returning(tokens: &[Token], cursor: &mut usize) -> Result<Option<Vec<String>>> {
@@ -2446,7 +2445,177 @@ fn rewrite_qualified_alias(col: &str, aliases: &[(String, String)]) -> String {
     col.to_string()
 }
 
+/// Locate the byte offset of the last top-level `" AS "` separator outside parentheses and quotes.
+pub(crate) fn find_top_level_as(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth: usize = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut last_pos = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'(' if !in_single && !in_double => depth += 1,
+            b')' if !in_single && !in_double => depth = depth.saturating_sub(1),
+            _ if !in_single
+                && !in_double
+                && depth == 0
+                && i + 4 <= bytes.len()
+                && bytes[i..i + 4].eq_ignore_ascii_case(b" AS ") =>
+            {
+                last_pos = Some(i);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    last_pos
+}
+
+pub(crate) enum ProjSubqueryPiece {
+    Raw(String),
+    Subquery(Box<Statement>),
+}
+
+pub(crate) fn parse_proj_subquery_pieces(expr: &str) -> Vec<ProjSubqueryPiece> {
+    if !expr.contains('(') || !expr.to_ascii_uppercase().contains("SELECT") {
+        return Vec::new();
+    }
+    let Ok(tokens) = crate::sql::lexer::tokenize(expr) else {
+        return Vec::new();
+    };
+    let mut pieces = Vec::new();
+    let mut raw_start = 0usize;
+    let mut i = 0usize;
+    let mut found_sub = false;
+    while i < tokens.len() {
+        if tokens[i] == Token::OpenParen && tokens.get(i + 1) == Some(&Token::Select) {
+            let mut cursor = i + 1;
+            if let Ok(stmt) = parse_compound_select(&tokens, &mut cursor)
+                && check_token(&tokens, cursor, &Token::CloseParen)
+            {
+                if raw_start < i {
+                    pieces.push(ProjSubqueryPiece::Raw(crate::sql::lexer::tokens_to_sql(
+                        &tokens[raw_start..i],
+                    )));
+                }
+                pieces.push(ProjSubqueryPiece::Subquery(Box::new(stmt)));
+                found_sub = true;
+                i = cursor + 1;
+                raw_start = i;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    if !found_sub {
+        return Vec::new();
+    }
+    if raw_start < tokens.len() {
+        pieces.push(ProjSubqueryPiece::Raw(crate::sql::lexer::tokens_to_sql(
+            &tokens[raw_start..],
+        )));
+    }
+    pieces
+}
+
+/// Extract validated scalar `(SELECT ...)` subqueries embedded inside a SELECT projection expression.
+pub fn extract_select_scalar_subqueries(col: &str) -> Vec<Statement> {
+    let trimmed = col.trim();
+    let expr = if let Some(pos) = find_top_level_as(trimmed) {
+        trimmed[..pos].trim()
+    } else {
+        trimmed
+    };
+    parse_proj_subquery_pieces(expr)
+        .into_iter()
+        .filter_map(|p| match p {
+            ProjSubqueryPiece::Subquery(s) => Some(*s),
+            ProjSubqueryPiece::Raw(_) => None,
+        })
+        .collect()
+}
+
+fn collect_subquery_scope_names(tokens: &[Token], start_after_open_paren: usize) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut depth: usize = 0;
+    let mut i = start_after_open_paren;
+    while i < tokens.len() {
+        match &tokens[i] {
+            Token::OpenParen => depth += 1,
+            Token::CloseParen => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+            Token::From | Token::Join if depth == 0 => {
+                if let Some(Token::Ident(tbl)) = tokens.get(i + 1) {
+                    names.push(tbl.clone());
+                    let mut alias_pos = i + 2;
+                    if matches!(tokens.get(alias_pos), Some(Token::As)) {
+                        alias_pos += 1;
+                    }
+                    if let Some(Token::Ident(alias)) = tokens.get(alias_pos)
+                        && !is_clause_boundary_ident(alias)
+                    {
+                        names.push(alias.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    names
+}
+
+fn rewrite_subquery_tokens_aliases(expr: &str, aliases: &[(String, String)]) -> String {
+    let Ok(mut tokens) = crate::sql::lexer::tokenize(expr) else {
+        return expr.to_string();
+    };
+    let mut shadow_frames: Vec<Vec<String>> = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        match &tokens[i] {
+            Token::OpenParen => {
+                let frame = if tokens.get(i + 1) == Some(&Token::Select) {
+                    collect_subquery_scope_names(&tokens, i + 1)
+                } else {
+                    Vec::new()
+                };
+                shadow_frames.push(frame);
+            }
+            Token::CloseParen => {
+                shadow_frames.pop();
+            }
+            Token::Ident(ident) if tokens.get(i + 1) == Some(&Token::Dot) => {
+                let shadowed = shadow_frames
+                    .iter()
+                    .any(|frame| frame.iter().any(|s| s.eq_ignore_ascii_case(ident)));
+                if !shadowed
+                    && let Some((_, real_table)) =
+                        aliases.iter().find(|(a, _)| a.eq_ignore_ascii_case(ident))
+                {
+                    tokens[i] = Token::Ident(real_table.clone());
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    crate::sql::lexer::tokens_to_sql(&tokens)
+}
+
 fn rewrite_expr_aliases(expr: &str, aliases: &[(String, String)]) -> String {
+    if aliases.is_empty() {
+        return expr.to_string();
+    }
+    if expr.contains('(') && expr.to_ascii_uppercase().contains("SELECT") {
+        return rewrite_subquery_tokens_aliases(expr, aliases);
+    }
     let mut out = String::with_capacity(expr.len() + 8);
     let bytes = expr.as_bytes();
     let mut i = 0;
@@ -2489,7 +2658,7 @@ fn rewrite_expr_aliases(expr: &str, aliases: &[(String, String)]) -> String {
 
 fn rewrite_select_col_aliases(col: &str, aliases: &[(String, String)]) -> String {
     let trimmed = col.trim();
-    if let Some(pos) = trimmed.to_ascii_uppercase().rfind(" AS ") {
+    if let Some(pos) = find_top_level_as(trimmed) {
         let expr = trimmed[..pos].trim();
         let alias = trimmed[pos + 4..].trim();
         if !alias.is_empty() {
@@ -2549,7 +2718,7 @@ fn rewrite_statement_outer_aliases(stmt: &mut Statement, aliases: &[(String, Str
             if let Some(h) = having {
                 rewrite_where_aliases(h, &filtered);
             }
-            if let Some(ord) = order_by {
+            for ord in order_by.iter_mut() {
                 ord.column = rewrite_qualified_alias(&ord.column, &filtered);
             }
         }
@@ -2587,7 +2756,13 @@ fn rewrite_where_aliases(expr: &mut WhereExpr, aliases: &[(String, String)]) {
             *column = rewrite_qualified_alias(column, aliases);
             rewrite_statement_outer_aliases(subquery, aliases);
         }
-        WhereExpr::Exists { subquery, .. } => {
+        WhereExpr::Exists { subquery, .. } | WhereExpr::SubqueryComparison { subquery, .. } => {
+            rewrite_statement_outer_aliases(subquery, aliases);
+        }
+        WhereExpr::ScalarSubqueryComparison {
+            column, subquery, ..
+        } => {
+            *column = rewrite_qualified_alias(column, aliases);
             rewrite_statement_outer_aliases(subquery, aliases);
         }
     }
@@ -2657,7 +2832,7 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             where_clause: None,
             group_by: None,
             having: None,
-            order_by: None,
+            order_by: Vec::new(),
             limit: None,
             offset: None,
             as_of_timestamp: None,
@@ -2900,90 +3075,100 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         having = Some(parse_where_expr(tokens, cursor)?);
     }
 
-    // Optional ORDER BY clause: ORDER BY col [ASC|DESC] or pgvector ORDER BY col <-> '[...]' LIMIT k
-    let mut order_by = None;
+    // Optional ORDER BY clause: ORDER BY col [ASC|DESC], ... or pgvector ORDER BY col <-> '[...]' [LIMIT k]
+    let mut order_by = Vec::new();
     if check_token(tokens, *cursor, &Token::Order) {
         *cursor += 1;
         expect_token(tokens, cursor, &Token::By)?;
-        let col = parse_column_ident(tokens, cursor)?;
+        loop {
+            let col = parse_column_ident(tokens, cursor)?;
 
-        // Support pgvector Euclidean/Cosine distance syntax: ORDER BY col <-> '[...]' [LIMIT k]
-        let is_vector_dist = if check_token(tokens, *cursor, &Token::LessThan)
-            && *cursor + 1 < tokens.len()
-            && tokens[*cursor + 1] == Token::Arrow
-        {
-            *cursor += 2;
-            true
-        } else if check_token(tokens, *cursor, &Token::LessThan)
-            && *cursor + 2 < tokens.len()
-            && tokens[*cursor + 1] == Token::Dash
-            && tokens[*cursor + 2] == Token::GreaterThan
-        {
-            *cursor += 3;
-            true
-        } else {
-            false
-        };
+            // Support pgvector Euclidean/Cosine distance syntax: ORDER BY col <-> '[...]' [LIMIT k]
+            let is_vector_dist = order_by.is_empty()
+                && if check_token(tokens, *cursor, &Token::LessThan)
+                    && *cursor + 1 < tokens.len()
+                    && tokens[*cursor + 1] == Token::Arrow
+                {
+                    *cursor += 2;
+                    true
+                } else if check_token(tokens, *cursor, &Token::LessThan)
+                    && *cursor + 2 < tokens.len()
+                    && tokens[*cursor + 1] == Token::Dash
+                    && tokens[*cursor + 2] == Token::GreaterThan
+                {
+                    *cursor += 3;
+                    true
+                } else {
+                    false
+                };
 
-        if is_vector_dist {
-            let query_val = parse_value_literal(tokens, cursor)?;
-            let query_vector = match query_val {
-                Value::Vector(v) => v,
-                Value::Text(ref s) => {
-                    let trimmed = s.trim();
-                    if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                        let inner = &trimmed[1..trimmed.len() - 1];
-                        inner
-                            .split(',')
-                            .map(|part| part.trim().parse::<f32>().unwrap_or(0.0))
-                            .collect()
-                    } else {
-                        return Err(Error::SqlSyntax("Expected vector literal after <->".into()));
+            if is_vector_dist {
+                let query_val = parse_value_literal(tokens, cursor)?;
+                let query_vector = match query_val {
+                    Value::Vector(v) => v,
+                    Value::Text(ref s) => {
+                        let trimmed = s.trim();
+                        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                            let inner = &trimmed[1..trimmed.len() - 1];
+                            inner
+                                .split(',')
+                                .map(|part| part.trim().parse::<f32>().unwrap_or(0.0))
+                                .collect()
+                        } else {
+                            return Err(Error::SqlSyntax(
+                                "Expected vector literal after <->".into(),
+                            ));
+                        }
                     }
-                }
-                other => {
-                    return Err(Error::SqlSyntax(format!(
-                        "Expected vector literal after <->, got {other:?}"
-                    )));
-                }
-            };
-
-            let mut top_k = 10;
-            if check_token(tokens, *cursor, &Token::Limit) {
-                *cursor += 1;
-                top_k = match get_token(tokens, cursor)? {
-                    Token::IntLit(n) => *n as usize,
                     other => {
                         return Err(Error::SqlSyntax(format!(
-                            "Expected integer for LIMIT, got {other:?}"
+                            "Expected vector literal after <->, got {other:?}"
                         )));
                     }
                 };
+
+                let mut top_k = 10;
+                if check_token(tokens, *cursor, &Token::Limit) {
+                    *cursor += 1;
+                    top_k = match get_token(tokens, cursor)? {
+                        Token::IntLit(n) => *n as usize,
+                        other => {
+                            return Err(Error::SqlSyntax(format!(
+                                "Expected integer for LIMIT, got {other:?}"
+                            )));
+                        }
+                    };
+                }
+
+                return Ok(Statement::VectorSearch {
+                    columns,
+                    table: table_name,
+                    vector_col: col,
+                    query_vector,
+                    top_k,
+                    where_clause,
+                });
             }
 
-            return Ok(Statement::VectorSearch {
-                columns,
-                table: table_name,
-                vector_col: col,
-                query_vector,
-                top_k,
-                where_clause,
-            });
-        }
-
-        let is_ascending = if check_token(tokens, *cursor, &Token::Desc) {
-            *cursor += 1;
-            false
-        } else {
-            if check_token(tokens, *cursor, &Token::Asc) {
+            let is_ascending = if check_token(tokens, *cursor, &Token::Desc) {
                 *cursor += 1;
+                false
+            } else {
+                if check_token(tokens, *cursor, &Token::Asc) {
+                    *cursor += 1;
+                }
+                true
+            };
+            order_by.push(OrderByClause {
+                column: col,
+                is_ascending,
+            });
+            if check_token(tokens, *cursor, &Token::Comma) {
+                *cursor += 1;
+            } else {
+                break;
             }
-            true
-        };
-        order_by = Some(OrderByClause {
-            column: col,
-            is_ascending,
-        });
+        }
     }
 
     // Optional LIMIT clause: LIMIT n
@@ -3036,7 +3221,7 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         if let Some(ref mut h) = having {
             rewrite_where_aliases(h, &alias_map);
         }
-        if let Some(ref mut ord) = order_by {
+        for ord in &mut order_by {
             ord.column = rewrite_qualified_alias(&ord.column, &alias_map);
         }
     }
@@ -3406,8 +3591,108 @@ fn parse_and_expr(tokens: &[Token], cursor: &mut usize) -> Result<WhereExpr> {
     Ok(expr)
 }
 
+fn parse_where_binary_op(tokens: &[Token], cursor: &mut usize, negated: bool) -> Result<BinaryOp> {
+    let raw_op = match get_token(tokens, cursor)? {
+        Token::Equals => BinaryOp::Equals,
+        Token::NotEquals => BinaryOp::NotEquals,
+        Token::GreaterThan => BinaryOp::GreaterThan,
+        Token::LessThan => BinaryOp::LessThan,
+        Token::GreaterOrEqual => BinaryOp::GreaterOrEqual,
+        Token::LessOrEqual => BinaryOp::LessOrEqual,
+        Token::Like => BinaryOp::Like,
+        Token::Match => BinaryOp::Match,
+        other => {
+            return Err(Error::SqlSyntax(format!(
+                "Expected comparison operator in WHERE, got {other:?}"
+            )));
+        }
+    };
+
+    if negated {
+        match raw_op {
+            BinaryOp::Like => Ok(BinaryOp::NotLike),
+            BinaryOp::Equals => Ok(BinaryOp::NotEquals),
+            BinaryOp::NotEquals => Ok(BinaryOp::Equals),
+            BinaryOp::GreaterThan => Ok(BinaryOp::LessOrEqual),
+            BinaryOp::LessThan => Ok(BinaryOp::GreaterOrEqual),
+            BinaryOp::GreaterOrEqual => Ok(BinaryOp::LessThan),
+            BinaryOp::LessOrEqual => Ok(BinaryOp::GreaterThan),
+            BinaryOp::NotLike => Ok(BinaryOp::Like),
+            BinaryOp::Match => Err(Error::SqlSyntax("NOT MATCH is not supported".into())),
+            BinaryOp::IsNull => Ok(BinaryOp::IsNotNull),
+            BinaryOp::IsNotNull => Ok(BinaryOp::IsNull),
+        }
+    } else {
+        Ok(raw_op)
+    }
+}
+
+fn flip_where_comparison_op(op: &BinaryOp) -> Option<BinaryOp> {
+    match op {
+        BinaryOp::Equals => Some(BinaryOp::Equals),
+        BinaryOp::NotEquals => Some(BinaryOp::NotEquals),
+        BinaryOp::GreaterThan => Some(BinaryOp::LessThan),
+        BinaryOp::LessThan => Some(BinaryOp::GreaterThan),
+        BinaryOp::GreaterOrEqual => Some(BinaryOp::LessOrEqual),
+        BinaryOp::LessOrEqual => Some(BinaryOp::GreaterOrEqual),
+        _ => None,
+    }
+}
+
 fn parse_primary_where_expr(tokens: &[Token], cursor: &mut usize) -> Result<WhereExpr> {
     if check_token(tokens, *cursor, &Token::OpenParen) {
+        if tokens.get(*cursor + 1) == Some(&Token::Select) {
+            *cursor += 1;
+            let subquery = parse_compound_select(tokens, cursor)?;
+            expect_token(tokens, cursor, &Token::CloseParen)?;
+
+            if check_token(tokens, *cursor, &Token::Is) {
+                *cursor += 1;
+                let is_not = if check_token(tokens, *cursor, &Token::Not) {
+                    *cursor += 1;
+                    true
+                } else {
+                    false
+                };
+                expect_token(tokens, cursor, &Token::Null)?;
+                return Ok(WhereExpr::SubqueryComparison {
+                    subquery: Box::new(subquery),
+                    op: if is_not {
+                        BinaryOp::IsNotNull
+                    } else {
+                        BinaryOp::IsNull
+                    },
+                    value: Value::Null,
+                });
+            }
+
+            let op = parse_where_binary_op(tokens, cursor, false)?;
+            if op != BinaryOp::Match
+                && matches!(
+                    tokens.get(*cursor),
+                    Some(Token::Ident(s)) if !s.eq_ignore_ascii_case("true") && !s.eq_ignore_ascii_case("false")
+                )
+            {
+                let right_col = parse_column_expression(tokens, cursor)?;
+                let flipped = flip_where_comparison_op(&op).ok_or_else(|| {
+                    Error::SqlSyntax(
+                        "Unsupported operator between scalar subquery and column".into(),
+                    )
+                })?;
+                return Ok(WhereExpr::ScalarSubqueryComparison {
+                    column: right_col,
+                    op: flipped,
+                    subquery: Box::new(subquery),
+                });
+            }
+
+            let val = parse_value_literal(tokens, cursor)?;
+            return Ok(WhereExpr::SubqueryComparison {
+                subquery: Box::new(subquery),
+                op,
+                value: val,
+            });
+        }
         *cursor += 1;
         let inner = parse_or_expr(tokens, cursor)?;
         expect_token(tokens, cursor, &Token::CloseParen)?;
@@ -3482,7 +3767,7 @@ fn parse_primary_where_expr(tokens: &[Token], cursor: &mut usize) -> Result<Wher
         *cursor += 1;
         expect_token(tokens, cursor, &Token::OpenParen)?;
         if check_token(tokens, *cursor, &Token::Select) {
-            let subquery = parse_select(tokens, cursor)?;
+            let subquery = parse_compound_select(tokens, cursor)?;
             expect_token(tokens, cursor, &Token::CloseParen)?;
             return Ok(WhereExpr::InSubquery {
                 column: col_name,
@@ -3508,39 +3793,21 @@ fn parse_primary_where_expr(tokens: &[Token], cursor: &mut usize) -> Result<Wher
         }
     }
 
-    let raw_op = match get_token(tokens, cursor)? {
-        Token::Equals => BinaryOp::Equals,
-        Token::NotEquals => BinaryOp::NotEquals,
-        Token::GreaterThan => BinaryOp::GreaterThan,
-        Token::LessThan => BinaryOp::LessThan,
-        Token::GreaterOrEqual => BinaryOp::GreaterOrEqual,
-        Token::LessOrEqual => BinaryOp::LessOrEqual,
-        Token::Like => BinaryOp::Like,
-        Token::Match => BinaryOp::Match,
-        other => {
-            return Err(Error::SqlSyntax(format!(
-                "Expected comparison operator in WHERE, got {other:?}"
-            )));
-        }
-    };
+    let op = parse_where_binary_op(tokens, cursor, negated)?;
 
-    let op = if negated {
-        match raw_op {
-            BinaryOp::Like => BinaryOp::NotLike,
-            BinaryOp::Equals => BinaryOp::NotEquals,
-            BinaryOp::NotEquals => BinaryOp::Equals,
-            BinaryOp::GreaterThan => BinaryOp::LessOrEqual,
-            BinaryOp::LessThan => BinaryOp::GreaterOrEqual,
-            BinaryOp::GreaterOrEqual => BinaryOp::LessThan,
-            BinaryOp::LessOrEqual => BinaryOp::GreaterThan,
-            BinaryOp::NotLike => BinaryOp::Like,
-            BinaryOp::Match => return Err(Error::SqlSyntax("NOT MATCH is not supported".into())),
-            BinaryOp::IsNull => BinaryOp::IsNotNull,
-            BinaryOp::IsNotNull => BinaryOp::IsNull,
-        }
-    } else {
-        raw_op
-    };
+    if op != BinaryOp::Match
+        && check_token(tokens, *cursor, &Token::OpenParen)
+        && tokens.get(*cursor + 1) == Some(&Token::Select)
+    {
+        *cursor += 1;
+        let subquery = parse_compound_select(tokens, cursor)?;
+        expect_token(tokens, cursor, &Token::CloseParen)?;
+        return Ok(WhereExpr::ScalarSubqueryComparison {
+            column: col_name,
+            op,
+            subquery: Box::new(subquery),
+        });
+    }
 
     if op != BinaryOp::Match
         && matches!(
@@ -4577,10 +4844,10 @@ mod tests {
                 );
                 assert_eq!(
                     order_by,
-                    Some(OrderByClause {
+                    vec![OrderByClause {
                         column: "orders.total".to_string(),
                         is_ascending: false,
-                    })
+                    }]
                 );
                 assert_eq!(limit, Some(10));
             }
@@ -4596,5 +4863,81 @@ mod tests {
             }
             _ => panic!("Expected Select with aggregates"),
         }
+    }
+
+    #[test]
+    fn test_parse_multi_column_order_by_and_scalar_subqueries() {
+        let sql_ord =
+            "SELECT u.dept, u.salary FROM users u ORDER BY u.dept ASC, u.salary DESC, u.id;";
+        let stmt_ord = parse_sql(sql_ord).expect("Parse multi-column ORDER BY");
+        match stmt_ord {
+            Statement::Select { order_by, .. } => {
+                assert_eq!(
+                    order_by,
+                    vec![
+                        OrderByClause {
+                            column: "users.dept".to_string(),
+                            is_ascending: true,
+                        },
+                        OrderByClause {
+                            column: "users.salary".to_string(),
+                            is_ascending: false,
+                        },
+                        OrderByClause {
+                            column: "users.id".to_string(),
+                            is_ascending: true,
+                        },
+                    ]
+                );
+            }
+            _ => panic!("Expected Select with multi-column ORDER BY"),
+        }
+
+        // Scalar subquery in WHERE (both RHS and LHS) + projection alias rewriting with inner alias shadowing
+        let sql_sub = "SELECT u.id, (SELECT COUNT(*) FROM orders u WHERE u.total > 0) AS shadowed, (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS order_count FROM users u WHERE u.salary > (SELECT AVG(salary) FROM employees) AND (SELECT COUNT(*) FROM orders o2 WHERE o2.user_id = u.id) >= 2;";
+        let stmt_sub = parse_sql(sql_sub).expect("Parse scalar subqueries");
+        match stmt_sub {
+            Statement::Select {
+                columns,
+                where_clause,
+                ..
+            } => {
+                assert_eq!(columns.len(), 3);
+                // Inner shadowed `u` must NOT be rewritten to `users`, while outer `u.id` in `o.user_id = u.id` IS rewritten
+                assert!(
+                    columns[1].contains("FROM orders u WHERE u.total"),
+                    "unexpected rewrite in shadowed subquery: {}",
+                    columns[1]
+                );
+                assert!(
+                    columns[2].contains("o.user_id = users.id"),
+                    "outer alias not rewritten in scalar subquery: {}",
+                    columns[2]
+                );
+                assert!(matches!(where_clause, Some(WhereExpr::And(_, _))));
+                let subs = extract_select_scalar_subqueries(&columns[2]);
+                assert_eq!(subs.len(), 1);
+            }
+            _ => panic!("Expected Select with scalar subqueries"),
+        }
+
+        let sql_lhs_col =
+            "SELECT id, price FROM products WHERE (SELECT AVG(price) FROM products) < price;";
+        let stmt_lhs_col = parse_sql(sql_lhs_col).expect("Parse LHS scalar subquery vs column");
+        match stmt_lhs_col {
+            Statement::Select { where_clause, .. } => match where_clause.unwrap() {
+                WhereExpr::ScalarSubqueryComparison { column, op, .. } => {
+                    assert_eq!(column, "price");
+                    assert_eq!(op, BinaryOp::GreaterThan);
+                }
+                other => panic!("Expected ScalarSubqueryComparison, got {other:?}"),
+            },
+            _ => panic!("Expected Select"),
+        }
+
+        assert!(
+            parse_sql("SELECT (SELECT FROM users) FROM users;").is_err(),
+            "Malformed scalar subquery inside SELECT projection must fail parse"
+        );
     }
 }

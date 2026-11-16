@@ -64,7 +64,7 @@ impl SQLExecutor {
 
                 let mut is_index_search = false;
                 if !is_pk_search && !has_joins {
-                    if order_by.is_none()
+                    if order_by.is_empty()
                         && let Some(ref expr) = where_clause
                     {
                         let mut and_eqs = HashMap::new();
@@ -236,17 +236,15 @@ impl SQLExecutor {
                         });
                     pk_order_pushdown = is_int_pk
                         && !has_joins
+                        && order_by.len() == 1
                         && pk_col_name.is_some_and(|pk_name| {
-                            order_by.as_ref().is_some_and(|ord| {
-                                let ord_col = ord
-                                    .column
-                                    .split_once('.')
-                                    .and_then(|(tbl, c)| {
-                                        tbl.eq_ignore_ascii_case(&table).then_some(c)
-                                    })
-                                    .unwrap_or(ord.column.as_str());
-                                pk_name.eq_ignore_ascii_case(ord_col)
-                            })
+                            let ord = &order_by[0];
+                            let ord_col = ord
+                                .column
+                                .split_once('.')
+                                .and_then(|(tbl, c)| tbl.eq_ignore_ascii_case(&table).then_some(c))
+                                .unwrap_or(ord.column.as_str());
+                            pk_name.eq_ignore_ascii_case(ord_col)
                         });
 
                     if has_pk_range || pk_order_pushdown {
@@ -256,9 +254,11 @@ impl SQLExecutor {
                             "SCAN TABLE"
                         };
                         let order_note = if pk_order_pushdown {
-                            let dir = order_by
-                                .as_ref()
-                                .map_or("ASC", |o| if o.is_ascending { "ASC" } else { "DESC" });
+                            let dir = if order_by[0].is_ascending {
+                                "ASC"
+                            } else {
+                                "DESC"
+                            };
                             format!(" ORDER ({dir})")
                         } else {
                             String::new()
@@ -308,19 +308,21 @@ impl SQLExecutor {
                     id += 1;
                 }
 
-                if let Some(ord) = order_by
-                    && !pk_order_pushdown
-                {
-                    let dir = if ord.is_ascending { "ASC" } else { "DESC" };
+                if !order_by.is_empty() && !pk_order_pushdown {
+                    let order_desc = order_by
+                        .iter()
+                        .map(|ord| {
+                            let dir = if ord.is_ascending { "ASC" } else { "DESC" };
+                            format!("{} {}", ord.column, dir)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     rows.push(Row::new(
                         cols.clone(),
                         vec![
                             Value::Integer(id),
                             Value::Integer(0),
-                            Value::Text(format!(
-                                "USE TEMP B-TREE FOR ORDER BY {} {}",
-                                ord.column, dir
-                            )),
+                            Value::Text(format!("USE TEMP B-TREE FOR ORDER BY {order_desc}")),
                         ],
                     ));
                     id += 1;
@@ -394,11 +396,13 @@ impl SQLExecutor {
         ctes: Vec<crate::sql::parser::CteClause>,
         main_query: Statement,
     ) -> Result<Vec<Row>> {
-        let mut cte_store: HashMap<String, Vec<Row>> = HashMap::new();
+        let prev_ctes = std::mem::take(&mut self.active_ctes);
+        let mut cte_store: HashMap<String, Vec<Row>> = prev_ctes.clone();
+        self.active_ctes = cte_store.clone();
 
         for cte in ctes {
             let cte_key = cte.name.to_ascii_lowercase();
-            let mapped_rows = if cte.recursive
+            let mapped_res = if cte.recursive
                 && let Statement::Compound { left, op, right } = *cte.query
             {
                 self.execute_recursive_cte(
@@ -409,17 +413,27 @@ impl SQLExecutor {
                     op,
                     *right,
                     &cte_store,
-                )?
+                )
             } else {
-                let rows = self.eval_cte_statement(pager, *cte.query, &cte_store)?;
-                apply_cte_column_names(rows, cte.columns.as_deref())
+                self.eval_cte_statement(pager, *cte.query, &cte_store)
+                    .map(|rows| apply_cte_column_names(rows, cte.columns.as_deref()))
+            };
+            let mapped_rows = match mapped_res {
+                Ok(r) => r,
+                Err(e) => {
+                    self.active_ctes = prev_ctes;
+                    return Err(e);
+                }
             };
 
             cte_store.insert(cte_key, mapped_rows);
+            self.active_ctes = cte_store.clone();
         }
 
         // Execute main query against ephemeral CTE store
-        self.eval_cte_statement(pager, main_query, &cte_store)
+        let res = self.eval_cte_statement(pager, main_query, &cte_store);
+        self.active_ctes = prev_ctes;
+        res
     }
 
     pub(super) fn eval_cte_statement(
@@ -548,7 +562,7 @@ impl SQLExecutor {
                         where_clause: None,
                         group_by: None,
                         having: None,
-                        order_by: None,
+                        order_by: Vec::new(),
                         limit: None,
                         offset: None,
                         as_of_timestamp: None,
@@ -577,7 +591,7 @@ impl SQLExecutor {
                             where_clause: None,
                             group_by: None,
                             having: None,
-                            order_by: None,
+                            order_by: Vec::new(),
                             limit: None,
                             offset: None,
                             as_of_timestamp: None,
@@ -694,24 +708,44 @@ impl SQLExecutor {
 
                 return Ok(vec![Row::new(agg_cols, agg_vals)]);
             } else if !columns.is_empty() && columns[0] != "*" {
-                // Full expression projection (supports arithmetic, scalar UDFs, JSON paths, aliases)
-                rows = rows
-                    .iter()
-                    .map(|r| self.project_row(r, &columns))
-                    .collect::<Result<Vec<Row>>>()?;
+                // Full expression projection (supports arithmetic, scalar UDFs, JSON paths, aliases, scalar subqueries)
+                if has_projection_subquery(&columns) {
+                    let synth_tdef = rows.first().map(|first| {
+                        let cols = first
+                            .columns()
+                            .iter()
+                            .map(|cname| {
+                                let bare = cname.rsplit('.').next().unwrap_or(cname);
+                                ColumnDef::new(bare, DataType::Text)
+                            })
+                            .collect();
+                        TableDef::new(table.clone(), 0, cols)
+                    });
+                    let outer_refs_slice: Vec<&TableDef> = synth_tdef.iter().collect();
+                    let plan = self.prepare_projection_plan(pager, &columns, &outer_refs_slice)?;
+                    let mut memo = CorrelatedSubqueryMemo::default();
+                    let mut projected = Vec::with_capacity(rows.len());
+                    for r in &rows {
+                        projected.push(self.project_row_with_plan(
+                            pager,
+                            r,
+                            &plan,
+                            &outer_refs_slice,
+                            &mut memo,
+                        )?);
+                    }
+                    rows = projected;
+                } else {
+                    rows = rows
+                        .iter()
+                        .map(|r| self.project_row(r, &columns))
+                        .collect::<Result<Vec<Row>>>()?;
+                }
             }
 
             // Apply ORDER BY (after GROUP BY / projection so aliases and aggregate names resolve)
-            if let Some(ref order) = order_by {
-                rows.sort_by(|a, b| {
-                    let val_a = a.get_value(&order.column).unwrap_or(&Value::Null);
-                    let val_b = b.get_value(&order.column).unwrap_or(&Value::Null);
-                    if order.is_ascending {
-                        val_a.compare(val_b)
-                    } else {
-                        val_b.compare(val_a)
-                    }
-                });
+            if !order_by.is_empty() {
+                rows.sort_by(|a, b| compare_rows_by_order(a, b, &order_by));
             }
 
             // Apply DISTINCT

@@ -738,20 +738,21 @@ impl SQLExecutor {
         }
         let mut idx = Bm25Index::new();
         let all_cols = table_def.column_names();
-        let cells = self.btree.scan(pager, table_def.root_page)?;
-        for cell in cells {
-            let row = decode_row(&cell.payload, &all_cols)?;
-            let mut text = String::new();
-            for col in &fts_cfg.columns {
-                if let Some(Value::Text(s)) = row.get_value(col) {
-                    if !text.is_empty() {
-                        text.push(' ');
+        self.btree
+            .scan_with_ref(pager, table_def.root_page, |row_id, payload| {
+                let row = decode_row(payload, &all_cols)?;
+                let mut text = String::new();
+                for col in &fts_cfg.columns {
+                    if let Some(Value::Text(s)) = row.get_value(col) {
+                        if !text.is_empty() {
+                            text.push(' ');
+                        }
+                        text.push_str(s);
                     }
-                    text.push_str(s);
                 }
-            }
-            idx.index_document(cell.row_id, &text);
-        }
+                idx.index_document(row_id, &text);
+                Ok(true)
+            })?;
         self.fts_indexes.insert(key, idx);
         Ok(())
     }

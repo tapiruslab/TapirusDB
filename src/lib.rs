@@ -1952,7 +1952,7 @@ impl Connection {
                 resolved_where.as_ref(),
                 group_by.as_deref(),
                 resolved_having.as_ref(),
-                order_by.as_ref(),
+                order_by.as_slice(),
                 limit,
                 offset,
             )? {

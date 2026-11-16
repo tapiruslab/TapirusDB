@@ -10,9 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Multi-column `ORDER BY` (`ORDER BY col1 [ASC|DESC], col2 [ASC|DESC], ...`) across the SQL parser, executor (including projected aliases and multi-column Parquet OLAP sorting), CTE/EXPLAIN planner, and query engine.
+- Uncorrelated and correlated scalar subqueries `(SELECT ...)` in `WHERE`, `HAVING`, and `SELECT` projection lists (including standalone columns, composite scalar/arithmetic expressions, shadowed inner aliases, `WITH` CTE subquery visibility via `active_ctes`, strict cardinality enforcement, `LIMIT 2` early stop, and HTTP AST RBAC enforcement in `authorize_sql_statement_ast`).
 - Chained multi-table `JOIN` execution (three or more joined tables), column-to-column `WHERE` comparisons (`col_a op col_b`), correlated subqueries (`EXISTS`, `NOT EXISTS`, `IN`, `NOT IN`) with memoized evaluation (`CorrelatedSubqueryMemo`), and `NOT IN` / `NOT EXISTS` predicate support in `src/sql/parser.rs` and `src/sql/executor/`.
 
+### Fixed
+- Resolve table-qualified column expressions (`table.col`) consistently in single-table `PushdownAgg` / `HashGroupAgg` scans and support nested scalar/aggregate/subquery expressions inside generic SQL function arguments (`COALESCE`, etc.).
+
 ### Performance
+- Convert the remaining 12 non-mutating B+Tree cursor loops (`ensure_fts_index`, `load_graph_from_disk`, `close_temporal_records`, `table_fingerprint`, vector index loaders, `CREATE INDEX`, `DROP TABLE` FK verification, `ANALYZE`, and `AS OF TIMESTAMP`) from owning `btree.scan(...)` allocations to zero-copy `btree.scan_with_ref(...)`.
 - Split monolithic `src/bin/tapirus.rs` and `src/sql/executor.rs` into focused submodules (`src/bin/tapirus/*`, `src/sql/executor/*`) and introduced deterministic hashing helpers (`src/stable_hash.rs`), Pager/WAL/B+Tree hot-path refinements, LZ4/replication improvements, and `Arc<Vec<String>>` shared headers in streaming CSV scans (`src/lakehouse/csv_stream.rs`).
 - Added SQL planner and execution optimizations: `WHERE` predicate pushdown onto table/index scans, multi-key `IN (...)` secondary index lookups, zero-allocation projection scans, filtered `Indexed Seek Join`, `OR` primary-key / secondary-index union planning (shown as `USING INDEX UNION` in `EXPLAIN` / `EXPLAIN QUERY PLAN`), and single-pass streaming `VectorSearch` with a bounded top-K max-heap.
 

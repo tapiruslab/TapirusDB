@@ -133,14 +133,14 @@ WHERE age BETWEEN 25 AND 55
   AND dept_id IS NOT NULL
 GROUP BY dept_id, role
 HAVING COUNT(*) >= 1
-ORDER BY dept_id ASC
+ORDER BY dept_id ASC, next_age DESC
 LIMIT 50 OFFSET 0;
 ```
-> Note: `ORDER BY` currently accepts a single sort expression (`ORDER BY col [ASC|DESC]`).
+> Note: `ORDER BY` supports multiple sort keys (`ORDER BY col1 [ASC|DESC], col2 [ASC|DESC], ...`), including computed projection aliases.
 
-**Supported `WHERE` predicates:** `=`, `!=` / `<>`, `<`, `<=`, `>`, `>=`, column-to-column comparisons (`e.age > e.min_age`), `AND`, `OR`, `[NOT] IN (...)`, `[NOT] IN (SELECT ...)`, `[NOT] EXISTS (SELECT ...)` (including correlated subqueries referencing outer columns), `LIKE`, `IS NULL`, `IS NOT NULL`, `BETWEEN ... AND ...`.
+**Supported `WHERE` predicates:** `=`, `!=` / `<>`, `<`, `<=`, `>`, `>=`, column-to-column comparisons (`e.age > e.min_age`), scalar subquery comparisons (`col <op> (SELECT ...)` and `(SELECT ...) <op> val_or_col`), `AND`, `OR`, `[NOT] IN (...)`, `[NOT] IN (SELECT ...)`, `[NOT] EXISTS (SELECT ...)` (including correlated subqueries referencing outer columns), `LIKE`, `IS NULL`, `IS NOT NULL`, `BETWEEN ... AND ...`.
 
-**Supported infix expressions in projections:** `+`, `-`, `*`, `/`, `%`, string concatenation `||`, parentheses `(...)`.
+**Supported infix expressions in projections:** `+`, `-`, `*`, `/`, `%`, string concatenation `||`, parentheses `(...)`, and scalar subqueries `(SELECT ...)` (0 rows -> `NULL`, >1 row -> runtime error).
 
 ### Joins, Correlated Subqueries & Derived Subqueries
 ```sql
@@ -160,12 +160,15 @@ WHERE e.age > d.min_age;
 -- RIGHT [OUTER] JOIN ... ON ...
 -- FULL [OUTER] JOIN ... ON ...
 
--- Correlated EXISTS / NOT EXISTS & IN subqueries
-SELECT d.id, d.name
+-- Correlated EXISTS / NOT EXISTS, IN, and scalar subqueries (WHERE & SELECT projection)
+SELECT d.id,
+       d.name,
+       (SELECT COUNT(*) FROM employees e WHERE e.dept_id = d.id) AS headcount
 FROM departments d
 WHERE EXISTS (
     SELECT 1 FROM employees e WHERE e.dept_id = d.id AND e.age >= 30
-);
+)
+ORDER BY headcount DESC, d.id ASC;
 
 -- Derived subquery in FROM
 SELECT sub.dept_id, sub.total
