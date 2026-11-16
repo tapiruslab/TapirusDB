@@ -7,7 +7,7 @@ name = "tapirus"
 version = "1.2.1"
 description = "Official Python SDK for TapirusDB's embedded database and local AI memory APIs"
 readme = "README.md"
-authors = [{ name = "TapirusDB Contributors", email = "contact@tapirusdb.com" }]
+authors = [{ name = "Ahmad Faiz", email = "faiz@tapirusdb.com" }]
 license = { text = "MIT AND BUSL-1.1" }
 requires-python = ">=3.10"
 keywords = ["tapirus", "tapirusdb", "embedded", "database", "sqlite", "vector", "graph", "ai-memory", "rag"]

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "tapirus-ctypes"
 version = "1.2.1"
 authors = [
-  { name="TapirusDB Contributors", email="contact@tapirusdb.com" },
+  { name="Ahmad Faiz", email="faiz@tapirusdb.com" },
 ]
 description = "Legacy ctypes integration for TapirusDB; use the native tapirus SDK for new applications"
 readme = "README.md"

@@ -2,7 +2,7 @@
 name = "tapirus"
 version = "1.2.1"
 edition = "2024"
-authors = ["TapirusDB Contributors <contact@tapirusdb.com>"]
+authors = ["Ahmad Faiz <faiz@tapirusdb.com>"]
 license = "BUSL-1.1"
 description = "Embedded multi-model database with SQL, vector search and local AI memory"
 repository = "https://github.com/tapiruslab/TapirusDB"
