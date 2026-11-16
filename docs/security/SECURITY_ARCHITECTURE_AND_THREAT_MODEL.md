@@ -10,13 +10,13 @@
 
 | Security Domain | Mechanism & Standard | Primary Implementation |
 | --- | --- | --- |
-| **Memory Safety** | `#![forbid(unsafe_code)]` across core library and CLI server | [`src/lib.rs`](../../src/lib.rs), [`src/bin/tapirus.rs`](../../src/bin/tapirus.rs) |
+| **Memory Safety** | `#![forbid(unsafe_code)]` across core library and CLI server | [`src/lib.rs`](../../src/lib.rs), [`src/bin/tapirus.rs`](../../src/bin/tapirus.rs), [`src/bin/tapirus/`](../../src/bin/tapirus/) |
 | **Page AEAD Encryption** | XChaCha20-Poly1305 (256-bit key, 24-byte CSPRNG `XNonce`, 16-byte Poly1305 tag per 4,096-byte page) | [`src/crypto/mod.rs`](../../src/crypto/mod.rs) |
 | **Header Authentication** | Poly1305 AEAD AAD binds `page_id` + Page 1 immutable security/format fields (`magic`, `page_size`, `version`, `encryption_flags`, `salt`, `kcv`) | [`build_page_aad`](../../src/crypto/mod.rs) |
 | **Key Derivation & KCV** | PBKDF2-HMAC-SHA256 (600,000 iterations default) + constant-time `subtle::ConstantTimeEq` KCV verification | [`pbkdf2_hmac_sha256`](../../src/crypto/mod.rs), [`verify_kcv`](../../src/crypto/mod.rs) |
 | **Secret Zeroization** | Non-`Clone` `DatabaseCipher` (`Zeroize` + `Drop`), PBKDF2/HMAC working buffers zeroized, `Config` redacts `Debug` and is taken/zeroized immediately on `Connection::open*` & `tapirus serve` | [`DatabaseCipher`](../../src/crypto/mod.rs), [`take_cipher_from_config`](../../src/lib.rs) |
 | **Browser / WASM Encryption** | End-to-end encrypted in-memory execution + encrypted `.tapir` snapshot export (`export_bytes`) for OPFS/IndexedDB | [`TapirusWasm::new_encrypted`](../../crates/tapirus-wasm/src/lib.rs) |
-| **HTTP Daemon Transport & Auth** | Native Rustls TLS 1.2/1.3 (`--tls-cert`/`--tls-key`, `ring` provider), constant-time API key comparison, namespace-scoped AI memory tokens (`--api-key-namespace`), AST-enforced SQL RBAC (`--api-key-role`), defensive response headers, loopback bind default | [`src/bin/tapirus.rs`](../../src/bin/tapirus.rs) |
+| **HTTP Daemon Transport & Auth** | Native Rustls TLS 1.2/1.3 (`--tls-cert`/`--tls-key`, `ring` provider), constant-time API key comparison, namespace-scoped AI memory tokens (`--api-key-namespace`), AST-enforced SQL RBAC (`--api-key-role`), defensive response headers, loopback bind default | [`src/bin/tapirus/http.rs`](../../src/bin/tapirus/http.rs) |
 | **Dependency Baseline** | MSRV raised to Rust `1.88` to track patched cryptographic dependencies (`chacha20poly1305 0.11`, `ctutils 0.4.8`, `sha2 0.11.1`) verified against OSV | [`Cargo.toml`](../../Cargo.toml), [`scripts/check-dependency-advisories.py`](../../scripts/check-dependency-advisories.py) |
 | **Formal WAL Model** | Single-writer WAL crash-safety specification (`TAPIRUS_WAL.tla`) checked by TLC in CI | [`docs/formal_verification/TAPIRUS_WAL.tla`](../formal_verification/TAPIRUS_WAL.tla) |
 
@@ -46,8 +46,8 @@ When commissioning an external audit firm (e.g., Trail of Bits, NCC Group, Quark
 
 1. **Cryptographic Design & Implementation Review (`src/crypto/`, `src/pager/`)**
    - Validate PBKDF2-HMAC-SHA256 RFC 2898 compliance, KCV domain separation, CSPRNG nonce generation, Page 1 header AAD boundary (`0..12`, `48..81` vs mutable counters `12..48`), and WAL frame encryption/recovery edge cases.
-2. **HTTP Server Auth, Parser & RBAC Bypass Testing (`src/bin/tapirus.rs`)**
-   - Fuzz HTTP header framing, Bearer/`X-API-Key` parsing, Rustls TLS configuration, and AST SQL RBAC (`authorize_sql_statement_ast`) for bypasses via CTEs, views, subqueries, or vector search paths.
+2. **HTTP Server Auth, Parser & RBAC Bypass Testing ([`src/bin/tapirus/http.rs`](../../src/bin/tapirus/http.rs))**
+   - Fuzz HTTP header framing, Bearer/`X-API-Key` parsing, Rustls TLS configuration, and AST SQL RBAC (`authorize_sql_statement_ast`) for bypasses via CTEs, views, subqueries, `UPDATE SET` expressions, or vector search paths.
 3. **Multi-Process WAL Locking & Crash Consistency (`src/pager/mod.rs`, `src/pager/wal.rs`)**
    - Audit `.tapir-lock` coordination, fingerprint validation, crash recovery fault injection (`tests/io_fault_recovery_tests.rs`), and correspondence between `TAPIRUS_WAL.tla` and Rust code.
 4. **C FFI & WASM Boundary Fuzzing (`crates/tapirus-ffi/`, `crates/tapirus-wasm/`)**
@@ -57,7 +57,7 @@ When commissioning an external audit firm (e.g., Trail of Bits, NCC Group, Quark
 
 ## 4. Commissioning & Publishing an External Audit Report
 
-See [`EXTERNAL_AUDIT_RFP.md`](EXTERNAL_AUDIT_RFP.md) for the v1.1.0 external firm scope pack and reproducible verification commands.
+See [`EXTERNAL_AUDIT_RFP.md`](EXTERNAL_AUDIT_RFP.md) for the `v1.2.0+` external firm scope pack and reproducible verification commands.
 
 Once an external audit completes:
 1. Place the auditor's signed PDF/Markdown report under `docs/security/reports/<YYYY>-<firm>-report.pdf` (with SHA-256 checksum).
