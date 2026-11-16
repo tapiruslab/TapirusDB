@@ -1549,3 +1549,107 @@ fn test_executor_phase7_case_cast_generated_expr_index_and_update_subqueries() {
         .unwrap();
     assert_eq!(alter_check[0].get::<f64>("doubled_total").unwrap(), 120.0);
 }
+
+#[test]
+fn test_executor_phase8_intersect_except_cross_join_and_sqlite_builtins() {
+    let mut pager = Pager::open_in_memory(4096, 256).expect("Pager open");
+    let mut executor = SQLExecutor::new(&mut pager).expect("Init executor");
+
+    for ddl in [
+        "CREATE TABLE set_a (v INTEGER);",
+        "CREATE TABLE set_b (v INTEGER);",
+        "CREATE TABLE sizes (sz TEXT);",
+        "CREATE TABLE colors (clr TEXT);",
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT, score INTEGER, bonus INTEGER);",
+    ] {
+        executor
+            .execute(&mut pager, parse_sql(ddl).unwrap())
+            .unwrap();
+    }
+
+    for ins in [
+        "INSERT INTO set_a VALUES (1), (2), (2), (3), (4);",
+        "INSERT INTO set_b VALUES (2), (4), (4), (5);",
+        "INSERT INTO sizes VALUES ('S'), ('M');",
+        "INSERT INTO colors VALUES ('red'), ('blue'), ('green');",
+        "INSERT INTO items VALUES (1, '  hello-world  ', 85, NULL), (2, 'xxabxx', 42, 10);",
+    ] {
+        executor
+            .execute(&mut pager, parse_sql(ins).unwrap())
+            .unwrap();
+    }
+
+    // 1. INTERSECT & EXCEPT (deduplicated) + WITH CTE
+    let inter = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT v FROM set_a INTERSECT SELECT v FROM set_b;").unwrap(),
+        )
+        .unwrap();
+    let inter_vals: Vec<i64> = inter.iter().map(|r| r.get::<i64>("v").unwrap()).collect();
+    assert_eq!(inter_vals, vec![2, 4]);
+
+    let except = executor
+        .query(
+            &mut pager,
+            parse_sql("SELECT v FROM set_a EXCEPT SELECT v FROM set_b;").unwrap(),
+        )
+        .unwrap();
+    let except_vals: Vec<i64> = except.iter().map(|r| r.get::<i64>("v").unwrap()).collect();
+    assert_eq!(except_vals, vec![1, 3]);
+
+    // 2. CROSS JOIN (table-to-table & ephemeral CTE)
+    let cross = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT s.sz, c.clr FROM sizes s CROSS JOIN colors c ORDER BY s.sz ASC, c.clr ASC;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(cross.len(), 6);
+    assert_eq!(cross[0].get::<String>("sz").unwrap(), "M");
+    assert_eq!(cross[0].get::<String>("clr").unwrap(), "blue");
+
+    let cte_cross = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "WITH a AS (SELECT v FROM set_a INTERSECT SELECT v FROM set_b), b AS (SELECT sz FROM sizes) SELECT a.v, b.sz FROM a CROSS JOIN b ORDER BY a.v ASC, b.sz ASC;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(cte_cross.len(), 4);
+
+    // 3. IIF, IFNULL, NULLIF, REPLACE, INSTR, LTRIM/RTRIM/TRIM, TYPEOF, math & HEX
+    let fns = executor
+        .query(
+            &mut pager,
+            parse_sql(
+                "SELECT id, IIF(score >= 80, 'pass', 'fail') AS grade, IFNULL(bonus, 99) AS eff_bonus, NULLIF(score, 42) AS null_42, REPLACE(TRIM(label), '-', '_') AS cleaned, INSTR(label, 'world') AS pos, LTRIM(RTRIM(label, 'x '), 'x ') AS trimmed, TYPEOF(bonus) AS bonus_t, TYPEOF(score) AS score_t, FLOOR(3.9) AS fl, CEIL(3.1) AS cl, POWER(2, 5) AS pw, SQRT(16) AS sq, MOD(17, 5) AS md, HEX('AB') AS hx FROM items ORDER BY id ASC;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(fns.len(), 2);
+    assert_eq!(fns[0].get::<String>("grade").unwrap(), "pass");
+    assert_eq!(fns[0].get::<i64>("eff_bonus").unwrap(), 99);
+    assert_eq!(fns[0].get::<i64>("null_42").unwrap(), 85);
+    assert_eq!(fns[0].get::<String>("cleaned").unwrap(), "hello_world");
+    assert_eq!(fns[0].get::<i64>("pos").unwrap(), 9);
+    assert_eq!(fns[0].get::<String>("bonus_t").unwrap(), "null");
+    assert_eq!(fns[0].get::<String>("score_t").unwrap(), "integer");
+    assert_eq!(fns[0].get::<f64>("fl").unwrap(), 3.0);
+    assert_eq!(fns[0].get::<f64>("cl").unwrap(), 4.0);
+    assert_eq!(fns[0].get::<f64>("pw").unwrap(), 32.0);
+    assert_eq!(fns[0].get::<f64>("sq").unwrap(), 4.0);
+    assert_eq!(fns[0].get::<i64>("md").unwrap(), 2);
+    assert_eq!(fns[0].get::<String>("hx").unwrap(), "4142");
+
+    assert_eq!(fns[1].get::<String>("grade").unwrap(), "fail");
+    assert_eq!(fns[1].get::<i64>("eff_bonus").unwrap(), 10);
+    assert!(fns[1].values()[3].is_null());
+    assert_eq!(fns[1].get::<String>("trimmed").unwrap(), "ab");
+}

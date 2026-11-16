@@ -1730,13 +1730,17 @@ impl SQLExecutor {
                         let merged_cols_shared = Arc::new(merged_cols_template);
 
                         // Resolve join key indices against accumulated left columns & right table
-                        let (l_col_idx, r_col_idx) = resolve_join_key_indices(
-                            &current_left_cols,
-                            None,
-                            right_table_def,
-                            &join_clause.left_col,
-                            &join_clause.right_col,
-                        );
+                        let (l_col_idx, r_col_idx) = if join_clause.join_type == JoinType::Cross {
+                            (None, None)
+                        } else {
+                            resolve_join_key_indices(
+                                &current_left_cols,
+                                None,
+                                right_table_def,
+                                &join_clause.left_col,
+                                &join_clause.right_col,
+                            )
+                        };
 
                         // Build hash table on right table (with pushed single-table WHERE when INNER)
                         let mut right_rows = Vec::new();
@@ -1856,7 +1860,65 @@ impl SQLExecutor {
                             || join_clause.join_type == JoinType::Full;
                         let mut joined_rows = Vec::with_capacity(left_rows.len());
 
-                        if all_int_keys && !is_right_or_full {
+                        if join_clause.join_type == JoinType::Cross {
+                            if let Some(ref direct_sources) = direct_join_sources {
+                                let output_col_shared = Arc::new(columns.clone());
+                                let mut final_rows =
+                                    Vec::with_capacity(left_rows.len() * right_rows.len());
+                                for l_row in &left_rows {
+                                    for r_row in &right_rows {
+                                        let mut vals = Vec::with_capacity(direct_sources.len());
+                                        for src in direct_sources {
+                                            match src {
+                                                JoinOutputCol::Left(idx) => vals.push(
+                                                    l_row
+                                                        .values()
+                                                        .get(*idx)
+                                                        .cloned()
+                                                        .unwrap_or(Value::Null),
+                                                ),
+                                                JoinOutputCol::Right(idx) => vals.push(
+                                                    r_row
+                                                        .values()
+                                                        .get(*idx)
+                                                        .cloned()
+                                                        .unwrap_or(Value::Null),
+                                                ),
+                                            }
+                                        }
+                                        final_rows.push(Row::with_shared_columns(
+                                            output_col_shared.clone(),
+                                            vals,
+                                        ));
+                                    }
+                                }
+                                let skip_count = offset.unwrap_or(0);
+                                if skip_count > 0 || limit.is_some() {
+                                    let mut sliced: Vec<Row> =
+                                        final_rows.into_iter().skip(skip_count).collect();
+                                    if let Some(lim) = limit {
+                                        sliced.truncate(lim);
+                                    }
+                                    return Ok(sliced);
+                                }
+                                return Ok(final_rows);
+                            }
+
+                            joined_rows.reserve(left_rows.len() * right_rows.len());
+                            for l_row in &left_rows {
+                                for r_row in &right_rows {
+                                    let mut merged_vals = Vec::with_capacity(
+                                        l_row.values().len() + r_row.values().len(),
+                                    );
+                                    merged_vals.extend_from_slice(l_row.values());
+                                    merged_vals.extend_from_slice(r_row.values());
+                                    joined_rows.push(Row::with_shared_columns(
+                                        merged_cols_shared.clone(),
+                                        merged_vals,
+                                    ));
+                                }
+                            }
+                        } else if all_int_keys && !is_right_or_full {
                             // ── Fast path: FastIntHasher + IntEntry ──
                             let r_idx_col = r_col_idx.unwrap();
                             let l_idx_col = l_col_idx.unwrap();

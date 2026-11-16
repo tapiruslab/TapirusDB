@@ -1,6 +1,6 @@
 # TapirusDB Complete Query Syntax Reference
 
-> **Applies to:** TapirusDB `v1.1.0` (plus `olap`/`bigdata` pushdowns and Phase 1–5 SQL planner/execution upgrades on `main`) across Rust (`Connection` / `SessionDatabase`), Python, Node.js, Browser WASM (`@tapirus/wasm` & `@tapirus/wasm-lite`), CLI (`tapirus`), and HTTP/TLS (`tapirus serve`).
+> **Applies to:** TapirusDB `v1.2.0` (Phases 1–8 SQL & execution upgrades) across Rust (`Connection` / `SessionDatabase`), Python, Node.js, Browser WASM (`@tapirus/wasm` & `@tapirus/wasm-lite`), CLI (`tapirus`), and HTTP/TLS (`tapirus serve`).
 
 This guide is designed so **any developer**—whether coming from SQLite/Postgres or building vector, graph, or Parquet analytics—can find the exact working query syntax in seconds.
 
@@ -142,8 +142,9 @@ LIMIT 50 OFFSET 0;
 
 **Supported scalar & conditional expressions in projections, `CHECK`, generated columns, `UPDATE SET`, and `WHERE`:**
 - Infix arithmetic (`+`, `-`, `*`, `/`, `%`), string concatenation `||`, parentheses `(...)`
-- Conditional branching: `CASE [expr] WHEN cond_or_val THEN res [...] [ELSE fallback] END`
+- Conditional branching: `CASE [expr] WHEN cond_or_val THEN res [...] [ELSE fallback] END` and `IIF(cond, true_val, false_val)`
 - Explicit type casting: `CAST(expr AS INTEGER|INT|REAL|FLOAT|TEXT|VARCHAR|BOOLEAN|BLOB)`
+- SQLite scalar built-ins: `IFNULL`, `NULLIF`, `COALESCE`, `CONCAT`, `REPLACE`, `INSTR`, `SUBSTR`, `TRIM`/`LTRIM`/`RTRIM` (with optional characters argument), `UPPER`, `LOWER`, `LENGTH`/`LEN`, `REVERSE`, `TYPEOF`, `ABS`, `ROUND`, `FLOOR`, `CEIL`/`CEILING`, `SQRT`, `POWER`/`POW`, `MOD`, `HEX`
 - Scalar subqueries `(SELECT ...)` (0 rows -> `NULL`, >1 row -> runtime error)
 - Expression indexes: `CREATE [UNIQUE] INDEX idx ON tbl (LOWER(email)) [WHERE ...]`
 - Generated columns: `col TYPE [GENERATED ALWAYS] AS (expr) [STORED|VIRTUAL]` (computed automatically on `INSERT`, `ON CONFLICT DO UPDATE`, `UPDATE`, and `ALTER TABLE ADD COLUMN`)
@@ -166,6 +167,7 @@ WHERE e.age > d.min_age;
 -- LEFT [OUTER] JOIN ... ON ...
 -- RIGHT [OUTER] JOIN ... ON ...
 -- FULL [OUTER] JOIN ... ON ...
+-- CROSS JOIN other_table
 
 -- Correlated EXISTS / NOT EXISTS, IN, and scalar subqueries (WHERE & SELECT projection)
 SELECT d.id,
@@ -183,7 +185,7 @@ FROM (SELECT dept_id, COUNT(*) AS total FROM employees GROUP BY dept_id) AS sub
 WHERE sub.total > 5;
 ```
 
-### CTEs (`WITH [RECURSIVE]`) & Set Operations (`UNION [ALL]`)
+### CTEs (`WITH [RECURSIVE]`) & Set Operations (`UNION [ALL]`, `INTERSECT`, `EXCEPT`)
 ```sql
 WITH RECURSIVE org_tree AS (
     SELECT id, manager_id, name, 0 AS depth FROM org WHERE manager_id IS NULL
@@ -202,6 +204,14 @@ SELECT name FROM archived_users;
 SELECT name FROM active_users
 UNION ALL    -- keeps all rows
 SELECT name FROM archived_users;
+
+SELECT name FROM active_users
+INTERSECT    -- common deduplicated rows
+SELECT name FROM premium_users;
+
+SELECT name FROM active_users
+EXCEPT       -- deduplicated rows in active_users absent from banned_users
+SELECT name FROM banned_users;
 ```
 
 ### Window Functions

@@ -1039,6 +1039,10 @@ pub fn try_eval_scalar_expr(
         return Ok(None);
     }
 
+    if let Some(iif_val) = try_eval_iif_expr(row, trimmed, udfs)? {
+        return Ok(Some(iif_val));
+    }
+
     if let Some(cast_val) = try_eval_cast_expr(row, trimmed, udfs)? {
         return Ok(Some(cast_val));
     }
@@ -1766,6 +1770,64 @@ fn try_eval_case_expr(
     }
 
     Ok(Some(Value::Null))
+}
+
+fn eval_truthy(val: &Value) -> bool {
+    match val {
+        Value::Null => false,
+        Value::Integer(i) => *i != 0,
+        Value::Real(f) => *f != 0.0,
+        Value::Text(s) => {
+            let t = s.trim();
+            if let Ok(i) = t.parse::<i64>() {
+                i != 0
+            } else if let Ok(f) = t.parse::<f64>() {
+                f != 0.0
+            } else {
+                matches!(t.to_ascii_lowercase().as_str(), "true" | "t" | "yes" | "y")
+            }
+        }
+        Value::Blob(b) => !b.is_empty(),
+        Value::Vector(v) => !v.is_empty(),
+    }
+}
+
+fn try_eval_iif_expr(
+    row: &Row,
+    trimmed: &str,
+    udfs: Option<&crate::sql::udf::UdfRegistry>,
+) -> Result<Option<Value>> {
+    if trimmed.len() < 5 || !trimmed[..3].eq_ignore_ascii_case("IIF") || !trimmed.ends_with(')') {
+        return Ok(None);
+    }
+    let after_name = trimmed[3..].trim_start();
+    if !after_name.starts_with('(') {
+        return Ok(None);
+    }
+    let inner = &after_name[1..after_name.len() - 1];
+    let args = split_func_args(inner);
+    if args.len() != 3 {
+        return Ok(None);
+    }
+
+    let cond_sql = args[0];
+    let cond_true = if let Ok(toks) = crate::sql::lexer::tokenize(cond_sql)
+        && let Ok((where_ast, cur)) = (|| -> Result<_> {
+            let mut cur = 0usize;
+            let ast = crate::sql::parser::parse_where_expr_public(&toks, &mut cur)?;
+            Ok((ast, cur))
+        })()
+        && cur == toks.len()
+    {
+        let resolved = where_expr_to_simple_resolved(&where_ast);
+        row_matches_resolved_with_udf(row, &resolved, udfs)
+    } else {
+        let cond_val = eval_func_arg(row, cond_sql, udfs)?;
+        eval_truthy(&cond_val)
+    };
+
+    let branch = if cond_true { args[1] } else { args[2] };
+    eval_func_arg(row, branch, udfs).map(Some)
 }
 
 fn where_expr_to_simple_resolved(expr: &crate::sql::parser::WhereExpr) -> ResolvedWhereExpr {

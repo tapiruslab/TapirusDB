@@ -1551,7 +1551,7 @@ dependencies = [
 
 [[package]]
 name = "tapirus"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "tapirus-ffi"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "serde_json",
  "tapirus",
@@ -1591,11 +1591,11 @@ dependencies = [
 
 [[package]]
 name = "tapirus-micro"
-version = "1.1.0"
+version = "1.2.0"
 
 [[package]]
 name = "tapirus-nodejs"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "napi",
  "napi-build",
@@ -1606,7 +1606,7 @@ dependencies = [
 
 [[package]]
 name = "tapirus-python"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "pyo3",
  "serde",
@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "tapirus-wasm"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "getrandom 0.4.3",
  "serde_json",

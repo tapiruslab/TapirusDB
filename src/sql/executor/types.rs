@@ -790,16 +790,33 @@ pub(crate) fn combine_compound_rows(
     right: Vec<Row>,
     op: crate::sql::parser::SetOperation,
 ) {
+    let row_key = |r: &Row| format!("{:?}", r.values());
     match op {
         crate::sql::parser::SetOperation::UnionAll => left.extend(right),
         crate::sql::parser::SetOperation::Union => {
             let mut seen = HashSet::with_capacity(left.len() + right.len());
-            left.retain(|r| seen.insert(format!("{:?}", r.values())));
+            left.retain(|r| seen.insert(row_key(r)));
             for row in right {
-                if seen.insert(format!("{:?}", row.values())) {
+                if seen.insert(row_key(&row)) {
                     left.push(row);
                 }
             }
+        }
+        crate::sql::parser::SetOperation::Intersect => {
+            let right_set: HashSet<String> = right.iter().map(row_key).collect();
+            let mut seen = HashSet::new();
+            left.retain(|r| {
+                let k = row_key(r);
+                right_set.contains(&k) && seen.insert(k)
+            });
+        }
+        crate::sql::parser::SetOperation::Except => {
+            let right_set: HashSet<String> = right.iter().map(row_key).collect();
+            let mut seen = HashSet::new();
+            left.retain(|r| {
+                let k = row_key(r);
+                !right_set.contains(&k) && seen.insert(k)
+            });
         }
     }
 }
@@ -1394,9 +1411,9 @@ pub(crate) fn split_join_where_predicates(
             Some(0) => left_items.push(c.clone()),
             Some(owner_idx) if owner_idx > 0 => {
                 let join_pos = owner_idx - 1;
-                let all_inner_prefix = joins[..=join_pos]
-                    .iter()
-                    .all(|j| j.join_type == JoinType::Inner && !j.is_left);
+                let all_inner_prefix = joins[..=join_pos].iter().all(|j| {
+                    (j.join_type == JoinType::Inner && !j.is_left) || j.join_type == JoinType::Cross
+                });
                 if all_inner_prefix {
                     right_pushed[join_pos].push(c.clone());
                 } else {

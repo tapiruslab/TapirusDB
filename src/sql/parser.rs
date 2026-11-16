@@ -21,6 +21,8 @@ pub enum JoinType {
     Right,
     /// FULL [OUTER] JOIN (all left and right rows, with NULLs for unmatched sides)
     Full,
+    /// CROSS JOIN (Cartesian product of left and right tables)
+    Cross,
 }
 
 /// Specification for table JOIN
@@ -85,6 +87,10 @@ pub enum SetOperation {
     Union,
     /// `UNION ALL` (retain duplicates)
     UnionAll,
+    /// `INTERSECT` (distinct rows present in both result sets)
+    Intersect,
+    /// `EXCEPT` (distinct rows in the left result set absent from the right)
+    Except,
 }
 
 /// Comparison and matching operators supported in WHERE clauses
@@ -2426,9 +2432,65 @@ fn parse_column_primary(tokens: &[Token], cursor: &mut usize) -> Result<String> 
         }
         Token::Case => parse_case_expression(tokens, cursor)?,
         Token::Ident(id)
+            if id.eq_ignore_ascii_case("IIF")
+                && *cursor + 1 < tokens.len()
+                && tokens[*cursor + 1] == Token::OpenParen =>
+        {
+            *cursor += 2;
+            let mut args = Vec::new();
+            let mut arg_start = *cursor;
+            let mut p_depth = 0usize;
+            let mut b_depth = 0usize;
+            let mut c_depth = 0usize;
+            let mut closed = false;
+            while *cursor < tokens.len() {
+                match &tokens[*cursor] {
+                    Token::OpenParen => p_depth += 1,
+                    Token::CloseParen => {
+                        if p_depth == 0 && b_depth == 0 {
+                            args.push(crate::sql::lexer::tokens_to_sql(
+                                &tokens[arg_start..*cursor],
+                            ));
+                            *cursor += 1;
+                            closed = true;
+                            break;
+                        }
+                        p_depth = p_depth.saturating_sub(1);
+                    }
+                    Token::OpenBracket => b_depth += 1,
+                    Token::CloseBracket => b_depth = b_depth.saturating_sub(1),
+                    Token::Case => c_depth += 1,
+                    Token::End => c_depth = c_depth.saturating_sub(1),
+                    Token::Comma if p_depth == 0 && b_depth == 0 && c_depth == 0 => {
+                        args.push(crate::sql::lexer::tokens_to_sql(
+                            &tokens[arg_start..*cursor],
+                        ));
+                        *cursor += 1;
+                        arg_start = *cursor;
+                        continue;
+                    }
+                    _ => {}
+                }
+                *cursor += 1;
+            }
+            if !closed {
+                return Err(Error::SqlSyntax("Unclosed '(' in IIF(...)".into()));
+            }
+            if args.len() != 3 {
+                return Err(Error::SqlSyntax(
+                    "IIF(cond, true_val, false_val) requires exactly 3 arguments".into(),
+                ));
+            }
+            format!("IIF({}, {}, {})", args[0], args[1], args[2])
+        }
+        Token::Ident(_) | Token::Replace
             if *cursor + 1 < tokens.len() && tokens[*cursor + 1] == Token::OpenParen =>
         {
-            let func_name = id.clone();
+            let func_name = match &tokens[*cursor] {
+                Token::Ident(id) => id.clone(),
+                Token::Replace => "REPLACE".to_string(),
+                _ => unreachable!(),
+            };
             *cursor += 2;
             let mut args = Vec::new();
             if !check_token(tokens, *cursor, &Token::CloseParen) {
@@ -2928,17 +2990,27 @@ fn rewrite_where_aliases(expr: &mut WhereExpr, aliases: &[(String, String)]) {
 
 fn parse_compound_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
     let mut stmt = parse_select(tokens, cursor)?;
-    while matches!(tokens.get(*cursor), Some(Token::Ident(s)) if s.eq_ignore_ascii_case("UNION")) {
-        *cursor += 1;
-        let op = if matches!(tokens.get(*cursor), Some(Token::Ident(s)) if s.eq_ignore_ascii_case("ALL"))
-        {
+    while let Some(Token::Ident(s)) = tokens.get(*cursor) {
+        let op = if s.eq_ignore_ascii_case("UNION") {
             *cursor += 1;
-            SetOperation::UnionAll
+            if matches!(tokens.get(*cursor), Some(Token::Ident(a)) if a.eq_ignore_ascii_case("ALL"))
+            {
+                *cursor += 1;
+                SetOperation::UnionAll
+            } else {
+                SetOperation::Union
+            }
+        } else if s.eq_ignore_ascii_case("INTERSECT") {
+            *cursor += 1;
+            SetOperation::Intersect
+        } else if s.eq_ignore_ascii_case("EXCEPT") {
+            *cursor += 1;
+            SetOperation::Except
         } else {
-            SetOperation::Union
+            break;
         };
         if !check_token(tokens, *cursor, &Token::Select) {
-            return Err(Error::SqlSyntax("Expected SELECT after UNION".into()));
+            return Err(Error::SqlSyntax(format!("Expected SELECT after {op:?}")));
         }
         let right = parse_select(tokens, cursor)?;
         stmt = Statement::Compound {
@@ -3044,6 +3116,8 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             }
         } else if let Some(Token::Ident(alias)) = tokens.get(*cursor)
             && !is_clause_boundary_ident(alias)
+            && !(alias.eq_ignore_ascii_case("CROSS")
+                && check_token(tokens, *cursor + 1, &Token::Join))
         {
             let alias = alias.clone();
             *cursor += 1;
@@ -3054,7 +3128,7 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         (name, None)
     };
 
-    // Optional chained JOIN clauses: {[INNER|LEFT|RIGHT|FULL] [OUTER] JOIN other_table ON left_col = right_col}...
+    // Optional chained JOIN clauses: {[CROSS | [INNER|LEFT|RIGHT|FULL] [OUTER]] JOIN other_table [ON left_col = right_col]}...
     let mut join = None;
     let mut extra_joins = Vec::new();
     while check_token(tokens, *cursor, &Token::Left)
@@ -3062,8 +3136,15 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
         || check_token(tokens, *cursor, &Token::Full)
         || check_token(tokens, *cursor, &Token::Inner)
         || check_token(tokens, *cursor, &Token::Join)
+        || (matches!(tokens.get(*cursor), Some(Token::Ident(s)) if s.eq_ignore_ascii_case("CROSS"))
+            && check_token(tokens, *cursor + 1, &Token::Join))
     {
-        let join_type = if check_token(tokens, *cursor, &Token::Left) {
+        let join_type = if matches!(tokens.get(*cursor), Some(Token::Ident(s)) if s.eq_ignore_ascii_case("CROSS"))
+        {
+            *cursor += 1;
+            expect_token(tokens, cursor, &Token::Join)?;
+            JoinType::Cross
+        } else if check_token(tokens, *cursor, &Token::Left) {
             *cursor += 1;
             if check_token(tokens, *cursor, &Token::Outer) {
                 *cursor += 1;
@@ -3111,6 +3192,8 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             }
         } else if let Some(Token::Ident(alias)) = tokens.get(*cursor)
             && !is_clause_boundary_ident(alias)
+            && !(alias.eq_ignore_ascii_case("CROSS")
+                && check_token(tokens, *cursor + 1, &Token::Join))
         {
             let alias = alias.clone();
             *cursor += 1;
@@ -3119,10 +3202,15 @@ fn parse_select(tokens: &[Token], cursor: &mut usize) -> Result<Statement> {
             }
         }
 
-        expect_token(tokens, cursor, &Token::On)?;
-        let left_col = parse_column_ident(tokens, cursor)?;
-        expect_token(tokens, cursor, &Token::Equals)?;
-        let right_col = parse_column_ident(tokens, cursor)?;
+        let (left_col, right_col) = if join_type == JoinType::Cross {
+            (String::new(), String::new())
+        } else {
+            expect_token(tokens, cursor, &Token::On)?;
+            let left_col = parse_column_ident(tokens, cursor)?;
+            expect_token(tokens, cursor, &Token::Equals)?;
+            let right_col = parse_column_ident(tokens, cursor)?;
+            (left_col, right_col)
+        };
 
         let jc = JoinClause {
             table: right_table,
@@ -5176,6 +5264,58 @@ mod tests {
                 assert_eq!(returning, Some(vec!["price".to_string()]));
             }
             _ => panic!("Expected Update"),
+        }
+    }
+
+    #[test]
+    fn test_parse_phase8_intersect_except_cross_join_and_iif() {
+        let inter_sql = "SELECT id FROM a INTERSECT SELECT id FROM b EXCEPT SELECT id FROM c;";
+        match parse_sql(inter_sql).expect("Parse INTERSECT / EXCEPT") {
+            Statement::Compound { left, op, right: _ } => {
+                assert_eq!(op, SetOperation::Except);
+                match *left {
+                    Statement::Compound { op: left_op, .. } => {
+                        assert_eq!(left_op, SetOperation::Intersect);
+                    }
+                    other => panic!("Expected inner Compound, got {other:?}"),
+                }
+            }
+            other => panic!("Expected Compound, got {other:?}"),
+        }
+
+        let cross_sql = "SELECT s.name, r.code FROM staff s CROSS JOIN roles r WHERE s.active = 1;";
+        match parse_sql(cross_sql).expect("Parse CROSS JOIN with table alias") {
+            Statement::Select {
+                join, where_clause, ..
+            } => {
+                let jc = join.expect("Expected join clause");
+                assert_eq!(jc.join_type, JoinType::Cross);
+                assert_eq!(jc.table, "roles");
+                assert!(jc.left_col.is_empty());
+                assert!(where_clause.is_some());
+            }
+            other => panic!("Expected Select, got {other:?}"),
+        }
+
+        let cross_no_alias = "SELECT a.id, b.id FROM a CROSS JOIN b;";
+        match parse_sql(cross_no_alias).expect("Parse CROSS JOIN without alias") {
+            Statement::Select { table, join, .. } => {
+                assert_eq!(table, "a");
+                let jc = join.expect("Expected join");
+                assert_eq!(jc.join_type, JoinType::Cross);
+                assert_eq!(jc.table, "b");
+            }
+            other => panic!("Expected Select, got {other:?}"),
+        }
+
+        let fn_sql = "SELECT IIF(score >= 80 AND active = 1, 'pass', 'fail') AS res, REPLACE(email, '@old', '@new') AS updated FROM users;";
+        match parse_sql(fn_sql).expect("Parse IIF and REPLACE") {
+            Statement::Select { columns, .. } => {
+                assert_eq!(columns.len(), 2);
+                assert!(columns[0].starts_with("IIF("));
+                assert!(columns[1].starts_with("REPLACE("));
+            }
+            other => panic!("Expected Select, got {other:?}"),
         }
     }
 }

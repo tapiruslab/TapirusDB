@@ -7,9 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.2.0] - 2026-11-16
 
 ### Added
+- `INTERSECT` and `EXCEPT` compound set operations across `SELECT` and CTE statements, `CROSS JOIN` (`JoinType::Cross`) across direct-join, general-join, ephemeral CTE, and `EXPLAIN` paths, plus standard SQLite scalar built-ins (`IIF`, `IFNULL`, `NULLIF`, `REPLACE`, `INSTR`, `LTRIM`, `RTRIM`, `TRIM(s, chars)`, `TYPEOF`, `FLOOR`, `CEIL`/`CEILING`, `SQRT`, `POWER`/`POW`, `MOD`, and `HEX`).
 - Conditional `CASE [operand] WHEN ... THEN ... [ELSE ...] END` and explicit `CAST(expr AS INTEGER|REAL|TEXT|BOOLEAN|BLOB)` across the SQL lexer, parser (`parse_column_primary`, nested `CREATE TRIGGER` depth tracking), and executor (`eval.rs`).
 - Computed `GENERATED ALWAYS AS (<expr>) [STORED|VIRTUAL]` columns in `ColumnDef` (`CREATE TABLE`, `ALTER TABLE ADD COLUMN` backfill, automatic calculation on `INSERT` / `ON CONFLICT DO UPDATE` / `UPDATE`, constraint & index updates, and strict rejection of direct writes).
 - Expression indexes (`CREATE [UNIQUE] INDEX idx ON tbl (LOWER(col)) [WHERE ...]`) with target validation, key evaluation via `eval_projected_expr`, and query-planner matching (`normalize_index_expr`, `USING INDEX`).

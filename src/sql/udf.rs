@@ -200,18 +200,222 @@ impl UdfRegistry {
             Ok(Value::Text(sub))
         });
 
-        // TRIM(str)
-        self.register("TRIM", |args| match args.first() {
-            Some(Value::Text(s)) => Ok(Value::Text(s.trim().to_string())),
-            Some(Value::Null) | None => Ok(Value::Null),
-            Some(other) => Ok(Value::Text(other.to_string().trim().to_string())),
-        });
+        // TRIM(str [, chars]), LTRIM(str [, chars]), RTRIM(str [, chars])
+        let apply_trim = |args: &[Value], left: bool, right: bool| -> Result<Value> {
+            let Some(val) = args.first() else {
+                return Ok(Value::Null);
+            };
+            if val.is_null() {
+                return Ok(Value::Null);
+            }
+            let s = match val {
+                Value::Text(s) => s.clone(),
+                other => other.to_string(),
+            };
+            let chars_owned: Option<Vec<char>> = match args.get(1) {
+                Some(Value::Text(c)) => Some(c.chars().collect()),
+                Some(Value::Null) => return Ok(Value::Null),
+                Some(other) => Some(other.to_string().chars().collect()),
+                None => None,
+            };
+            let out = match chars_owned {
+                Some(ref pat) => {
+                    let slice = pat.as_slice();
+                    match (left, right) {
+                        (true, true) => s.trim_matches(slice),
+                        (true, false) => s.trim_start_matches(slice),
+                        (false, true) => s.trim_end_matches(slice),
+                        (false, false) => s.as_str(),
+                    }
+                }
+                None => match (left, right) {
+                    (true, true) => s.trim(),
+                    (true, false) => s.trim_start(),
+                    (false, true) => s.trim_end(),
+                    (false, false) => s.as_str(),
+                },
+            };
+            Ok(Value::Text(out.to_string()))
+        };
+        self.register("TRIM", move |args| apply_trim(args, true, true));
+        self.register("LTRIM", move |args| apply_trim(args, true, false));
+        self.register("RTRIM", move |args| apply_trim(args, false, true));
 
         // REVERSE(str)
         self.register("REVERSE", |args| match args.first() {
             Some(Value::Text(s)) => Ok(Value::Text(s.chars().rev().collect())),
             Some(Value::Null) | None => Ok(Value::Null),
             Some(other) => Ok(Value::Text(other.to_string().chars().rev().collect())),
+        });
+
+        // IFNULL(x, y)
+        self.register("IFNULL", |args| {
+            for arg in args {
+                if !arg.is_null() {
+                    return Ok(arg.clone());
+                }
+            }
+            Ok(Value::Null)
+        });
+
+        // NULLIF(x, y)
+        self.register("NULLIF", |args| match (args.first(), args.get(1)) {
+            (Some(x), Some(y)) if !x.is_null() && x == y => Ok(Value::Null),
+            (Some(x), _) => Ok(x.clone()),
+            (None, _) => Ok(Value::Null),
+        });
+
+        // REPLACE(str, from, to)
+        self.register("REPLACE", |args| {
+            let (Some(a0), Some(a1), Some(a2)) = (args.first(), args.get(1), args.get(2)) else {
+                return Ok(Value::Null);
+            };
+            if a0.is_null() || a1.is_null() || a2.is_null() {
+                return Ok(Value::Null);
+            }
+            let s = match a0 {
+                Value::Text(v) => v.clone(),
+                other => other.to_string(),
+            };
+            let from = match a1 {
+                Value::Text(v) => v.clone(),
+                other => other.to_string(),
+            };
+            let to = match a2 {
+                Value::Text(v) => v.clone(),
+                other => other.to_string(),
+            };
+            if from.is_empty() {
+                return Ok(Value::Text(s));
+            }
+            Ok(Value::Text(s.replace(&from, &to)))
+        });
+
+        // INSTR(haystack, needle) — 1-based char index, 0 when not found
+        self.register("INSTR", |args| {
+            let (Some(a0), Some(a1)) = (args.first(), args.get(1)) else {
+                return Ok(Value::Null);
+            };
+            if a0.is_null() || a1.is_null() {
+                return Ok(Value::Null);
+            }
+            let hay = match a0 {
+                Value::Text(v) => v.clone(),
+                other => other.to_string(),
+            };
+            let needle = match a1 {
+                Value::Text(v) => v.clone(),
+                other => other.to_string(),
+            };
+            if needle.is_empty() {
+                return Ok(Value::Integer(1));
+            }
+            let pos = hay
+                .find(&needle)
+                .map(|byte_idx| hay[..byte_idx].chars().count() as i64 + 1)
+                .unwrap_or(0);
+            Ok(Value::Integer(pos))
+        });
+
+        // TYPEOF(val)
+        self.register("TYPEOF", |args| {
+            let kind = match args.first() {
+                None | Some(Value::Null) => "null",
+                Some(Value::Integer(_)) => "integer",
+                Some(Value::Real(_)) => "real",
+                Some(Value::Text(_)) => "text",
+                Some(Value::Blob(_)) => "blob",
+                Some(Value::Vector(_)) => "vector",
+            };
+            Ok(Value::Text(kind.to_string()))
+        });
+
+        // FLOOR(num), CEIL(num) / CEILING(num), SQRT(num), POWER(a, b) / POW(a, b), MOD(a, b)
+        let to_f64 = |v: &Value| -> Option<f64> {
+            match v {
+                Value::Integer(i) => Some(*i as f64),
+                Value::Real(f) => Some(*f),
+                Value::Text(s) => s.trim().parse::<f64>().ok(),
+                _ => None,
+            }
+        };
+        self.register("FLOOR", move |args| match args.first() {
+            Some(Value::Null) | None => Ok(Value::Null),
+            Some(Value::Integer(i)) => Ok(Value::Integer(*i)),
+            Some(v) => match to_f64(v) {
+                Some(f) => Ok(Value::Real(f.floor())),
+                None => Err(Error::ConstraintViolation(format!(
+                    "Cannot compute FLOOR on {v:?}"
+                ))),
+            },
+        });
+        let ceil_fn = move |args: &[Value]| match args.first() {
+            Some(Value::Null) | None => Ok(Value::Null),
+            Some(Value::Integer(i)) => Ok(Value::Integer(*i)),
+            Some(v) => match to_f64(v) {
+                Some(f) => Ok(Value::Real(f.ceil())),
+                None => Err(Error::ConstraintViolation(format!(
+                    "Cannot compute CEIL on {v:?}"
+                ))),
+            },
+        };
+        self.register("CEIL", ceil_fn);
+        self.register("CEILING", ceil_fn);
+        self.register("SQRT", move |args| match args.first() {
+            Some(Value::Null) | None => Ok(Value::Null),
+            Some(v) => match to_f64(v) {
+                Some(f) if f >= 0.0 => Ok(Value::Real(f.sqrt())),
+                Some(_) => Ok(Value::Null),
+                None => Err(Error::ConstraintViolation(format!(
+                    "Cannot compute SQRT on {v:?}"
+                ))),
+            },
+        });
+        let power_fn = move |args: &[Value]| match (args.first(), args.get(1)) {
+            (Some(Value::Null), _) | (_, Some(Value::Null)) | (None, _) | (_, None) => {
+                Ok(Value::Null)
+            }
+            (Some(a), Some(b)) => match (to_f64(a), to_f64(b)) {
+                (Some(x), Some(y)) => Ok(Value::Real(x.powf(y))),
+                _ => Err(Error::ConstraintViolation(format!(
+                    "Cannot compute POWER({a:?}, {b:?})"
+                ))),
+            },
+        };
+        self.register("POWER", power_fn);
+        self.register("POW", power_fn);
+        self.register("MOD", move |args| match (args.first(), args.get(1)) {
+            (Some(Value::Null), _) | (_, Some(Value::Null)) | (None, _) | (_, None) => {
+                Ok(Value::Null)
+            }
+            (Some(Value::Integer(_)), Some(Value::Integer(0))) => Ok(Value::Null),
+            (Some(Value::Integer(a)), Some(Value::Integer(b))) => Ok(Value::Integer(a % b)),
+            (Some(a), Some(b)) => match (to_f64(a), to_f64(b)) {
+                (Some(_), Some(0.0)) => Ok(Value::Null),
+                (Some(x), Some(y)) => Ok(Value::Real(x % y)),
+                _ => Err(Error::ConstraintViolation(format!(
+                    "Cannot compute MOD({a:?}, {b:?})"
+                ))),
+            },
+        });
+
+        // HEX(val)
+        self.register("HEX", |args| {
+            let hex_bytes = |bytes: &[u8]| -> String {
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                let mut out = String::with_capacity(bytes.len() * 2);
+                for &b in bytes {
+                    out.push(HEX[(b >> 4) as usize] as char);
+                    out.push(HEX[(b & 0x0F) as usize] as char);
+                }
+                out
+            };
+            match args.first() {
+                None | Some(Value::Null) => Ok(Value::Null),
+                Some(Value::Blob(b)) => Ok(Value::Text(hex_bytes(b))),
+                Some(Value::Text(s)) => Ok(Value::Text(hex_bytes(s.as_bytes()))),
+                Some(other) => Ok(Value::Text(hex_bytes(other.to_string().as_bytes()))),
+            }
         });
     }
 }

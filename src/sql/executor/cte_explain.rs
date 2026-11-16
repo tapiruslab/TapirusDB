@@ -294,16 +294,17 @@ impl SQLExecutor {
                 }
 
                 for j in join.iter().chain(extra_joins.iter()) {
+                    let msg = if j.join_type == crate::sql::parser::JoinType::Cross {
+                        format!("CROSS JOIN TABLE {}", j.table)
+                    } else {
+                        format!(
+                            "SEARCH SUBQUERY / JOIN TABLE {} ON {} = {}",
+                            j.table, j.left_col, j.right_col
+                        )
+                    };
                     rows.push(Row::new(
                         cols.clone(),
-                        vec![
-                            Value::Integer(id),
-                            Value::Integer(0),
-                            Value::Text(format!(
-                                "SEARCH SUBQUERY / JOIN TABLE {} ON {} = {}",
-                                j.table, j.left_col, j.right_col
-                            )),
-                        ],
+                        vec![Value::Integer(id), Value::Integer(0), Value::Text(msg)],
                     ));
                     id += 1;
                 }
@@ -478,6 +479,14 @@ impl SQLExecutor {
         outer_store: &HashMap<String, Vec<Row>>,
     ) -> Result<Vec<Row>> {
         const MAX_RECURSIVE_ITERATIONS: usize = 10_000;
+        if matches!(
+            op,
+            crate::sql::parser::SetOperation::Intersect | crate::sql::parser::SetOperation::Except
+        ) {
+            return Err(Error::SqlSyntax(
+                "WITH RECURSIVE CTE only supports UNION or UNION ALL".into(),
+            ));
+        }
         let anchor_rows = apply_cte_column_names(
             self.eval_cte_statement(pager, anchor, outer_store)?,
             explicit_cols,
@@ -605,23 +614,25 @@ impl SQLExecutor {
                 for left_r in &rows {
                     let mut matched = false;
                     for right_r in &right_rows {
-                        let (left_v, right_v) = if left_r.get_value(&j.left_col).is_some()
-                            && right_r.get_value(&j.right_col).is_some()
-                        {
-                            (
-                                left_r.get_value(&j.left_col),
-                                right_r.get_value(&j.right_col),
-                            )
+                        let is_match = if j.join_type == crate::sql::parser::JoinType::Cross {
+                            true
                         } else {
-                            (
-                                left_r.get_value(&j.right_col),
-                                right_r.get_value(&j.left_col),
-                            )
+                            let (left_v, right_v) = if left_r.get_value(&j.left_col).is_some()
+                                && right_r.get_value(&j.right_col).is_some()
+                            {
+                                (
+                                    left_r.get_value(&j.left_col),
+                                    right_r.get_value(&j.right_col),
+                                )
+                            } else {
+                                (
+                                    left_r.get_value(&j.right_col),
+                                    right_r.get_value(&j.left_col),
+                                )
+                            };
+                            matches!((left_v, right_v), (Some(lv), Some(rv)) if lv == rv && !lv.is_null())
                         };
-                        if let (Some(lv), Some(rv)) = (left_v, right_v)
-                            && lv == rv
-                            && !lv.is_null()
-                        {
+                        if is_match {
                             matched = true;
                             let mut j_cols = left_r.columns().to_vec();
                             let mut j_vals = left_r.values().to_vec();
