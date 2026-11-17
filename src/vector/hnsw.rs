@@ -492,26 +492,38 @@ impl HnswIndex {
         if candidates.len() <= limit {
             return candidates.iter().map(|(id, _)| *id).collect();
         }
-        let vector = |id: u64| -> Option<&[f32]> {
-            if let Some((new_id, new_vector)) = inserted
-                && new_id == id
-            {
-                return Some(new_vector);
-            }
-            self.nodes.get(&id).map(|node| node.vector.as_slice())
-        };
-        let mut selected = Vec::with_capacity(limit);
-        let mut pruned = Vec::new();
-        for &(id, anchor_distance) in candidates {
-            let Some(candidate) = vector(id) else {
-                continue;
-            };
-            let redundant = selected.iter().any(|neighbor| {
-                vector(*neighbor)
-                    .is_some_and(|other| self.distance(candidate, other) < anchor_distance)
-            });
+        let resolved: Vec<(u64, f32, &[f32])> = candidates
+            .iter()
+            .filter_map(|&(id, anchor_distance)| {
+                let slice = if let Some((new_id, new_vector)) = inserted
+                    && new_id == id
+                {
+                    new_vector
+                } else {
+                    self.nodes.get(&id)?.vector.as_slice()
+                };
+                Some((id, anchor_distance, slice))
+            })
+            .collect();
+        self.diverse_neighbors_slices(&resolved, limit)
+    }
+
+    fn diverse_neighbors_slices(
+        &self,
+        candidates: &[(u64, f32, &[f32])],
+        limit: usize,
+    ) -> Vec<u64> {
+        if candidates.len() <= limit {
+            return candidates.iter().map(|(id, _, _)| *id).collect();
+        }
+        let mut selected: Vec<(u64, &[f32])> = Vec::with_capacity(limit);
+        let mut pruned = Vec::with_capacity(candidates.len().saturating_sub(limit));
+        for &(id, anchor_distance, candidate) in candidates {
+            let redundant = selected
+                .iter()
+                .any(|&(_, other)| self.distance(candidate, other) < anchor_distance);
             if !redundant {
-                selected.push(id);
+                selected.push((id, candidate));
                 if selected.len() == limit {
                     break;
                 }
@@ -521,8 +533,9 @@ impl HnswIndex {
         }
         // Keep the requested graph degree when geometric pruning is too
         // aggressive. Sparse reciprocal links make distant regions unreachable.
-        selected.extend(pruned.into_iter().take(limit - selected.len()));
-        selected
+        let mut out: Vec<u64> = selected.into_iter().map(|(id, _)| id).collect();
+        out.extend(pruned.into_iter().take(limit - out.len()));
+        out
     }
 
     /// Search K-nearest neighbors for a query vector with optional candidate ID pre-filtering
@@ -731,20 +744,23 @@ impl VectorIndexEngine for HnswIndex {
                         // Prune by geometric diversity, including the new reverse
                         // edge, rather than retaining a cluster of redundant links.
                         let anchor = &neighbor_node.vector;
-                        let mut ranked: Vec<_> = connections
+                        let mut ranked: Vec<(u64, f32, &[f32])> = connections
                             .into_iter()
                             .filter_map(|candidate| {
-                                let candidate_vector = if candidate == id {
+                                let candidate_vector: &[f32] = if candidate == id {
                                     vector
                                 } else {
                                     &self.nodes.get(&candidate)?.vector
                                 };
-                                Some((candidate, self.distance(anchor, candidate_vector)))
+                                Some((
+                                    candidate,
+                                    self.distance(anchor, candidate_vector),
+                                    candidate_vector,
+                                ))
                             })
                             .collect();
                         ranked.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-                        connections =
-                            self.diverse_neighbors(&ranked, max_neighbors, Some((id, vector)));
+                        connections = self.diverse_neighbors_slices(&ranked, max_neighbors);
                     }
                     self.nodes
                         .get_mut(&nid)
