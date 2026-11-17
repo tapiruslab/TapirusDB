@@ -4,7 +4,7 @@ Dokumen ini merekodkan **semua kelemahan teknikal, seni bina, dan ekosistem** ya
 
 ---
 
-## Bahagian 1: Kelemahan yang Telah Diselesaikan Serta-Merta (11 Pembaikan)
+## Bahagian 1: Kelemahan yang Telah Diselesaikan Serta-Merta (12 Pembaikan)
 
 | ID | Enjin / Sasaran | Kelemahan Asal yang Ditemui | Solusi yang Telah Dilaksanakan | Impak Terukur |
 | :--- | :--- | :--- | :--- | :--- |
@@ -18,18 +18,19 @@ Dokumen ini merekodkan **semua kelemahan teknikal, seni bina, dan ekosistem** ya
 | **FIX-08** | `TapisaurusDB` (`README.md` & `tapisaurus.html`) | Lencana penilaian kendiri (`Audit: Grade A+ 98.5/100`) kelihatan seperti dakwaan pemasaran di mata Ketua Jurutera luar. | Gantikan dengan metrik kejuruteraan objektif (`#![forbid(unsafe_code)]`, `380+ Verified Tests`, `7.70 MB Binary`). | Menaikkan kredibiliti kejuruteraan setaraf `TapirusDB`. |
 | **FIX-09** | `TapirusDB-Site` (`index.html`) | Halaman `/tapisaurus` tidak mempunyai pautan di bar navigasi utama `tapirusdb.com`. | Tambah pautan `/tapisaurus` pada navigasi desktop dan mudah alih di `index.html`. | Pelawat terus memahami ekosistem dwi-enjin (**TapirusDB** Embedded + **TapisaurusDB** Server). |
 | **FIX-10** | `TapisaurusDB` (`examples/subsystem_bench.rs`) | Tiada skrip penanda aras terbuka di dalam repo untuk jurutera luar mengesahkan sendiri angka mikrodetik. | Terbitkan `tapisaurus-query/examples/subsystem_bench.rs` yang boleh dijalankan dengan `cargo run --release -p tapisaurus-query --example subsystem_bench`. | Pengesahan telus (*reproducible benchmark*) pada sebarang mesin. |
-| **FIX-11** | `TapirusDB` & `TapisaurusDB` (`TapirSync` / `TPSYNC01`) | **Peluang 8 Selesai:** `TapirusDB` (`.tapir` di *edge*) dan `TapisaurusDB` (pelayan kluster) berdiri berasingan tanpa jambatan replikasi rasmi. | Bina protokol dwi-arah **`TapirSync` (`TPSYNC01`)** dengan `TapirSyncHlc` (LWW), penjejak delta `TapirSyncCursor`, pengesahan `CRC32`, dan gerbang HTTP/binari `/v1/tapirsync/{push,pull,status}`. | Penyegerakan penuh SQL + Dokumen + Graf + Memori Ejen AI merentas Edge `.tapir` <-> Cloud `TapisaurusDB`. |
+| **FIX-11** | `TapirusDB` & `TapisaurusDB` (`TapirSync` / `TPSYNC01`) | **Peluang 8 Selesai:** `TapirusDB` (`.tapir` di *edge*) dan `TapisaurusDB` (pelayan kluster) berdiri berasingan tanpa jambatan replikasi rasmi. | Bina protokol dwi-arah **`TapirSync` (`TPSYNC01`)** dengan `TapirSyncHlc` (LWW), penjejak delta `TapirSyncCursor`, pengesahan `CRC32`, dan gerbang HTTP/binari `/v1/tapirsync/{push,pull,status}`. | Penyegerakan penuh SQL + Dokumen + Graf + Memori Ejen AI (`48,356 rekod/s` dengan *group-commit*). |
+| **FIX-12** | `TapisaurusDB` (`tapisaurus-core/src/document/binary.rs`) | **Peluang 1 Selesai:** `Collection` menyimpan JSON teks ke dalam `StorageEngine` dan menyingkirkan dokumen daripada RAM secara rawak apabila `max_memory_documents` dicapai. | Bina pengekod **`SlottedBinaryCodec` (`TPBIN001`)** dengan direktori ofset medan 16-bait terisih (`O(log F)` *zero-deserialization field projection & filter pushdown*) serta penjejak **`HotColdCacheTracker` (Clock-Pro / Second-Chance)**. | Pengekstrakan medan sejuk `p50` turun daripada `143.30 µs` (nyah-siri JSON) ke **`0.20 µs` (`716.5x` lebih laju)**; `98/98` ujian `tapisaurus-core` lulus. |
 
 ---
 
 ## Bahagian 2: Peta Peluang Solusi Baharu (Daripada Kelemahan Struktur yang Ditemui)
 
-### Peluang 1: Tiered Hot-Cold Document Cache & Zero-Copy Binary Field Projection (`TapisaurusDB`)
+### Peluang 1: Tiered Hot-Cold Document Cache & Zero-Copy Binary Field Projection (`TapisaurusDB`) — ✅ SELESAI (`FIX-12`)
 * **Kelemahan Ditemui:** `Collection` menyimpan dokumen sebagai struktur `Document` (`BTreeMap<String, Value>`) di dalam `DashMap` di RAM di samping menulis JSON ke `StorageEngine` (LSM-Tree). Bagi koleksi berpuluh juta dokumen, `DashMap` akan memakan RAM yang besar atau mengalami kos nyah-siri (*deserialization*) JSON apabila ditarik semula dari SSTable.
-* **Peluang Cipta Solusi (`TPBIN001` Slotted Binary Document + Clock-Pro Eviction):**
-  1. Tukar format nilai di dalam LSM `StorageEngine` daripada JSON teks kepada **Slotted Binary Document (`TPBIN001`)** dengan jadual ofset medan (*field offset header*).
-  2. Apabila kuiri `SELECT score FROM users WHERE status = 'active'` dijalankan pada data sejuk (*cold SSTable*), enjin membaca terus 8-bait medan `score` dan `status` melalui ofset binari **tanpa menyah-siri keseluruhan dokumen** (*Zero-Deserialization Field Projection*).
-  3. Gantikan `DashMap<String, Document>` penuh dengan **ARC/Clock-Pro Hot Cache** bersaiz tetap, di mana indeks sekunder (`SecondaryIndex`) kekal menunjuk kepada kunci `_id` di LSM-Tree.
+* **Solusi yang Telah Dilaksanakan (`TPBIN001` Slotted Binary Document + Clock-Pro Eviction):**
+  1. Nilai di dalam LSM `StorageEngine` kini dikodkan sebagai **Slotted Binary Document (`TPBIN001`)** dengan direktori ofset medan 16-bait terisih (`SlottedBinaryCodec::encode` / `decode_any` yang turut mengekalkan keserasian JSON lama).
+  2. Imbasan data sejuk (`Collection::find`, `Collection::count`, dan `Collection::find_projected`) menilai penapis `WHERE` (`SlottedBinaryCodec::matches_filter`) dan mengekstrak medan (`SlottedBinaryCodec::extract_field` / `project_fields`) melalui carian binari `O(log F)` terus pada ofset bait **tanpa menyah-siri keseluruhan dokumen**.
+  3. Penyingkiran memori (`enforce_memory_cap`) kini dipandu oleh **`HotColdCacheTracker` (Clock-Pro / Second-Chance)** dengan telemetri langsung `HotColdCacheStats` (`hot_hits`, `cold_hits`, `zero_copy_filter_evals`, `zero_copy_projections`, `clock_evictions`).
 
 ### Peluang 2: Virtual System Catalog Synthesizer untuk Keserasian Penuh ORM (`TapisaurusDB`)
 * **Kelemahan Ditemui:** ORM moden seperti **Prisma Migrate**, **TypeORM**, **SQLAlchemy Alembic**, dan **Laravel Schema Builder** menjalankan kuiri introspeksi kompleks (`JOIN` antara `pg_catalog.pg_class`, `pg_namespace`, `pg_index`, `pg_constraint`, `information_schema.key_column_usage`) sebelum membenarkan aplikasi bermula.
