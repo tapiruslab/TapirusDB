@@ -4,7 +4,7 @@ Dokumen ini merekodkan **semua kelemahan teknikal, seni bina, dan ekosistem** ya
 
 ---
 
-## Bahagian 1: Kelemahan yang Telah Diselesaikan Serta-Merta (12 Pembaikan)
+## Bahagian 1: Kelemahan yang Telah Diselesaikan Serta-Merta (13 Pembaikan)
 
 | ID | Enjin / Sasaran | Kelemahan Asal yang Ditemui | Solusi yang Telah Dilaksanakan | Impak Terukur |
 | :--- | :--- | :--- | :--- | :--- |
@@ -20,6 +20,7 @@ Dokumen ini merekodkan **semua kelemahan teknikal, seni bina, dan ekosistem** ya
 | **FIX-10** | `TapisaurusDB` (`examples/subsystem_bench.rs`) | Tiada skrip penanda aras terbuka di dalam repo untuk jurutera luar mengesahkan sendiri angka mikrodetik. | Terbitkan `tapisaurus-query/examples/subsystem_bench.rs` yang boleh dijalankan dengan `cargo run --release -p tapisaurus-query --example subsystem_bench`. | Pengesahan telus (*reproducible benchmark*) pada sebarang mesin. |
 | **FIX-11** | `TapirusDB` & `TapisaurusDB` (`TapirSync` / `TPSYNC01`) | **Peluang 8 Selesai:** `TapirusDB` (`.tapir` di *edge*) dan `TapisaurusDB` (pelayan kluster) berdiri berasingan tanpa jambatan replikasi rasmi. | Bina protokol dwi-arah **`TapirSync` (`TPSYNC01`)** dengan `TapirSyncHlc` (LWW), penjejak delta `TapirSyncCursor`, pengesahan `CRC32`, dan gerbang HTTP/binari `/v1/tapirsync/{push,pull,status}`. | Penyegerakan penuh SQL + Dokumen + Graf + Memori Ejen AI (`48,356 rekod/s` dengan *group-commit*). |
 | **FIX-12** | `TapisaurusDB` (`tapisaurus-core/src/document/binary.rs`) | **Peluang 1 Selesai:** `Collection` menyimpan JSON teks ke dalam `StorageEngine` dan menyingkirkan dokumen daripada RAM secara rawak apabila `max_memory_documents` dicapai. | Bina pengekod **`SlottedBinaryCodec` (`TPBIN001`)** dengan direktori ofset medan 16-bait terisih (`O(log F)` *zero-deserialization field projection & filter pushdown*) serta penjejak **`HotColdCacheTracker` (Clock-Pro / Second-Chance)**. | Pengekstrakan medan sejuk `p50` turun daripada `143.30 µs` (nyah-siri JSON) ke **`0.20 µs` (`716.5x` lebih laju)**; `98/98` ujian `tapisaurus-core` lulus. |
+| **FIX-13** | `TapisaurusDB` (`tapisaurus-catalog` & wire `5432`/`3306`) | **Peluang 2 Selesai:** Pengendali katalog lama hanya memadankan subrentetan statik (`CONTAINS`) dan membuang skema lajur/FK daripada `CREATE TABLE (...)`. | Bina crate **`tapisaurus-catalog`** (`Dynamic System Catalog Materializer` + enjin SQL `JOIN`/`= ANY(...)`/`format_type`/`pg_attrdef`), pengekstrak DDL `RelationalSchema` berterusan (`schema.rs` + `ddl.rs`), integrasi penuh Extended Query `Describe`, refleksi `information_schema.*` di MySQL `3306`, serta skrip CI ORM `verify_orm_introspection.py`. | Kuiri `JOIN` Prisma/SQLAlchemy/Laravel & `SHOW CREATE TABLE` PK/FK berjaya merentasi TCP `5432` dan `3306` (ujian `test_orm_catalog_introspection` & `cargo clippy -- -D warnings` lulus). |
 
 ---
 
@@ -32,11 +33,12 @@ Dokumen ini merekodkan **semua kelemahan teknikal, seni bina, dan ekosistem** ya
   2. Imbasan data sejuk (`Collection::find`, `Collection::count`, dan `Collection::find_projected`) menilai penapis `WHERE` (`SlottedBinaryCodec::matches_filter`) dan mengekstrak medan (`SlottedBinaryCodec::extract_field` / `project_fields`) melalui carian binari `O(log F)` terus pada ofset bait **tanpa menyah-siri keseluruhan dokumen**.
   3. Penyingkiran memori (`enforce_memory_cap`) kini dipandu oleh **`HotColdCacheTracker` (Clock-Pro / Second-Chance)** dengan telemetri langsung `HotColdCacheStats` (`hot_hits`, `cold_hits`, `zero_copy_filter_evals`, `zero_copy_projections`, `clock_evictions`).
 
-### Peluang 2: Virtual System Catalog Synthesizer untuk Keserasian Penuh ORM (`TapisaurusDB`)
+### Peluang 2: Virtual System Catalog Synthesizer untuk Keserasian Penuh ORM (`TapisaurusDB`) — ✅ SELESAI (`FIX-13`)
 * **Kelemahan Ditemui:** ORM moden seperti **Prisma Migrate**, **TypeORM**, **SQLAlchemy Alembic**, dan **Laravel Schema Builder** menjalankan kuiri introspeksi kompleks (`JOIN` antara `pg_catalog.pg_class`, `pg_namespace`, `pg_index`, `pg_constraint`, `information_schema.key_column_usage`) sebelum membenarkan aplikasi bermula.
-* **Peluang Cipta Solusi (`tapisaurus-catalog` Virtual Schema Engine):**
-  1. Bina lapisan **Dynamic System Catalog Materializer** yang menjana jadual maya `pg_catalog.*` dan `information_schema.*` secara dinamik daripada metadata koleksi, skema JSON, dan indeks sekunder `TapisaurusDB`.
-  2. Sediakan ujian CI automatik yang menjalankan `prisma db pull` dan `sqlalchemy.inspect(engine)` terus terhadap port `5432` dan `3306`.
+* **Solusi yang Telah Dilaksanakan (`tapisaurus-catalog` Virtual Schema Engine):**
+  1. Dibina sebagai crate teras **`tapisaurus-catalog`** (`materializer.rs`, `parser.rs`, `eval.rs`) yang menjana kesemua jadual maya `pg_catalog.*` (`pg_class`, `pg_attribute`, `pg_attrdef`, `pg_index`, `pg_constraint`, `pg_am`, `pg_type`, `pg_collation`, `pg_tablespace`, `pg_description`) dan `information_schema.*` dengan OID deterministik yang boleh di-`JOIN`.
+  2. Dilengkapi pengekstrak DDL `RelationalSchema` (`tapisaurus-core/src/document/schema.rs` & `tapisaurus-query/src/ddl.rs`) yang memelihara jenis data SQL, `NOT NULL`, `DEFAULT`, `PRIMARY KEY`, `UNIQUE`, `FOREIGN KEY ... REFERENCES`, indeks sekunder B-Tree, dan indeks vektor HNSW/DiskANN merentasi `StorageEngine`.
+  3. Diikat pada port PostgreSQL `5432` (termasuk Extended Query `Describe` sebelum `Bind`) dan MySQL `3306` (`SHOW FULL TABLES`, `SHOW CREATE TABLE`, `information_schema.*`), bersama ujian TCP `test_orm_catalog_introspection.rs` serta skrip CI `scripts/ci/verify_orm_introspection.py` (`sqlalchemy.inspect` & `prisma db pull` pada port `5432` dan `3306`).
 
 ### Peluang 3: Deterministic Simulation Testing (DST) Gaya FoundationDB / TigerBeetle (`TapisaurusDB`)
 * **Kelemahan Ditemui:** Jurutera sistem luar sentiasa skeptikal terhadap pelaksanaan Raft, CRDT, dan Calvin Sequencer pada enjin baharu sehingga ia dibuktikan tahan terhadap *network partition*, *packet reordering*, *clock drift*, dan *disk bit-flip*.
