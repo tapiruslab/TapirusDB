@@ -17,6 +17,9 @@ use std::{
 };
 use web_time::{Duration, Instant};
 
+/// Default busy timeout (5 seconds) for multi-threaded writer sessions created via [`SessionDatabase::session_blocking`].
+pub const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
 struct CommittedSnapshot {
     epoch: u64,
     connection: Connection,
@@ -183,8 +186,16 @@ impl SessionDatabase {
         self.shared.mvcc_epoch.load(Ordering::Acquire)
     }
     /// Create a session that returns Busy immediately when another owns a transaction.
+    ///
+    /// For multi-threaded writer pools that should wait for the active transaction to finish
+    /// rather than failing immediately with `Error::Busy`, use [`Self::session_blocking`] or
+    /// [`Self::session_with_timeout`].
     pub fn session(&self) -> Result<Session> {
         self.session_with_timeout(Duration::ZERO)
+    }
+    /// Create a multi-thread-friendly session configured with [`DEFAULT_BUSY_TIMEOUT`] (5 seconds).
+    pub fn session_blocking(&self) -> Result<Session> {
+        self.session_with_timeout(DEFAULT_BUSY_TIMEOUT)
     }
     /// Create a session with a maximum wait for another session's transaction.
     /// Browser WASM always returns Busy immediately rather than blocking its event loop.
