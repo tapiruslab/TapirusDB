@@ -4,7 +4,7 @@ Dokumen ini merekodkan **semua kelemahan teknikal, seni bina, dan ekosistem** ya
 
 ---
 
-## Bahagian 1: Kelemahan yang Telah Diselesaikan Serta-Merta (10 Pembaikan)
+## Bahagian 1: Kelemahan yang Telah Diselesaikan Serta-Merta (11 Pembaikan)
 
 | ID | Enjin / Sasaran | Kelemahan Asal yang Ditemui | Solusi yang Telah Dilaksanakan | Impak Terukur |
 | :--- | :--- | :--- | :--- | :--- |
@@ -14,10 +14,11 @@ Dokumen ini merekodkan **semua kelemahan teknikal, seni bina, dan ekosistem** ya
 | **FIX-04** | `TapisaurusDB` (`tapisaurus-graph`) | `GraphStore::shortest_path` melakukan 3 klon `String` bagi setiap sisi (*edge*) semasa rentasan BFS. | Gunakan rujukan pinjaman `&str` (`HashSet<&str>`, `HashMap<&str, &str>`, `VecDeque<&str>`) sepanjang BFS. | Carian laluan terpendek BFS menjadi **`2.35x` lebih laju** (`10.80 µs` -> **`4.60 µs`**). |
 | **FIX-05** | `TapirusDB` (`src/vector/hnsw.rs`) | Pemangkasan jiran RNG (`diverse_neighbors`) melakukan jutaan carian `HashMap` berulang semasa membina indeks HNSW. | Tambah `diverse_neighbors_slices` untuk menyelesaikan hirisan `&[f32]` sekali sahaja sebelum gelung perbandingan. | Masa binaan indeks HNSW 2,000 vektor turun **`1.45x`** (`2,727.78 ms` -> **`1,875.04 ms`**). |
 | **FIX-06** | `TapirusDB` (`src/session.rs`) | `SessionDatabase::session()` menggunakan `Duration::ZERO` secara lalai, menyebabkan panggilan serentak (*multi-thread*) gagal serta-merta dengan `Error::Busy`. | Tambah `SessionDatabase::session_blocking()` dengan `DEFAULT_BUSY_TIMEOUT` (`5 saat`, setara `PRAGMA busy_timeout` SQLite) sambil mengekalkan `session()` untuk keserasian. | Mengelakkan kegagalan mengejut apabila pembangun menggunakan *thread pool*. |
-| **FIX-07** | `TapisaurusDB` (`tapisaurus-query`) | 4 inovasi teras (`TPHTAP01`, `TPDANN01`, `DeterministicSequencer`, `WasmUdfRegistry`) wujud di `tapisaurus-core`/`vector` tetapi belum diikat sepenuhnya ke `DatabaseContext` dan SQL `UPDATE`/`ANALYZE`. | Ikat `diskann_indexes`, `htap_tables`, `deterministic_sequencer`, `ANALYZE <col>`, serta pencetus WASM pada `UPDATE` terus di dalam `DatabaseContext`. | Kesemua 4 inovasi kini beroperasi *end-to-end* melalui lapisan kuiri (`61/61` ujian `tapisaurus-query` lulus). |
+| **FIX-07** | `TapisaurusDB` (`tapisaurus-query`) | 4 inovasi teras (`TPHTAP01`, `TPDANN01`, `DeterministicSequencer`, `WasmUdfRegistry`) wujud di `tapisaurus-core`/`vector` tetapi belum diikat sepenuhnya ke `DatabaseContext` dan SQL `UPDATE`/`ANALYZE`. | Ikat `diskann_indexes`, `htap_tables`, `deterministic_sequencer`, `ANALYZE <col>`, serta pencetus WASM pada `UPDATE` terus di dalam `DatabaseContext`. | Kesemua 4 inovasi kini beroperasi *end-to-end* melalui lapisan kuiri (`62/62` ujian `tapisaurus-query` lulus). |
 | **FIX-08** | `TapisaurusDB` (`README.md` & `tapisaurus.html`) | Lencana penilaian kendiri (`Audit: Grade A+ 98.5/100`) kelihatan seperti dakwaan pemasaran di mata Ketua Jurutera luar. | Gantikan dengan metrik kejuruteraan objektif (`#![forbid(unsafe_code)]`, `380+ Verified Tests`, `7.70 MB Binary`). | Menaikkan kredibiliti kejuruteraan setaraf `TapirusDB`. |
 | **FIX-09** | `TapirusDB-Site` (`index.html`) | Halaman `/tapisaurus` tidak mempunyai pautan di bar navigasi utama `tapirusdb.com`. | Tambah pautan `/tapisaurus` pada navigasi desktop dan mudah alih di `index.html`. | Pelawat terus memahami ekosistem dwi-enjin (**TapirusDB** Embedded + **TapisaurusDB** Server). |
 | **FIX-10** | `TapisaurusDB` (`examples/subsystem_bench.rs`) | Tiada skrip penanda aras terbuka di dalam repo untuk jurutera luar mengesahkan sendiri angka mikrodetik. | Terbitkan `tapisaurus-query/examples/subsystem_bench.rs` yang boleh dijalankan dengan `cargo run --release -p tapisaurus-query --example subsystem_bench`. | Pengesahan telus (*reproducible benchmark*) pada sebarang mesin. |
+| **FIX-11** | `TapirusDB` & `TapisaurusDB` (`TapirSync` / `TPSYNC01`) | **Peluang 8 Selesai:** `TapirusDB` (`.tapir` di *edge*) dan `TapisaurusDB` (pelayan kluster) berdiri berasingan tanpa jambatan replikasi rasmi. | Bina protokol dwi-arah **`TapirSync` (`TPSYNC01`)** dengan `TapirSyncHlc` (LWW), penjejak delta `TapirSyncCursor`, pengesahan `CRC32`, dan gerbang HTTP/binari `/v1/tapirsync/{push,pull,status}`. | Penyegerakan penuh SQL + Dokumen + Graf + Memori Ejen AI merentas Edge `.tapir` <-> Cloud `TapisaurusDB`. |
 
 ---
 
@@ -66,9 +67,10 @@ Dokumen ini merekodkan **semua kelemahan teknikal, seni bina, dan ekosistem** ya
 * **Peluang Cipta Solusi:**
   1. Lengkapkan aliran kerja GitHub Actions (`maturin` untuk PyPI + `@napi-rs/cli` untuk npm) yang membina dan menguji pakej roda binari (`linux-x86_64`, `linux-aarch64`, `macos-arm64`, `windows-x64`) pada setiap *tag* keluaran.
 
-### Peluang 8: Protokol Replikasi `TapirSync` (Edge `.tapir` <-> Cloud `TapisaurusDB`)
+### Peluang 8: Protokol Replikasi `TapirSync` (Edge `.tapir` <-> Cloud `TapisaurusDB`) — ✅ SELESAI (`FIX-11`)
 * **Kelemahan Ditemui:** **TapirusDB** (enjin satu fail di peranti *edge* / telefon / laptop) dan **TapisaurusDB** (pelayan kluster di awan) berdiri sebagai dua enjin berasingan tanpa jambatan penyegerakan rasmi.
-* **Peluang Cipta Solusi (Killer Ecosystem Moat):**
-  1. Gunakan `WalReplicationFrame` / `WalReplicationStream` daripada `TapirusDB` untuk menghantar perubahan halaman/WAL secara inkremental ke gerbang gRPC `TapisaurusDB` (`TapirSync`).
-  2. Ejen AI atau peranti IoT menulis secara tempatan pada kelajuan mikrodetik ke dalam fail `.tapir` (**TapirusDB**) ketika *offline*, dan sebaik sahaja bersambung ke rangkaian, perubahan disegerakkan secara automatik ke kluster **TapisaurusDB** pusat untuk analitik HTAP dan carian merentas peranti.
+* **Solusi yang Telah Dilaksanakan (`TPSYNC01` Binary Wire Protocol):**
+  1. Dibina dalam `TapirusDB` (`src/tapirsync.rs`) dan `TapisaurusDB` (`tapisaurus-core/src/tapirsync.rs`, `tapisaurus-query/src/executor.rs`, `tapisaurus-server/src/api/tapirsync.rs`) menggunakan bingkai wayar binari 38-bait **`TPSYNC01`** dengan pengesahan `CRC32` perkakasan.
+  2. Menyokong replikasi delta inkremental *multi-modal* (`TableRowUpsert`, `TableRowDelete`, `DocumentUpsert`, `DocumentDelete`, `GraphVertexUpsert`, `GraphEdgeUpsert`, `AgentMemoryUpsert` termasuk vektor padat) menggunakan **`TapirSyncCursor`** dan penyelesaian konflik deterministik **Hybrid Logical Clock Last-Write-Wins (`TapirSyncHlc`)**.
+  3. Dilengkapi titik akhir REST/Binari `/v1/tapirsync/push`, `/v1/tapirsync/pull`, dan `/v1/tapirsync/status` di `TapisaurusDB`, serta pengindeksan automatik memori ejen AI ke dalam indeks vektor HNSW `_agent_memories_vec`.
 

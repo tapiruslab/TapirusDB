@@ -25,6 +25,7 @@ pub mod session;
 pub mod sql;
 pub mod stable_hash;
 pub mod tap;
+pub mod tapirsync;
 pub mod traits;
 pub mod vector;
 
@@ -62,6 +63,10 @@ pub use tap::{
     BitNetBlock, BitNetLinear, BitNetRmsNorm, ClassificationResult, RouteResult, ScoreResult,
     TapConfig, TapDeepEngine, TapEngine, TapInferenceEngine, TapRuntime, TapTokenizer, TapWeights,
     TernaryVal, VerifyResult,
+};
+pub use tapirsync::{
+    TAPIRSYNC_PROTOCOL_VERSION, TAPIRSYNC_WIRE_MAGIC, TapirSyncAck, TapirSyncBundle,
+    TapirSyncCursor, TapirSyncHlc, TapirSyncRecord,
 };
 pub use traits::{DatabaseConnection, FromValue, HashableValue, Row, Value, VectorIndexEngine};
 pub use vector::{
