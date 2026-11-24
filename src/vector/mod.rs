@@ -8,7 +8,10 @@ pub mod paged_hnsw;
 pub mod quantization;
 pub mod simd;
 pub use hnsw::{HnswConfig, HnswIndex, HnswSnapshot};
-pub use ivf::{IvfCluster, IvfConfig, IvfIndex};
+pub use ivf::{
+    DiskBackedIvfEmeansIndex, DiskIvfClusterMeta, IvfCluster, IvfConfig, IvfIndex,
+    TAPIR_IVF_EMEANS_MAGIC, train_emeans_centroids,
+};
 pub use paged_hnsw::{PagedHnswHeader, PagedHnswIndex, PagedNodeRecord, PagedVectorStore};
 pub use quantization::{
     ProductQuantizer, QuantizedVector8, QuantizedVectorPQ, RaBitQuantizedVector, RaBitQuantizer,
