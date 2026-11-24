@@ -110,6 +110,9 @@ jobs:
       - name: Install and test wheel on its native host
         run: python scripts/test-python-sdk.py --wheel dist
 
+      - name: Verify FFI Wheel & N-API Binary Matrix integrity
+        run: python scripts/verify-sdk-binary-matrix.py --verify-manifest-matrix --wheel-dir dist
+
       - name: Upload Python wheels artifact
         uses: actions/upload-artifact@v7
         with:

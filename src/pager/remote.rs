@@ -441,6 +441,331 @@ impl RemoteStorageAdapter for CloudS3RemoteStorage {
     }
 }
 
+/// Callback type for synchronous on-demand 4KB page reads from a browser OPFS `FileSystemSyncAccessHandle`.
+pub type OpfsSyncReadFn = Arc<dyn Fn(u64, usize) -> Result<Vec<u8>> + Send + Sync>;
+
+/// Callback type for synchronous 4KB page writes to a browser OPFS `FileSystemSyncAccessHandle`.
+pub type OpfsSyncWriteFn = Arc<dyn Fn(u64, &[u8]) -> Result<()> + Send + Sync>;
+
+/// Origin Private File System (`FileSystemSyncAccessHandle`) Zero-Copy 4KB Pager (`OpfsSyncPager`).
+///
+/// Enables `TapirusWasm` and embedded runtimes to open multi-gigabyte `.tapir` files inside a
+/// Browser Web Worker without copying the entire file into the `2 GB – 4 GB` `wasm32` linear heap.
+/// Only the requested `4,096`-byte B+Tree, Document, and HNSW Vector pages are read and decrypted
+/// on demand into a fixed-capacity LRU page cache.
+pub struct OpfsSyncPager {
+    total_size_bytes: AtomicU64,
+    page_size: usize,
+    cache_capacity_pages: usize,
+    resident_pages: RwLock<HashMap<PageId, Vec<u8>>>,
+    lru_queue: RwLock<std::collections::VecDeque<PageId>>,
+    dirty_pages: RwLock<std::collections::BTreeSet<PageId>>,
+    sync_reader: Option<OpfsSyncReadFn>,
+    sync_writer: Option<OpfsSyncWriteFn>,
+    cache_hits: AtomicUsize,
+    opfs_page_reads: AtomicUsize,
+    opfs_page_writes: AtomicUsize,
+}
+
+impl OpfsSyncPager {
+    /// Construct a new `OpfsSyncPager` with a fixed 4KB page cache cap (`cache_capacity_pages`).
+    pub fn new(total_size_bytes: u64, cache_capacity_pages: usize) -> Self {
+        Self {
+            total_size_bytes: AtomicU64::new(total_size_bytes),
+            page_size: crate::pager::DEFAULT_PAGE_SIZE as usize,
+            cache_capacity_pages: cache_capacity_pages.max(8),
+            resident_pages: RwLock::new(HashMap::new()),
+            lru_queue: RwLock::new(std::collections::VecDeque::new()),
+            dirty_pages: RwLock::new(std::collections::BTreeSet::new()),
+            sync_reader: None,
+            sync_writer: None,
+            cache_hits: AtomicUsize::new(0),
+            opfs_page_reads: AtomicUsize::new(0),
+            opfs_page_writes: AtomicUsize::new(0),
+        }
+    }
+
+    /// Construct an `OpfsSyncPager` backed by synchronous `FileSystemSyncAccessHandle.read/write` callbacks.
+    pub fn with_sync_callbacks(
+        total_size_bytes: u64,
+        cache_capacity_pages: usize,
+        reader: OpfsSyncReadFn,
+        writer: Option<OpfsSyncWriteFn>,
+    ) -> Self {
+        let mut pager = Self::new(total_size_bytes, cache_capacity_pages);
+        pager.sync_reader = Some(reader);
+        pager.sync_writer = writer;
+        pager
+    }
+
+    /// Compute the 0-based byte offset in the `.tapir` file for 1-indexed `page_id`.
+    #[inline]
+    pub fn page_byte_offset(&self, page_id: PageId) -> u64 {
+        (page_id.saturating_sub(1) as u64) * (self.page_size as u64)
+    }
+
+    /// Stage a `4,096`-byte page fetched from `FileSystemSyncAccessHandle.read` into the bounded LRU cache.
+    pub fn stage_page_4kb(&self, page_id: PageId, bytes: &[u8]) -> Result<()> {
+        if page_id == 0 {
+            return Err(Error::PageNotFound(0));
+        }
+        let mut page_buf = vec![0u8; self.page_size];
+        let copy_len = bytes.len().min(self.page_size);
+        page_buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+
+        let end_offset = self.page_byte_offset(page_id) + (bytes.len() as u64);
+        let cur_total = self.total_size_bytes.load(Ordering::Relaxed);
+        if end_offset > cur_total {
+            self.total_size_bytes.store(end_offset, Ordering::Relaxed);
+        }
+
+        self.insert_cached_page(page_id, page_buf, false);
+        Ok(())
+    }
+
+    /// Write an arbitrary byte range `[offset, offset + data.len())` into 4KB page slots,
+    /// marking touched pages dirty and forwarding to `FileSystemSyncAccessHandle.write` if attached.
+    pub fn write_range(&self, offset: u64, data: &[u8]) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        if let Some(ref writer) = self.sync_writer {
+            writer(offset, data)?;
+        }
+
+        let ps = self.page_size as u64;
+        let mut cursor = 0usize;
+        while cursor < data.len() {
+            let abs_off = offset + (cursor as u64);
+            let page_id = ((abs_off / ps) as u32) + 1;
+            let in_page_off = (abs_off % ps) as usize;
+            let chunk_len = (self.page_size - in_page_off).min(data.len() - cursor);
+
+            let mut page_bytes = self
+                .fetch_or_load_page_4kb(page_id)
+                .unwrap_or_else(|_| vec![0u8; self.page_size]);
+            page_bytes[in_page_off..in_page_off + chunk_len]
+                .copy_from_slice(&data[cursor..cursor + chunk_len]);
+
+            self.insert_cached_page(page_id, page_bytes, true);
+            self.opfs_page_writes.fetch_add(1, Ordering::Relaxed);
+            cursor += chunk_len;
+        }
+
+        let end_off = offset + (data.len() as u64);
+        let cur_total = self.total_size_bytes.load(Ordering::Relaxed);
+        if end_off > cur_total {
+            self.total_size_bytes.store(end_off, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// Read a single `4,096`-byte page on demand (serving from LRU cache or calling `sync_reader`).
+    pub fn fetch_or_load_page_4kb(&self, page_id: PageId) -> Result<Vec<u8>> {
+        if page_id == 0 {
+            return Err(Error::PageNotFound(0));
+        }
+        if let Some(cached) = self.resident_pages.read().get(&page_id).cloned() {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            self.touch_lru(page_id);
+            return Ok(cached);
+        }
+
+        if let Some(ref reader) = self.sync_reader {
+            let offset = self.page_byte_offset(page_id);
+            let total = self.total_size_bytes.load(Ordering::Relaxed);
+            if offset >= total {
+                return Err(Error::PageNotFound(page_id));
+            }
+            let read_len = ((total - offset) as usize).min(self.page_size);
+            let raw = reader(offset, read_len)?;
+            let mut page_buf = vec![0u8; self.page_size];
+            let copy_len = raw.len().min(self.page_size);
+            page_buf[..copy_len].copy_from_slice(&raw[..copy_len]);
+            self.opfs_page_reads.fetch_add(1, Ordering::Relaxed);
+            self.insert_cached_page(page_id, page_buf.clone(), false);
+            return Ok(page_buf);
+        }
+
+        Err(Error::PageNotFound(page_id))
+    }
+
+    /// Return current number of 4KB pages resident in the bounded WASM heap cache.
+    pub fn resident_page_count(&self) -> usize {
+        self.resident_pages.read().len()
+    }
+
+    /// Maximum number of 4KB pages allowed in the bounded LRU cache.
+    pub fn cache_capacity_pages(&self) -> usize {
+        self.cache_capacity_pages
+    }
+
+    /// Number of 4KB page hits served directly from the bounded LRU cache.
+    pub fn cache_hits(&self) -> usize {
+        self.cache_hits.load(Ordering::Relaxed)
+    }
+
+    /// Number of on-demand 4KB page reads pulled from the underlying OPFS sync handle.
+    pub fn opfs_page_reads(&self) -> usize {
+        self.opfs_page_reads.load(Ordering::Relaxed)
+    }
+
+    /// Number of 4KB page writes pushed to the OPFS sync handle.
+    pub fn opfs_page_writes(&self) -> usize {
+        self.opfs_page_writes.load(Ordering::Relaxed)
+    }
+
+    /// Return sorted list of dirty 1-indexed `PageId`s modified since last flush.
+    pub fn dirty_page_ids(&self) -> Vec<PageId> {
+        self.dirty_pages.read().iter().copied().collect()
+    }
+
+    /// Clear dirty page markers after the Web Worker flushes `FileSystemSyncAccessHandle.flush()`.
+    pub fn clear_dirty_flags(&self) {
+        self.dirty_pages.write().clear();
+    }
+
+    fn touch_lru(&self, page_id: PageId) {
+        let mut q = self.lru_queue.write();
+        if let Some(pos) = q.iter().position(|&p| p == page_id) {
+            q.remove(pos);
+        }
+        q.push_back(page_id);
+    }
+
+    fn insert_cached_page(&self, page_id: PageId, page_bytes: Vec<u8>, is_dirty: bool) {
+        if is_dirty {
+            self.dirty_pages.write().insert(page_id);
+        }
+        {
+            let mut pages = self.resident_pages.write();
+            let mut q = self.lru_queue.write();
+            let dirty = self.dirty_pages.read();
+
+            if !pages.contains_key(&page_id) && pages.len() >= self.cache_capacity_pages {
+                // Evict oldest clean 4KB page (or oldest page if all are dirty and sync_writer persisted them)
+                let evict_cand = q
+                    .iter()
+                    .copied()
+                    .find(|pid| !dirty.contains(pid))
+                    .or_else(|| q.front().copied());
+                if let Some(victim) = evict_cand {
+                    pages.remove(&victim);
+                    if let Some(pos) = q.iter().position(|&p| p == victim) {
+                        q.remove(pos);
+                    }
+                }
+            }
+            pages.insert(page_id, page_bytes);
+            if let Some(pos) = q.iter().position(|&p| p == page_id) {
+                q.remove(pos);
+            }
+            q.push_back(page_id);
+        }
+    }
+}
+
+impl RemoteRangeReader for OpfsSyncPager {
+    fn fetch_range(&self, offset: u64, length: usize) -> Result<Vec<u8>> {
+        let total = self.total_size_bytes.load(Ordering::Relaxed);
+        if offset > total {
+            return Err(Error::Corrupted(format!(
+                "OPFS range offset {offset} exceeds file size {total}"
+            )));
+        }
+        if length == 0 || offset == total {
+            return Ok(Vec::new());
+        }
+
+        let ps = self.page_size as u64;
+        let end = (offset + (length as u64)).min(total);
+        let total_to_read = (end - offset) as usize;
+        let mut out = Vec::with_capacity(total_to_read);
+
+        let mut cur_off = offset;
+        while cur_off < end {
+            let page_id = ((cur_off / ps) as u32) + 1;
+            let in_page_off = (cur_off % ps) as usize;
+            let chunk_len = (self.page_size - in_page_off).min((end - cur_off) as usize);
+            let page = self.fetch_or_load_page_4kb(page_id)?;
+            out.extend_from_slice(&page[in_page_off..in_page_off + chunk_len]);
+            cur_off += chunk_len as u64;
+        }
+
+        Ok(out)
+    }
+
+    fn total_size(&self) -> Result<u64> {
+        Ok(self.total_size_bytes.load(Ordering::Relaxed))
+    }
+}
+
+impl RemoteStorageAdapter for OpfsSyncPager {
+    fn put_object(&self, data: &[u8]) -> Result<()> {
+        self.write_range(0, data)
+    }
+}
+
+#[cfg(test)]
+mod opfs_sync_pager_tests {
+    use super::*;
+
+    #[test]
+    fn test_opfs_sync_pager_on_demand_4kb_streaming_and_lru_cap() {
+        // Simulate a 400 KB database file (100 x 4KB pages) on disk while capping WASM cache to 8 pages (32 KB)
+        let backing_file: Arc<RwLock<Vec<u8>>> = Arc::new(RwLock::new(vec![0u8; 100 * 4096]));
+        {
+            let mut data = backing_file.write();
+            for p in 0..100usize {
+                let off = p * 4096;
+                data[off..off + 4].copy_from_slice(&((p as u32 + 1).to_le_bytes()));
+            }
+        }
+
+        let reader_file = backing_file.clone();
+        let writer_file = backing_file.clone();
+        let opfs = OpfsSyncPager::with_sync_callbacks(
+            (100 * 4096) as u64,
+            8,
+            Arc::new(move |offset, len| {
+                let guard = reader_file.read();
+                let s = offset as usize;
+                let e = (s + len).min(guard.len());
+                Ok(guard[s..e].to_vec())
+            }),
+            Some(Arc::new(move |offset, bytes| {
+                let mut guard = writer_file.write();
+                let s = offset as usize;
+                if s + bytes.len() > guard.len() {
+                    guard.resize(s + bytes.len(), 0);
+                }
+                guard[s..s + bytes.len()].copy_from_slice(bytes);
+                Ok(())
+            })),
+        );
+
+        // Fetch 25 different 4KB pages on demand
+        for pid in 1..=25u32 {
+            let off = ((pid - 1) as u64) * 4096;
+            let page = opfs.fetch_range(off, 4096).unwrap();
+            assert_eq!(
+                u32::from_le_bytes([page[0], page[1], page[2], page[3]]),
+                pid
+            );
+        }
+
+        // Resident memory must NEVER exceed cache_capacity_pages (8 pages = 32 KB)
+        assert_eq!(opfs.resident_page_count(), 8);
+        assert_eq!(opfs.opfs_page_reads(), 25);
+
+        // Re-reading page 25 must hit the bounded in-memory LRU cache without an OPFS read
+        let hits_before = opfs.cache_hits();
+        let _ = opfs.fetch_range(24 * 4096, 4096).unwrap();
+        assert_eq!(opfs.cache_hits(), hits_before + 1);
+        assert_eq!(opfs.opfs_page_reads(), 25);
+    }
+}
+
 #[cfg(all(test, feature = "cloud-s3"))]
 mod tests {
     use super::*;

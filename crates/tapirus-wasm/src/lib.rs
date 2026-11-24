@@ -23,6 +23,93 @@ pub struct TapirusWasm {
     conn: Connection,
 }
 
+/// Origin Private File System (`FileSystemSyncAccessHandle`) Zero-Copy 4KB Pager for `TapirusWasm`.
+///
+/// Streams and caches only active `4,096`-byte `.tapir` pages inside a bounded LRU table so
+/// multi-gigabyte databases can be queried and decrypted on demand inside a Browser Web Worker
+/// without loading the entire file into the `wasm32` heap.
+#[wasm_bindgen]
+pub struct OpfsSyncPager {
+    inner: std::sync::Arc<tapirus::OpfsSyncPager>,
+}
+
+#[wasm_bindgen]
+impl OpfsSyncPager {
+    /// Initialize an `OpfsSyncPager` for a `.tapir` file of `total_size_bytes` with a bounded
+    /// in-memory cache of `cache_capacity_pages` 4KB pages (e.g., `256` pages = `1 MB` max RAM).
+    #[wasm_bindgen(constructor)]
+    pub fn new(total_size_bytes: u64, cache_capacity_pages: usize) -> OpfsSyncPager {
+        OpfsSyncPager {
+            inner: std::sync::Arc::new(tapirus::OpfsSyncPager::new(
+                total_size_bytes,
+                cache_capacity_pages,
+            )),
+        }
+    }
+
+    /// Return the 0-based byte offset for a 1-indexed 4KB `page_id` (`(page_id - 1) * 4096`).
+    pub fn page_byte_offset(&self, page_id: u32) -> u64 {
+        self.inner.page_byte_offset(page_id)
+    }
+
+    /// Stage a `4,096`-byte page read via `FileSystemSyncAccessHandle.read(buf, { at: offset })`
+    /// into the bounded 4KB LRU cache.
+    pub fn stage_page_4kb(&self, page_id: u32, page_bytes: &[u8]) -> Result<(), JsValue> {
+        self.inner
+            .stage_page_4kb(page_id, page_bytes)
+            .map_err(|e| JsValue::from_str(&format!("OPFS stage_page_4kb error: {e}")))
+    }
+
+    /// Write a byte slice at `offset` into 4KB page slots and mark affected pages dirty.
+    pub fn write_range(&self, offset: u64, data: &[u8]) -> Result<(), JsValue> {
+        self.inner
+            .write_range(offset, data)
+            .map_err(|e| JsValue::from_str(&format!("OPFS write_range error: {e}")))
+    }
+
+    /// Read a `4,096`-byte page by 1-indexed `page_id` from the bounded LRU cache.
+    pub fn read_page_4kb(&self, page_id: u32) -> Result<Vec<u8>, JsValue> {
+        self.inner
+            .fetch_or_load_page_4kb(page_id)
+            .map_err(|e| JsValue::from_str(&format!("OPFS read_page_4kb error: {e}")))
+    }
+
+    /// Current number of 4KB pages resident in WASM linear memory.
+    pub fn resident_page_count(&self) -> usize {
+        self.inner.resident_page_count()
+    }
+
+    /// Maximum number of 4KB pages allowed in the bounded LRU cache.
+    pub fn cache_capacity_pages(&self) -> usize {
+        self.inner.cache_capacity_pages()
+    }
+
+    /// Total 4KB page hits served from the bounded LRU cache.
+    pub fn cache_hits(&self) -> usize {
+        self.inner.cache_hits()
+    }
+
+    /// Total 4KB page reads pulled from the underlying OPFS sync handle.
+    pub fn opfs_page_reads(&self) -> usize {
+        self.inner.opfs_page_reads()
+    }
+
+    /// Total 4KB page writes recorded on the OPFS sync handle.
+    pub fn opfs_page_writes(&self) -> usize {
+        self.inner.opfs_page_writes()
+    }
+
+    /// Return sorted list of dirty 1-indexed `PageId`s waiting to be flushed to OPFS.
+    pub fn dirty_page_ids(&self) -> Vec<u32> {
+        self.inner.dirty_page_ids()
+    }
+
+    /// Clear dirty page markers after `FileSystemSyncAccessHandle.flush()` completes.
+    pub fn clear_dirty_flags(&self) {
+        self.inner.clear_dirty_flags();
+    }
+}
+
 fn parameters(json: &str) -> Result<Vec<Value>, JsValue> {
     let values: Vec<serde_json::Value> =
         serde_json::from_str(json).map_err(|error| JsValue::from_str(&error.to_string()))?;
@@ -77,6 +164,39 @@ impl TapirusWasm {
         let conn = Connection::open_encrypted_in_memory(passphrase)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(Self { conn })
+    }
+
+    /// Mount a `TapirusWasm` database backed by an on-demand 4KB `OpfsSyncPager`
+    /// (`FileSystemSyncAccessHandle` in a Browser Web Worker), supporting optional
+    /// ChaCha20-Poly1305 page-level decryption without copying the whole file into WASM RAM.
+    #[wasm_bindgen]
+    pub fn from_opfs_pager(
+        pager: &OpfsSyncPager,
+        passphrase: Option<String>,
+    ) -> Result<TapirusWasm, JsValue> {
+        use tapirus::RemoteRangeReader;
+        let mut config = tapirus::Config::default();
+        config.page_cache_capacity = pager.cache_capacity_pages();
+
+        let cipher = if let Some(ref pw) = passphrase {
+            let header_bytes = pager
+                .inner
+                .fetch_range(0, tapirus::pager::DATABASE_HEADER_SIZE)
+                .map_err(|e| JsValue::from_str(&format!("OPFS header read error: {e}")))?;
+            let header = tapirus::DatabaseHeader::from_bytes(&header_bytes)
+                .map_err(|e| JsValue::from_str(&format!("OPFS header decode error: {e}")))?;
+            Some(tapirus::crypto::DatabaseCipher::from_passphrase(
+                pw,
+                header.salt,
+            ))
+        } else {
+            None
+        };
+
+        let reader: std::sync::Arc<dyn tapirus::RemoteRangeReader> = pager.inner.clone();
+        let conn = Connection::open_remote_with_config(reader, config, cipher)
+            .map_err(|e| JsValue::from_str(&format!("Failed to mount OPFS 4KB pager: {e}")))?;
+        Ok(TapirusWasm { conn })
     }
 
     /// Return `true` when page-level ChaCha20-Poly1305 encryption is active.

@@ -543,9 +543,8 @@ impl TapirSyncBundle {
                     bytes.len()
                 )));
             }
-            let decoded: Self = serde_json::from_slice(&bytes[38..]).map_err(|e| {
-                Error::Corrupted(format!("Invalid TPSYNC01 payload JSON: {e}"))
-            })?;
+            let decoded: Self = serde_json::from_slice(&bytes[38..])
+                .map_err(|e| Error::Corrupted(format!("Invalid TPSYNC01 payload JSON: {e}")))?;
             if decoded.protocol_version != version
                 || decoded.base_sequence != base_seq
                 || decoded.target_sequence != target_seq
@@ -898,8 +897,8 @@ impl Connection {
         }
 
         for edge in self.graph_edges() {
-            let props: serde_json::Value = serde_json::from_str(&edge.properties)
-                .unwrap_or_else(|_| serde_json::json!({}));
+            let props: serde_json::Value =
+                serde_json::from_str(&edge.properties).unwrap_or_else(|_| serde_json::json!({}));
             let candidate = TapirSyncRecord::GraphEdgeUpsert {
                 edge_id: edge.id.to_string(),
                 from_id: edge.from_id.to_string(),
@@ -943,7 +942,8 @@ impl Connection {
         }
 
         // 5. Export AI Agent Memories
-        let mut memory_entries: Vec<_> = self.memory.read().all_entries().values().cloned().collect();
+        let mut memory_entries: Vec<_> =
+            self.memory.read().all_entries().values().cloned().collect();
         memory_entries.sort_by_key(|e| e.id);
         for entry in memory_entries {
             let candidate = TapirSyncRecord::AgentMemoryUpsert {
@@ -1052,10 +1052,9 @@ impl Connection {
                 } => {
                     sanitize_ident(table)?;
                     self.apply_tapirsync_table_upsert(table, row_id, columns)?;
-                    cursor.known_records.insert(
-                        key,
-                        (rec.content_crc32(), hlc.clone()),
-                    );
+                    cursor
+                        .known_records
+                        .insert(key, (rec.content_crc32(), hlc.clone()));
                     records_applied += 1;
                 }
                 TapirSyncRecord::TableRowDelete { table, row_id, hlc } => {
@@ -1091,10 +1090,9 @@ impl Connection {
                     } else {
                         col.insert_with_id(numeric_id, document)?;
                     }
-                    cursor.known_records.insert(
-                        key,
-                        (rec.content_crc32(), hlc.clone()),
-                    );
+                    cursor
+                        .known_records
+                        .insert(key, (rec.content_crc32(), hlc.clone()));
                     records_applied += 1;
                 }
                 TapirSyncRecord::DocumentDelete {
@@ -1127,10 +1125,9 @@ impl Connection {
                         &props_str,
                         vector.as_deref(),
                     )?;
-                    cursor.known_records.insert(
-                        key,
-                        (rec.content_crc32(), hlc.clone()),
-                    );
+                    cursor
+                        .known_records
+                        .insert(key, (rec.content_crc32(), hlc.clone()));
                     records_applied += 1;
                 }
                 TapirSyncRecord::GraphEdgeUpsert {
@@ -1150,10 +1147,9 @@ impl Connection {
                         .unwrap_or_else(|_| u64::from(crc32fast::hash(to_id.as_bytes())));
                     let props_str = serde_json::to_string(properties).unwrap_or_default();
                     self.graph_add_edge(from_num, to_num, relation, *weight, &props_str)?;
-                    cursor.known_records.insert(
-                        key,
-                        (rec.content_crc32(), hlc.clone()),
-                    );
+                    cursor
+                        .known_records
+                        .insert(key, (rec.content_crc32(), hlc.clone()));
                     records_applied += 1;
                 }
                 TapirSyncRecord::AgentMemoryUpsert {
@@ -1169,7 +1165,9 @@ impl Connection {
                     let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
                     let effective_vec = match vector {
                         Some(v) if !v.is_empty() => v.clone(),
-                        _ => crate::memory::DeterministicHashEmbedder::default().embed_text(content),
+                        _ => {
+                            crate::memory::DeterministicHashEmbedder::default().embed_text(content)
+                        }
                     };
                     self.memory_remember_scoped(
                         content,
@@ -1179,10 +1177,9 @@ impl Connection {
                         namespace.as_deref(),
                         session_id.as_deref(),
                     )?;
-                    cursor.known_records.insert(
-                        key,
-                        (rec.content_crc32(), hlc.clone()),
-                    );
+                    cursor
+                        .known_records
+                        .insert(key, (rec.content_crc32(), hlc.clone()));
                     records_applied += 1;
                 }
             }
@@ -1262,9 +1259,10 @@ impl Connection {
                 col_names.push(col_def.name.clone());
                 placeholders.push("?");
                 let raw_val = match (&col_def.data_type, json_val) {
-                    (DataType::Text, serde_json::Value::Array(_) | serde_json::Value::Object(_)) => {
-                        Value::Text(json_val.to_string())
-                    }
+                    (
+                        DataType::Text,
+                        serde_json::Value::Array(_) | serde_json::Value::Object(_),
+                    ) => Value::Text(json_val.to_string()),
                     _ => Value::from_json_parameter(json_val)?,
                 };
                 params.push(raw_val);

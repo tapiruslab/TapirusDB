@@ -1927,17 +1927,24 @@ impl SQLExecutor {
                                 }
                             }
                         } else if all_int_keys && !is_right_or_full {
-                            // ── Fast path: FastIntHasher + IntEntry ──
+                            // ── Fast path: FastIntHasher + IntEntry + 512-bit SIMD Block Bloom Filter Pushdown ──
                             let r_idx_col = r_col_idx.unwrap();
                             let l_idx_col = l_col_idx.unwrap();
+                            let is_inner_join =
+                                join_clause.join_type == JoinType::Inner && !join_clause.is_left;
                             let mut int_hash: HashMap<i64, IntEntry, FastIntBuildHasher> =
                                 HashMap::with_capacity_and_hasher(
                                     right_rows.len(),
                                     FastIntBuildHasher::default(),
                                 );
+                            let mut simd_bloom =
+                                SimdJoinBloomFilter::with_capacity(right_rows.len());
 
                             for (r_idx, r_row) in right_rows.iter().enumerate() {
                                 if let Some(Value::Integer(k)) = r_row.values().get(r_idx_col) {
+                                    if is_inner_join {
+                                        simd_bloom.insert_i64(*k);
+                                    }
                                     match int_hash.get_mut(k) {
                                         Some(IntEntry::One(prev)) => {
                                             let first = *prev;
@@ -1953,6 +1960,15 @@ impl SQLExecutor {
                                 }
                             }
 
+                            if is_inner_join && int_hash.is_empty() {
+                                if direct_join_sources.is_some() {
+                                    return Ok(Vec::new());
+                                }
+                                left_rows.clear();
+                                current_left_cols = Arc::unwrap_or_clone(merged_cols_shared);
+                                continue;
+                            }
+
                             if let Some(ref direct_sources) = direct_join_sources {
                                 // ── Direct Join Projection: Zero intermediate Row allocations ──
                                 let output_col_shared = Arc::new(columns.clone());
@@ -1962,6 +1978,7 @@ impl SQLExecutor {
                                 for l_row in &left_rows {
                                     let mut matched = false;
                                     if let Some(Value::Integer(lk)) = l_row.values().get(l_idx_col)
+                                        && (!is_inner_join || simd_bloom.might_contain_i64(*lk))
                                         && let Some(entry) = int_hash.get(lk)
                                     {
                                         matched = true;
@@ -2044,6 +2061,7 @@ impl SQLExecutor {
                             for l_row in &left_rows {
                                 let mut matched = false;
                                 if let Some(Value::Integer(lk)) = l_row.values().get(l_idx_col)
+                                    && (!is_inner_join || simd_bloom.might_contain_i64(*lk))
                                     && let Some(entry) = int_hash.get(lk)
                                 {
                                     matched = true;
@@ -2083,9 +2101,13 @@ impl SQLExecutor {
                                 }
                             }
                         } else {
-                            // ── General path: HashableValue HashMap ──
+                            // ── General path: HashableValue HashMap + 512-bit SIMD Block Bloom Filter Pushdown ──
+                            let is_inner_join =
+                                join_clause.join_type == JoinType::Inner && !join_clause.is_left;
                             let mut right_hash_table: HashMap<HashableValue, Vec<usize>> =
                                 HashMap::with_capacity(right_rows.len());
+                            let mut simd_bloom =
+                                SimdJoinBloomFilter::with_capacity(right_rows.len());
                             for (r_idx, r_row) in right_rows.iter().enumerate() {
                                 let r_val = if let Some(idx) = r_col_idx {
                                     r_row.values().get(idx)
@@ -2095,11 +2117,18 @@ impl SQLExecutor {
                                 if let Some(r_val) = r_val
                                     && !r_val.is_null()
                                 {
-                                    right_hash_table
-                                        .entry(HashableValue::from(r_val))
-                                        .or_default()
-                                        .push(r_idx);
+                                    let hv = HashableValue::from(r_val);
+                                    if is_inner_join {
+                                        simd_bloom.insert_value(&hv);
+                                    }
+                                    right_hash_table.entry(hv).or_default().push(r_idx);
                                 }
+                            }
+
+                            if is_inner_join && right_hash_table.is_empty() {
+                                left_rows.clear();
+                                current_left_cols = Arc::unwrap_or_clone(merged_cols_shared);
+                                continue;
                             }
 
                             let mut matched_right_indices = if is_right_or_full {
@@ -2118,24 +2147,28 @@ impl SQLExecutor {
 
                                 if let Some(lv) = l_val
                                     && !lv.is_null()
-                                    && let Some(matching_r_indices) =
-                                        right_hash_table.get(&HashableValue::from(lv))
                                 {
-                                    matched = true;
-                                    for &r_idx in matching_r_indices {
-                                        let r_row = &right_rows[r_idx];
-                                        if is_right_or_full {
-                                            matched_right_indices.insert(r_idx);
+                                    let l_hv = HashableValue::from(lv);
+                                    if (!is_inner_join || simd_bloom.might_contain_value(&l_hv))
+                                        && let Some(matching_r_indices) =
+                                            right_hash_table.get(&l_hv)
+                                    {
+                                        matched = true;
+                                        for &r_idx in matching_r_indices {
+                                            let r_row = &right_rows[r_idx];
+                                            if is_right_or_full {
+                                                matched_right_indices.insert(r_idx);
+                                            }
+                                            let mut merged_vals = Vec::with_capacity(
+                                                l_row.values().len() + r_row.values().len(),
+                                            );
+                                            merged_vals.extend_from_slice(l_row.values());
+                                            merged_vals.extend_from_slice(r_row.values());
+                                            joined_rows.push(Row::with_shared_columns(
+                                                merged_cols_shared.clone(),
+                                                merged_vals,
+                                            ));
                                         }
-                                        let mut merged_vals = Vec::with_capacity(
-                                            l_row.values().len() + r_row.values().len(),
-                                        );
-                                        merged_vals.extend_from_slice(l_row.values());
-                                        merged_vals.extend_from_slice(r_row.values());
-                                        joined_rows.push(Row::with_shared_columns(
-                                            merged_cols_shared.clone(),
-                                            merged_vals,
-                                        ));
                                     }
                                 }
 

@@ -50,9 +50,10 @@ pub use memory::{
 #[cfg(feature = "cloud-s3")]
 pub use pager::CloudS3RemoteStorage;
 pub use pager::{
-    DEFAULT_PAGE_SIZE, DatabaseHeader, MockRemoteRangeStorage, PageId, Pager, RemotePager,
-    RemoteRangeReader, RemoteStorageAdapter, S3StorageConfig, StorageHealth, WalReplicationChunk,
-    WalReplicationFrame, WalReplicationReceiver, WalReplicationStream,
+    DEFAULT_PAGE_SIZE, DatabaseHeader, MockRemoteRangeStorage, OpfsSyncPager, OpfsSyncReadFn,
+    OpfsSyncWriteFn, PageId, Pager, RemotePager, RemoteRangeReader, RemoteStorageAdapter,
+    S3StorageConfig, StorageHealth, WalReplicationChunk, WalReplicationFrame,
+    WalReplicationReceiver, WalReplicationStream,
 };
 pub use realtime::{ChangeEvent, ChangeOp, RealtimeBus};
 pub use session::{Session, SessionDatabase, SnapshotSession};

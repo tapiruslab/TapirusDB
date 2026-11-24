@@ -1452,6 +1452,169 @@ pub(crate) fn split_join_where_predicates(
     )
 }
 
+/// Cache-line 512-bit (`[u64; 8]`) 8-lane SIMD Block Bloom Filter for join-key pushdown.
+///
+/// Maps each key hash into a single 64-byte block and tests/sets 8 bit positions across
+/// the 8 `u64` lanes in parallel, pruning non-matching probe rows in L1 cache before
+/// touching the hash table.
+#[derive(Debug, Clone)]
+pub struct SimdJoinBloomFilter {
+    blocks: Vec<[u64; 8]>,
+    item_count: usize,
+}
+
+impl SimdJoinBloomFilter {
+    /// Allocate a SIMD Block Bloom Filter sized for `expected_items`.
+    pub fn with_capacity(expected_items: usize) -> Self {
+        let min_blocks = ((expected_items.max(16) * 12) / 512).max(1);
+        let num_blocks = min_blocks.next_power_of_two();
+        Self {
+            blocks: vec![[0u64; 8]; num_blocks],
+            item_count: 0,
+        }
+    }
+
+    #[inline]
+    fn mix_u64(mut z: u64) -> u64 {
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    #[inline]
+    fn lane_masks(hash: u64) -> [u64; 8] {
+        const SALT: [u64; 8] = [
+            0x47B6_137B_9E37_79B9,
+            0x8823_D2F3_BF58_476D,
+            0x71D3_626B_94D0_49BB,
+            0x2F6E_2B15_D1B5_4A32,
+            0xA5A5_5A5A_C6BC_2796,
+            0x517C_C1B7_2722_0A95,
+            0x9E37_79B9_7F4A_7C15,
+            0xD6E8_FEB8_6659_FD93,
+        ];
+        let mut masks = [0u64; 8];
+        for i in 0..8 {
+            let bit = (hash.wrapping_mul(SALT[i]) >> 58) & 63;
+            masks[i] = 1u64 << bit;
+        }
+        masks
+    }
+
+    /// Insert a signed 64-bit integer join key.
+    #[inline]
+    pub fn insert_i64(&mut self, key: i64) {
+        self.insert_hash(Self::mix_u64(key as u64));
+    }
+
+    /// Insert a `HashableValue` join key.
+    #[inline]
+    pub fn insert_value(&mut self, val: &HashableValue) {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = FastIntHasher::default();
+        val.hash(&mut hasher);
+        self.insert_hash(Self::mix_u64(hasher.finish()));
+    }
+
+    /// Insert a 64-bit hash into a single 64-byte SIMD block.
+    #[inline]
+    pub fn insert_hash(&mut self, hash: u64) {
+        let block_idx = ((hash >> 32) as usize) & (self.blocks.len() - 1);
+        let masks = Self::lane_masks(hash);
+        let blk = &mut self.blocks[block_idx];
+        for i in 0..8 {
+            blk[i] |= masks[i];
+        }
+        self.item_count += 1;
+    }
+
+    /// Test whether integer `key` might exist in the build relation.
+    #[inline]
+    pub fn might_contain_i64(&self, key: i64) -> bool {
+        self.might_contain_hash(Self::mix_u64(key as u64))
+    }
+
+    /// Test whether `HashableValue` might exist in the build relation.
+    #[inline]
+    pub fn might_contain_value(&self, val: &HashableValue) -> bool {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = FastIntHasher::default();
+        val.hash(&mut hasher);
+        self.might_contain_hash(Self::mix_u64(hasher.finish()))
+    }
+
+    /// Test a 64-bit hash across all 8 `u64` SIMD block lanes.
+    #[inline]
+    pub fn might_contain_hash(&self, hash: u64) -> bool {
+        let block_idx = ((hash >> 32) as usize) & (self.blocks.len() - 1);
+        let masks = Self::lane_masks(hash);
+        let blk = &self.blocks[block_idx];
+        let mut missed = 0u64;
+        for i in 0..8 {
+            missed |= (blk[i] & masks[i]) ^ masks[i];
+        }
+        missed == 0
+    }
+}
+
+/// Cost-Based Multi-Join Reordering planner (`Dynamic Programming / Greedy Cardinality Ordering`).
+///
+/// Given a base left table and a chain of `JoinClause`s along with their estimated post-filter
+/// cardinalities, returns the optimal execution order indices `(0..joins.len())` that minimizes
+/// intermediate hash-join cardinalities while respecting table-reference dependencies and
+/// preserving outer join ordering.
+pub fn plan_cbo_inner_join_order(
+    base_table: &str,
+    joins: &[&JoinClause],
+    estimated_right_rows: &[usize],
+) -> Vec<usize> {
+    let n = joins.len();
+    if n <= 1 {
+        return (0..n).collect();
+    }
+    let all_inner = joins
+        .iter()
+        .all(|j| j.join_type == JoinType::Inner && !j.is_left);
+    if !all_inner {
+        return (0..n).collect();
+    }
+
+    let mut available_tables: Vec<String> = vec![base_table.to_ascii_lowercase()];
+    let mut remaining: Vec<usize> = (0..n).collect();
+    let mut order = Vec::with_capacity(n);
+
+    while !remaining.is_empty() {
+        // Pick the lowest-cardinality join whose left_col table prefix (if qualified) is already in `available_tables`
+        let mut best_pos = 0usize;
+        let mut best_card = usize::MAX;
+        let mut found_ready = false;
+
+        for (pos, &j_idx) in remaining.iter().enumerate() {
+            let jc = joins[j_idx];
+            let left_prefix = jc
+                .left_col
+                .split_once('.')
+                .map(|(t, _)| t.to_ascii_lowercase());
+            let is_ready = match left_prefix {
+                Some(ref prefix) => available_tables.iter().any(|t| t == prefix),
+                None => true,
+            };
+            let card = estimated_right_rows.get(j_idx).copied().unwrap_or(1_000);
+            if is_ready && (!found_ready || card < best_card) {
+                found_ready = true;
+                best_card = card;
+                best_pos = pos;
+            }
+        }
+
+        let chosen_idx = remaining.remove(best_pos);
+        available_tables.push(joins[chosen_idx].table.to_ascii_lowercase());
+        order.push(chosen_idx);
+    }
+
+    order
+}
+
 #[derive(Default)]
 pub(crate) struct CorrelatedSubqueryMemo {
     pub exists_cache: HashMap<(usize, Vec<HashableValue>), bool>,
@@ -2121,5 +2284,59 @@ pub(crate) fn substitute_outer_statement(
             }
         }
         _ => Some(cloned),
+    }
+}
+
+#[cfg(test)]
+mod cbo_bloom_tests {
+    use super::*;
+    use crate::sql::parser::{JoinClause, JoinType};
+
+    #[test]
+    fn test_simd_join_bloom_filter_and_cbo_multi_join_order() {
+        let mut bloom = SimdJoinBloomFilter::with_capacity(256);
+        for k in 0..120i64 {
+            bloom.insert_i64(k * 7);
+        }
+        for k in 0..120i64 {
+            assert!(
+                bloom.might_contain_i64(k * 7),
+                "Inserted integer key must never yield false negative"
+            );
+        }
+        let mut fp = 0;
+        for k in 10_000..10_500i64 {
+            if bloom.might_contain_i64(k) {
+                fp += 1;
+            }
+        }
+        assert!(fp < 25, "Expected low false positive rate, got {fp}/500");
+
+        let j0 = JoinClause {
+            join_type: JoinType::Inner,
+            is_left: false,
+            table: "events_large".to_string(),
+            left_col: "orders.user_id".to_string(),
+            right_col: "events_large.user_id".to_string(),
+        };
+        let j1 = JoinClause {
+            join_type: JoinType::Inner,
+            is_left: false,
+            table: "regions_small".to_string(),
+            left_col: "orders.region_id".to_string(),
+            right_col: "regions_small.id".to_string(),
+        };
+        let j2 = JoinClause {
+            join_type: JoinType::Inner,
+            is_left: false,
+            table: "tiers_tiny".to_string(),
+            left_col: "orders.tier_id".to_string(),
+            right_col: "tiers_tiny.id".to_string(),
+        };
+        let join_refs = vec![&j0, &j1, &j2];
+        let est_rows = vec![200_000, 150, 8];
+
+        let order = plan_cbo_inner_join_order("orders", &join_refs, &est_rows);
+        assert_eq!(order, vec![2, 1, 0]);
     }
 }

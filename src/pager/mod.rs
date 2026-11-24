@@ -20,7 +20,8 @@ pub use compression::{COMPRESSED_PAGE_MAGIC, compress_page_frame, decompress_pag
 #[cfg(feature = "cloud-s3")]
 pub use remote::CloudS3RemoteStorage;
 pub use remote::{
-    MockRemoteRangeStorage, RemotePager, RemoteRangeReader, RemoteStorageAdapter, S3StorageConfig,
+    MockRemoteRangeStorage, OpfsSyncPager, OpfsSyncReadFn, OpfsSyncWriteFn, RemotePager,
+    RemoteRangeReader, RemoteStorageAdapter, S3StorageConfig,
 };
 pub use replication::{
     WalReplicationChunk, WalReplicationFrame, WalReplicationReceiver, WalReplicationStream,

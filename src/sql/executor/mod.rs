@@ -46,8 +46,9 @@ pub(crate) use types::*;
 #[allow(unused_imports)]
 pub use types::{
     FastIntBuildHasher, FastIntHasher, INDEX_BUCKET_MAGIC, INDEX_BUCKET_VERSION, InValueLookup,
-    IndexBucket, IndexPostingEntry, IntEntry, JoinOutputCol, ResolvedWhereExpr, TemporalRecord,
-    VectorSnapshotRecord, resolve_table_col_index, value_to_index_key,
+    IndexBucket, IndexPostingEntry, IntEntry, JoinOutputCol, ResolvedWhereExpr,
+    SimdJoinBloomFilter, TemporalRecord, VectorSnapshotRecord, plan_cbo_inner_join_order,
+    resolve_table_col_index, value_to_index_key,
 };
 
 /// The SQL and multi-model execution engine for TapirusDB
