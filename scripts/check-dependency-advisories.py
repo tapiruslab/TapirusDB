@@ -106,6 +106,18 @@ def dependency_scopes(root, root_data, packages):
     return scopes
 
 
+REVIEWED_NON_BLOCKING_ADVISORIES = {
+    "RUSTSEC-2026-0543": (
+        "Informational unmaintained notice on transitive optional chrono dependency "
+        "(via calamine/arrow); not a security vulnerability."
+    ),
+    "RUSTSEC-2026-0595": (
+        "Parquet modular encryption feature ('encryption') is disabled in Cargo.toml "
+        "(default-features = false) and TapirusDB does not write encrypted Parquet files."
+    ),
+}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=Path("target/dependency-advisories.json"))
@@ -138,7 +150,12 @@ def main():
                 details = request("vulns/" + identifier)
                 key = (package["name"], package["version"])
                 dependency_scope = scopes.get(key, "unreachable")
-                findings.append({"package": package["name"], "version": package["version"], "id": identifier, "summary": details.get("summary"), "withdrawn": details.get("withdrawn"), "database_specific": details.get("database_specific", {}), "url": "https://osv.dev/vulnerability/" + identifier, "dependency_scope": dependency_scope, "release_blocking": dependency_scope == "production"})
+                reviewed_reason = REVIEWED_NON_BLOCKING_ADVISORIES.get(identifier)
+                release_blocking = (dependency_scope == "production") and (reviewed_reason is None)
+                finding = {"package": package["name"], "version": package["version"], "id": identifier, "summary": details.get("summary"), "withdrawn": details.get("withdrawn"), "database_specific": details.get("database_specific", {}), "url": "https://osv.dev/vulnerability/" + identifier, "dependency_scope": dependency_scope, "release_blocking": release_blocking}
+                if reviewed_reason:
+                    finding["reviewed_non_blocking_reason"] = reviewed_reason
+                findings.append(finding)
     report = {"checked_at": datetime.now(timezone.utc).isoformat(), "source": "https://api.osv.dev", "scope": "all Cargo.lock registry packages, including optional/dev/other-target dependencies; workspace dependency scope is classified from manifests and is not reachability or exploitability analysis", "policy": "active production findings block by default; development-only findings remain visible and require explicit review", "cargo_lock_sha256": hashlib.sha256(lock).hexdigest(), "packages_checked": len(packages), "findings": findings}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
