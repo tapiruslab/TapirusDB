@@ -175,8 +175,10 @@ impl TapirusWasm {
         passphrase: Option<String>,
     ) -> Result<TapirusWasm, JsValue> {
         use tapirus::RemoteRangeReader;
-        let mut config = tapirus::Config::default();
-        config.page_cache_capacity = pager.cache_capacity_pages();
+        let config = tapirus::Config {
+            page_cache_capacity: pager.cache_capacity_pages(),
+            ..Default::default()
+        };
 
         let cipher = if let Some(ref pw) = passphrase {
             let header_bytes = pager

@@ -254,7 +254,7 @@ func (c *Client) request(ctx context.Context, method, path string, body interfac
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "TapirusDB-Go/1.2.1")
+	req.Header.Set("User-Agent", "TapirusDB-Go/1.3.0")
 
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)

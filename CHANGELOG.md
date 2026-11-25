@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-11-25
+
+### Added
+- Disk-Backed `IVF-EMEANS` hybrid vector index (`DiskBackedIvfEmeansIndex`, `TPIVFE01`) and 2.5-epoch mini-batch Exponential Moving Average centroid trainer (`train_emeans_centroids`) with half-cosine learning-rate annealing, proportional dead-cluster revival, per-cluster `CRC32` verification, optional `RaBitQ` codes, and real-time `hot_buffer` delta mutations in `src/vector/ivf.rs`.
+- Cost-Based `INNER JOIN` cardinality reordering (`plan_cbo_inner_join_order`) and cache-line-aligned 512-bit 8-lane SIMD Block Bloom Filter pushdown (`SimdJoinBloomFilter`) in `src/sql/executor/`.
+- `TapirSync` (`TPSYNC01`) 38-byte binary-framed Edge-to-Cloud multi-modal delta replication protocol with `CRC32` verification, `TapirSyncCursor`, and Hybrid Logical Clock Last-Write-Wins (`TapirSyncHlc`) conflict resolution in `src/tapirsync.rs`.
+- Browser OPFS 4 KiB on-demand pager (`OpfsSyncPager` in `src/pager/remote.rs`) and `#[wasm_bindgen] TapirusWasm::from_opfs_pager` in `crates/tapirus-wasm/src/lib.rs` for streaming and decrypting (`ChaCha20-Poly1305`) multi-GB `.tapir` databases inside bounded WASM LRU memory.
+- `SessionDatabase::session_blocking()` with a default 5-second busy timeout (`DEFAULT_BUSY_TIMEOUT`, equivalent to SQLite `PRAGMA busy_timeout`) in `src/session.rs`.
+- Automated FFI wheel (`abi3`) and N-API (`.node`) binary matrix verification script (`scripts/verify-sdk-binary-matrix.py`) wired into `.github/workflows/publish-sdks.yml`.
+
+### Performance
+- Accelerate HNSW RNG neighbor diversification (`diverse_neighbors_slices` in `src/vector/hnsw.rs`) by pre-resolving candidate `&[f32]` slices once prior to pairwise distance checks (`1.45x` faster HNSW graph construction).
+
 ## [1.2.1] - 2026-11-16
 
 ### Added

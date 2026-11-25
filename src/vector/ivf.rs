@@ -399,46 +399,45 @@ pub fn train_emeans_centroids(
         let dead_mass_thresh = (0.05 * (batch_size as f32 / k as f32)).max(1e-4);
         let stale_limit = ((steps_per_epoch.ceil() as usize) * 2).max(3);
         for j in 0..k {
-            if masses[j] < dead_mass_thresh || stale_steps[j] >= stale_limit {
-                if let Some((donor, _)) = masses
+            if (masses[j] < dead_mass_thresh || stale_steps[j] >= stale_limit)
+                && let Some((donor, _)) = masses
                     .iter()
                     .enumerate()
                     .filter(|&(idx, &m)| {
                         idx != j && m > dead_mass_thresh * 2.0 && batch_counts[idx] >= 2
                     })
                     .max_by(|a, b| a.1.total_cmp(b.1))
-                {
-                    let half_mass = (masses[donor] * 0.5).max(1.0);
-                    masses[donor] = half_mass;
-                    masses[j] = half_mass;
+            {
+                let half_mass = (masses[donor] * 0.5).max(1.0);
+                masses[donor] = half_mass;
+                masses[j] = half_mass;
 
-                    let furthest_idx = batch_furthest[donor].0;
-                    let mut new_c = if furthest_idx < n {
-                        vectors[furthest_idx].1.clone()
+                let furthest_idx = batch_furthest[donor].0;
+                let mut new_c = if furthest_idx < n {
+                    vectors[furthest_idx].1.clone()
+                } else {
+                    centroids[donor].clone()
+                };
+                new_c.resize(dim, 0.0);
+                for (di, val) in new_c.iter_mut().enumerate() {
+                    let eps = if (di + step + j) % 2 == 0 {
+                        1e-3
                     } else {
-                        centroids[donor].clone()
+                        -1e-3
                     };
-                    new_c.resize(dim, 0.0);
-                    for (di, val) in new_c.iter_mut().enumerate() {
-                        let eps = if (di + step + j) % 2 == 0 {
-                            1e-3
-                        } else {
-                            -1e-3
-                        };
-                        *val += eps;
-                    }
-                    if spherical {
-                        l2_normalize_vec(&mut new_c);
-                    }
-                    for (sv, &cv) in sums[j].iter_mut().zip(new_c.iter()) {
-                        *sv = cv * half_mass;
-                    }
-                    for sv in &mut sums[donor] {
-                        *sv *= 0.5;
-                    }
-                    centroids[j] = new_c;
-                    stale_steps[j] = 0;
+                    *val += eps;
                 }
+                if spherical {
+                    l2_normalize_vec(&mut new_c);
+                }
+                for (sv, &cv) in sums[j].iter_mut().zip(new_c.iter()) {
+                    *sv = cv * half_mass;
+                }
+                for sv in &mut sums[donor] {
+                    *sv *= 0.5;
+                }
+                centroids[j] = new_c;
+                stale_steps[j] = 0;
             }
         }
     }
@@ -664,10 +663,10 @@ impl DiskBackedIvfEmeansIndex {
             inverted[cid].push((id, vec));
         }
 
-        if let Some(parent) = self.disk_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = self.disk_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         let mut file = File::create(&self.disk_path)?;
         file.write_all(TAPIR_IVF_EMEANS_MAGIC)?;

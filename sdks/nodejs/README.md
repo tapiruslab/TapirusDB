@@ -5,7 +5,7 @@ lines. Release builds target Linux x64/ARM64 (glibc), macOS Intel/Apple Silicon,
 and Windows x64. Linux musl and Windows ARM64 addons are not produced by the
 SDK release workflow. The Rust core's broader target matrix is separate.
 
-Source releases (`1.2.1`) include `upsertMemory`, atomic batches, TTLs, pinned embedding model identity, optimistic revision checks, indexed retrieval diagnostics, fast transactional batch inserts, `WITH RECURSIVE` CTEs, partial & expression indexes, `GENERATED ALWAYS AS (...)` columns, `CASE`/`CAST`, `INTERSECT`/`EXCEPT`, `CROSS JOIN`, `DATE`/`TIME`/`STRFTIME`, `ON CONFLICT DO UPDATE` with `EXCLUDED` expressions, and correlated scalar subqueries. `TapirusSessionDatabase` provides independently owned transactions alongside non-blocking snapshot reads. See [AI and embedded workflows](../../docs/AI_EMBEDDED_WORKFLOWS.md).
+Source releases (`1.3.0`) include `upsertMemory`, atomic batches, TTLs, pinned embedding model identity, optimistic revision checks, indexed retrieval diagnostics, fast transactional batch inserts, `WITH RECURSIVE` CTEs, partial & expression indexes, `GENERATED ALWAYS AS (...)` columns, `CASE`/`CAST`, `INTERSECT`/`EXCEPT`, `CROSS JOIN`, `DATE`/`TIME`/`STRFTIME`, `ON CONFLICT DO UPDATE` with `EXCLUDED` expressions, and correlated scalar subqueries. `TapirusSessionDatabase` provides independently owned transactions alongside non-blocking snapshot reads. See [AI and embedded workflows](../../docs/AI_EMBEDDED_WORKFLOWS.md).
 
 This package is a synchronous Node.js binding to the TapirusDB Rust engine. It requires a matching native `.node` addon. It does not switch to an in-memory JavaScript implementation if that addon is missing; opening a database fails with a diagnostic error instead.
 

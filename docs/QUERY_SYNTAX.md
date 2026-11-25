@@ -1,6 +1,6 @@
 # TapirusDB Complete Query Syntax Reference
 
-> **Applies to:** TapirusDB `v1.2.1` (Phases 1–9 SQL & execution upgrades) across Rust (`Connection` / `SessionDatabase`), Python, Node.js, Browser WASM (`@tapirus/wasm` & `@tapirus/wasm-lite`), CLI (`tapirus`), and HTTP/TLS (`tapirus serve`).
+> **Applies to:** TapirusDB `v1.3.0` (Phases 1–9 SQL & execution upgrades) across Rust (`Connection` / `SessionDatabase`), Python, Node.js, Browser WASM (`@tapirus/wasm` & `@tapirus/wasm-lite`), CLI (`tapirus`), and HTTP/TLS (`tapirus serve`).
 
 This guide is designed so **any developer**—whether coming from SQLite/Postgres or building vector, graph, or Parquet analytics—can find the exact working query syntax in seconds.
 

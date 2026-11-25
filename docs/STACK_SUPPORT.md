@@ -1,6 +1,6 @@
 # SDK Stack & Package Validation Matrix
 
-Updated: **16 November 2026** (synchronized at **`1.2.1`**, MSRV **Rust `1.88+`**).
+Updated: **16 November 2026** (synchronized at **`1.3.0`**, MSRV **Rust `1.88+`**).
 
 ## Unified Source & Package Matrix
 
@@ -33,6 +33,6 @@ python scripts/test-http-clients.py
 python scripts/package-go-sdk.py
 ```
 
-`scripts/check-release-version.py` enforces exact version parity (`1.2.1`) across Cargo manifests, SDK metadata, examples, and installers prior to release tagging.
+`scripts/check-release-version.py` enforces exact version parity (`1.3.0`) across Cargo manifests, SDK metadata, examples, and installers prior to release tagging.
 
 See [Current Release Status](CURRENT_STATUS.md) and [Release Validation](RELEASE_VALIDATION.md).

@@ -1,7 +1,7 @@
 # TapirusDB Windows installer. Prebuilt releases require a matching SHA-256 file.
 [CmdletBinding()]
 param(
-    [string]$Version = '1.2.1',
+    [string]$Version = '1.3.0',
     [string]$InstallDir = $env:TAPIRUS_INSTALL_DIR,
     [switch]$FromSource,
     [string]$ArchivePath,
